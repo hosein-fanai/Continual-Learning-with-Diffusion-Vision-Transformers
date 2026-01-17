@@ -21,15 +21,12 @@ def init():
             print("Could not limit gpu memory.")
 
 
-def load_cifar10(indices=list(range(10)), preprocess=True, verbose=1):
-    from tensorflow.keras.datasets import cifar10
-
+def get_data(x_train, y_train, x_test, y_test, 
+            indices, preprocess, verbose):
     from sklearn.model_selection import train_test_split
 
     import numpy as np
 
-
-    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
 
     if preprocess:
         x_train = x_train.astype("float64") / 255.
@@ -37,7 +34,6 @@ def load_cifar10(indices=list(range(10)), preprocess=True, verbose=1):
     else:
         x_train = x_train.astype("uint8")
         x_test = x_test.astype("uint8")
-
 
     labels_set_list = []
     for labels_set in (y_train, y_test):
@@ -71,6 +67,26 @@ def load_cifar10(indices=list(range(10)), preprocess=True, verbose=1):
             print()
 
     return x_train, y_train, x_val, y_val, x_test, y_test
+
+
+def load_cifar10(indices=list(range(10)), preprocess=True, 
+                verbose=1):
+    from tensorflow.keras.datasets import cifar10
+
+
+    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+    
+    return get_data(x_train, y_train, x_test, y_test, indices, preprocess, verbose)
+
+
+def load_cifar100(indices=list(range(100)), preprocess=True, 
+                verbose=1):
+    from tensorflow.keras.datasets import cifar100
+
+
+    (x_train, y_train), (x_test, y_test) = cifar100.load_data()
+    
+    return get_data(x_train, y_train, x_test, y_test, indices, preprocess, verbose)
 
 
 def get_dataset(X, Y, conv_base=None, batch_size=128):
@@ -272,6 +288,34 @@ def show_img(x, y=None):
         plt.title(f"Label: {y[0]}")
 
     plt.show()
+
+
+def save_samples(arr, path, type_):
+    import numpy as np
+
+
+    if type_ == ".csv":
+        np.savetxt(path+type_, arr, delimiter=',')
+    elif type_ == ".npy":
+        with open(path+type_, "wb") as file:
+            np.save(file ,arr)
+    else:
+        print("Wrong type!")
+
+
+def load_samples(path, type_):
+    import numpy as np
+
+
+    if type_ == ".csv":
+        pass
+    elif type_ == ".npy":
+        with open(path+type_, "rb") as file:
+            arr = np.load(file, allow_pickle=True)
+    else:
+        return None
+    
+    return arr
 
 
 def save_logs(model_name, i, val_f1, best_f1, 
