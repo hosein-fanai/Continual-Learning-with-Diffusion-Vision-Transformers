@@ -1,4 +1,4 @@
-----Opt Iteration 1: val_f1=0.10000000149011612, best_f1=0.10000000149011612
+----Opt Iteration 1: val_acc=0.10000000149011612, best_acc=0.10000000149011612
 conv_num: five
 first_conv_filter_size: 5
 batch_norm: no
@@ -18,7 +18,7 @@ momentum: 0.0
 weight_decay: 0.03
 opt_choice: rmsprop
 
-----Opt Iteration 2: val_f1=0.779699981212616, best_f1=0.779699981212616
+----Opt Iteration 2: val_acc=0.779699981212616, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -38,7 +38,7 @@ momentum: 0.3
 weight_decay: 0.003
 opt_choice: rmsprop
 
-----Opt Iteration 3: val_f1=0.6431999802589417, best_f1=0.779699981212616
+----Opt Iteration 3: val_acc=0.6431999802589417, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 7
 batch_norm: yes
@@ -58,7 +58,7 @@ momentum: 0.1
 weight_decay: 0.01
 opt_choice: adam
 
-----Opt Iteration 4: val_f1=0.6674000024795532, best_f1=0.779699981212616
+----Opt Iteration 4: val_acc=0.6674000024795532, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 9
 batch_norm: no
@@ -78,7 +78,7 @@ momentum: 0.5
 weight_decay: 0.1
 opt_choice: adamw
 
-----Opt Iteration 5: val_f1=0.6545000076293945, best_f1=0.779699981212616
+----Opt Iteration 5: val_acc=0.6545000076293945, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 5
 batch_norm: yes
@@ -98,7 +98,7 @@ momentum: 0.8
 weight_decay: 0.001
 opt_choice: adamax
 
-----Opt Iteration 6: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 6: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 3
 batch_norm: no
@@ -118,7 +118,7 @@ momentum: 0.8
 weight_decay: 0.0003
 opt_choice: adam
 
-----Opt Iteration 7: val_f1=0.5037999749183655, best_f1=0.779699981212616
+----Opt Iteration 7: val_acc=0.5037999749183655, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 7
 batch_norm: yes
@@ -138,7 +138,7 @@ momentum: 0.0
 weight_decay: 0.001
 opt_choice: nadam
 
-----Opt Iteration 8: val_f1=0.515500009059906, best_f1=0.779699981212616
+----Opt Iteration 8: val_acc=0.515500009059906, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -158,7 +158,7 @@ momentum: 0.1
 weight_decay: 0.0003
 opt_choice: adamw
 
-----Opt Iteration 9: val_f1=0.59579998254776, best_f1=0.779699981212616
+----Opt Iteration 9: val_acc=0.59579998254776, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 7
 batch_norm: yes
@@ -178,7 +178,7 @@ momentum: 0.1
 weight_decay: 0.003
 opt_choice: adam
 
-----Opt Iteration 10: val_f1=0.41749998927116394, best_f1=0.779699981212616
+----Opt Iteration 10: val_acc=0.41749998927116394, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 3
 batch_norm: yes
@@ -198,7 +198,7 @@ momentum: 0.1
 weight_decay: 0.01
 opt_choice: sgd
 
-----Opt Iteration 11: val_f1=0.45170000195503235, best_f1=0.779699981212616
+----Opt Iteration 11: val_acc=0.45170000195503235, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 3
 batch_norm: no
@@ -218,7 +218,7 @@ momentum: 0.1
 weight_decay: 0.1
 opt_choice: rmsprop
 
-----Opt Iteration 12: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 12: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 9
 batch_norm: no
@@ -238,7 +238,7 @@ momentum: 0.0
 weight_decay: 0.0001
 opt_choice: adamax
 
-----Opt Iteration 13: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 13: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 5
 batch_norm: no
@@ -258,7 +258,7 @@ momentum: 0.8
 weight_decay: 0.001
 opt_choice: rmsprop
 
-----Opt Iteration 14: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 14: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 9
 batch_norm: no
@@ -278,7 +278,7 @@ momentum: 0.1
 weight_decay: 0.0
 opt_choice: rmsprop
 
-----Opt Iteration 15: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 15: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 9
 batch_norm: no
@@ -298,7 +298,7 @@ momentum: 0.03
 weight_decay: 0.0001
 opt_choice: sgd
 
-----Opt Iteration 16: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 16: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 5
 batch_norm: no
@@ -318,7 +318,7 @@ momentum: 0.99
 weight_decay: 0.0001
 opt_choice: rmsprop
 
-----Opt Iteration 17: val_f1=0.4196000099182129, best_f1=0.779699981212616
+----Opt Iteration 17: val_acc=0.4196000099182129, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 3
 batch_norm: no
@@ -338,7 +338,7 @@ momentum: 0.5
 weight_decay: 0.0001
 opt_choice: rmsprop
 
-----Opt Iteration 18: val_f1=0.1404000073671341, best_f1=0.779699981212616
+----Opt Iteration 18: val_acc=0.1404000073671341, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 7
 batch_norm: no
@@ -358,7 +358,7 @@ momentum: 0.9
 weight_decay: 0.001
 opt_choice: sgd
 
-----Opt Iteration 19: val_f1=0.17870000004768372, best_f1=0.779699981212616
+----Opt Iteration 19: val_acc=0.17870000004768372, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 5
 batch_norm: yes
@@ -378,7 +378,7 @@ momentum: 0.8
 weight_decay: 0.003
 opt_choice: sgd
 
-----Opt Iteration 20: val_f1=0.5677000284194946, best_f1=0.779699981212616
+----Opt Iteration 20: val_acc=0.5677000284194946, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 3
 batch_norm: yes
@@ -398,7 +398,7 @@ momentum: 0.8
 weight_decay: 0.0001
 opt_choice: sgd
 
-----Opt Iteration 21: val_f1=0.73089998960495, best_f1=0.779699981212616
+----Opt Iteration 21: val_acc=0.73089998960495, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 9
 batch_norm: yes
@@ -418,7 +418,7 @@ momentum: 0.3
 weight_decay: 0.1
 opt_choice: adamw
 
-----Opt Iteration 22: val_f1=0.7425000071525574, best_f1=0.779699981212616
+----Opt Iteration 22: val_acc=0.7425000071525574, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 9
 batch_norm: yes
@@ -438,7 +438,7 @@ momentum: 0.3
 weight_decay: 0.003
 opt_choice: adamw
 
-----Opt Iteration 23: val_f1=0.757099986076355, best_f1=0.779699981212616
+----Opt Iteration 23: val_acc=0.757099986076355, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -458,7 +458,7 @@ momentum: 0.3
 weight_decay: 0.003
 opt_choice: nadam
 
-----Opt Iteration 24: val_f1=0.6710000038146973, best_f1=0.779699981212616
+----Opt Iteration 24: val_acc=0.6710000038146973, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -478,7 +478,7 @@ momentum: 0.01
 weight_decay: 0.003
 opt_choice: nadam
 
-----Opt Iteration 25: val_f1=0.7200000286102295, best_f1=0.779699981212616
+----Opt Iteration 25: val_acc=0.7200000286102295, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -498,7 +498,7 @@ momentum: 0.3
 weight_decay: 0.003
 opt_choice: nadam
 
-----Opt Iteration 26: val_f1=0.7731000185012817, best_f1=0.779699981212616
+----Opt Iteration 26: val_acc=0.7731000185012817, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -518,7 +518,7 @@ momentum: 0.3
 weight_decay: 0.03
 opt_choice: nadam
 
-----Opt Iteration 27: val_f1=0.7322999835014343, best_f1=0.779699981212616
+----Opt Iteration 27: val_acc=0.7322999835014343, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -538,7 +538,7 @@ momentum: 0.3
 weight_decay: 0.03
 opt_choice: nadam
 
-----Opt Iteration 28: val_f1=0.6470999717712402, best_f1=0.779699981212616
+----Opt Iteration 28: val_acc=0.6470999717712402, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -558,7 +558,7 @@ momentum: 0.3
 weight_decay: 0.03
 opt_choice: adamax
 
-----Opt Iteration 29: val_f1=0.7542999982833862, best_f1=0.779699981212616
+----Opt Iteration 29: val_acc=0.7542999982833862, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -578,7 +578,7 @@ momentum: 0.01
 weight_decay: 0.03
 opt_choice: nadam
 
-----Opt Iteration 30: val_f1=0.2004999965429306, best_f1=0.779699981212616
+----Opt Iteration 30: val_acc=0.2004999965429306, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -598,7 +598,7 @@ momentum: 0.99
 weight_decay: 0.0
 opt_choice: rmsprop
 
-----Opt Iteration 31: val_f1=0.7569000124931335, best_f1=0.779699981212616
+----Opt Iteration 31: val_acc=0.7569000124931335, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -618,7 +618,7 @@ momentum: 0.9
 weight_decay: 0.03
 opt_choice: nadam
 
-----Opt Iteration 32: val_f1=0.6035000085830688, best_f1=0.779699981212616
+----Opt Iteration 32: val_acc=0.6035000085830688, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -638,7 +638,7 @@ momentum: 0.03
 weight_decay: 0.01
 opt_choice: adam
 
-----Opt Iteration 33: val_f1=0.7095000147819519, best_f1=0.779699981212616
+----Opt Iteration 33: val_acc=0.7095000147819519, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -658,7 +658,7 @@ momentum: 0.3
 weight_decay: 0.03
 opt_choice: rmsprop
 
-----Opt Iteration 34: val_f1=0.5979999899864197, best_f1=0.779699981212616
+----Opt Iteration 34: val_acc=0.5979999899864197, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 5
 batch_norm: yes
@@ -678,7 +678,7 @@ momentum: 0.5
 weight_decay: 0.0003
 opt_choice: adamax
 
-----Opt Iteration 35: val_f1=0.7793999910354614, best_f1=0.779699981212616
+----Opt Iteration 35: val_acc=0.7793999910354614, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -698,7 +698,7 @@ momentum: 0.3
 weight_decay: 0.0
 opt_choice: adam
 
-----Opt Iteration 36: val_f1=0.765500009059906, best_f1=0.779699981212616
+----Opt Iteration 36: val_acc=0.765500009059906, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -718,7 +718,7 @@ momentum: 0.0
 weight_decay: 0.0
 opt_choice: adam
 
-----Opt Iteration 37: val_f1=0.40779998898506165, best_f1=0.779699981212616
+----Opt Iteration 37: val_acc=0.40779998898506165, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 5
 batch_norm: yes
@@ -738,7 +738,7 @@ momentum: 0.9
 weight_decay: 0.0
 opt_choice: adam
 
-----Opt Iteration 38: val_f1=0.6640999913215637, best_f1=0.779699981212616
+----Opt Iteration 38: val_acc=0.6640999913215637, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 3
 batch_norm: yes
@@ -758,7 +758,7 @@ momentum: 0.3
 weight_decay: 0.0
 opt_choice: adam
 
-----Opt Iteration 39: val_f1=0.7519000172615051, best_f1=0.779699981212616
+----Opt Iteration 39: val_acc=0.7519000172615051, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -778,7 +778,7 @@ momentum: 0.03
 weight_decay: 0.01
 opt_choice: adam
 
-----Opt Iteration 40: val_f1=0.754800021648407, best_f1=0.779699981212616
+----Opt Iteration 40: val_acc=0.754800021648407, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 7
 batch_norm: yes
@@ -798,7 +798,7 @@ momentum: 0.99
 weight_decay: 0.0003
 opt_choice: adam
 
-----Opt Iteration 41: val_f1=0.5250999927520752, best_f1=0.779699981212616
+----Opt Iteration 41: val_acc=0.5250999927520752, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 3
 batch_norm: yes
@@ -818,7 +818,7 @@ momentum: 0.01
 weight_decay: 0.1
 opt_choice: adamw
 
-----Opt Iteration 42: val_f1=0.6593999862670898, best_f1=0.779699981212616
+----Opt Iteration 42: val_acc=0.6593999862670898, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 7
 batch_norm: yes
@@ -838,7 +838,7 @@ momentum: 0.5
 weight_decay: 0.0
 opt_choice: rmsprop
 
-----Opt Iteration 43: val_f1=0.10000000149011612, best_f1=0.779699981212616
+----Opt Iteration 43: val_acc=0.10000000149011612, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 9
 batch_norm: no
@@ -858,7 +858,7 @@ momentum: 0.0
 weight_decay: 0.003
 opt_choice: adamax
 
-----Opt Iteration 44: val_f1=0.6952999830245972, best_f1=0.779699981212616
+----Opt Iteration 44: val_acc=0.6952999830245972, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 5
 batch_norm: yes
@@ -878,7 +878,7 @@ momentum: 0.3
 weight_decay: 0.001
 opt_choice: adam
 
-----Opt Iteration 45: val_f1=0.5745000243186951, best_f1=0.779699981212616
+----Opt Iteration 45: val_acc=0.5745000243186951, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 7
 batch_norm: no
@@ -898,7 +898,7 @@ momentum: 0.3
 weight_decay: 0.0
 opt_choice: rmsprop
 
-----Opt Iteration 46: val_f1=0.7024999856948853, best_f1=0.779699981212616
+----Opt Iteration 46: val_acc=0.7024999856948853, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 3
 batch_norm: yes
@@ -918,7 +918,7 @@ momentum: 0.1
 weight_decay: 0.0003
 opt_choice: rmsprop
 
-----Opt Iteration 47: val_f1=0.3027999997138977, best_f1=0.779699981212616
+----Opt Iteration 47: val_acc=0.3027999997138977, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 9
 batch_norm: no
@@ -938,7 +938,7 @@ momentum: 0.03
 weight_decay: 0.01
 opt_choice: adam
 
-----Opt Iteration 48: val_f1=0.34869998693466187, best_f1=0.779699981212616
+----Opt Iteration 48: val_acc=0.34869998693466187, best_acc=0.779699981212616
 conv_num: five
 first_conv_filter_size: 7
 batch_norm: yes
@@ -958,7 +958,7 @@ momentum: 0.99
 weight_decay: 0.1
 opt_choice: adamw
 
-----Opt Iteration 49: val_f1=0.6969000101089478, best_f1=0.779699981212616
+----Opt Iteration 49: val_acc=0.6969000101089478, best_acc=0.779699981212616
 conv_num: three
 first_conv_filter_size: 5
 batch_norm: no
@@ -978,7 +978,7 @@ momentum: 0.8
 weight_decay: 0.003
 opt_choice: rmsprop
 
-----Opt Iteration 50: val_f1=0.5264999866485596, best_f1=0.779699981212616
+----Opt Iteration 50: val_acc=0.5264999866485596, best_acc=0.779699981212616
 conv_num: four
 first_conv_filter_size: 7
 batch_norm: yes
