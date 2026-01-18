@@ -42,6 +42,8 @@ def get_data(x_train, y_train, x_test, y_test,
             features_path, verbose):
     from sklearn.model_selection import train_test_split
 
+    import numpy as np
+
 
     if preprocess:
         x_train = x_train.astype("float64") / 255.
