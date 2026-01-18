@@ -21,11 +21,26 @@ def init():
             print("Could not limit gpu memory.")
 
 
-def get_data(x_train, y_train, x_test, y_test, 
-            indices, preprocess, verbose):
-    from sklearn.model_selection import train_test_split
-
+def sort_filter_labels(labels_list, indices):
     import numpy as np
+
+
+    labels_set_list = []
+    for labels_set in labels_list:
+        allowed_instances_list = []
+        for index in indices:
+            allowed_instances = np.where(labels_set == index)[0].tolist()
+            allowed_instances_list.extend(allowed_instances)
+
+        labels_set_list.append(allowed_instances_list)
+    
+    return labels_set_list
+
+
+def get_data(x_train, y_train, x_test, y_test, 
+            indices, preprocess, return_features, 
+            features_path, verbose):
+    from sklearn.model_selection import train_test_split
 
 
     if preprocess:
@@ -35,28 +50,29 @@ def get_data(x_train, y_train, x_test, y_test,
         x_train = x_train.astype("uint8")
         x_test = x_test.astype("uint8")
 
-    labels_set_list = []
-    for labels_set in (y_train, y_test):
-        allowed_instances_list = []
-        for index in indices:
-            allowed_instances = np.where(labels_set == index)[0].tolist()
-            allowed_instances_list.extend(allowed_instances)
+    if return_features:
+        x_train, x_val, x_test = load_samples(features_path, ".npy")
 
-        labels_set_list.append(allowed_instances_list)
+        labels_set_list = sort_filter_labels([y_train, y_test], indices)
+        y_train = y_train[labels_set_list[0]]
+        y_test = y_test[labels_set_list[1]]
 
-    x_train = x_train[labels_set_list[0]]
-    y_train = y_train[labels_set_list[0]]
-    x_test = x_test[labels_set_list[1]]
-    y_test = y_test[labels_set_list[1]]
+        y_train, y_val = train_test_split(y_train, test_size=0.2, 
+                                        stratify=y_train, random_state=42)
 
-    x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, 
-                                                    stratify=y_train, shuffle=True, 
-                                                    random_state=42)
+        return x_train, y_train, x_val, y_val, x_test, y_test
+    else:
+        labels_set_list = sort_filter_labels([y_train, y_test], indices)
+        x_train, y_train = x_train[labels_set_list[0]], y_train[labels_set_list[0]]
+        x_test, y_test = x_test[labels_set_list[1]], y_test[labels_set_list[1]]
+
+        x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, 
+                                                    stratify=y_train, random_state=42)
 
     if verbose:
-        print(x_train.shape, y_train.shape)
-        print(x_val.shape, y_val.shape)
-        print(x_test.shape, y_test.shape)
+        print("Trainset:", x_train.shape, y_train.shape)
+        print("Validation set:", x_val.shape, y_val.shape)
+        print("Testset:", x_test.shape, y_test.shape)
 
         for set_id, dataset in enumerate((y_train, y_val, y_test)):
             print(f"---{set_id}")
@@ -69,24 +85,30 @@ def get_data(x_train, y_train, x_test, y_test,
     return x_train, y_train, x_val, y_val, x_test, y_test
 
 
-def load_cifar10(indices=list(range(10)), preprocess=True, 
-                verbose=1):
+def load_cifar10(indices=list(range(10)), preprocess=True,  
+                features_path="./data/cifar10_xception_gavgpooled_features_train_val_test", 
+                return_features=False, verbose=1):
     from tensorflow.keras.datasets import cifar10
 
 
     (x_train, y_train), (x_test, y_test) = cifar10.load_data()
     
-    return get_data(x_train, y_train, x_test, y_test, indices, preprocess, verbose)
+    return get_data(x_train, y_train, x_test, y_test, 
+                indices, preprocess, return_features, 
+                features_path, verbose)
 
 
 def load_cifar100(indices=list(range(100)), preprocess=True, 
-                verbose=1):
+                features_path="./data/cifar100_xception_gavgpooled_features_train_val_test", 
+                return_features=False, verbose=1):
     from tensorflow.keras.datasets import cifar100
 
 
     (x_train, y_train), (x_test, y_test) = cifar100.load_data()
     
-    return get_data(x_train, y_train, x_test, y_test, indices, preprocess, verbose)
+    return get_data(x_train, y_train, x_test, y_test, 
+                indices, preprocess, return_features, 
+                features_path, verbose)
 
 
 def get_dataset(X, Y, conv_base=None, batch_size=128):
@@ -120,7 +142,7 @@ def create_compile_args(optimizer="adam"):
 
 def create_callbacks_list(monitor="val_accuracy", mode="max", 
                         patience=5, min_delta=1e-3, reducelr_factor=0.6, 
-                        verbose=1, idx=(0,)):
+                        idx=[0], verbose=1):
     from tensorflow.keras import callbacks
 
 
@@ -160,10 +182,10 @@ def get_callbacks():
     ]
 
 
-def get_model(class_num, dropout_rate=0., 
-            model_type="default", model_path="", 
-            num_last_not_frozen=3, resize=(299, 299),
-            verbose=1):
+def get_model(class_num, model_type="CNN", model_path="", 
+            dropout_rate=0., num_last_not_frozen=3, 
+            resize=(299, 299), verbose=1):
+    import tensorflow as tf
     from tensorflow.keras import models, layers, applications
 
 
@@ -182,7 +204,6 @@ def get_model(class_num, dropout_rate=0.,
         ])
     elif model_type == "hp-tuned":
         model = models.Sequential([
-            layers.Input(shape=(32, 32, 3)),
             *models.clone_model(models.load_model(model_path)).layers[:-1],
             layers.Dense(class_num, activation="softmax")
         ])
@@ -219,6 +240,8 @@ def get_model(class_num, dropout_rate=0.,
         metrics=["accuracy"]
     )
 
+    model.build(model.layers[0].input_shape)
+
     if verbose:
         model.summary()
 
@@ -244,7 +267,8 @@ def copy_model(prev_model, new_model):
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])
 
 
-def plot_history(history, range_=(0, None), indices=None):
+def plot_history(history, range_=(0, None), 
+                indices=None):
     from matplotlib import pyplot as plt
 
 
@@ -331,4 +355,5 @@ def save_logs(model_name, i, val_f1, best_f1,
 
     if where_to == "print" or where_to == "both":
         print(txt)
+
 
