@@ -53,22 +53,30 @@ def get_data(x_train, y_train, x_test, y_test,
         x_test = x_test.astype("uint8")
 
     if return_features:
-        x_train, x_val, x_test = load_samples(features_path, ".npy")
+        if "cifar10_" in features_path:
+            class_num = 10
+        elif "cifar100_" in features_path:
+            class_num = 100
+        else:
+            raise Exception("features_path has to contain cifar10_ or cifar100_.")
 
-        labels_set_list = sort_filter_labels([y_train, y_test], indices)
+        labels_set_list = sort_filter_labels([y_train, y_test], list(range(class_num)))
         y_train = y_train[labels_set_list[0]]
         y_test = y_test[labels_set_list[1]]
 
         y_train, y_val = train_test_split(y_train, test_size=0.2, 
                                         stratify=y_train, random_state=42)
 
-        return x_train, y_train, x_val, y_val, x_test, y_test
-    else:
-        labels_set_list = sort_filter_labels([y_train, y_test], indices)
-        x_train, y_train = x_train[labels_set_list[0]], y_train[labels_set_list[0]]
-        x_test, y_test = x_test[labels_set_list[1]], y_test[labels_set_list[1]]
+        x_train, x_val, x_test = load_samples(features_path, ".npy")
 
-        x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, 
+        x_train = np.concatenate([x_train, x_val], axis=0)
+        y_train = np.concatenate([y_train, y_val], axis=0)
+
+    labels_set_list = sort_filter_labels([y_train, y_test], indices)
+    x_train, y_train = x_train[labels_set_list[0]], y_train[labels_set_list[0]]
+    x_test, y_test = x_test[labels_set_list[1]], y_test[labels_set_list[1]]
+
+    x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, 
                                                     stratify=y_train, random_state=42)
 
     if verbose:
@@ -78,7 +86,6 @@ def get_data(x_train, y_train, x_test, y_test,
 
         for set_id, dataset in enumerate((y_train, y_val, y_test)):
             print(f"---{set_id}")
-
             for clss_id in np.unique(dataset):
                 print(clss_id, sum(dataset == clss_id) / len(dataset))
             
