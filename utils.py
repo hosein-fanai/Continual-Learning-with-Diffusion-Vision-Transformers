@@ -139,19 +139,20 @@ def get_dataset(X, Y, conv_base=None, batch_size=128):
     return dataset
 
 
-def create_compile_args(optimizer="adam"):
+def get_compile_args(optimizer="adam", metrics=["accuracy"], 
+                    loss="sparse_categorical_crossentropy"):
     compile_args = {
         "optimizer": optimizer,
-        "loss": "sparse_categorical_crossentropy",
-        "metrics": ["accuracy"]
+        "loss": loss,
+        "metrics": metrics
     }
 
     return compile_args
 
 
-def create_callbacks_list(monitor="val_accuracy", mode="max", 
-                        patience=5, min_delta=1e-3, reducelr_factor=0.6, 
-                        idx=[0], verbose=1):
+def get_callbacks(indices=[0], monitor="val_accuracy", mode="max", 
+                patience=5, min_delta=1e-2, reducelr_factor=0.6, 
+                verbose=1):
     from tensorflow.keras import callbacks
 
 
@@ -172,28 +173,14 @@ def create_callbacks_list(monitor="val_accuracy", mode="max",
             verbose=verbose,
         )
     ]
-    
-    return [callbacks_list[i] for i in idx]
 
-
-def get_callbacks():
-    from tensorflow.keras import callbacks
-
-
-    return [
-        callbacks.EarlyStopping(
-            monitor="val_accuracy",
-            restore_best_weights=True,
-            patience=5,
-            min_delta=1e-2,
-            verbose=1,
-        )
-    ]
+    return [callbacks_list[idx] for idx in indices]
 
 
 def get_model(class_num, model_type="CNN", model_path="", 
             dropout_rate=0., num_last_not_frozen=3, 
-            resize=(299, 299), verbose=1):
+            resize=(299, 299), compile_args=None, 
+            verbose=1):
     import tensorflow as tf
     from tensorflow.keras import models, layers, applications
 
@@ -243,11 +230,10 @@ def get_model(class_num, model_type="CNN", model_path="",
     else:
         raise Exception("model_type needs to be one of pretrained, hp-tuned, CNN, or DNN.")
 
-    model.compile(
-        optimizer="adam",
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"]
-    )
+    if compile_args is None:
+        compile_args = get_compile_args()
+
+    model.compile(**compile_args)
 
     model.build(model.layers[0].input_shape)
 
@@ -274,6 +260,32 @@ def copy_model(prev_model, new_model):
     new_last_layer_bias[:-1] = old_last_layer_bias
 
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])
+
+
+def extract_features(dataset_list, batch_size=128, 
+                    file_name=None):
+    from tensorflow.keras import models
+
+    import numpy as np
+
+
+    conv_base = models.Sequential(
+        get_model(10, model_type="pretrained", verbose=0).layers[:4]
+    )
+    conv_base.trainable = False
+
+    features_list = []
+    for dataset in dataset_list:
+        features = conv_base.predict(dataset, batch_size=batch_size)
+        features_list.append(features)
+
+    del conv_base
+
+    if file_name is not None:
+        save_samples(np.array(features_list, dtype="object"), 
+                    file_name, ".npy")
+
+    return features_list
 
 
 def plot_history(history, range_=(0, None), 
