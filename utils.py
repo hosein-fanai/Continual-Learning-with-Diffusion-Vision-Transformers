@@ -392,6 +392,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
         1, 
         model_type="hp-tuned", 
         model_path=tuned_model_path, 
+        compile_args=compile_args, 
         use_loaded_opt=use_loaded_opt, 
         verbose=0
     )
@@ -433,6 +434,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
             i+2, model_type="hp-tuned", 
             model_path=tuned_model_path, 
             compile_args=compile_args, 
+            use_loaded_opt=use_loaded_opt, 
             verbose=0
         )
 
