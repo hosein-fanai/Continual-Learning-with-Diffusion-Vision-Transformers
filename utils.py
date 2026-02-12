@@ -188,10 +188,13 @@ def get_callbacks(indices=[0], monitor="val_accuracy", mode="max",
 def get_model(class_num, model_type="CNN", model_path="", 
             dropout_rate=0., num_last_not_frozen=3, 
             resize=(299, 299), compile_args=None, 
-            verbose=1):
+            use_loaded_opt=False, verbose=1):
     import tensorflow as tf
     from tensorflow.keras import models, layers, applications
 
+
+    if compile_args is None:
+        compile_args = get_compile_args()
 
     if model_type == "pretrained":
         conv_base = applications.Xception(include_top=False, input_shape=(resize[0], resize[1], 3))
@@ -207,8 +210,12 @@ def get_model(class_num, model_type="CNN", model_path="",
             layers.Dense(class_num, activation="softmax")
         ])
     elif model_type == "hp-tuned":
+        model = models.load_model(model_path)
+        if use_loaded_opt:
+            compile_args["optimizer"] = model.optimizer
+
         model = models.Sequential([
-            *models.clone_model(models.load_model(model_path)).layers[:-1],
+            *models.clone_model(model).layers[:-1],
             layers.Dense(class_num, activation="softmax")
         ])
     elif model_type == "CNN":
@@ -238,9 +245,6 @@ def get_model(class_num, model_type="CNN", model_path="",
     else:
         raise Exception("model_type needs to be one of pretrained, hp-tuned, CNN, or DNN.")
 
-    if compile_args is None:
-        compile_args = get_compile_args()
-
     model.compile(**compile_args)
 
     model.build(model.layers[0].input_shape)
@@ -251,7 +255,12 @@ def get_model(class_num, model_type="CNN", model_path="",
     return model
 
 
-def copy_model(prev_model, new_model):
+def copy_model(prev_model, new_model): # , copy_opt_states=False
+    from tensorflow.keras import backend as K
+
+    import numpy as np
+
+
     assert (layers_num:=len(prev_model.layers)) == len(new_model.layers)
 
     for i in range(layers_num-1):
@@ -264,6 +273,30 @@ def copy_model(prev_model, new_model):
     new_last_layer_bias[:-1] = old_last_layer_bias
 
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])
+
+    # if not copy_opt_states:
+    #     return
+
+    # lr = new_model.optimizer.learning_rate
+    # K.set_value(new_model.optimizer.lr, 0.)
+    # new_model.train_on_batch(
+    #     np.random.normal(size=(1, *prev_model.input_shape[1:])),
+    #     np.zeros((1,), dtype="float32")
+    # )
+    # K.set_value(new_model.optimizer.lr, lr)
+
+    # prev_states = prev_model.optimizer.get_weights()
+    # new_states = new_model.optimizer.get_weights()
+
+    # new_states[:-2] = prev_states[:-2]
+    # last_weight_prev_state, last_bias_prev_state = prev_states[-2:]
+
+    # new_states[-2][:, :-1] = last_weight_prev_state
+    # new_states[-1][:-1] = last_bias_prev_state
+
+    # new_model.optimizer.set_weights(new_states)
+
+    pass
 
 
 def extract_features(dataset_list, batch_size=128, 
@@ -340,8 +373,10 @@ def plot_history(history, range_=(0, None),
 
 
 def continually_learn(class_num, load_dataset_fn, keep_same_model,
-                    remove_prev_classes, tuned_model_path, onehot_labels=False, 
-                    batch_size=128, epochs=100, compile_args=None):
+                    remove_prev_classes, tuned_model_path, 
+                    onehot_labels=False, batch_size=128, 
+                    epochs=100, compile_args=None, 
+                    use_loaded_opt=False): # , copy_opt_states=False
     from sklearn.metrics import (accuracy_score, 
                             classification_report, 
                             ConfusionMatrixDisplay)
@@ -352,9 +387,16 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
 
 
     return_features = True if "dnn" in tuned_model_path else False
-    prev_model = get_model(1, model_type="hp-tuned", model_path=tuned_model_path, verbose=0)
-    acc_list = []
 
+    prev_model = get_model(
+        1, 
+        model_type="hp-tuned", 
+        model_path=tuned_model_path, 
+        use_loaded_opt=use_loaded_opt, 
+        verbose=0
+    )
+
+    acc_list = []
     for i in range(class_num-1):
         print(75*'-'+" Classes:", list(range(i+2)))
 
@@ -395,7 +437,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
         )
 
         if keep_same_model:
-            copy_model(prev_model, new_model)
+            copy_model(prev_model, new_model) # , copy_opt_states=copy_opt_states
 
         history = new_model.fit(
             x_train, y_train, 
@@ -420,10 +462,10 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
         print(classification_report(y_test, preds, digits=4))
         ConfusionMatrixDisplay.from_predictions(y_test, preds)
         plt.show()
-        
+
         print(75*'-'+'\n')
 
-    CL_plot(class_num, [(acc_list, "")])
+    CL_plot(class_num, [(acc_list, " ")])
 
     return acc_list
 
