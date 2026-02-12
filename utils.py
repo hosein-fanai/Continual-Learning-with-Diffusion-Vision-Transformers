@@ -244,14 +244,10 @@ def get_model(class_num, model_type="CNN", model_path="",
 
 
 def copy_model(prev_model, new_model):
-    from tensorflow.keras import layers
+    assert (layers_num:=len(prev_model.layers)) == len(new_model.layers)
 
-
-    for old_layer, new_layer in zip(prev_model.layers, new_model.layers):
-        if isinstance(old_layer, layers.Dense):
-            break
-
-        new_layer.set_weights(old_layer.get_weights())
+    for i in range(layers_num-1):
+        new_model.layers[i].set_weights(prev_model.layers[i].get_weights())
 
     old_last_layer_weights, old_last_layer_bias = prev_model.layers[-1].get_weights()
     new_last_layer_weights, new_last_layer_bias = new_model.layers[-1].get_weights()
@@ -288,6 +284,19 @@ def extract_features(dataset_list, batch_size=128,
     return features_list
 
 
+def CL_plot(class_num, pairs):
+    from matplotlib import pyplot as plt
+
+
+    for accs, label in pairs:
+        plt.plot(list(range(2, class_num+1)), accs, label=label)
+
+    plt.legend()
+    plt.xlabel("#classes")
+    plt.ylabel("accuracy")
+    plt.show()
+
+
 def plot_history(history, range_=(0, None), 
                 indices=None):
     from matplotlib import pyplot as plt
@@ -308,10 +317,10 @@ def plot_history(history, range_=(0, None),
 
         if (i > len(history.keys()) / 2 and has_val):
             break
-
-        plt.figure(i)
         
         epochs = range(1, len(history.get(metric))+1)[range_]
+
+        plt.figure(i)
         plt.plot(epochs, history.get(metric)[range_], label="Training")
         if has_val:
             plt.plot(epochs, history.get("val_"+metric)[range_], label="Validation", marker='v')
@@ -320,6 +329,89 @@ def plot_history(history, range_=(0, None),
         plt.xlabel("Epochs")
         plt.ylabel(metric.capitalize())
         plt.show()
+
+
+def continually_learn(class_num, load_dataset, same_model,
+                    remove_prev_classes, tuned_model_path, 
+                    batch_size=128, epochs=100):
+    from sklearn.metrics import (accuracy_score, 
+                            classification_report, 
+                            ConfusionMatrixDisplay)
+
+    import numpy as np
+
+    from matplotlib import pyplot as plt
+
+
+    return_features = True if "dnn" in tuned_model_path else False
+    prev_model = get_model(1, model_type="hp-tuned", model_path=tuned_model_path, verbose=0)
+    acc_list = []
+
+    for i in range(class_num-1):
+        print(75*'-'+" Classes:", list(range(i+2)))
+
+        if remove_prev_classes:
+            *_, x_val, y_val, x_test, y_test = load_dataset(
+                indices=list(range(0, i+2)), 
+                return_features=return_features, 
+                verbose=0
+            )
+            if i == 0:
+                x_train, y_train, *_ = load_dataset(
+                    indices=[i, i+1], 
+                    return_features=return_features, 
+                    verbose=0
+                )
+            else:
+                x_train, y_train, *_ = load_dataset(
+                    indices=[i+1], 
+                    return_features=return_features, 
+                    verbose=0
+                )
+        else:
+            x_train, y_train, x_val, y_val, x_test, y_test = load_dataset(
+                indices=list(range(0, i+2)), 
+                return_features=return_features, 
+                verbose=0
+            )
+
+        new_model = get_model(
+            i+2, model_type="hp-tuned", 
+            model_path=tuned_model_path, 
+            # compile_args=get_compile_args(optimizers.Adam(learning_rate=1e-6)), 
+            verbose=0
+        )
+
+        if same_model:
+            copy_model(prev_model, new_model)
+
+        history = new_model.fit(
+            x_train, y_train, 
+            batch_size=batch_size,
+            epochs=epochs,
+            validation_data=(x_val, y_val), 
+            callbacks=get_callbacks(),
+            verbose=0,
+        ).history
+        prev_model = new_model
+
+        plot_history(history, indices=[1])
+
+        preds = new_model.predict(x_test)
+        preds = np.argmax(preds, axis=-1)
+        acc = accuracy_score(y_test, preds)
+        acc_list.append(acc)
+
+        print(classification_report(y_test, preds, digits=4))
+
+        ConfusionMatrixDisplay.from_predictions(y_test, preds)
+        plt.show()
+        
+        print(75*'-'+'\n')
+
+    CL_plot(class_num, [(acc_list, "")])
+
+    return acc_list
 
 
 def show_img(x, y=None):
