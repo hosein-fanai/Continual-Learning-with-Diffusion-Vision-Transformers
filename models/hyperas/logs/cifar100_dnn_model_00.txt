@@ -1,0 +1,3600 @@
+----Opt Iteration 1: val_acc=0.3887999951839447, best_acc=0.3887999951839447
+hidden_num: two
+units1: 1024
+units2: 256
+units3: 128
+units4: 32
+actv: elu
+use_normed_data: True
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 2: val_acc=0.14239999651908875, best_acc=0.3887999951839447
+hidden_num: four
+units1: 8
+units2: 2
+units3: 0
+units4: 0
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 3: val_acc=0.07429999858140945, best_acc=0.3887999951839447
+hidden_num: four
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.01
+opt_choice: adamw
+
+----Opt Iteration 4: val_acc=0.029600000008940697, best_acc=0.3887999951839447
+hidden_num: three
+units1: 32
+units2: 4
+units3: 2
+units4: 1
+actv: elu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.003
+momentum: 0.0
+weight_decay: 0.1
+opt_choice: adam
+
+----Opt Iteration 5: val_acc=0.6574000120162964, best_acc=0.6574000120162964
+hidden_num: two
+units1: 256
+units2: 64
+units3: 16
+units4: 4
+actv: elu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.35
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: adam
+
+----Opt Iteration 6: val_acc=0.048700001090765, best_acc=0.6574000120162964
+hidden_num: two
+units1: 4
+units2: 2
+units3: 0
+units4: 0
+actv: selu
+use_normed_data: True
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+dense_dropout: 0.4
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0003
+opt_choice: sgd
+
+----Opt Iteration 7: val_acc=0.46869999170303345, best_acc=0.6574000120162964
+hidden_num: two
+units1: 512
+units2: 64
+units3: 16
+units4: 16
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.5
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 8: val_acc=0.3894999921321869, best_acc=0.6574000120162964
+hidden_num: four
+units1: 512
+units2: 64
+units3: 16
+units4: 8
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.3
+lr: 0.0001
+momentum: 0.9
+weight_decay: 0.0003
+opt_choice: rmsprop
+
+----Opt Iteration 9: val_acc=0.4235000014305115, best_acc=0.6574000120162964
+hidden_num: three
+units1: 1024
+units2: 256
+units3: 64
+units4: 16
+actv: elu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: sgd
+
+----Opt Iteration 10: val_acc=0.12809999287128448, best_acc=0.6574000120162964
+hidden_num: one
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.1
+lr: 0.1
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adam
+
+----Opt Iteration 11: val_acc=0.018300000578165054, best_acc=0.6574000120162964
+hidden_num: two
+units1: 4
+units2: 2
+units3: 0
+units4: 0
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.1
+lr: 0.1
+momentum: 0.03
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 12: val_acc=0.019600000232458115, best_acc=0.6574000120162964
+hidden_num: two
+units1: 8
+units2: 1
+units3: 0
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+dense_dropout: 0.15
+lr: 0.001
+momentum: 0.9
+weight_decay: 0.0001
+opt_choice: nadam
+
+----Opt Iteration 13: val_acc=0.14419999718666077, best_acc=0.6574000120162964
+hidden_num: three
+units1: 4
+units2: 2
+units3: 0
+units4: 0
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: adamw
+
+----Opt Iteration 14: val_acc=0.6424000263214111, best_acc=0.6574000120162964
+hidden_num: three
+units1: 512
+units2: 64
+units3: 16
+units4: 8
+actv: elu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.1
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 15: val_acc=0.09279999881982803, best_acc=0.6574000120162964
+hidden_num: two
+units1: 8
+units2: 2
+units3: 1
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.0001
+opt_choice: adam
+
+----Opt Iteration 16: val_acc=0.5888000130653381, best_acc=0.6574000120162964
+hidden_num: four
+units1: 128
+units2: 32
+units3: 32
+units4: 16
+actv: relu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.0
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 17: val_acc=0.48179998993873596, best_acc=0.6574000120162964
+hidden_num: one
+units1: 16
+units2: 8
+units3: 8
+units4: 4
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.35
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 18: val_acc=0.1356000006198883, best_acc=0.6574000120162964
+hidden_num: four
+units1: 1024
+units2: 128
+units3: 64
+units4: 64
+actv: tanh
+use_normed_data: False
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.45
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: sgd
+
+----Opt Iteration 19: val_acc=0.21960000693798065, best_acc=0.6574000120162964
+hidden_num: three
+units1: 4
+units2: 0
+units3: 0
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 20: val_acc=0.21619999408721924, best_acc=0.6574000120162964
+hidden_num: four
+units1: 4
+units2: 0
+units3: 0
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.99
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 21: val_acc=0.5440999865531921, best_acc=0.6574000120162964
+hidden_num: three
+units1: 256
+units2: 64
+units3: 16
+units4: 8
+actv: selu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 22: val_acc=0.6628999710083008, best_acc=0.6628999710083008
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 8
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.1
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 23: val_acc=0.6665999889373779, best_acc=0.6665999889373779
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 4
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 24: val_acc=0.6492999792098999, best_acc=0.6665999889373779
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 8
+actv: selu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.1
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 25: val_acc=0.583299994468689, best_acc=0.6665999889373779
+hidden_num: one
+units1: 64
+units2: 16
+units3: 16
+units4: 4
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 26: val_acc=0.6650999784469604, best_acc=0.6665999889373779
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 8
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.3
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 27: val_acc=0.6552000045776367, best_acc=0.6665999889373779
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 4
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.3
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 28: val_acc=0.6671000123023987, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 32
+units3: 8
+units4: 2
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.3
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 29: val_acc=0.38690000772476196, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 32
+units3: 32
+units4: 8
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.3
+lr: 0.0003
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 30: val_acc=0.6198999881744385, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 32
+units3: 8
+units4: 2
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.2
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 31: val_acc=0.6273999810218811, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 32
+units3: 8
+units4: 2
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.15
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 32: val_acc=0.6654999852180481, best_acc=0.6671000123023987
+hidden_num: one
+units1: 64
+units2: 16
+units3: 4
+units4: 1
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 33: val_acc=0.6597999930381775, best_acc=0.6671000123023987
+hidden_num: one
+units1: 32
+units2: 16
+units3: 4
+units4: 1
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 34: val_acc=0.1534000039100647, best_acc=0.6671000123023987
+hidden_num: one
+units1: 16
+units2: 4
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: sgd
+
+----Opt Iteration 35: val_acc=0.013799999840557575, best_acc=0.6671000123023987
+hidden_num: one
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.3
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.1
+opt_choice: adamax
+
+----Opt Iteration 36: val_acc=0.6597999930381775, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 32
+units3: 8
+units4: 2
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.5
+lr: 0.03
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 37: val_acc=0.1273999959230423, best_acc=0.6671000123023987
+hidden_num: four
+units1: 32
+units2: 16
+units3: 4
+units4: 4
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.3
+lr: 0.1
+momentum: 0.5
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 38: val_acc=0.6621999740600586, best_acc=0.6671000123023987
+hidden_num: one
+units1: 1024
+units2: 256
+units3: 64
+units4: 16
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.4
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: adamax
+
+----Opt Iteration 39: val_acc=0.31529998779296875, best_acc=0.6671000123023987
+hidden_num: two
+units1: 16
+units2: 4
+units3: 2
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 40: val_acc=0.6593000292778015, best_acc=0.6671000123023987
+hidden_num: one
+units1: 128
+units2: 64
+units3: 16
+units4: 4
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.15
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.0003
+opt_choice: rmsprop
+
+----Opt Iteration 41: val_acc=0.08129999786615372, best_acc=0.6671000123023987
+hidden_num: four
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: sgd
+
+----Opt Iteration 42: val_acc=0.06530000269412994, best_acc=0.6671000123023987
+hidden_num: three
+units1: 8
+units2: 2
+units3: 0
+units4: 0
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.1
+momentum: 0.3
+weight_decay: 0.0
+opt_choice: adam
+
+----Opt Iteration 43: val_acc=0.6653000116348267, best_acc=0.6671000123023987
+hidden_num: two
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+actv: selu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.0001
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 44: val_acc=0.6656000018119812, best_acc=0.6671000123023987
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 2
+actv: elu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.0
+weight_decay: 0.003
+opt_choice: adamax
+
+----Opt Iteration 45: val_acc=0.3937000036239624, best_acc=0.6671000123023987
+hidden_num: one
+units1: 256
+units2: 64
+units3: 16
+units4: 16
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.0003
+opt_choice: sgd
+
+----Opt Iteration 46: val_acc=0.5615000128746033, best_acc=0.6671000123023987
+hidden_num: two
+units1: 128
+units2: 16
+units3: 4
+units4: 1
+actv: relu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.3
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 47: val_acc=0.2084999978542328, best_acc=0.6671000123023987
+hidden_num: three
+units1: 32
+units2: 16
+units3: 16
+units4: 4
+actv: prelu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.0
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 48: val_acc=0.295199990272522, best_acc=0.6671000123023987
+hidden_num: four
+units1: 1024
+units2: 256
+units3: 128
+units4: 32
+actv: tanh
+use_normed_data: True
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: adam
+
+----Opt Iteration 49: val_acc=0.47589999437332153, best_acc=0.6671000123023987
+hidden_num: one
+units1: 8
+units2: 1
+units3: 0
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: adamax
+
+----Opt Iteration 50: val_acc=0.6620000004768372, best_acc=0.6671000123023987
+hidden_num: two
+units1: 512
+units2: 128
+units3: 32
+units4: 8
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.45
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 51: val_acc=0.051100000739097595, best_acc=0.6671000123023987
+hidden_num: three
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+dense_dropout: 0.15
+lr: 0.0001
+momentum: 0.3
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 52: val_acc=0.6728000044822693, best_acc=0.6728000044822693
+hidden_num: one
+units1: 256
+units2: 64
+units3: 32
+units4: 32
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 53: val_acc=0.01140000019222498, best_acc=0.6728000044822693
+hidden_num: four
+units1: 16
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.99
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 54: val_acc=0.21870000660419464, best_acc=0.6728000044822693
+hidden_num: one
+units1: 4
+units2: 1
+units3: 0
+units4: 0
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 55: val_acc=0.357699990272522, best_acc=0.6728000044822693
+hidden_num: three
+units1: 256
+units2: 32
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 56: val_acc=0.5708000063896179, best_acc=0.6728000044822693
+hidden_num: two
+units1: 128
+units2: 32
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.5
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 57: val_acc=0.6746000051498413, best_acc=0.6746000051498413
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 8
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 58: val_acc=0.532800018787384, best_acc=0.6746000051498413
+hidden_num: four
+units1: 64
+units2: 32
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 59: val_acc=0.6728000044822693, best_acc=0.6746000051498413
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 8
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 60: val_acc=0.6748999953269958, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 61: val_acc=0.31859999895095825, best_acc=0.6748999953269958
+hidden_num: three
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 62: val_acc=0.6711999773979187, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 63: val_acc=0.5015000104904175, best_acc=0.6748999953269958
+hidden_num: two
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 64: val_acc=0.6549000144004822, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 65: val_acc=0.11739999800920486, best_acc=0.6748999953269958
+hidden_num: four
+units1: 64
+units2: 8
+units3: 4
+units4: 2
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 66: val_acc=0.6643999814987183, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 67: val_acc=0.6690000295639038, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 68: val_acc=0.6708999872207642, best_acc=0.6748999953269958
+hidden_num: one
+units1: 256
+units2: 32
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 69: val_acc=0.6723999977111816, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 8
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 70: val_acc=0.26159998774528503, best_acc=0.6748999953269958
+hidden_num: one
+units1: 4
+units2: 0
+units3: 0
+units4: 0
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.01
+opt_choice: adamw
+
+----Opt Iteration 71: val_acc=0.5784000158309937, best_acc=0.6748999953269958
+hidden_num: one
+units1: 1024
+units2: 256
+units3: 128
+units4: 128
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: sgd
+
+----Opt Iteration 72: val_acc=0.645799994468689, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 8
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adam
+
+----Opt Iteration 73: val_acc=0.05490000173449516, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 4
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 74: val_acc=0.43230000138282776, best_acc=0.6748999953269958
+hidden_num: one
+units1: 8
+units2: 2
+units3: 1
+units4: 0
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.0
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 75: val_acc=0.6646000146865845, best_acc=0.6748999953269958
+hidden_num: one
+units1: 512
+units2: 256
+units3: 128
+units4: 128
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 76: val_acc=0.6287999749183655, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 16
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 77: val_acc=0.010999999940395355, best_acc=0.6748999953269958
+hidden_num: three
+units1: 256
+units2: 64
+units3: 32
+units4: 32
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.45
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 78: val_acc=0.6309999823570251, best_acc=0.6748999953269958
+hidden_num: one
+units1: 32
+units2: 4
+units3: 2
+units4: 1
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 79: val_acc=0.6420999765396118, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 16
+units3: 8
+units4: 8
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.15
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0001
+opt_choice: adam
+
+----Opt Iteration 80: val_acc=0.009999999776482582, best_acc=0.6748999953269958
+hidden_num: two
+units1: 2
+units2: 1
+units3: 1
+units4: 1
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 81: val_acc=0.040699999779462814, best_acc=0.6748999953269958
+hidden_num: four
+units1: 16
+units2: 4
+units3: 2
+units4: 2
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.03
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 82: val_acc=0.6651999950408936, best_acc=0.6748999953269958
+hidden_num: one
+units1: 64
+units2: 8
+units3: 4
+units4: 2
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 83: val_acc=0.4699000120162964, best_acc=0.6748999953269958
+hidden_num: one
+units1: 8
+units2: 2
+units3: 1
+units4: 1
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.5
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 84: val_acc=0.38690000772476196, best_acc=0.6748999953269958
+hidden_num: three
+units1: 32
+units2: 8
+units3: 8
+units4: 8
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.0
+weight_decay: 0.0003
+opt_choice: adamw
+
+----Opt Iteration 85: val_acc=0.013500000350177288, best_acc=0.6748999953269958
+hidden_num: one
+units1: 256
+units2: 32
+units3: 16
+units4: 16
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: sgd
+
+----Opt Iteration 86: val_acc=0.04839999973773956, best_acc=0.6748999953269958
+hidden_num: two
+units1: 4
+units2: 2
+units3: 1
+units4: 1
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: adam
+
+----Opt Iteration 87: val_acc=0.5267999768257141, best_acc=0.6748999953269958
+hidden_num: one
+units1: 512
+units2: 128
+units3: 64
+units4: 32
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 88: val_acc=0.009999999776482582, best_acc=0.6748999953269958
+hidden_num: four
+units1: 1024
+units2: 256
+units3: 256
+units4: 256
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.1
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 89: val_acc=0.6561999917030334, best_acc=0.6748999953269958
+hidden_num: one
+units1: 256
+units2: 32
+units3: 16
+units4: 16
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.1
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 90: val_acc=0.01979999989271164, best_acc=0.6748999953269958
+hidden_num: three
+units1: 16
+units2: 4
+units3: 2
+units4: 2
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.5
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 91: val_acc=0.08699999749660492, best_acc=0.6748999953269958
+hidden_num: one
+units1: 2
+units2: 1
+units3: 0
+units4: 0
+actv: selu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 92: val_acc=0.008799999952316284, best_acc=0.6748999953269958
+hidden_num: two
+units1: 256
+units2: 64
+units3: 32
+units4: 16
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+dense_dropout: 0.3
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.0003
+opt_choice: sgd
+
+----Opt Iteration 93: val_acc=0.6789000034332275, best_acc=0.6789000034332275
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.5
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adamw
+
+----Opt Iteration 94: val_acc=0.6593999862670898, best_acc=0.6789000034332275
+hidden_num: four
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.0
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+
+----Opt Iteration 95: val_acc=0.6790000200271606, best_acc=0.6790000200271606
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adamw
+
+----Opt Iteration 96: val_acc=0.6801000237464905, best_acc=0.6801000237464905
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 97: val_acc=0.6474999785423279, best_acc=0.6801000237464905
+hidden_num: three
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 98: val_acc=0.6758000254631042, best_acc=0.6801000237464905
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 99: val_acc=0.6682999730110168, best_acc=0.6801000237464905
+hidden_num: two
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 100: val_acc=0.6761999726295471, best_acc=0.6801000237464905
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 101: val_acc=0.6491000056266785, best_acc=0.6801000237464905
+hidden_num: four
+units1: 1024
+units2: 128
+units3: 128
+units4: 128
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 102: val_acc=0.6796000003814697, best_acc=0.6801000237464905
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 103: val_acc=0.6761999726295471, best_acc=0.6801000237464905
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 104: val_acc=0.682200014591217, best_acc=0.682200014591217
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 105: val_acc=0.6662999987602234, best_acc=0.682200014591217
+hidden_num: three
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 106: val_acc=0.6765000224113464, best_acc=0.682200014591217
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 107: val_acc=0.6671000123023987, best_acc=0.682200014591217
+hidden_num: two
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 108: val_acc=0.6783999800682068, best_acc=0.682200014591217
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 109: val_acc=0.6313999891281128, best_acc=0.682200014591217
+hidden_num: four
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 110: val_acc=0.3463999927043915, best_acc=0.682200014591217
+hidden_num: one
+units1: 8
+units2: 1
+units3: 1
+units4: 0
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 111: val_acc=0.28780001401901245, best_acc=0.682200014591217
+hidden_num: one
+units1: 4
+units2: 0
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.35
+lr: 0.0003
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 112: val_acc=0.6725000143051147, best_acc=0.682200014591217
+hidden_num: one
+units1: 512
+units2: 64
+units3: 64
+units4: 32
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 113: val_acc=0.045499999076128006, best_acc=0.682200014591217
+hidden_num: three
+units1: 32
+units2: 4
+units3: 4
+units4: 2
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 114: val_acc=0.6751999855041504, best_acc=0.682200014591217
+hidden_num: two
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 115: val_acc=0.009999999776482582, best_acc=0.682200014591217
+hidden_num: one
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 116: val_acc=0.07760000228881836, best_acc=0.682200014591217
+hidden_num: four
+units1: 16
+units2: 8
+units3: 8
+units4: 4
+actv: tanh
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.3
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 117: val_acc=0.6520000100135803, best_acc=0.682200014591217
+hidden_num: one
+units1: 128
+units2: 16
+units3: 16
+units4: 8
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 118: val_acc=0.43140000104904175, best_acc=0.682200014591217
+hidden_num: one
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.1
+lr: 0.0001
+momentum: 0.3
+weight_decay: 0.1
+opt_choice: rmsprop
+
+----Opt Iteration 119: val_acc=0.6759999990463257, best_acc=0.682200014591217
+hidden_num: three
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 120: val_acc=0.3840000033378601, best_acc=0.682200014591217
+hidden_num: one
+units1: 8
+units2: 4
+units3: 4
+units4: 2
+actv: relu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.35
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: sgd
+
+----Opt Iteration 121: val_acc=0.11429999768733978, best_acc=0.682200014591217
+hidden_num: two
+units1: 4
+units2: 0
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+
+----Opt Iteration 122: val_acc=0.18199999630451202, best_acc=0.682200014591217
+hidden_num: one
+units1: 512
+units2: 64
+units3: 64
+units4: 32
+actv: sigmoid
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.1
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 123: val_acc=0.02019999921321869, best_acc=0.682200014591217
+hidden_num: four
+units1: 32
+units2: 4
+units3: 4
+units4: 2
+actv: tanh
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.45
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 124: val_acc=0.6771000027656555, best_acc=0.682200014591217
+hidden_num: one
+units1: 1024
+units2: 512
+units3: 512
+units4: 256
+actv: elu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 125: val_acc=0.6588000059127808, best_acc=0.682200014591217
+hidden_num: one
+units1: 128
+units2: 16
+units3: 16
+units4: 8
+actv: prelu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 126: val_acc=0.009999999776482582, best_acc=0.682200014591217
+hidden_num: one
+units1: 2
+units2: 0
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.1
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 127: val_acc=0.3310000002384186, best_acc=0.682200014591217
+hidden_num: one
+units1: 16
+units2: 2
+units3: 0
+units4: 0
+actv: relu
+use_normed_data: False
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adamax
+
+----Opt Iteration 128: val_acc=0.031099999323487282, best_acc=0.682200014591217
+hidden_num: three
+units1: 1024
+units2: 128
+units3: 128
+units4: 64
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.3
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 129: val_acc=0.6825000047683716, best_acc=0.6825000047683716
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 256
+actv: relu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 130: val_acc=0.17239999771118164, best_acc=0.6825000047683716
+hidden_num: two
+units1: 8
+units2: 4
+units3: 4
+units4: 1
+actv: tanh
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 131: val_acc=0.10289999842643738, best_acc=0.6825000047683716
+hidden_num: two
+units1: 4
+units2: 2
+units3: 2
+units4: 1
+actv: elu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: adamax
+
+----Opt Iteration 132: val_acc=0.5576000213623047, best_acc=0.6825000047683716
+hidden_num: two
+units1: 32
+units2: 16
+units3: 4
+units4: 2
+actv: relu
+use_normed_data: False
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 133: val_acc=0.6826000213623047, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 134: val_acc=0.5307000279426575, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: sgd
+
+----Opt Iteration 135: val_acc=0.661899983882904, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: adam
+
+----Opt Iteration 136: val_acc=0.6793000102043152, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 137: val_acc=0.6466000080108643, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 138: val_acc=0.666700005531311, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 139: val_acc=0.6661999821662903, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 140: val_acc=0.5831000208854675, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: rmsprop
+
+----Opt Iteration 141: val_acc=0.04490000009536743, best_acc=0.6826000213623047
+hidden_num: two
+units1: 2
+units2: 1
+units3: 0
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 142: val_acc=0.3815000057220459, best_acc=0.6826000213623047
+hidden_num: two
+units1: 128
+units2: 64
+units3: 64
+units4: 16
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.35
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: sgd
+
+----Opt Iteration 143: val_acc=0.15929999947547913, best_acc=0.6826000213623047
+hidden_num: two
+units1: 16
+units2: 8
+units3: 8
+units4: 2
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.0
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 144: val_acc=0.6718999743461609, best_acc=0.6826000213623047
+hidden_num: two
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 145: val_acc=0.14550000429153442, best_acc=0.6826000213623047
+hidden_num: two
+units1: 8
+units2: 4
+units3: 1
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 146: val_acc=0.6772000193595886, best_acc=0.6826000213623047
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 256
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 147: val_acc=0.6880000233650208, best_acc=0.6880000233650208
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 148: val_acc=0.6829000115394592, best_acc=0.6880000233650208
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 149: val_acc=0.6769999861717224, best_acc=0.6880000233650208
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: relu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 150: val_acc=0.6919000148773193, best_acc=0.6919000148773193
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 151: val_acc=0.11559999734163284, best_acc=0.6919000148773193
+hidden_num: two
+units1: 4
+units2: 2
+units3: 2
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 152: val_acc=0.5871000289916992, best_acc=0.6919000148773193
+hidden_num: two
+units1: 32
+units2: 16
+units3: 16
+units4: 4
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 153: val_acc=0.6843000054359436, best_acc=0.6919000148773193
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 154: val_acc=0.6945000290870667, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 155: val_acc=0.6797000169754028, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 156: val_acc=0.6769000291824341, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adamax
+
+----Opt Iteration 157: val_acc=0.6618000268936157, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 158: val_acc=0.6507999897003174, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 159: val_acc=0.5712000131607056, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 160: val_acc=0.38839998841285706, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.1
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 161: val_acc=0.6782000064849854, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.3
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 162: val_acc=0.015300000086426735, best_acc=0.6945000290870667
+hidden_num: two
+units1: 2
+units2: 1
+units3: 1
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 163: val_acc=0.5198000073432922, best_acc=0.6945000290870667
+hidden_num: two
+units1: 128
+units2: 64
+units3: 64
+units4: 16
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adam
+
+----Opt Iteration 164: val_acc=0.5184999704360962, best_acc=0.6945000290870667
+hidden_num: two
+units1: 16
+units2: 8
+units3: 2
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.0
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 165: val_acc=0.6773999929428101, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adamax
+
+----Opt Iteration 166: val_acc=0.6686000227928162, best_acc=0.6945000290870667
+hidden_num: two
+units1: 256
+units2: 128
+units3: 128
+units4: 32
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 167: val_acc=0.6847000122070312, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 168: val_acc=0.6572999954223633, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 169: val_acc=0.020500000566244125, best_acc=0.6945000290870667
+hidden_num: four
+units1: 8
+units2: 4
+units3: 4
+units4: 1
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 170: val_acc=0.3637000024318695, best_acc=0.6945000290870667
+hidden_num: two
+units1: 32
+units2: 16
+units3: 4
+units4: 1
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 171: val_acc=0.07519999891519547, best_acc=0.6945000290870667
+hidden_num: two
+units1: 4
+units2: 2
+units3: 2
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 172: val_acc=0.6783999800682068, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 173: val_acc=0.670799970626831, best_acc=0.6945000290870667
+hidden_num: three
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 174: val_acc=0.04809999838471413, best_acc=0.6945000290870667
+hidden_num: two
+units1: 2
+units2: 1
+units3: 1
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.003
+opt_choice: rmsprop
+
+----Opt Iteration 175: val_acc=0.29980000853538513, best_acc=0.6945000290870667
+hidden_num: four
+units1: 128
+units2: 64
+units3: 64
+units4: 16
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.45
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: rmsprop
+
+----Opt Iteration 176: val_acc=0.6373000144958496, best_acc=0.6945000290870667
+hidden_num: two
+units1: 256
+units2: 128
+units3: 32
+units4: 8
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.1
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 177: val_acc=0.009399999864399433, best_acc=0.6945000290870667
+hidden_num: two
+units1: 16
+units2: 8
+units3: 8
+units4: 2
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.3
+lr: 0.1
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 178: val_acc=0.6152999997138977, best_acc=0.6945000290870667
+hidden_num: three
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.35
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: sgd
+
+----Opt Iteration 179: val_acc=0.6068999767303467, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.0
+lr: 0.0001
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adam
+
+----Opt Iteration 180: val_acc=0.11739999800920486, best_acc=0.6945000290870667
+hidden_num: two
+units1: 8
+units2: 4
+units3: 4
+units4: 1
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 181: val_acc=0.6504999995231628, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 128
+units4: 32
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.003
+opt_choice: adamax
+
+----Opt Iteration 182: val_acc=0.023399999365210533, best_acc=0.6945000290870667
+hidden_num: four
+units1: 4
+units2: 2
+units3: 2
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.15
+lr: 0.1
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 183: val_acc=0.6381999850273132, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.1
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 184: val_acc=0.019700000062584877, best_acc=0.6945000290870667
+hidden_num: two
+units1: 2
+units2: 1
+units3: 1
+units4: 0
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 185: val_acc=0.4794999957084656, best_acc=0.6945000290870667
+hidden_num: three
+units1: 32
+units2: 16
+units3: 16
+units4: 4
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.3
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: adam
+
+----Opt Iteration 186: val_acc=0.5889000296592712, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.35
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 187: val_acc=0.5350000262260437, best_acc=0.6945000290870667
+hidden_num: two
+units1: 128
+units2: 64
+units3: 16
+units4: 4
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 188: val_acc=0.3871000111103058, best_acc=0.6945000290870667
+hidden_num: two
+units1: 256
+units2: 128
+units3: 128
+units4: 32
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: adam
+
+----Opt Iteration 189: val_acc=0.17090000212192535, best_acc=0.6945000290870667
+hidden_num: four
+units1: 16
+units2: 8
+units3: 8
+units4: 2
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 190: val_acc=0.6161999702453613, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.45
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 191: val_acc=0.6473000049591064, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+dense_dropout: 0.15
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 192: val_acc=0.17790000140666962, best_acc=0.6945000290870667
+hidden_num: three
+units1: 8
+units2: 4
+units3: 4
+units4: 1
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 193: val_acc=0.6898000240325928, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 194: val_acc=0.031599998474121094, best_acc=0.6945000290870667
+hidden_num: two
+units1: 4
+units2: 2
+units3: 0
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 195: val_acc=0.5612999796867371, best_acc=0.6945000290870667
+hidden_num: two
+units1: 32
+units2: 16
+units3: 16
+units4: 4
+actv: sigmoid
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 196: val_acc=0.6837000250816345, best_acc=0.6945000290870667
+hidden_num: four
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 197: val_acc=0.6815999746322632, best_acc=0.6945000290870667
+hidden_num: two
+units1: 1024
+units2: 512
+units3: 512
+units4: 128
+actv: tanh
+use_normed_data: True
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 198: val_acc=0.6621000170707703, best_acc=0.6945000290870667
+hidden_num: two
+units1: 128
+units2: 64
+units3: 64
+units4: 16
+actv: elu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 199: val_acc=0.017799999564886093, best_acc=0.6945000290870667
+hidden_num: three
+units1: 2
+units2: 1
+units3: 1
+units4: 0
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 200: val_acc=0.45329999923706055, best_acc=0.6945000290870667
+hidden_num: two
+units1: 16
+units2: 8
+units3: 8
+units4: 2
+actv: prelu
+use_normed_data: True
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+

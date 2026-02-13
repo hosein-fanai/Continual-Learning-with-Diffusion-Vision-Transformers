@@ -1,0 +1,4000 @@
+----Opt Iteration 1: val_acc=0.009999999776482582, best_acc=0.009999999776482582
+conv_num: five
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 8
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 2: val_acc=0.45170000195503235, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.003
+opt_choice: rmsprop
+
+----Opt Iteration 3: val_acc=0.2451000064611435, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 1
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adam
+
+----Opt Iteration 4: val_acc=0.2897000014781952, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 5: val_acc=0.22679999470710754, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: adamax
+
+----Opt Iteration 6: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 4
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.1
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: adam
+
+----Opt Iteration 7: val_acc=0.1501999944448471, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 8
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.0
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 8: val_acc=0.13379999995231628, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.0
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: adamw
+
+----Opt Iteration 9: val_acc=0.193900004029274, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.1
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.003
+opt_choice: adam
+
+----Opt Iteration 10: val_acc=0.057999998331069946, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 128
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 11: val_acc=0.08980000019073486, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: rmsprop
+
+----Opt Iteration 12: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: adamax
+
+----Opt Iteration 13: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 14: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 3
+convgp3_num: 2
+convgp4_num: 1
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.1
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: rmsprop
+
+----Opt Iteration 15: val_acc=0.011900000274181366, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 128
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.0001
+opt_choice: sgd
+
+----Opt Iteration 16: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 17: val_acc=0.0794999971985817, best_acc=0.45170000195503235
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 8
+convgp2_kernels: 8
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.0001
+opt_choice: rmsprop
+
+----Opt Iteration 18: val_acc=0.009999999776482582, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.1
+lr: 0.0001
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: sgd
+
+----Opt Iteration 19: val_acc=0.010700000450015068, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 8
+convgp2_kernels: 8
+convgp3_kernels: 8
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: sgd
+
+----Opt Iteration 20: val_acc=0.1348000019788742, best_acc=0.45170000195503235
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: sgd
+
+----Opt Iteration 21: val_acc=0.3896999955177307, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 22: val_acc=0.42989999055862427, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 1024
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 23: val_acc=0.4481000006198883, best_acc=0.45170000195503235
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 24: val_acc=0.46309998631477356, best_acc=0.46309998631477356
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 25: val_acc=0.47279998660087585, best_acc=0.47279998660087585
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 26: val_acc=0.48089998960494995, best_acc=0.48089998960494995
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 27: val_acc=0.45969998836517334, best_acc=0.48089998960494995
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 28: val_acc=0.4374000132083893, best_acc=0.48089998960494995
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 29: val_acc=0.45419999957084656, best_acc=0.48089998960494995
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 30: val_acc=0.10130000114440918, best_acc=0.48089998960494995
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 31: val_acc=0.4830999970436096, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 32: val_acc=0.4754999876022339, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 33: val_acc=0.27869999408721924, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 34: val_acc=0.42570000886917114, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 35: val_acc=0.012400000356137753, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 36: val_acc=0.4023999869823456, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: adamax
+
+----Opt Iteration 37: val_acc=0.374099999666214, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 38: val_acc=0.09000000357627869, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 39: val_acc=0.42890000343322754, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.003
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 40: val_acc=0.022700000554323196, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 41: val_acc=0.3538999855518341, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.9
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 42: val_acc=0.18440000712871552, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 43: val_acc=0.11060000211000443, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adam
+
+----Opt Iteration 44: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 1
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.1
+lr: 0.003
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 45: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.4
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: adamw
+
+----Opt Iteration 46: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 47: val_acc=0.23180000483989716, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 48: val_acc=0.021299999207258224, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 3
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 49: val_acc=0.39570000767707825, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.5
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: adam
+
+----Opt Iteration 50: val_acc=0.011500000022351742, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.03
+momentum: 0.8
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 51: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 52: val_acc=0.1387999951839447, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 53: val_acc=0.23729999363422394, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.4
+lr: 0.003
+momentum: 0.3
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 54: val_acc=0.3427000045776367, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 55: val_acc=0.06040000170469284, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 56: val_acc=0.26739999651908875, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 57: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.03
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 58: val_acc=0.4717999994754791, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 59: val_acc=0.17870000004768372, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.0003
+opt_choice: adam
+
+----Opt Iteration 60: val_acc=0.13699999451637268, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: sgd
+
+----Opt Iteration 61: val_acc=0.25450000166893005, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 62: val_acc=0.3962000012397766, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 63: val_acc=0.3569999933242798, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 64: val_acc=0.44769999384880066, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.001
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 65: val_acc=0.010599999688565731, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: rmsprop
+
+----Opt Iteration 66: val_acc=0.4553000032901764, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 67: val_acc=0.45739999413490295, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 68: val_acc=0.4632999897003174, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 69: val_acc=0.4648999869823456, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 70: val_acc=0.4456000030040741, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 71: val_acc=0.46050000190734863, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 72: val_acc=0.4546000063419342, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.01
+momentum: 0.0
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 73: val_acc=0.1891999989748001, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: adamax
+
+----Opt Iteration 74: val_acc=0.3199999928474426, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.0001
+opt_choice: adam
+
+----Opt Iteration 75: val_acc=0.1476999968290329, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 76: val_acc=0.21209999918937683, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: sgd
+
+----Opt Iteration 77: val_acc=0.35019999742507935, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.001
+opt_choice: adamw
+
+----Opt Iteration 78: val_acc=0.4108999967575073, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 79: val_acc=0.4392000138759613, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 80: val_acc=0.00989999994635582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 16
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 81: val_acc=0.17000000178813934, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.01
+momentum: 0.0
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 82: val_acc=0.11110000312328339, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 83: val_acc=0.4253999888896942, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: adam
+
+----Opt Iteration 84: val_acc=0.3012000024318695, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: sgd
+
+----Opt Iteration 85: val_acc=0.10050000250339508, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.03
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 86: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 87: val_acc=0.30970001220703125, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 88: val_acc=0.04010000079870224, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 89: val_acc=0.1216999962925911, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 90: val_acc=0.009800000116229057, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 91: val_acc=0.02669999934732914, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 92: val_acc=0.42100000381469727, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 93: val_acc=0.2549000084400177, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.0
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 94: val_acc=0.36480000615119934, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: adamw
+
+----Opt Iteration 95: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.1
+momentum: 0.5
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 96: val_acc=0.13359999656677246, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 97: val_acc=0.38989999890327454, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 98: val_acc=0.24570000171661377, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.0001
+opt_choice: nadam
+
+----Opt Iteration 99: val_acc=0.3962000012397766, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 100: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 101: val_acc=0.4334999918937683, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.1
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 102: val_acc=0.07010000199079514, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.99
+weight_decay: 0.03
+opt_choice: sgd
+
+----Opt Iteration 103: val_acc=0.043699998408555984, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: adamw
+
+----Opt Iteration 104: val_acc=0.14980000257492065, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 105: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 106: val_acc=0.35839998722076416, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 107: val_acc=0.29030001163482666, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.01
+opt_choice: rmsprop
+
+----Opt Iteration 108: val_acc=0.2874000072479248, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0001
+opt_choice: adamax
+
+----Opt Iteration 109: val_acc=0.4025000035762787, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 110: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: adam
+
+----Opt Iteration 111: val_acc=0.014600000344216824, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: sgd
+
+----Opt Iteration 112: val_acc=0.37940001487731934, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.0001
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 113: val_acc=0.0560000017285347, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 4
+convgp4_kernels: 4
+convgp5_kernels: 4
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 114: val_acc=0.3662000000476837, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.99
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 115: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 116: val_acc=0.42879998683929443, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: rmsprop
+
+----Opt Iteration 117: val_acc=0.27880001068115234, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: adamax
+
+----Opt Iteration 118: val_acc=0.3407000005245209, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 119: val_acc=0.2736999988555908, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.0001
+opt_choice: adam
+
+----Opt Iteration 120: val_acc=0.008899999782443047, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: sgd
+
+----Opt Iteration 121: val_acc=0.13439999520778656, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 122: val_acc=0.26930001378059387, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: adamw
+
+----Opt Iteration 123: val_acc=0.3668999969959259, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 124: val_acc=0.2621000111103058, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.5
+lr: 0.03
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 125: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 126: val_acc=0.15060000121593475, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.1
+opt_choice: adamax
+
+----Opt Iteration 127: val_acc=0.16220000386238098, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 128: val_acc=0.3921999931335449, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: adam
+
+----Opt Iteration 129: val_acc=0.014000000432133675, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 32
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 130: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.003
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: nadam
+
+----Opt Iteration 131: val_acc=0.41119998693466187, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 132: val_acc=0.36250001192092896, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.0001
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: nadam
+
+----Opt Iteration 133: val_acc=0.38019999861717224, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: nadam
+
+----Opt Iteration 134: val_acc=0.37459999322891235, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.2
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: rmsprop
+
+----Opt Iteration 135: val_acc=0.010599999688565731, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: adamax
+
+----Opt Iteration 136: val_acc=0.013000000268220901, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.4
+lr: 0.1
+momentum: 0.3
+weight_decay: 0.1
+opt_choice: nadam
+
+----Opt Iteration 137: val_acc=0.03669999912381172, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 138: val_acc=0.16680000722408295, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 16
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.25
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 139: val_acc=0.4334999918937683, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: sgd
+
+----Opt Iteration 140: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: adamw
+
+----Opt Iteration 141: val_acc=0.4221000075340271, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 142: val_acc=0.35179999470710754, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.5
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.0001
+opt_choice: nadam
+
+----Opt Iteration 143: val_acc=0.14740000665187836, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 16
+convgp4_kernels: 16
+convgp5_kernels: 16
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.0
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 144: val_acc=0.4595000147819519, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.2
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 145: val_acc=0.14920000731945038, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 146: val_acc=0.4611999988555908, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 147: val_acc=0.4659999907016754, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 148: val_acc=0.45739999413490295, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 149: val_acc=0.45419999957084656, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 150: val_acc=0.45179998874664307, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 151: val_acc=0.4580000042915344, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 152: val_acc=0.47189998626708984, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 153: val_acc=0.46549999713897705, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 154: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 155: val_acc=0.25369998812675476, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adam
+
+----Opt Iteration 156: val_acc=0.4203000068664551, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 157: val_acc=0.022700000554323196, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.003
+opt_choice: sgd
+
+----Opt Iteration 158: val_acc=0.43689998984336853, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: nadam
+
+----Opt Iteration 159: val_acc=0.43779999017715454, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.003
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamw
+
+----Opt Iteration 160: val_acc=0.41929998993873596, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 161: val_acc=0.26510000228881836, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: nadam
+
+----Opt Iteration 162: val_acc=0.44510000944137573, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.001
+opt_choice: rmsprop
+
+----Opt Iteration 163: val_acc=0.2660999894142151, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.03
+momentum: 0.0
+weight_decay: 0.0003
+opt_choice: adamax
+
+----Opt Iteration 164: val_acc=0.10580000281333923, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 8
+convgp4_kernels: 8
+convgp5_kernels: 8
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 1
+dense_dropout: 0.4
+lr: 0.01
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+
+----Opt Iteration 165: val_acc=0.09070000052452087, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 256
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 3
+dense_dropout: 0.1
+lr: 0.1
+momentum: 0.03
+weight_decay: 0.03
+opt_choice: adam
+
+----Opt Iteration 166: val_acc=0.3700999915599823, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.25
+lr: 0.01
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+
+----Opt Iteration 167: val_acc=0.011599999852478504, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 2
+convgp5_num: 3
+dense_dropout: 0.4
+lr: 0.0003
+momentum: 0.3
+weight_decay: 0.1
+opt_choice: sgd
+
+----Opt Iteration 168: val_acc=0.3578000068664551, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 7
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 2
+convgp5_num: 2
+dense_dropout: 0.25
+lr: 0.001
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: adamw
+
+----Opt Iteration 169: val_acc=0.47999998927116394, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 170: val_acc=0.4372999966144562, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 171: val_acc=0.40720000863075256, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 172: val_acc=0.30070000886917114, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: rmsprop
+
+----Opt Iteration 173: val_acc=0.20919999480247498, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: nadam
+
+----Opt Iteration 174: val_acc=0.47850000858306885, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 175: val_acc=0.46160000562667847, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 176: val_acc=0.32190001010894775, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 177: val_acc=0.3643999993801117, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 32
+convgp2_kernels: 32
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 178: val_acc=0.44029998779296875, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 179: val_acc=0.47540000081062317, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 180: val_acc=0.40549999475479126, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 181: val_acc=0.29840001463890076, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 182: val_acc=0.44839999079704285, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 183: val_acc=0.06849999725818634, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 4
+convgp2_kernels: 4
+convgp3_kernels: 4
+convgp4_kernels: 4
+convgp5_kernels: 4
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.0
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 184: val_acc=0.46869999170303345, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 185: val_acc=0.36570000648498535, best_acc=0.4830999970436096
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: adamax
+
+----Opt Iteration 186: val_acc=0.009999999776482582, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 1
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: adam
+
+----Opt Iteration 187: val_acc=0.05620000138878822, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+
+----Opt Iteration 188: val_acc=0.4805999994277954, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 256
+convgp5_kernels: 256
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 189: val_acc=0.33090001344680786, best_acc=0.4830999970436096
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 1
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.0
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 190: val_acc=0.14980000257492065, best_acc=0.4830999970436096
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 32
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 3
+dense_dropout: 0.5
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 191: val_acc=0.4846000075340271, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 192: val_acc=0.009999999776482582, best_acc=0.4846000075340271
+conv_num: four
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 4
+convgp2_kernels: 8
+convgp3_kernels: 16
+convgp4_kernels: 32
+convgp5_kernels: 32
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 193: val_acc=0.4659000039100647, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 194: val_acc=0.30320000648498535, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 16
+convgp2_kernels: 32
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 3
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 195: val_acc=0.45570001006126404, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: max
+convgp1_kernels: 64
+convgp2_kernels: 64
+convgp3_kernels: 64
+convgp4_kernels: 128
+convgp5_kernels: 128
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 196: val_acc=0.3391999900341034, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 9
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 32
+convgp2_kernels: 64
+convgp3_kernels: 128
+convgp4_kernels: 256
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 2
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 197: val_acc=0.3889000117778778, best_acc=0.4846000075340271
+conv_num: five
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 1
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 198: val_acc=0.009999999776482582, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: no
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.03
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 199: val_acc=0.020899999886751175, best_acc=0.4846000075340271
+conv_num: four
+first_conv_filter_size: 5
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 8
+convgp2_kernels: 16
+convgp3_kernels: 32
+convgp4_kernels: 64
+convgp5_kernels: 64
+convgp2_num: 2
+convgp3_num: 3
+convgp4_num: 3
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.1
+momentum: 0.3
+weight_decay: 0.0001
+opt_choice: adamw
+
+----Opt Iteration 200: val_acc=0.45989999175071716, best_acc=0.4846000075340271
+conv_num: three
+first_conv_filter_size: 3
+batch_norm: yes
+global_pooling_type: avg
+convgp1_kernels: 64
+convgp2_kernels: 128
+convgp3_kernels: 256
+convgp4_kernels: 512
+convgp5_kernels: 512
+convgp2_num: 2
+convgp3_num: 1
+convgp4_num: 1
+convgp5_num: 2
+dense_dropout: 0.2
+lr: 0.0003
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+
