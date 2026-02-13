@@ -48,13 +48,6 @@ def get_data(x_train, y_train, x_test, y_test,
     import numpy as np
 
 
-    if preprocess:
-        x_train = x_train.astype("float64") / 255.
-        x_test = x_test.astype("float64") / 255.
-    else:
-        x_train = x_train.astype("uint8")
-        x_test = x_test.astype("uint8")
-
     if return_features:
         if "cifar10_" in features_path:
             class_num = 10
@@ -82,6 +75,25 @@ def get_data(x_train, y_train, x_test, y_test,
     x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, 
                                                     stratify=y_train, random_state=42)
 
+    if preprocess == "min-max":
+        min_ = x_train.min()
+        max_ = x_train.max()
+
+        x_train = (x_train - min_) / (max_ - min_)
+        x_val = (x_val - min_) / (max_ - min_)
+        x_test = (x_test - min_) / (max_ - min_)
+    elif preprocess == "normalize":
+        mean = x_train.mean(axis=0)
+        std = x_train.std(axis=0)
+
+        x_train = (x_train - mean) / std
+        x_val = (x_val - mean) / std
+        x_test = (x_test - mean) / std
+    else: # no preprocess
+        if not return_features:
+            x_train = x_train.astype("uint8")
+            x_test = x_test.astype("uint8")
+
     if onehot_labels:
         y_train = to_categorical(y_train, num_classes=class_num)
         y_val = to_categorical(y_val, num_classes=class_num)
@@ -102,7 +114,7 @@ def get_data(x_train, y_train, x_test, y_test,
     return x_train, y_train, x_val, y_val, x_test, y_test
 
 
-def load_cifar10(indices=list(range(10)), preprocess=True, 
+def load_cifar10(indices=list(range(10)), preprocess=None, 
                 features_path="./data/cifar10_xception_gavgpooled_features_train_val_test", 
                 return_features=False, onehot_labels=False, verbose=1):
     from tensorflow.keras.datasets import cifar10
@@ -115,7 +127,7 @@ def load_cifar10(indices=list(range(10)), preprocess=True,
                 features_path, onehot_labels, verbose)
 
 
-def load_cifar100(indices=list(range(100)), preprocess=True, 
+def load_cifar100(indices=list(range(100)), preprocess=None, 
                 features_path="./data/cifar100_xception_gavgpooled_features_train_val_test", 
                 return_features=False, onehot_labels=False, verbose=1):
     from tensorflow.keras.datasets import cifar100
@@ -374,9 +386,9 @@ def plot_history(history, range_=(0, None),
 
 def continually_learn(class_num, load_dataset_fn, keep_same_model,
                     remove_prev_classes, tuned_model_path, 
-                    onehot_labels=False, batch_size=128, 
-                    epochs=100, compile_args=None, 
-                    use_loaded_opt=False): # , copy_opt_states=False
+                    preprocess=None, onehot_labels=False, 
+                    compile_args=None, use_loaded_opt=False, 
+                    batch_size=128, epochs=100, verbose=1): # , copy_opt_states=False
     from sklearn.metrics import (accuracy_score, 
                             classification_report, 
                             ConfusionMatrixDisplay)
@@ -399,11 +411,13 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
 
     acc_list = []
     for i in range(class_num-1):
-        print(75*'-'+" Classes:", list(range(i+2)))
+        if verbose:
+            print(75*'-'+" Classes:", list(range(i+2)))
 
         if remove_prev_classes:
             *_, x_val, y_val, x_test, y_test = load_dataset_fn(
                 indices=list(range(0, i+2)), 
+                preprocess=preprocess,
                 return_features=return_features, 
                 onehot_labels=onehot_labels, 
                 verbose=0
@@ -411,6 +425,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
             if i == 0:
                 x_train, y_train, *_ = load_dataset_fn(
                     indices=[i, i+1], 
+                    preprocess=preprocess, 
                     return_features=return_features, 
                     onehot_labels=onehot_labels, 
                     verbose=0
@@ -418,6 +433,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
             else:
                 x_train, y_train, *_ = load_dataset_fn(
                     indices=[i+1], 
+                    preprocess=preprocess, 
                     return_features=return_features, 
                     onehot_labels=onehot_labels, 
                     verbose=0
@@ -425,6 +441,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
         else:
             x_train, y_train, x_val, y_val, x_test, y_test = load_dataset_fn(
                 indices=list(range(0, i+2)), 
+                preprocess=preprocess,
                 return_features=return_features, 
                 onehot_labels=onehot_labels, 
                 verbose=0
@@ -461,11 +478,12 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
         acc = accuracy_score(y_test, preds)
         acc_list.append(acc)
 
-        print(classification_report(y_test, preds, digits=4))
-        ConfusionMatrixDisplay.from_predictions(y_test, preds)
-        plt.show()
+        if verbose:
+            print(classification_report(y_test, preds, digits=4))
+            ConfusionMatrixDisplay.from_predictions(y_test, preds)
+            plt.show()
 
-        print(75*'-'+'\n')
+            print(75*'-'+'\n')
 
     CL_plot(class_num, [(acc_list, " ")])
 
