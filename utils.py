@@ -388,17 +388,22 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
                     remove_prev_classes, tuned_model_path, 
                     preprocess=None, onehot_labels=False, 
                     compile_args=None, use_loaded_opt=False, 
-                    batch_size=128, epochs=100, verbose=1): # , copy_opt_states=False
+                    batch_size=128, epochs=100, buffer_maxlen=0, 
+                    buffer_sample_num=1_000, buffer_insert_num=1_000,
+                    buffer_seed=None, verbose=1): # , copy_opt_states=False
     from sklearn.metrics import (accuracy_score, 
                             classification_report, 
                             ConfusionMatrixDisplay)
 
     import numpy as np
 
+    from replay_buffer import ReplayBuffer
+
     from matplotlib import pyplot as plt
 
 
     return_features = True if "dnn" in tuned_model_path else False
+    buffer = ReplayBuffer(maxlen=buffer_maxlen, seed=buffer_seed)
 
     prev_model = get_model(
         1, 
@@ -413,6 +418,17 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
     for i in range(class_num-1):
         if verbose:
             print(75*'-'+" Classes:", list(range(i+2)))
+
+        new_model = get_model(
+            i+2, model_type="hp-tuned", 
+            model_path=tuned_model_path, 
+            compile_args=compile_args, 
+            use_loaded_opt=use_loaded_opt, 
+            verbose=0
+        )
+
+        if keep_same_model:
+            copy_model(prev_model, new_model) # , copy_opt_states=copy_opt_states
 
         if remove_prev_classes:
             *_, x_val, y_val, x_test, y_test = load_dataset_fn(
@@ -447,16 +463,13 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
                 verbose=0
             )
 
-        new_model = get_model(
-            i+2, model_type="hp-tuned", 
-            model_path=tuned_model_path, 
-            compile_args=compile_args, 
-            use_loaded_opt=use_loaded_opt, 
-            verbose=0
-        )
+        if buffer_maxlen > 0:
+            x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_sample_num)
+            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_insert_num)
 
-        if keep_same_model:
-            copy_model(prev_model, new_model) # , copy_opt_states=copy_opt_states
+            if len(x_buffer) > 0:
+                x_train = np.concatenate([x_train, x_buffer], axis=0)
+                y_train = np.concatenate([y_train, y_buffer], axis=0)
 
         history = new_model.fit(
             x_train, y_train, 
@@ -475,6 +488,7 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
 
         preds = new_model.predict(x_test)
         preds = np.argmax(preds, axis=-1)
+
         acc = accuracy_score(y_test, preds)
         acc_list.append(acc)
 
