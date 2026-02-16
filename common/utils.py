@@ -4,7 +4,7 @@ import os
 models_path = "./models"
 hyperas_path = os.path.join(models_path, "hyperas")
 
-best_acc = -float("inf")
+best_score = -float("inf")
 i = 1
 
 
@@ -570,12 +570,21 @@ def load_samples(path, type_):
     return arr
 
 
-def save_logs(model_name, i, val_f1, best_f1, 
-            search_space, names, where_to="file"):
-    txt = f"----Opt Iteration {i}: val_acc={val_f1}, best_acc={best_f1}\n"
-    for ss, name in zip(search_space, names):
-        txt += f"{name}: {ss}\n"
-    txt += '\n'
+def save_logs(model_name, i, search_space=[], 
+            names=[], metrics={}, where_to="file"):
+    txt = ""
+
+    if search_space and names:
+        txt += f"----Optimization Iteration {i}:\n"
+        for ss, name in zip(search_space, names):
+            txt += f"{name}: {ss}\n"
+
+    if metrics:
+        txt += "----("
+        for metric_name, metric_value in metrics.items():
+            txt += f"{metric_name}={metric_value}, "
+
+        txt = txt[:-2] + ")\n\n"
 
     if where_to == "file" or where_to == "both":
         with open(f"./models/hyperas/logs/{model_name}.txt", "at") as f: 
