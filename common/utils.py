@@ -390,7 +390,8 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
                     compile_args=None, use_loaded_opt=False, 
                     batch_size=128, epochs=100, buffer_maxlen=0, 
                     buffer_sample_num=1_000, buffer_insert_num=1_000,
-                    buffer_seed=None, verbose=1): # , copy_opt_states=False
+                    buffer_seed=None, use_vae=False, vae_train_num=1_000, 
+                    vae_per_class_num=1_000, verbose=1): # , copy_opt_states=False
     from sklearn.metrics import (accuracy_score, 
                             classification_report, 
                             ConfusionMatrixDisplay)
@@ -399,11 +400,18 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
 
     from replay_buffer import ReplayBuffer
 
+    from autoencoder.variational_autoencoder import VariationalAutoencoder
+
     from matplotlib import pyplot as plt
 
 
     return_features = True if "dnn" in tuned_model_path else False
-    buffer = ReplayBuffer(maxlen=buffer_maxlen, seed=buffer_seed)
+
+    if buffer_maxlen > 0:
+        buffer = ReplayBuffer(maxlen=buffer_maxlen, seed=buffer_seed)
+
+    if use_vae:
+        vae = VariationalAutoencoder(conditioned=True, class_num=class_num)
 
     prev_model = get_model(
         1, 
@@ -465,11 +473,9 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
 
         if buffer_maxlen > 0:
             x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_sample_num)
-            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_insert_num)
 
-            if len(x_buffer) > 0:
-                x_train = np.concatenate([x_train, x_buffer], axis=0)
-                y_train = np.concatenate([y_train, y_buffer], axis=0)
+        if use_vae:
+            x_buffer, y_buffer = vae.generate(vae_per_class_num, onehot_labels)
 
         history = new_model.fit(
             x_train, y_train, 
@@ -477,11 +483,30 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
             epochs=epochs,
             validation_data=(x_val, y_val), 
             callbacks=get_callbacks(),
-            verbose=0,
+            verbose=verbose,
         ).history
         prev_model = new_model
 
         plot_history(history, indices=[1])
+
+        if buffer_maxlen > 0:
+            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_insert_num)
+
+            if len(x_buffer) > 0:
+                x_train = np.concatenate([x_train, x_buffer], axis=0)
+                y_train = np.concatenate([y_train, y_buffer], axis=0)
+
+        if use_vae:
+            vae.train(
+                x_train, y_train, 
+                vae_train_num, 
+                validation_data=(x_val, y_val),
+                clf=new_model
+            )
+
+            if len(x_buffer) > 0:
+                x_train = np.concatenate([x_train, x_buffer], axis=0)
+                y_train = np.concatenate([y_train, y_buffer], axis=0)
 
         if onehot_labels:
             y_test = np.argmax(y_test, axis=-1)

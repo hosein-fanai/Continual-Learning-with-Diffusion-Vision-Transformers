@@ -2,13 +2,13 @@ import tensorflow as tf
 from tensorflow.keras import losses
 
 
-class FilteredLoss(losses.Loss):
+class MaskedLoss(losses.Loss):
     """
     Error computed only on the first N logits in order to match the shape of the labels and logits.
     """
 
-    def __init__(self, name="filtered_loss"):
-        super(FilteredLoss, self).__init__(name=name)
+    def __init__(self, name="masked_loss"):
+        super(MaskedLoss, self).__init__(name=name)
         self.loss = losses.MeanAbsoluteError()
 
     def call(self, y_true, y_pred):
@@ -18,6 +18,4 @@ class FilteredLoss(losses.Loss):
         y_pred_last = y_pred
 
         return self.loss(y_true_last, y_pred_last)
-
-
 
