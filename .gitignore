@@ -5,5 +5,6 @@ old
 data
 
 *.h5
+*.tf
 
 test.ipynb

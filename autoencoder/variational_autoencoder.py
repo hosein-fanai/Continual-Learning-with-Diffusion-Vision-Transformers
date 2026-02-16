@@ -14,7 +14,8 @@ class VariationalAutoencoder(models.Model):
         data_dim=2048, 
         latent_dim=16, 
         hiddens_dims=(512, 256, 256), 
-        last_activation="linear",
+        hiddens_kwargs={},
+        last_activation="linear", 
         beta=1., 
         conditioned=False, 
         class_num=None, 
@@ -28,8 +29,8 @@ class VariationalAutoencoder(models.Model):
         self.conditioned = conditioned
         self.class_num = class_num
 
-        self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, class_num)
-        self.decoder = self._build_decoder(data_dim, latent_dim, hiddens_dims[::-1], 
+        self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, hiddens_kwargs, class_num)
+        self.decoder = self._build_decoder(data_dim, latent_dim, hiddens_dims[::-1], hiddens_kwargs,
                                         class_num, last_activation)
 
         self.seen_classes = []
@@ -196,8 +197,21 @@ class VariationalAutoencoder(models.Model):
     def update_seen_classes(self, cls):
         self.seen_classes.append(cls)
 
+    def _dense_layer(self, units, actv="relu", use_batch_norm=False, 
+                    kernel_init="glorot_uniform"):
+        dlayer = models.Sequential()
+
+        dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
+                        kernel_initializer=kernel_init, use_bias=not use_batch_norm))
+        dlayer.add(layers.Activation(actv)) if (use_batch_norm and actv != "prelu") else None
+        dlayer.add(layers.PReLU()) if actv == "prelu" else None
+        dlayer.add(layers.BatchNormalization()) if use_batch_norm else None
+
+        return dlayer
+
     def _build_encoder(self, input_dim, latent_dim, 
-                    hiddens_dims, class_num=None):
+                    hiddens_dims, hiddens_kwargs={}, 
+                    class_num=None):
         x_inputs = layers.Input(shape=(input_dim,), name="x_input")
 
         if self.conditioned:
@@ -209,7 +223,7 @@ class VariationalAutoencoder(models.Model):
             inputs = x_inputs
 
         for hidden_dim in hiddens_dims:
-            x = layers.Dense(hidden_dim, activation="relu")(x)
+            x = self._dense_layer(hidden_dim, **hiddens_kwargs)(x)
 
         z_mean = layers.Dense(latent_dim, name="z_mean")(x)
         z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
@@ -222,8 +236,8 @@ class VariationalAutoencoder(models.Model):
         return encoder
 
     def _build_decoder(self, output_dim, latent_dim, 
-                    hiddens_dims, class_num, 
-                    last_activation):
+                    hiddens_dims, hiddens_kwargs, 
+                    class_num, last_activation):
         z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
 
         if self.conditioned:
@@ -235,7 +249,7 @@ class VariationalAutoencoder(models.Model):
             inputs = z_inputs
 
         for hidden_dim in hiddens_dims:
-            z = layers.Dense(hidden_dim, activation="relu")(z)
+            z = self._dense_layer(hidden_dim, **hiddens_kwargs)(z)
 
         outputs = layers.Dense(output_dim, activation=last_activation)(z)
 
