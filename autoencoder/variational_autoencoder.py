@@ -136,15 +136,18 @@ class VariationalAutoencoder(models.Model):
             "kl_loss": self.kl_loss_tracker.result(),
         }
 
-    def generate(self, samples_per_class=500, 
-                onehot_labels=True, verbose=0):
+    def generate(self, classes=None, samples_per_class=500, 
+                onehot_labels=False, verbose=0):
         if self.conditioned:
-            if len(self.seen_classes) == 0:
+            if classes is None:
+                classes = self.seen_classes
+            
+            if len(classes) == 0:
                 return [], []
 
-            z = tf.random.normal(shape=(samples_per_class*len(self.seen_classes), self.latent_dim))
+            z = tf.random.normal(shape=(samples_per_class*len(classes), self.latent_dim))
             y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.uint8), 
-                                    depth=self.class_num) for i in self.seen_classes], 
+                                    depth=self.class_num) for i in classes], 
                                 axis=0)
             x = self.decoder.predict((z, y), verbose=verbose)
 
