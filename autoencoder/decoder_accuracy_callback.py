@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import callbacks, models
+from tensorflow.keras import callbacks
 
 import numpy as np
 

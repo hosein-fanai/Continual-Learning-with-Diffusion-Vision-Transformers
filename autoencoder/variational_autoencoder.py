@@ -4,7 +4,7 @@ from tensorflow.keras import layers, models, optimizers
 import numpy as np
 
 from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
-from common.utils import get_callbacks
+from model import get_callbacks
 
 
 class VariationalAutoencoder(models.Model):
