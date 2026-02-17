@@ -1,59 +1,100 @@
-from typing import Literal
-
-
 def continually_learn(class_num: int, load_dataset_fn: callable, 
-                    keep_same_model: bool, remove_prev_classes: bool, 
-                    tuned_model_path: str, onehot_labels: bool = False, 
-                    preprocess: Literal["", "normalize", "min-max"] = None, 
-                    compile_args: dict = None, use_loaded_opt: bool = False, 
-                    batch_size: int = 128, epochs: int = 100, buffer_maxlen: int = 0, 
-                    buffer_sample_num: int = 1_000, buffer_insert_num: int = 1_000,
-                    buffer_seed: int = None, use_vae: bool = False, vae_train_num: int = 1_000, 
-                    vae_per_class_num: int = 1_000, verbose: bool = True) -> list[float]:
+                    load_dataset_fn_kwargs: dict = {
+                        "preprocess": "", 
+                        "onehot_labels": False, 
+                    },
+                    remove_prev_classes: bool = True, keep_same_model: bool = True, 
+                    tuned_model_path: str = "", compile_args: dict = None, 
+                    use_loaded_opt: bool = False, batch_size: int = 128, 
+                    epochs: int = 100, use_buffer: bool = False, 
+                    buffer_kwargs: dict = {
+                        "buffer_maxlen": 10_000, 
+                        "sample_num": 1_000,
+                        "insert_num": 1_000,
+                        "seed": None,
+                    }, 
+                    use_vae: bool = False, vae_init_kwargs: dict = {}, 
+                    vae_kwargs: dict[str, int] = {
+                        "train_num": 1_000,
+                        "samples_per_class": 1_000
+                    }, 
+                    verbose: bool = True) -> list[float]:
     """
     Runs a continual learning scenario with an optional solution.
 
     Args:
-        class_num: number of total classes
+        class_num: 
+            The number of total classes in the given dataset.
 
         load_dataset_fn:
+            A function to load the designated dataset.
 
-        keep_same_model:
+        load_dataset_fn_kwargs:
+            A dictionary with the following keys to pass to the load_dataset_fn:
+                preprocess:
+                    What type of preprocessing to apply on the dataset (image dataset or features dataset). It can be one of the following: "", "normalize", or "min-max".
+                onehot_labels:
+                    Whether or not to onehot the labels in the dataset.
 
         remove_prev_classes:
+            Whether to keep the previous tasks' classes or remove them for the current task.
 
-        tuned_model_path:
+        keep_same_model:
+            Whether to use the same model for each continual task or reinstantiate it for each task.
 
-        onehot_labels:
-
-        preprocess:
+        tuned_model_path: 
+            Path to the hyperparameter-optimized model to run the learning process on. If the path contains "dnn", return_feature argument of load_dataset_fn will be True.
 
         compile_args:
+            Complie arguments for the model being continually learned.
 
         use_loaded_opt:
+            Whether to use the loaded optimizer or to use the optimizer from comple_args.
 
         batch_size:
+            The batch size for the CL process.
 
         epochs:
+            The number of epochs for the CL process.
 
-        buffer_maxlen:
+        use_buffer:
+            Whether or not to use a replay buffer to mitigate catastrophic forgetting. It cannot be used with the VAE.
 
-        buffer_sample_num:
+        buffer_kwargs:
+            A dictionary to be used for replay-buffer-related actions. Its keys are as follows:
+                maxlen:
+                    The maximum capacity for the buffer.
 
-        buffer_insert_num:
+                sample_num:
+                    The number of samples to be drawn from the buffer.
 
-        buffer_seed: 
+                insert_num:
+                    The number of new samples to be inserted to the buffer after each task.
+
+                seed: 
+                    The random seed for the buffer to draw the samples for the CL process.
 
         use_vae:
+            Whether or not to use VAE to mitigate catastrophic forgetting. It cannot be used with the replay buffer.
+        
+        vae_init_kwargs:
+            Keyword arguments passed to the VAE's initializer.
 
-        vae_train_num:
+        vae_kwargs:
+            A dictionary to be used for VAE-related actions. Its keys are as follows:
+                train_num:
+                    The number of instances to train the VAE from the given input. 
+                    
+                    If -1 is provided, all of the data is used and any other number makes the function to sample only that number of instances, then, train the VAE.
 
-        vae_per_class_num:
+                samples_per_class:
+                    The number of samples to be drawn from each class that VAE has seen before.
 
-        verbose: 
+        verbose:
+            Whether to print anything about the learning process.
 
     Returns:
-        A list of accuracy scores corresponding each continual-learning task.
+        A list of accuracy scores corresponding to each continual-learning task.
     """
 
 
@@ -71,13 +112,17 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
     from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
+    assert len(tuned_model_path) > 0, "tuned_model_path cannot be empty."
+    assert (use_buffer or use_vae) or (use_buffer and not use_vae) or (not use_buffer and use_vae), "Both of the replay buffer and VAE cannot be used."
+
+
     return_features = True if "dnn" in tuned_model_path else False
 
-    if buffer_maxlen > 0:
-        buffer = ReplayBuffer(maxlen=buffer_maxlen, seed=buffer_seed)
+    if use_buffer:
+        buffer = ReplayBuffer(maxlen=buffer_kwargs["maxlen"], seed=buffer_kwargs["seed"])
 
     if use_vae:
-        vae = VariationalAutoencoder(conditioned=True, class_num=class_num)
+        vae = VariationalAutoencoder(conditioned=True, class_num=class_num, **vae_init_kwargs)
 
     prev_model = get_model(
         1, 
@@ -102,43 +147,39 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
         )
 
         if keep_same_model:
-            copy_model(prev_model, new_model) # , copy_opt_states=copy_opt_states
+            copy_model(prev_model, new_model)
 
         if remove_prev_classes:
             *_, x_val, y_val, x_test, y_test = load_dataset_fn(
                 indices=list(range(0, i+2)), 
-                preprocess=preprocess,
                 return_features=return_features, 
-                onehot_labels=onehot_labels, 
-                verbose=0
+                **load_dataset_fn_kwargs, 
+                verbose=0,
             )
             if i == 0:
                 x_train, y_train, *_ = load_dataset_fn(
                     indices=[i, i+1], 
-                    preprocess=preprocess, 
                     return_features=return_features, 
-                    onehot_labels=onehot_labels, 
-                    verbose=0
+                    **load_dataset_fn_kwargs,
+                    verbose=0,
                 )
             else:
                 x_train, y_train, *_ = load_dataset_fn(
                     indices=[i+1], 
-                    preprocess=preprocess, 
                     return_features=return_features, 
-                    onehot_labels=onehot_labels, 
-                    verbose=0
+                    **load_dataset_fn_kwargs, 
+                    verbose=0,
                 )
         else:
             x_train, y_train, x_val, y_val, x_test, y_test = load_dataset_fn(
                 indices=list(range(0, i+2)), 
-                preprocess=preprocess,
                 return_features=return_features, 
-                onehot_labels=onehot_labels, 
-                verbose=0
+                **load_dataset_fn_kwargs,
+                verbose=0,
             )
 
-        if buffer_maxlen > 0:
-            x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_sample_num)
+        if use_buffer:
+            x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_kwargs["sample_num"])
 
             if len(x_buffer) > 0:
                 x_train = np.concatenate([x_train, x_buffer], axis=0)
@@ -146,8 +187,8 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
         if use_vae:
             x_buffer, y_buffer = vae.generate(
-                samples_per_class=vae_per_class_num, 
-                onehot_labels=onehot_labels, 
+                samples_per_class=vae_kwargs["samples_per_class"], 
+                onehot_labels=load_dataset_fn_kwargs["onehot_labels"], 
                 verbose=verbose
             )
 
@@ -167,18 +208,18 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
         plot_history(history, indices=[1])
 
-        if buffer_maxlen > 0:
-            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_insert_num)
+        if use_buffer:
+            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_kwargs["insert_num"])
 
         if use_vae:
             vae.train(
                 x_train, y_train, 
-                vae_train_num, 
-                validation_data=(x_val, y_val),
-                clf=new_model
+                vae_kwargs["train_num"], 
+                clf=new_model,
+                verbose=verbose
             )
 
-        if onehot_labels:
+        if load_dataset_fn_kwargs["onehot_labels"]:
             y_test = np.argmax(y_test, axis=-1)
 
         preds = new_model.predict(x_test)
