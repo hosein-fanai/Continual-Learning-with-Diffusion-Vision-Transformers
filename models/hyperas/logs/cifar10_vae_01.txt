@@ -1,0 +1,4200 @@
+----Optimization Iteration 1:
+hidden_num: 3
+units1: 2048
+units2: 1024
+units3: 256
+units4: 64
+latent_dim: 16
+actv: prelu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.03
+opt_choice: sgd
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.0966, trainable_num=1.315792, mean_of_stds=0.03910563141107559, score=-1.1800863685889245, best_score=-1.1800863685889245)
+
+----Optimization Iteration 2:
+hidden_num: 1
+units1: 8192
+units2: 2048
+units3: 512
+units4: 128
+latent_dim: 64
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.001
+momentum: 0.3
+weight_decay: 0.003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=0.1, trainable_num=3.532608, mean_of_stds=nan, score=nan, best_score=-1.1800863685889245)
+
+----Optimization Iteration 3:
+hidden_num: 4
+units1: 4096
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: adamax
+loss_choice: mse
+beta: 0.5
+----(val_acc=0.2502, trainable_num=2.8583168, mean_of_stds=0.27187567949295044, score=-2.3362411205070495, best_score=-1.1800863685889245)
+
+----Optimization Iteration 4:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 0.75
+----(val_acc=0.991, trainable_num=0.057472, mean_of_stds=0.059013884514570236, score=0.9925418845145703, best_score=0.9925418845145703)
+
+----Optimization Iteration 5:
+hidden_num: 3
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+latent_dim: 16
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: nadam
+loss_choice: mae
+beta: 0.5
+----(val_acc=1.0, trainable_num=0.2406304, mean_of_stds=0.2408386915922165, score=1.0002082915922164, best_score=1.0002082915922164)
+
+----Optimization Iteration 6:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 64
+units4: 64
+latent_dim: 16
+actv: relu
+last_actv: linear
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.0003
+opt_choice: adam
+loss_choice: mse
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.0589472, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 7:
+hidden_num: 2
+units1: 128
+units2: 128
+units3: 64
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.001
+opt_choice: sgd
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0574528, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 8:
+hidden_num: 3
+units1: 64
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: sigmoid
+last_actv: linear
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.0003
+opt_choice: nadam
+loss_choice: mse
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.0268144, mean_of_stds=0.0018585041398182511, score=0.07504410413981825, best_score=1.0002082915922164)
+
+----Optimization Iteration 9:
+hidden_num: 3
+units1: 256
+units2: 64
+units3: 32
+units4: 32
+latent_dim: 16
+actv: elu
+last_actv: linear
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.003
+opt_choice: adam
+loss_choice: mse
+beta: 0.1
+----(val_acc=0.1, trainable_num=0.109264, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 10:
+hidden_num: 2
+units1: 512
+units2: 128
+units3: 128
+units4: 32
+latent_dim: 8
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+loss_choice: mae
+beta: 0.5
+----(val_acc=1.0, trainable_num=0.224232, mean_of_stds=0.00609417911618948, score=0.7818621791161895, best_score=1.0002082915922164)
+
+----Optimization Iteration 11:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 256
+units4: 64
+latent_dim: 16
+actv: prelu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 2.0
+----(val_acc=1.0, trainable_num=0.2662432, mean_of_stds=0.044284023344516754, score=0.7780408233445167, best_score=1.0002082915922164)
+
+----Optimization Iteration 12:
+hidden_num: 2
+units1: 2048
+units2: 1024
+units3: 256
+units4: 128
+latent_dim: 32
+actv: elu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: sgd
+loss_choice: mse
+beta: 0.5
+----(val_acc=0.1, trainable_num=1.2726336, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 13:
+hidden_num: 2
+units1: 4096
+units2: 2048
+units3: 512
+units4: 256
+latent_dim: 64
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: nadam
+loss_choice: mse
+beta: 1.5
+----(val_acc=0.1, trainable_num=3.4023552, mean_of_stds=0.0, score=-3.3023552, best_score=1.0002082915922164)
+
+----Optimization Iteration 14:
+hidden_num: 2
+units1: 128
+units2: 128
+units3: 128
+units4: 128
+latent_dim: 64
+actv: elu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.1
+weight_decay: 0.0
+opt_choice: adamax
+loss_choice: mae
+beta: 0.75
+----(val_acc=0.1, trainable_num=0.058688, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 15:
+hidden_num: 1
+units1: 256
+units2: 64
+units3: 32
+units4: 16
+latent_dim: 8
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.001
+momentum: 0.03
+weight_decay: 0.0001
+opt_choice: sgd
+loss_choice: mse
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.1062416, mean_of_stds=0.08187885582447052, score=0.07563725582447052, best_score=1.0002082915922164)
+
+----Optimization Iteration 16:
+hidden_num: 3
+units1: 256
+units2: 256
+units3: 64
+units4: 32
+latent_dim: 8
+actv: relu
+last_actv: linear
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.0001
+momentum: 0.5
+weight_decay: 0.0001
+opt_choice: sgd
+loss_choice: mse
+beta: 1.5
+----(val_acc=0.1004, trainable_num=0.1220368, mean_of_stds=0.07473697513341904, score=0.05310017513341904, best_score=1.0002082915922164)
+
+----Optimization Iteration 17:
+hidden_num: 1
+units1: 256
+units2: 128
+units3: 128
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.0001
+opt_choice: adamw
+loss_choice: mae
+beta: 0.25
+----(val_acc=0.1002, trainable_num=0.1154816, mean_of_stds=0.019409364089369774, score=0.004127764089369768, best_score=1.0002082915922164)
+
+----Optimization Iteration 18:
+hidden_num: 1
+units1: 2048
+units2: 2048
+units3: 512
+units4: 512
+latent_dim: 128
+actv: relu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.1
+momentum: 0.5
+weight_decay: 0.001
+opt_choice: sgd
+loss_choice: mse
+beta: 0.75
+----(val_acc=0.1, trainable_num=0.9226496, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 19:
+hidden_num: 2
+units1: 8192
+units2: 4096
+units3: 2048
+units4: 512
+latent_dim: 128
+actv: prelu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: sgd
+loss_choice: mae
+beta: 0.1
+----(val_acc=0.1016, trainable_num=10.2410496, mean_of_stds=0.0999528169631958, score=-10.039496783036805, best_score=1.0002082915922164)
+
+----Optimization Iteration 20:
+hidden_num: 3
+units1: 512
+units2: 512
+units3: 128
+units4: 128
+latent_dim: 64
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.0003
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: sgd
+loss_choice: mse
+beta: 1.75
+----(val_acc=0.1148, trainable_num=0.2790272, mean_of_stds=0.11533237993717194, score=-0.048894820062828026, best_score=1.0002082915922164)
+
+----Optimization Iteration 21:
+hidden_num: 2
+units1: 256
+units2: 64
+units3: 32
+units4: 32
+latent_dim: 16
+actv: elu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.0001
+momentum: 0.8
+weight_decay: 0.01
+opt_choice: adamw
+loss_choice: mse
+beta: 0.5
+----(val_acc=0.1006, trainable_num=0.1090336, mean_of_stds=0.04181266576051712, score=0.03337906576051712, best_score=1.0002082915922164)
+
+----Optimization Iteration 22:
+hidden_num: 3
+units1: 64
+units2: 64
+units3: 32
+units4: 32
+latent_dim: 8
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: sgd
+loss_choice: mae
+beta: 0.1
+----(val_acc=0.4616, trainable_num=0.0279184, mean_of_stds=0.13034971058368683, score=0.5640313105836868, best_score=1.0002082915922164)
+
+----Optimization Iteration 23:
+hidden_num: 1
+units1: 512
+units2: 128
+units3: 64
+units4: 16
+latent_dim: 8
+actv: relu
+last_actv: linear
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0001
+opt_choice: adam
+loss_choice: mae
+beta: 0.1
+----(val_acc=1.0, trainable_num=0.2122768, mean_of_stds=0.051538996398448944, score=0.839262196398449, best_score=1.0002082915922164)
+
+----Optimization Iteration 24:
+hidden_num: 1
+units1: 1024
+units2: 512
+units3: 256
+units4: 64
+latent_dim: 64
+actv: prelu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.003
+opt_choice: adamax
+loss_choice: mae
+beta: 0.75
+----(val_acc=0.1, trainable_num=0.4419712, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 25:
+hidden_num: 2
+units1: 8192
+units2: 2048
+units3: 1024
+units4: 256
+latent_dim: 64
+actv: sigmoid
+last_actv: linear
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.03
+opt_choice: adamw
+loss_choice: mse
+beta: 0.75
+----(val_acc=0.1, trainable_num=6.7627136, mean_of_stds=2.8196259904689214e-07, score=-6.662713318037401, best_score=1.0002082915922164)
+
+----Optimization Iteration 26:
+hidden_num: 3
+units1: 512
+units2: 128
+units3: 128
+units4: 32
+latent_dim: 16
+actv: relu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.0003
+opt_choice: nadam
+loss_choice: mse
+beta: 0.1
+----(val_acc=0.1702, trainable_num=0.2277152, mean_of_stds=0.010429280810058117, score=-0.0470859191899419, best_score=1.0002082915922164)
+
+----Optimization Iteration 27:
+hidden_num: 1
+units1: 512
+units2: 512
+units3: 512
+units4: 128
+latent_dim: 64
+actv: relu
+last_actv: linear
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: adamw
+loss_choice: mse
+beta: 1.75
+----(val_acc=0.1, trainable_num=0.2208896, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 28:
+hidden_num: 4
+units1: 256
+units2: 128
+units3: 64
+units4: 64
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: sgd
+loss_choice: mse
+beta: 0.1
+----(val_acc=0.102, trainable_num=0.1148064, mean_of_stds=0.1714058816432953, score=0.1585994816432953, best_score=1.0002082915922164)
+
+----Optimization Iteration 29:
+hidden_num: 2
+units1: 32
+units2: 16
+units3: 16
+units4: 16
+latent_dim: 16
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.003
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adamax
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.3818, trainable_num=0.0135616, mean_of_stds=0.11901319026947021, score=0.4872515902694702, best_score=1.0002082915922164)
+
+----Optimization Iteration 30:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.3
+weight_decay: 0.0
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.75
+----(val_acc=1.0, trainable_num=0.057536, mean_of_stds=0.03575970605015755, score=0.9782237060501575, best_score=1.0002082915922164)
+
+----Optimization Iteration 31:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 1.0
+----(val_acc=0.74, trainable_num=0.057536, mean_of_stds=0.006614354904741049, score=0.689078354904741, best_score=1.0002082915922164)
+
+----Optimization Iteration 32:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 32
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 1.25
+----(val_acc=1.0, trainable_num=0.2776064, mean_of_stds=0.026880700141191483, score=0.7492743001411915, best_score=1.0002082915922164)
+
+----Optimization Iteration 33:
+hidden_num: 4
+units1: 1024
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 32
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 0.75
+----(val_acc=1.0, trainable_num=0.5404672, mean_of_stds=0.1472342312335968, score=0.6067670312335968, best_score=1.0002082915922164)
+
+----Optimization Iteration 34:
+hidden_num: 3
+units1: 256
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.0
+weight_decay: 0.0
+opt_choice: adamw
+loss_choice: mae
+beta: 1.75
+----(val_acc=0.9958, trainable_num=0.1132032, mean_of_stds=0.07798115909099579, score=0.9605779590909957, best_score=1.0002082915922164)
+
+----Optimization Iteration 35:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.003
+opt_choice: adamax
+loss_choice: mae
+beta: 2.0
+----(val_acc=0.3008, trainable_num=0.057536, mean_of_stds=0.14374902844429016, score=0.3870130284442902, best_score=1.0002082915922164)
+
+----Optimization Iteration 36:
+hidden_num: 1
+units1: 1024
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: linear
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: adam
+loss_choice: mae
+beta: 1.0
+----(val_acc=0.3162, trainable_num=0.4319296, mean_of_stds=0.006881078239530325, score=-0.10884852176046972, best_score=1.0002082915922164)
+
+----Optimization Iteration 37:
+hidden_num: 4
+units1: 64
+units2: 64
+units3: 16
+units4: 16
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.75
+----(val_acc=1.0, trainable_num=0.0277184, mean_of_stds=0.0003168702241964638, score=0.9725984702241964, best_score=1.0002082915922164)
+
+----Optimization Iteration 38:
+hidden_num: 3
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+latent_dim: 16
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.03
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.25
+----(val_acc=0.1, trainable_num=0.240464, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 39:
+hidden_num: 3
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+latent_dim: 16
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.001
+momentum: 0.5
+weight_decay: 0.03
+opt_choice: adamw
+loss_choice: mae
+beta: 1.25
+----(val_acc=1.0, trainable_num=0.240464, mean_of_stds=0.09838647395372391, score=0.8579224739537239, best_score=1.0002082915922164)
+
+----Optimization Iteration 40:
+hidden_num: 3
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 32
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.03
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 0.75
+----(val_acc=1.0, trainable_num=0.277792, mean_of_stds=0.0660514235496521, score=0.7882594235496521, best_score=1.0002082915922164)
+
+----Optimization Iteration 41:
+hidden_num: 4
+units1: 2048
+units2: 1024
+units3: 256
+units4: 128
+latent_dim: 128
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.001
+opt_choice: nadam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.9754, trainable_num=1.3252864, mean_of_stds=0.071499302983284, score=-0.27838709701671593, best_score=1.0002082915922164)
+
+----Optimization Iteration 42:
+hidden_num: 3
+units1: 256
+units2: 256
+units3: 64
+units4: 64
+latent_dim: 64
+actv: tanh
+last_actv: linear
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: adamax
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.5866, trainable_num=0.1232384, mean_of_stds=0.01567082479596138, score=0.4790324247959614, best_score=1.0002082915922164)
+
+----Optimization Iteration 43:
+hidden_num: 4
+units1: 256
+units2: 128
+units3: 32
+units4: 16
+latent_dim: 16
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.003
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: adamw
+loss_choice: mae
+beta: 0.5
+----(val_acc=1.0, trainable_num=0.112976, mean_of_stds=0.0470026470720768, score=0.9340266470720768, best_score=1.0002082915922164)
+
+----Optimization Iteration 44:
+hidden_num: 3
+units1: 512
+units2: 512
+units3: 512
+units4: 128
+latent_dim: 128
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: nadam
+loss_choice: mae
+beta: 2.0
+----(val_acc=0.97, trainable_num=0.3364096, mean_of_stds=0.10277827084064484, score=0.7363686708406448, best_score=1.0002082915922164)
+
+----Optimization Iteration 45:
+hidden_num: 1
+units1: 512
+units2: 256
+units3: 64
+units4: 16
+latent_dim: 16
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.001
+momentum: 0.0
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 0.75
+----(val_acc=1.0, trainable_num=0.2135072, mean_of_stds=0.037279821932315826, score=0.8237726219323158, best_score=1.0002082915922164)
+
+----Optimization Iteration 46:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 47:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 48:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 49:
+hidden_num: 4
+units1: 256
+units2: 256
+units3: 64
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.1233344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 50:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 51:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 52:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 53:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 54:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 55:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 56:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 57:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 58:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 59:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 1.0
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 60:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 61:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 62:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 63:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.03
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 64:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 65:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 66:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 67:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 68:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 69:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 70:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.1, trainable_num=0.2785344, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 71:
+hidden_num: 4
+units1: 512
+units2: 512
+units3: 128
+units4: 64
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.001
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.727, trainable_num=0.2785344, mean_of_stds=0.011270077899098396, score=0.45973567789909836, best_score=1.0002082915922164)
+
+----Optimization Iteration 72:
+hidden_num: 3
+units1: 512
+units2: 256
+units3: 256
+units4: 64
+latent_dim: 64
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.75
+----(val_acc=0.1996, trainable_num=0.2553472, mean_of_stds=0.0022932167630642653, score=-0.05345398323693573, best_score=1.0002082915922164)
+
+----Optimization Iteration 73:
+hidden_num: 3
+units1: 512
+units2: 128
+units3: 32
+units4: 16
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 0.25
+----(val_acc=0.8998, trainable_num=0.2246816, mean_of_stds=0.12189481407403946, score=0.7970132140740395, best_score=1.0002082915922164)
+
+----Optimization Iteration 74:
+hidden_num: 1
+units1: 1024
+units2: 1024
+units3: 256
+units4: 256
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.0003
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: adamax
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.5998, trainable_num=0.4612352, mean_of_stds=0.056299008429050446, score=0.19486380842905043, best_score=1.0002082915922164)
+
+----Optimization Iteration 75:
+hidden_num: 4
+units1: 64
+units2: 32
+units3: 32
+units4: 8
+latent_dim: 8
+actv: prelu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.001
+momentum: 0.8
+weight_decay: 0.001
+opt_choice: rmsprop
+loss_choice: mae
+beta: 1.0
+----(val_acc=0.1162, trainable_num=0.0272592, mean_of_stds=0.0011728908866643906, score=0.09011369088666439, best_score=1.0002082915922164)
+
+----Optimization Iteration 76:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 128
+latent_dim: 32
+actv: selu
+last_actv: linear
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.01
+opt_choice: nadam
+loss_choice: mae
+beta: 1.25
+----(val_acc=1.0, trainable_num=0.2684992, mean_of_stds=0.07607245445251465, score=0.8075732544525147, best_score=1.0002082915922164)
+
+----Optimization Iteration 77:
+hidden_num: 3
+units1: 512
+units2: 128
+units3: 32
+units4: 16
+latent_dim: 16
+actv: elu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mse
+beta: 0.5
+----(val_acc=1.0, trainable_num=0.224816, mean_of_stds=0.015864500775933266, score=0.7910485007759332, best_score=1.0002082915922164)
+
+----Optimization Iteration 78:
+hidden_num: 1
+units1: 512
+units2: 256
+units3: 128
+units4: 128
+latent_dim: 64
+actv: relu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.0001
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: nadam
+loss_choice: mae
+beta: 2.0
+----(val_acc=0.103, trainable_num=0.2208896, mean_of_stds=0.044447291642427444, score=-0.07344230835757255, best_score=1.0002082915922164)
+
+----Optimization Iteration 79:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 128
+units4: 32
+latent_dim: 8
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.0003
+momentum: 0.03
+weight_decay: 0.001
+opt_choice: adamw
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.060328, mean_of_stds=0.0004884416121058166, score=0.04016044161210582, best_score=1.0002082915922164)
+
+----Optimization Iteration 80:
+hidden_num: 2
+units1: 2048
+units2: 512
+units3: 128
+units4: 128
+latent_dim: 128
+actv: prelu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.01
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: adam
+loss_choice: mse
+beta: 0.75
+----(val_acc=0.7992, trainable_num=1.0725632, mean_of_stds=0.05878423899412155, score=-0.21457896100587848, best_score=1.0002082915922164)
+
+----Optimization Iteration 81:
+hidden_num: 3
+units1: 512
+units2: 256
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+loss_choice: mae
+beta: 0.25
+----(val_acc=0.1142, trainable_num=0.2441248, mean_of_stds=0.12449242919683456, score=-0.005432370803165443, best_score=1.0002082915922164)
+
+----Optimization Iteration 82:
+hidden_num: 3
+units1: 256
+units2: 256
+units3: 64
+units4: 32
+latent_dim: 8
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.003
+momentum: 0.5
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mse
+beta: 0.5
+----(val_acc=1.0, trainable_num=0.1220368, mean_of_stds=0.06788142025470734, score=0.9458446202547073, best_score=1.0002082915922164)
+
+----Optimization Iteration 83:
+hidden_num: 2
+units1: 64
+units2: 32
+units3: 32
+units4: 32
+latent_dim: 32
+actv: relu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.0003
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: adamw
+loss_choice: mae
+beta: 1.75
+----(val_acc=0.6634, trainable_num=0.0272768, mean_of_stds=0.09800161421298981, score=0.7341248142129898, best_score=1.0002082915922164)
+
+----Optimization Iteration 84:
+hidden_num: 4
+units1: 8192
+units2: 2048
+units3: 1024
+units4: 256
+latent_dim: 64
+actv: sigmoid
+last_actv: sigmoid
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0001
+momentum: 0.8
+weight_decay: 0.0001
+opt_choice: rmsprop
+loss_choice: mse
+beta: 0.75
+----(val_acc=0.1, trainable_num=7.1986304, mean_of_stds=0.00041703134775161743, score=-7.098213368652249, best_score=1.0002082915922164)
+
+----Optimization Iteration 85:
+hidden_num: 1
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adamax
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0535584, mean_of_stds=0.05245106667280197, score=0.998892666672802, best_score=1.0002082915922164)
+
+----Optimization Iteration 86:
+hidden_num: 1
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: adamax
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0535584, mean_of_stds=0.031546272337436676, score=0.9779878723374367, best_score=1.0002082915922164)
+
+----Optimization Iteration 87:
+hidden_num: 1
+units1: 1024
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: linear
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: adamax
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.7504, trainable_num=0.4270112, mean_of_stds=0.26947158575057983, score=0.5928603857505799, best_score=1.0002082915922164)
+
+----Optimization Iteration 88:
+hidden_num: 1
+units1: 256
+units2: 64
+units3: 32
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.003
+opt_choice: adamax
+loss_choice: mse
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.1069088, mean_of_stds=0.04744953662157059, score=0.9405407366215706, best_score=1.0002082915922164)
+
+----Optimization Iteration 89:
+hidden_num: 1
+units1: 256
+units2: 256
+units3: 64
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.001
+opt_choice: adamax
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.1069088, mean_of_stds=3.963645576732233e-05, score=-0.00686916354423267, best_score=1.0002082915922164)
+
+----Optimization Iteration 90:
+hidden_num: 1
+units1: 256
+units2: 128
+units3: 128
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.1
+opt_choice: adamax
+loss_choice: mae
+beta: 1.0
+----(val_acc=1.0, trainable_num=0.1069088, mean_of_stds=0.054687440395355225, score=0.9477786403953552, best_score=1.0002082915922164)
+
+----Optimization Iteration 91:
+hidden_num: 1
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.003
+momentum: 0.3
+weight_decay: 0.0003
+opt_choice: sgd
+loss_choice: mae
+beta: 0.1
+----(val_acc=0.0766, trainable_num=0.0535584, mean_of_stds=0.1869792938232422, score=0.21002089382324218, best_score=1.0002082915922164)
+
+----Optimization Iteration 92:
+hidden_num: 1
+units1: 512
+units2: 256
+units3: 128
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: glorot
+kernel_init: glorot_normal
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.0001
+opt_choice: adamax
+loss_choice: mse
+beta: 1.25
+----(val_acc=1.0, trainable_num=0.2136096, mean_of_stds=0.015256216749548912, score=0.8016466167495488, best_score=1.0002082915922164)
+
+----Optimization Iteration 93:
+hidden_num: 3
+units1: 4096
+units2: 1024
+units3: 256
+units4: 256
+latent_dim: 128
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.001
+momentum: 0.01
+weight_decay: 0.0
+opt_choice: adam
+loss_choice: mae
+beta: 0.5
+----(val_acc=0.9962, trainable_num=2.5866496, mean_of_stds=0.10613133013248444, score=-1.4843182698675155, best_score=1.0002082915922164)
+
+----Optimization Iteration 94:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 95:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 96:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 97:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 98:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 99:
+hidden_num: 2
+units1: 512
+units2: 512
+units3: 128
+units4: 32
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.1
+momentum: 0.8
+weight_decay: 0.03
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.2662432, mean_of_stds=1.1793527932013603e-08, score=-0.16624318820647208, best_score=1.0002082915922164)
+
+----Optimization Iteration 100:
+hidden_num: 1
+units1: 256
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 8
+actv: relu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.003
+momentum: 0.99
+weight_decay: 0.01
+opt_choice: rmsprop
+loss_choice: mae
+beta: 0.25
+----(val_acc=0.1854, trainable_num=0.1062928, mean_of_stds=0.16274996101856232, score=0.2418571610185623, best_score=1.0002082915922164)
+
+----Optimization Iteration 101:
+hidden_num: 3
+units1: 64
+units2: 64
+units3: 64
+units4: 32
+latent_dim: 16
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.1
+momentum: 0.01
+weight_decay: 0.1
+opt_choice: sgd
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1112, trainable_num=0.0285728, mean_of_stds=0.1303233802318573, score=0.2129505802318573, best_score=1.0002082915922164)
+
+----Optimization Iteration 102:
+hidden_num: 1
+units1: 2048
+units2: 1024
+units3: 512
+units4: 128
+latent_dim: 64
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.003
+momentum: 0.03
+weight_decay: 0.001
+opt_choice: adamax
+loss_choice: mae
+beta: 1.75
+----(val_acc=0.102, trainable_num=0.8833152, mean_of_stds=0.00017158973787445575, score=-0.7811436102621255, best_score=1.0002082915922164)
+
+----Optimization Iteration 103:
+hidden_num: 3
+units1: 256
+units2: 256
+units3: 64
+units4: 64
+latent_dim: 16
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.03
+momentum: 0.0
+weight_decay: 0.0001
+opt_choice: nadam
+loss_choice: mae
+beta: 0.1
+----(val_acc=1.0, trainable_num=0.1223072, mean_of_stds=0.0008851563325151801, score=0.8785779563325151, best_score=1.0002082915922164)
+
+----Optimization Iteration 104:
+hidden_num: 2
+units1: 8192
+units2: 4096
+units3: 1024
+units4: 256
+latent_dim: 128
+actv: tanh
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: glorot
+kernel_init: glorot_uniform
+lr: 0.0001
+momentum: 0.8
+weight_decay: 0.003
+opt_choice: adamax
+loss_choice: mae
+beta: 0.5
+----(val_acc=1.0, trainable_num=10.2410496, mean_of_stds=0.07643184810876846, score=-9.164617751891232, best_score=1.0002082915922164)
+
+----Optimization Iteration 105:
+hidden_num: 3
+units1: 1024
+units2: 256
+units3: 64
+units4: 64
+latent_dim: 16
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: uniform
+initialization: lecun
+kernel_init: lecun_uniform
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.1
+opt_choice: adam
+loss_choice: mse
+beta: 1.0
+----(val_acc=0.3798, trainable_num=0.4772768, mean_of_stds=0.004124688915908337, score=-0.09335211108409164, best_score=1.0002082915922164)
+
+----Optimization Iteration 106:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 0.75
+----(val_acc=0.9704, trainable_num=0.057472, mean_of_stds=0.057084064930677414, score=0.9700120649306775, best_score=1.0002082915922164)
+
+----Optimization Iteration 107:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.5
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 0.75
+----(val_acc=0.9194, trainable_num=0.057472, mean_of_stds=0.05931268259882927, score=0.9212406825988293, best_score=1.0002082915922164)
+
+----Optimization Iteration 108:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.001
+momentum: 0.1
+weight_decay: 0.1
+opt_choice: adamw
+loss_choice: mae
+beta: 1.25
+----(val_acc=1.0, trainable_num=0.057472, mean_of_stds=0.04677238687872887, score=0.9893003868787289, best_score=1.0002082915922164)
+
+----Optimization Iteration 109:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.9942, trainable_num=0.057472, mean_of_stds=0.061569105833768845, score=0.9982971058337688, best_score=1.0002082915922164)
+
+----Optimization Iteration 110:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: elu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.9906, trainable_num=0.057472, mean_of_stds=0.06062645837664604, score=0.9937544583766461, best_score=1.0002082915922164)
+
+----Optimization Iteration 111:
+hidden_num: 4
+units1: 128
+units2: 128
+units3: 32
+units4: 32
+latent_dim: 32
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.003
+momentum: 0.9
+weight_decay: 0.001
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0576, mean_of_stds=0.04502701014280319, score=0.9874270101428032, best_score=1.0002082915922164)
+
+----Optimization Iteration 112:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 113:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 114:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 115:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 116:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 117:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 118:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 119:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 120:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0002082915922164)
+
+----Optimization Iteration 121:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.1
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.3914, trainable_num=0.0134608, mean_of_stds=0.6393343806266785, score=1.0172735806266786, best_score=1.0172735806266786)
+
+----Optimization Iteration 122:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0134672, mean_of_stds=0.029135722666978836, score=1.0156685226669788, best_score=1.0172735806266786)
+
+----Optimization Iteration 123:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0134672, mean_of_stds=0.027666741982102394, score=1.0141995419821024, best_score=1.0172735806266786)
+
+----Optimization Iteration 124:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=1.0, trainable_num=0.0134672, mean_of_stds=0.028951123356819153, score=1.0154839233568191, best_score=1.0172735806266786)
+
+----Optimization Iteration 125:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0172735806266786)
+
+----Optimization Iteration 126:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0172735806266786)
+
+----Optimization Iteration 127:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0172735806266786)
+
+----Optimization Iteration 128:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1, trainable_num=0.0134608, mean_of_stds=nan, score=nan, best_score=1.0172735806266786)
+
+----Optimization Iteration 129:
+hidden_num: 1
+units1: 32
+units2: 32
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.7568, trainable_num=0.0134608, mean_of_stds=0.07556486874818802, score=0.818904068748188, best_score=1.0172735806266786)
+
+----Optimization Iteration 130:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.9988, trainable_num=0.0035216, mean_of_stds=0.023436453193426132, score=1.0187148531934263, best_score=1.0187148531934263)
+
+----Optimization Iteration 131:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: linear
+use_batch_norm: False
+distribution: uniform
+initialization: he
+kernel_init: he_uniform
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.1034, trainable_num=0.00352, mean_of_stds=0.0007480676867999136, score=0.10062806768679992, best_score=1.0187148531934263)
+
+----Optimization Iteration 132:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 1.5
+----(val_acc=0.9898, trainable_num=0.0035216, mean_of_stds=0.03229741007089615, score=1.0185758100708961, best_score=1.0187148531934263)
+
+----Optimization Iteration 133:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: False
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 2.0
+----(val_acc=0.323, trainable_num=0.00352, mean_of_stds=0.08560802042484283, score=0.4050880204248428, best_score=1.0187148531934263)
+
+----Optimization Iteration 134:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 0.25
+----(val_acc=0.9944, trainable_num=0.0035216, mean_of_stds=0.027431238442659378, score=1.0183096384426593, best_score=1.0187148531934263)
+
+----Optimization Iteration 135:
+hidden_num: 1
+units1: 8
+units2: 8
+units3: 8
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mae
+beta: 0.25
+----(val_acc=1.0, trainable_num=0.0035216, mean_of_stds=0.002118049655109644, score=0.9985964496551096, best_score=1.0187148531934263)
+
+----Optimization Iteration 136:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mse
+beta: 0.25
+----(val_acc=1.0, trainable_num=0.0068368, mean_of_stds=0.05518057942390442, score=1.0483437794239046, best_score=1.0483437794239046)
+
+----Optimization Iteration 137:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: rmsprop
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.1, trainable_num=0.0068368, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 138:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.03
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: rmsprop
+loss_choice: mse
+beta: 0.25
+----(val_acc=1.0, trainable_num=0.0068368, mean_of_stds=0.0036376970820128918, score=0.9968008970820129, best_score=1.0483437794239046)
+
+----Optimization Iteration 139:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: relu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0
+opt_choice: sgd
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.5788, trainable_num=0.0068368, mean_of_stds=0.03548085317015648, score=0.6074440531701565, best_score=1.0483437794239046)
+
+----Optimization Iteration 140:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.0001
+momentum: 0.03
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.6264, trainable_num=0.0068368, mean_of_stds=0.074358731508255, score=0.693921931508255, best_score=1.0483437794239046)
+
+----Optimization Iteration 141:
+hidden_num: 1
+units1: 64
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: sigmoid
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.001
+momentum: 0.99
+weight_decay: 0.0
+opt_choice: nadam
+loss_choice: mse
+beta: 1.75
+----(val_acc=0.1, trainable_num=0.026728, mean_of_stds=0.008396429941058159, score=0.08166842994105816, best_score=1.0483437794239046)
+
+----Optimization Iteration 142:
+hidden_num: 1
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: he
+kernel_init: he_normal
+lr: 0.1
+momentum: 0.0
+weight_decay: 0.0
+opt_choice: adam
+loss_choice: mse
+beta: 0.1
+----(val_acc=1.0, trainable_num=0.0068368, mean_of_stds=0.018648922443389893, score=1.01181212244339, best_score=1.0483437794239046)
+
+----Optimization Iteration 143:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=1.0, trainable_num=0.0068944, mean_of_stds=0.03689327463507652, score=1.0299988746350766, best_score=1.0483437794239046)
+
+----Optimization Iteration 144:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=1.0, trainable_num=0.0068944, mean_of_stds=0.005082759074866772, score=0.9981883590748668, best_score=1.0483437794239046)
+
+----Optimization Iteration 145:
+hidden_num: 2
+units1: 2048
+units2: 512
+units3: 512
+units4: 256
+latent_dim: 64
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=1.0, trainable_num=1.06272, mean_of_stds=0.08337219059467316, score=0.020652190594673048, best_score=1.0483437794239046)
+
+----Optimization Iteration 146:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: relu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=1.0, trainable_num=0.0068944, mean_of_stds=0.01764211431145668, score=1.0107477143114567, best_score=1.0483437794239046)
+
+----Optimization Iteration 147:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=0.1, trainable_num=0.0068944, mean_of_stds=0.009546985849738121, score=0.10265258584973813, best_score=1.0483437794239046)
+
+----Optimization Iteration 148:
+hidden_num: 2
+units1: 256
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.1
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.0
+----(val_acc=1.0, trainable_num=0.1287424, mean_of_stds=0.04295693710446358, score=0.9142145371044635, best_score=1.0483437794239046)
+
+----Optimization Iteration 149:
+hidden_num: 2
+units1: 64
+units2: 64
+units3: 64
+units4: 32
+latent_dim: 8
+actv: selu
+last_actv: linear
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.3
+weight_decay: 0.03
+opt_choice: rmsprop
+loss_choice: mse
+beta: 1.25
+----(val_acc=0.9152, trainable_num=0.0275728, mean_of_stds=0.02276509627699852, score=0.9103922962769986, best_score=1.0483437794239046)
+
+----Optimization Iteration 150:
+hidden_num: 2
+units1: 512
+units2: 128
+units3: 128
+units4: 64
+latent_dim: 64
+actv: prelu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.03
+momentum: 0.1
+weight_decay: 0.01
+opt_choice: sgd
+loss_choice: mse
+beta: 0.25
+----(val_acc=0.089, trainable_num=0.2265216, mean_of_stds=0.28612953424453735, score=0.14860793424453736, best_score=1.0483437794239046)
+
+----Optimization Iteration 151:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=1.0, trainable_num=0.0068944, mean_of_stds=0.02939872071146965, score=1.0225043207114697, best_score=1.0483437794239046)
+
+----Optimization Iteration 152:
+hidden_num: 2
+units1: 16
+units2: 16
+units3: 16
+units4: 8
+latent_dim: 8
+actv: relu
+last_actv: sigmoid
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.0068944, mean_of_stds=5.1456627261359245e-06, score=0.09311074566272615, best_score=1.0483437794239046)
+
+----Optimization Iteration 153:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 154:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 155:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 156:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.03
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 157:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 158:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 159:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 160:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 161:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 162:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 163:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 164:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 165:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 166:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 167:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 168:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 169:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 170:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 171:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 172:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 173:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 174:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 175:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 176:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 177:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 178:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 179:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 180:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 181:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 182:
+hidden_num: 2
+units1: 1024
+units2: 1024
+units3: 1024
+units4: 512
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.6715648, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 183:
+hidden_num: 2
+units1: 64
+units2: 64
+units3: 64
+units4: 32
+latent_dim: 8
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.9004, trainable_num=0.0275728, mean_of_stds=0.05170483514666557, score=0.9245320351466656, best_score=1.0483437794239046)
+
+----Optimization Iteration 184:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 185:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 186:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 187:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 188:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 189:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 190:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 191:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 192:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 193:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 194:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: selu
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 195:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 196:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 197:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 198:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 199:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+
+----Optimization Iteration 200:
+hidden_num: 2
+units1: 1024
+units2: 256
+units3: 256
+units4: 128
+latent_dim: 128
+actv: sigmoid
+last_actv: tanh
+use_batch_norm: True
+distribution: normal
+initialization: lecun
+kernel_init: lecun_normal
+lr: 0.01
+momentum: 0.99
+weight_decay: 0.0003
+opt_choice: rmsprop
+loss_choice: mse
+beta: 2.0
+----(val_acc=0.1, trainable_num=0.483712, mean_of_stds=nan, score=nan, best_score=1.0483437794239046)
+

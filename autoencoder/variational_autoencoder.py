@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers, models, optimizers
 
 import numpy as np
 
@@ -12,11 +12,11 @@ class VariationalAutoencoder(models.Model):
     def __init__(
         self, 
         data_dim=2048, 
-        latent_dim=16, 
-        hiddens_dims=(512, 256, 256), 
+        latent_dim=8, 
+        hiddens_dims=(16,), 
         hiddens_kwargs={},
-        last_activation="linear", 
-        beta=1., 
+        last_activation="tanh", 
+        beta=0.25, 
         conditioned=False, 
         class_num=None, 
         compile_args=None, 
@@ -41,8 +41,8 @@ class VariationalAutoencoder(models.Model):
 
         if compile_args is None:
             compile_args = {
-                "optimizer": "adam",
-                "loss": "binary_crossentropy",
+                "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
+                "loss": "mean_squared_error",
             }
             
         self.compile(**compile_args)
@@ -167,7 +167,7 @@ class VariationalAutoencoder(models.Model):
         return x
 
     def train(self, x, y=None, train_num=1_000, 
-            epochs=5, batch_size=256, validation_data=None, 
+            epochs=10, batch_size=512, validation_data=None, 
             callbacks_list=None, clf=None, verbose=1):
         if train_num != -1:
             indices = np.random.randint(0, len(x), (train_num,))
@@ -180,7 +180,7 @@ class VariationalAutoencoder(models.Model):
         list(set(self.seen_classes))
 
         if callbacks_list is None:
-            callbacks_list = get_callbacks(monitor="decoder_accuracy")
+            callbacks_list = get_callbacks(monitor="decoder_accuracy", verbose=verbose)
         else:
             callbacks_list = callbacks_list
 
@@ -200,8 +200,8 @@ class VariationalAutoencoder(models.Model):
     def update_seen_classes(self, cls):
         self.seen_classes.append(cls)
 
-    def _dense_layer(self, units, actv="relu", use_batch_norm=False, 
-                    kernel_init="glorot_uniform"):
+    def _dense_layer(self, units, actv="selu", use_batch_norm=True, 
+                    kernel_init="he_normal"):
         dlayer = models.Sequential()
 
         dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 

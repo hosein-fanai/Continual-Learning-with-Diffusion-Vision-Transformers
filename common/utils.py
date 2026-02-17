@@ -475,7 +475,11 @@ def continually_learn(class_num, load_dataset_fn, keep_same_model,
             x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_sample_num)
 
         if use_vae:
-            x_buffer, y_buffer = vae.generate(vae_per_class_num, onehot_labels)
+            x_buffer, y_buffer = vae.generate(
+                samples_per_class=vae_per_class_num, 
+                onehot_labels=onehot_labels, 
+                verbose=verbose
+            )
 
         history = new_model.fit(
             x_train, y_train, 
