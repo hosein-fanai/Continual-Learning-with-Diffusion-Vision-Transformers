@@ -7,9 +7,15 @@ class MaskedLoss(losses.Loss):
     Error computed only on the first N logits in order to match the shape of the labels and logits.
     """
 
-    def __init__(self, name="masked_loss"):
+    def __init__(self, loss_type="mae", name="masked_loss"):
         super(MaskedLoss, self).__init__(name=name)
-        self.loss = losses.MeanAbsoluteError()
+
+        if loss_type == "mae":
+            self.loss = losses.MeanAbsoluteError()
+        elif loss_type == "mse":
+            self.loss = losses.MeanSquaredError()
+        else:
+            raise("loss_type needs to be one of mae or mse.")
 
     def call(self, y_true, y_pred):
         n = tf.shape(y_pred)[1]

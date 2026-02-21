@@ -38,14 +38,14 @@ def get_callbacks(indices=[0], monitor="val_accuracy", mode="max",
 
 def get_model(class_num, model_type="CNN", model_path="", 
             dropout_rate=0., num_last_not_frozen=3, 
-            resize=(299, 299), compile_args=None, 
+            resize=(299, 299), compile_args={}, 
             use_loaded_opt=False, verbose=1):
     import tensorflow as tf
     from tensorflow.keras import models, layers, applications
 
 
-    if compile_args is None:
-        compile_args = get_compile_args()
+    compile_args_default = get_compile_args()
+    compile_args = {**compile_args_default, **compile_args}
 
     if model_type == "pretrained":
         conv_base = applications.Xception(include_top=False, input_shape=(resize[0], resize[1], 3))

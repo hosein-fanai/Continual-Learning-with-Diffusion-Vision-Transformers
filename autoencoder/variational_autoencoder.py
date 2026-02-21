@@ -19,7 +19,7 @@ class VariationalAutoencoder(models.Model):
         beta=0.25, 
         conditioned=False, 
         class_num=None, 
-        compile_args=None, 
+        compile_args={}, 
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -39,12 +39,12 @@ class VariationalAutoencoder(models.Model):
         self.recon_loss_tracker = tf.keras.metrics.Mean(name="recon_loss")
         self.kl_loss_tracker = tf.keras.metrics.Mean(name="kl_loss")
 
-        if compile_args is None:
-            compile_args = {
-                "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
-                "loss": "mean_squared_error",
-            }
-            
+        compile_args_default = {
+            "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
+            "loss": "mean_squared_error",
+        }
+        compile_args = {**compile_args_default, **compile_args}
+
         self.compile(**compile_args)
 
     @property
@@ -169,15 +169,21 @@ class VariationalAutoencoder(models.Model):
     def train(self, x, y=None, train_num=1_000, 
             epochs=10, batch_size=512, validation_data=None, 
             callbacks_list=None, clf=None, verbose=1):
+        assert (self.conditioned and (y is not None)) or (not self.conditioned and (y is None)) 
+
         if train_num != -1:
-            indices = np.random.randint(0, len(x), (train_num,))
+            input_size = len(x)
+            train_num = max(train_num, input_size)
+
+            indices = np.random.randint(0, input_size, (train_num,))
             x = x[indices]
             if y is not None:
                 y = y[indices]
 
-        new_classes = np.unique(np.argmax(y, axis=-1))
-        self.seen_classes.extend(new_classes)
-        list(set(self.seen_classes))
+        if y is not None:
+            new_classes = np.unique(np.argmax(y, axis=-1))
+            self.seen_classes.extend(new_classes)
+            self.seen_classes = list(set(self.seen_classes))
 
         if callbacks_list is None:
             callbacks_list = get_callbacks(monitor="decoder_accuracy", verbose=verbose)
@@ -262,21 +268,19 @@ class VariationalAutoencoder(models.Model):
 
 
 if __name__ == "__main__":
-    from common.utils import init, load_cifar10
+    from dataloader import load_cifar10
+    from common.utils import init
 
 
     init()
 
-    x_train, y_train, x_val, y_val, *_ = load_cifar10(return_features=True, onehot_labels=True, verbose=0) # , preprocess="normalize"
+    x_train, y_train, *_ = load_cifar10(return_features=True, onehot_labels=True, preprocess="normalize", verbose=0)
 
-    vae = VariationalAutoencoder(conditioned=True) # , last_activation="tanh"
+    vae = VariationalAutoencoder(conditioned=True)
 
     vae.train(
         x_train, y_train, 
         train_num=-1, 
-        epochs=5, 
-        batch_size=256, 
-        validation_data=(x_val, y_val), 
-        clf=models.load_model("./models/hyperas/cifar10_dnn_model_00.h5")
+        clf=models.load_model("./models/hyperas/cifar10_dnn_model_00B.h5")
     )
 

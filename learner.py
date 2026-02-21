@@ -1,24 +1,12 @@
 def continually_learn(class_num: int, load_dataset_fn: callable, 
-                    load_dataset_fn_kwargs: dict = {
-                        "preprocess": "", 
-                        "onehot_labels": False, 
-                    },
+                    load_dataset_fn_kwargs: dict = {},
                     remove_prev_classes: bool = True, keep_same_model: bool = True, 
-                    tuned_model_path: str = "", compile_args: dict = None, 
+                    tuned_model_path: str = "", compile_args: dict = {}, 
                     use_loaded_opt: bool = False, batch_size: int = 128, 
                     epochs: int = 100, use_buffer: bool = False, 
-                    buffer_kwargs: dict = {
-                        "buffer_maxlen": 10_000, 
-                        "sample_num": 1_000,
-                        "insert_num": 1_000,
-                        "seed": None,
-                    }, 
-                    use_vae: bool = False, vae_init_kwargs: dict = {}, 
-                    vae_kwargs: dict[str, int] = {
-                        "train_num": 1_000,
-                        "samples_per_class": 1_000
-                    }, 
-                    verbose: bool = True) -> list[float]:
+                    buffer_kwargs: dict = {}, use_vae: bool = False, 
+                    vae_init_kwargs: dict = {}, vae_kwargs: dict[str, int] = {}, 
+                    plot_results: bool = True, verbose: bool = True) -> list[float]:
     """
     Runs a continual learning scenario with an optional solution.
 
@@ -76,7 +64,7 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
         use_vae:
             Whether or not to use VAE to mitigate catastrophic forgetting. It cannot be used with the replay buffer.
-        
+
         vae_init_kwargs:
             Keyword arguments passed to the VAE's initializer.
 
@@ -84,11 +72,14 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
             A dictionary to be used for VAE-related actions. Its keys are as follows:
                 train_num:
                     The number of instances to train the VAE from the given input. 
-                    
+
                     If -1 is provided, all of the data is used and any other number makes the function to sample only that number of instances, then, train the VAE.
 
                 samples_per_class:
                     The number of samples to be drawn from each class that VAE has seen before.
+
+        plot_results:
+            Whether to plot the accuracies list.
 
         verbose:
             Whether to print anything about the learning process.
@@ -113,8 +104,28 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
 
     assert len(tuned_model_path) > 0, "tuned_model_path cannot be empty."
-    assert (use_buffer or use_vae) or (use_buffer and not use_vae) or (not use_buffer and use_vae), "Both of the replay buffer and VAE cannot be used."
+    assert (not use_buffer and not use_vae) or (use_buffer and not use_vae) or (not use_buffer and use_vae), "Both of the replay buffer and VAE cannot be used."
 
+
+    load_dataset_fn_kwargs_default = {
+        "preprocess": "", 
+        "onehot_labels": False, 
+    }
+    load_dataset_fn_kwargs = {**load_dataset_fn_kwargs_default, **load_dataset_fn_kwargs}
+
+    buffer_kwargs_default = {
+        "maxlen": 10_000, 
+        "sample_num": 1_000,
+        "insert_num": 1_000,
+        "seed": None,
+    }
+    buffer_kwargs = {**buffer_kwargs_default, **buffer_kwargs}
+
+    vae_kwargs_default = {
+        "train_num": 1_000,
+        "samples_per_class": 1_000
+    }
+    vae_kwargs = {**vae_kwargs_default, **vae_kwargs}
 
     return_features = True if "dnn" in tuned_model_path else False
 
@@ -180,6 +191,7 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
         if use_buffer:
             x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_kwargs["sample_num"])
+            # buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_kwargs["insert_num"])
 
             if len(x_buffer) > 0:
                 x_train = np.concatenate([x_train, x_buffer], axis=0)
@@ -206,7 +218,8 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
         ).history
         prev_model = new_model
 
-        plot_history(history, indices=[1])
+        if verbose:
+            plot_history(history, indices=[1])
 
         if use_buffer:
             buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_kwargs["insert_num"])
@@ -222,7 +235,7 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
         if load_dataset_fn_kwargs["onehot_labels"]:
             y_test = np.argmax(y_test, axis=-1)
 
-        preds = new_model.predict(x_test)
+        preds = new_model.predict(x_test, verbose=verbose)
         preds = np.argmax(preds, axis=-1)
 
         acc = accuracy_score(y_test, preds)
@@ -235,7 +248,8 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
 
             print(75*'-'+'\n')
 
-    CL_plot(class_num, [(acc_list, " ")])
+    if plot_results:
+        CL_plot(class_num, [(acc_list, " ")])
 
     return acc_list
 
