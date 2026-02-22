@@ -1,0 +1,1400 @@
+----Optimization Iteration 1:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 20000
+samples_per_class: 250
+----(score=0.1982, best_score=0.1982)
+
+----Optimization Iteration 2:
+last_actv: linear
+loss_choice: mse
+train_num: 5000
+samples_per_class: 5000
+----(score=0.5661, best_score=0.5661)
+
+----Optimization Iteration 3:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.6518, best_score=0.6518)
+
+----Optimization Iteration 4:
+last_actv: tanh
+loss_choice: mse
+train_num: 10000
+samples_per_class: 2500
+----(score=0.1124, best_score=0.6518)
+
+----Optimization Iteration 5:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 2500
+samples_per_class: 1500
+----(score=0.1146, best_score=0.6518)
+
+----Optimization Iteration 6:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 1000
+samples_per_class: 500
+----(score=0.1121, best_score=0.6518)
+
+----Optimization Iteration 7:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1000
+----(score=0.5475, best_score=0.6518)
+
+----Optimization Iteration 8:
+last_actv: tanh
+loss_choice: mse
+train_num: 1000
+samples_per_class: 2500
+----(score=0.1235, best_score=0.6518)
+
+----Optimization Iteration 9:
+last_actv: tanh
+loss_choice: mae
+train_num: 5000
+samples_per_class: 500
+----(score=0.3522, best_score=0.6518)
+
+----Optimization Iteration 10:
+last_actv: tanh
+loss_choice: mse
+train_num: 10000
+samples_per_class: 100
+----(score=0.3127, best_score=0.6518)
+
+----Optimization Iteration 11:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 500
+samples_per_class: 1000
+----(score=0.1864, best_score=0.6518)
+
+----Optimization Iteration 12:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 500
+samples_per_class: 1500
+----(score=0.1056, best_score=0.6518)
+
+----Optimization Iteration 13:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 2500
+samples_per_class: 250
+----(score=0.5029, best_score=0.6518)
+
+----Optimization Iteration 14:
+last_actv: tanh
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.4251, best_score=0.6518)
+
+----Optimization Iteration 15:
+last_actv: tanh
+loss_choice: mse
+train_num: 500
+samples_per_class: 100
+----(score=0.3237, best_score=0.6518)
+
+----Optimization Iteration 16:
+last_actv: tanh
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.3897, best_score=0.6518)
+
+----Optimization Iteration 17:
+last_actv: tanh
+loss_choice: mse
+train_num: 500
+samples_per_class: 250
+----(score=0.3488, best_score=0.6518)
+
+----Optimization Iteration 18:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 100
+----(score=0.4074, best_score=0.6518)
+
+----Optimization Iteration 19:
+last_actv: tanh
+loss_choice: mae
+train_num: 5000
+samples_per_class: 100
+----(score=0.3701, best_score=0.6518)
+
+----Optimization Iteration 20:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 5000
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 21:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 5000
+----(score=0.3023, best_score=0.6518)
+
+----Optimization Iteration 22:
+last_actv: linear
+loss_choice: mse
+train_num: 5000
+samples_per_class: 500
+----(score=0.4685, best_score=0.6518)
+
+----Optimization Iteration 23:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 5000
+----(score=0.3215, best_score=0.6518)
+
+----Optimization Iteration 24:
+last_actv: linear
+loss_choice: mse
+train_num: 10000
+samples_per_class: 500
+----(score=0.5689, best_score=0.6518)
+
+----Optimization Iteration 25:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5278, best_score=0.6518)
+
+----Optimization Iteration 26:
+last_actv: linear
+loss_choice: mse
+train_num: 10000
+samples_per_class: 500
+----(score=0.5332, best_score=0.6518)
+
+----Optimization Iteration 27:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.35, best_score=0.6518)
+
+----Optimization Iteration 28:
+last_actv: linear
+loss_choice: mse
+train_num: 20000
+samples_per_class: 500
+----(score=0.417, best_score=0.6518)
+
+----Optimization Iteration 29:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.5976, best_score=0.6518)
+
+----Optimization Iteration 30:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.4044, best_score=0.6518)
+
+----Optimization Iteration 31:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 1000
+----(score=0.4396, best_score=0.6518)
+
+----Optimization Iteration 32:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 2500
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 33:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 1500
+----(score=0.3137, best_score=0.6518)
+
+----Optimization Iteration 34:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 500
+----(score=0.355, best_score=0.6518)
+
+----Optimization Iteration 35:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 1000
+samples_per_class: 2500
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 36:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 1500
+----(score=0.4385, best_score=0.6518)
+
+----Optimization Iteration 37:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 500
+----(score=0.4012, best_score=0.6518)
+
+----Optimization Iteration 38:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 1000
+samples_per_class: 1000
+----(score=0.2751, best_score=0.6518)
+
+----Optimization Iteration 39:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.5364, best_score=0.6518)
+
+----Optimization Iteration 40:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.2224, best_score=0.6518)
+
+----Optimization Iteration 41:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.6426, best_score=0.6518)
+
+----Optimization Iteration 42:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1500
+----(score=0.3509, best_score=0.6518)
+
+----Optimization Iteration 43:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 2500
+samples_per_class: 5000
+----(score=0.1154, best_score=0.6518)
+
+----Optimization Iteration 44:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1000
+----(score=0.5814, best_score=0.6518)
+
+----Optimization Iteration 45:
+last_actv: tanh
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.4205, best_score=0.6518)
+
+----Optimization Iteration 46:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.2549, best_score=0.6518)
+
+----Optimization Iteration 47:
+last_actv: tanh
+loss_choice: mae
+train_num: 1000
+samples_per_class: 100
+----(score=0.3296, best_score=0.6518)
+
+----Optimization Iteration 48:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.3387, best_score=0.6518)
+
+----Optimization Iteration 49:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 500
+----(score=0.4759, best_score=0.6518)
+
+----Optimization Iteration 50:
+last_actv: tanh
+loss_choice: mae
+train_num: 20000
+samples_per_class: 250
+----(score=0.369, best_score=0.6518)
+
+----Optimization Iteration 51:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 5000
+samples_per_class: 100
+----(score=0.4005, best_score=0.6518)
+
+----Optimization Iteration 52:
+last_actv: linear
+loss_choice: mse
+train_num: 10000
+samples_per_class: 5000
+----(score=0.4882, best_score=0.6518)
+
+----Optimization Iteration 53:
+last_actv: tanh
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1000
+----(score=0.1985, best_score=0.6518)
+
+----Optimization Iteration 54:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 1500
+----(score=0.3714, best_score=0.6518)
+
+----Optimization Iteration 55:
+last_actv: linear
+loss_choice: mse
+train_num: 10000
+samples_per_class: 500
+----(score=0.4517, best_score=0.6518)
+
+----Optimization Iteration 56:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 500
+----(score=0.5236, best_score=0.6518)
+
+----Optimization Iteration 57:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 5000
+samples_per_class: 250
+----(score=0.3027, best_score=0.6518)
+
+----Optimization Iteration 58:
+last_actv: tanh
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.4144, best_score=0.6518)
+
+----Optimization Iteration 59:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5161, best_score=0.6518)
+
+----Optimization Iteration 60:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 5000
+----(score=0.3645, best_score=0.6518)
+
+----Optimization Iteration 61:
+last_actv: linear
+loss_choice: mse
+train_num: 20000
+samples_per_class: 500
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 62:
+last_actv: tanh
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.1108, best_score=0.6518)
+
+----Optimization Iteration 63:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1000
+----(score=0.5332, best_score=0.6518)
+
+----Optimization Iteration 64:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 2500
+samples_per_class: 1500
+----(score=0.1001, best_score=0.6518)
+
+----Optimization Iteration 65:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 500
+----(score=0.5891, best_score=0.6518)
+
+----Optimization Iteration 66:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.514, best_score=0.6518)
+
+----Optimization Iteration 67:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.4448, best_score=0.6518)
+
+----Optimization Iteration 68:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.568, best_score=0.6518)
+
+----Optimization Iteration 69:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.5984, best_score=0.6518)
+
+----Optimization Iteration 70:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.4343, best_score=0.6518)
+
+----Optimization Iteration 71:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 500
+----(score=0.598, best_score=0.6518)
+
+----Optimization Iteration 72:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5036, best_score=0.6518)
+
+----Optimization Iteration 73:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.6058, best_score=0.6518)
+
+----Optimization Iteration 74:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 250
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 75:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.6169, best_score=0.6518)
+
+----Optimization Iteration 76:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5416, best_score=0.6518)
+
+----Optimization Iteration 77:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.4706, best_score=0.6518)
+
+----Optimization Iteration 78:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.556, best_score=0.6518)
+
+----Optimization Iteration 79:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.1715, best_score=0.6518)
+
+----Optimization Iteration 80:
+last_actv: tanh
+loss_choice: mse
+train_num: 2500
+samples_per_class: 100
+----(score=0.3174, best_score=0.6518)
+
+----Optimization Iteration 81:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 5000
+----(score=0.3833, best_score=0.6518)
+
+----Optimization Iteration 82:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.3276, best_score=0.6518)
+
+----Optimization Iteration 83:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1500
+----(score=0.3165, best_score=0.6518)
+
+----Optimization Iteration 84:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1000
+----(score=0.1351, best_score=0.6518)
+
+----Optimization Iteration 85:
+last_actv: tanh
+loss_choice: mse
+train_num: 1000
+samples_per_class: 250
+----(score=0.3389, best_score=0.6518)
+
+----Optimization Iteration 86:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 100
+----(score=0.4508, best_score=0.6518)
+
+----Optimization Iteration 87:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 5000
+----(score=0.4529, best_score=0.6518)
+
+----Optimization Iteration 88:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.5845, best_score=0.6518)
+
+----Optimization Iteration 89:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 20000
+samples_per_class: 2500
+----(score=0.223, best_score=0.6518)
+
+----Optimization Iteration 90:
+last_actv: tanh
+loss_choice: mse
+train_num: 2500
+samples_per_class: 1500
+----(score=0.1569, best_score=0.6518)
+
+----Optimization Iteration 91:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 1000
+----(score=0.462, best_score=0.6518)
+
+----Optimization Iteration 92:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.565, best_score=0.6518)
+
+----Optimization Iteration 93:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 100
+----(score=0.5605, best_score=0.6518)
+
+----Optimization Iteration 94:
+last_actv: linear
+loss_choice: mse
+train_num: 1000
+samples_per_class: 500
+----(score=0.5685, best_score=0.6518)
+
+----Optimization Iteration 95:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 96:
+last_actv: tanh
+loss_choice: mae
+train_num: 500
+samples_per_class: 5000
+----(score=0.1043, best_score=0.6518)
+
+----Optimization Iteration 97:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.5752, best_score=0.6518)
+
+----Optimization Iteration 98:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 1500
+----(score=0.4007, best_score=0.6518)
+
+----Optimization Iteration 99:
+last_actv: linear
+loss_choice: mse
+train_num: 10000
+samples_per_class: 1000
+----(score=0.4334, best_score=0.6518)
+
+----Optimization Iteration 100:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5873, best_score=0.6518)
+
+----Optimization Iteration 101:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 5000
+samples_per_class: 500
+----(score=0.1438, best_score=0.6518)
+
+----Optimization Iteration 102:
+last_actv: tanh
+loss_choice: mae
+train_num: 1000
+samples_per_class: 500
+----(score=0.3522, best_score=0.6518)
+
+----Optimization Iteration 103:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 100
+----(score=0.6005, best_score=0.6518)
+
+----Optimization Iteration 104:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 250
+----(score=0.5682, best_score=0.6518)
+
+----Optimization Iteration 105:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 5000
+----(score=0.4037, best_score=0.6518)
+
+----Optimization Iteration 106:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.5238, best_score=0.6518)
+
+----Optimization Iteration 107:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 20000
+samples_per_class: 2500
+----(score=0.1, best_score=0.6518)
+
+----Optimization Iteration 108:
+last_actv: tanh
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.3651, best_score=0.6518)
+
+----Optimization Iteration 109:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 1500
+----(score=0.247, best_score=0.6518)
+
+----Optimization Iteration 110:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1000
+----(score=0.5287, best_score=0.6518)
+
+----Optimization Iteration 111:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 250
+----(score=0.5301, best_score=0.6518)
+
+----Optimization Iteration 112:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.5241, best_score=0.6518)
+
+----Optimization Iteration 113:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.1147, best_score=0.6518)
+
+----Optimization Iteration 114:
+last_actv: tanh
+loss_choice: mse
+train_num: 500
+samples_per_class: 250
+----(score=0.2859, best_score=0.6518)
+
+----Optimization Iteration 115:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.4799, best_score=0.6518)
+
+----Optimization Iteration 116:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 5000
+----(score=0.5029, best_score=0.6518)
+
+----Optimization Iteration 117:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.4192, best_score=0.6518)
+
+----Optimization Iteration 118:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.5357, best_score=0.6518)
+
+----Optimization Iteration 119:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 5000
+samples_per_class: 1500
+----(score=0.1083, best_score=0.6518)
+
+----Optimization Iteration 120:
+last_actv: tanh
+loss_choice: mae
+train_num: 1000
+samples_per_class: 250
+----(score=0.3072, best_score=0.6518)
+
+----Optimization Iteration 121:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1000
+----(score=0.3377, best_score=0.6518)
+
+----Optimization Iteration 122:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5908, best_score=0.6518)
+
+----Optimization Iteration 123:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.6483, best_score=0.6518)
+
+----Optimization Iteration 124:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 500
+----(score=0.5861, best_score=0.6518)
+
+----Optimization Iteration 125:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 500
+samples_per_class: 100
+----(score=0.4011, best_score=0.6518)
+
+----Optimization Iteration 126:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 5000
+----(score=0.4236, best_score=0.6518)
+
+----Optimization Iteration 127:
+last_actv: tanh
+loss_choice: mae
+train_num: 500
+samples_per_class: 2500
+----(score=0.124, best_score=0.6518)
+
+----Optimization Iteration 128:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 500
+----(score=0.5596, best_score=0.6518)
+
+----Optimization Iteration 129:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.5597, best_score=0.6518)
+
+----Optimization Iteration 130:
+last_actv: linear
+loss_choice: mse
+train_num: 500
+samples_per_class: 1500
+----(score=0.2566, best_score=0.6518)
+
+----Optimization Iteration 131:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 1000
+----(score=0.5497, best_score=0.6518)
+
+----Optimization Iteration 132:
+last_actv: sigmoid
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.1063, best_score=0.6518)
+
+----Optimization Iteration 133:
+last_actv: tanh
+loss_choice: mae
+train_num: 20000
+samples_per_class: 250
+----(score=0.2762, best_score=0.6518)
+
+----Optimization Iteration 134:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5826, best_score=0.6518)
+
+----Optimization Iteration 135:
+last_actv: linear
+loss_choice: mse
+train_num: 500
+samples_per_class: 100
+----(score=0.5169, best_score=0.6518)
+
+----Optimization Iteration 136:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 5000
+----(score=0.4914, best_score=0.6518)
+
+----Optimization Iteration 137:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 2500
+----(score=0.3819, best_score=0.6518)
+
+----Optimization Iteration 138:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.1405, best_score=0.6518)
+
+----Optimization Iteration 139:
+last_actv: tanh
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.3494, best_score=0.6518)
+
+----Optimization Iteration 140:
+last_actv: linear
+loss_choice: mse
+train_num: 500
+samples_per_class: 1500
+----(score=0.2343, best_score=0.6518)
+
+----Optimization Iteration 141:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 500
+----(score=0.4703, best_score=0.6518)
+
+----Optimization Iteration 142:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 1000
+----(score=0.4498, best_score=0.6518)
+
+----Optimization Iteration 143:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.1029, best_score=0.6518)
+
+----Optimization Iteration 144:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 5000
+samples_per_class: 500
+----(score=0.1066, best_score=0.6518)
+
+----Optimization Iteration 145:
+last_actv: tanh
+loss_choice: mse
+train_num: 1000
+samples_per_class: 100
+----(score=0.232, best_score=0.6518)
+
+----Optimization Iteration 146:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5489, best_score=0.6518)
+
+----Optimization Iteration 147:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5988, best_score=0.6518)
+
+----Optimization Iteration 148:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.614, best_score=0.6518)
+
+----Optimization Iteration 149:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5692, best_score=0.6518)
+
+----Optimization Iteration 150:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5819, best_score=0.6518)
+
+----Optimization Iteration 151:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.5652, best_score=0.6518)
+
+----Optimization Iteration 152:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 250
+----(score=0.5477, best_score=0.6518)
+
+----Optimization Iteration 153:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.5661, best_score=0.6518)
+
+----Optimization Iteration 154:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.6438, best_score=0.6518)
+
+----Optimization Iteration 155:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 250
+----(score=0.4525, best_score=0.6518)
+
+----Optimization Iteration 156:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 5000
+----(score=0.1312, best_score=0.6518)
+
+----Optimization Iteration 157:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.4203, best_score=0.6518)
+
+----Optimization Iteration 158:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 2500
+----(score=0.3336, best_score=0.6518)
+
+----Optimization Iteration 159:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.6327, best_score=0.6518)
+
+----Optimization Iteration 160:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1500
+----(score=0.5019, best_score=0.6518)
+
+----Optimization Iteration 161:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 1000
+----(score=0.4792, best_score=0.6518)
+
+----Optimization Iteration 162:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.473, best_score=0.6518)
+
+----Optimization Iteration 163:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.5519, best_score=0.6518)
+
+----Optimization Iteration 164:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 500
+----(score=0.6227, best_score=0.6518)
+
+----Optimization Iteration 165:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.465, best_score=0.6518)
+
+----Optimization Iteration 166:
+last_actv: tanh
+loss_choice: mae
+train_num: 20000
+samples_per_class: 5000
+----(score=0.1009, best_score=0.6518)
+
+----Optimization Iteration 167:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 500
+----(score=0.5555, best_score=0.6518)
+
+----Optimization Iteration 168:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 2500
+----(score=0.2794, best_score=0.6518)
+
+----Optimization Iteration 169:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.6357, best_score=0.6518)
+
+----Optimization Iteration 170:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1500
+----(score=0.3549, best_score=0.6518)
+
+----Optimization Iteration 171:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1000
+----(score=0.1458, best_score=0.6518)
+
+----Optimization Iteration 172:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 500
+----(score=0.625, best_score=0.6518)
+
+----Optimization Iteration 173:
+last_actv: tanh
+loss_choice: mse
+train_num: 10000
+samples_per_class: 250
+----(score=0.3431, best_score=0.6518)
+
+----Optimization Iteration 174:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 500
+----(score=0.5984, best_score=0.6518)
+
+----Optimization Iteration 175:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.4746, best_score=0.6518)
+
+----Optimization Iteration 176:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.5089, best_score=0.6518)
+
+----Optimization Iteration 177:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 5000
+----(score=0.3834, best_score=0.6518)
+
+----Optimization Iteration 178:
+last_actv: tanh
+loss_choice: mse
+train_num: 10000
+samples_per_class: 500
+----(score=0.3325, best_score=0.6518)
+
+----Optimization Iteration 179:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 500
+samples_per_class: 2500
+----(score=0.1038, best_score=0.6518)
+
+----Optimization Iteration 180:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 250
+----(score=0.3808, best_score=0.6518)
+
+----Optimization Iteration 181:
+last_actv: linear
+loss_choice: mae
+train_num: 5000
+samples_per_class: 1500
+----(score=0.1912, best_score=0.6518)
+
+----Optimization Iteration 182:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 500
+----(score=0.5574, best_score=0.6518)
+
+----Optimization Iteration 183:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 1000
+----(score=0.4956, best_score=0.6518)
+
+----Optimization Iteration 184:
+last_actv: sigmoid
+loss_choice: mse
+train_num: 10000
+samples_per_class: 250
+----(score=0.1503, best_score=0.6518)
+
+----Optimization Iteration 185:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 500
+----(score=0.4971, best_score=0.6518)
+
+----Optimization Iteration 186:
+last_actv: tanh
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.3617, best_score=0.6518)
+
+----Optimization Iteration 187:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.5613, best_score=0.6518)
+
+----Optimization Iteration 188:
+last_actv: linear
+loss_choice: mae
+train_num: 20000
+samples_per_class: 5000
+----(score=0.4558, best_score=0.6518)
+
+----Optimization Iteration 189:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.5367, best_score=0.6518)
+
+----Optimization Iteration 190:
+last_actv: linear
+loss_choice: mse
+train_num: 2500
+samples_per_class: 2500
+----(score=0.3065, best_score=0.6518)
+
+----Optimization Iteration 191:
+last_actv: linear
+loss_choice: mae
+train_num: 500
+samples_per_class: 250
+----(score=0.4979, best_score=0.6518)
+
+----Optimization Iteration 192:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 2500
+samples_per_class: 1500
+----(score=0.1225, best_score=0.6518)
+
+----Optimization Iteration 193:
+last_actv: tanh
+loss_choice: mae
+train_num: 5000
+samples_per_class: 500
+----(score=0.3494, best_score=0.6518)
+
+----Optimization Iteration 194:
+last_actv: linear
+loss_choice: mae
+train_num: 1000
+samples_per_class: 1000
+----(score=0.3167, best_score=0.6518)
+
+----Optimization Iteration 195:
+last_actv: linear
+loss_choice: mae
+train_num: 10000
+samples_per_class: 250
+----(score=0.5632, best_score=0.6518)
+
+----Optimization Iteration 196:
+last_actv: linear
+loss_choice: mse
+train_num: 500
+samples_per_class: 500
+----(score=0.5855, best_score=0.6518)
+
+----Optimization Iteration 197:
+last_actv: linear
+loss_choice: mae
+train_num: -1
+samples_per_class: 250
+----(score=0.5423, best_score=0.6518)
+
+----Optimization Iteration 198:
+last_actv: linear
+loss_choice: mae
+train_num: 2500
+samples_per_class: 100
+----(score=0.5014, best_score=0.6518)
+
+----Optimization Iteration 199:
+last_actv: sigmoid
+loss_choice: mae
+train_num: 20000
+samples_per_class: 5000
+----(score=0.3116, best_score=0.6518)
+
+----Optimization Iteration 200:
+last_actv: tanh
+loss_choice: mae
+train_num: 10000
+samples_per_class: 500
+----(score=0.3653, best_score=0.6518)
+
