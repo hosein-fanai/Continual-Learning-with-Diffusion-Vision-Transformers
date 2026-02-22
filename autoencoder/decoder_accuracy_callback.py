@@ -1,8 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import callbacks
 
-import numpy as np
-
 
 class DecoderAccuracyCallback(callbacks.Callback):
 
@@ -20,13 +18,14 @@ class DecoderAccuracyCallback(callbacks.Callback):
 
         x_gen, y_true = self.model.generate(
             samples_per_class=self.samples_per_class, 
-            onehot_labels=False
+            onehot_y_output=False
         )
 
-        y_pred = self.classifier.predict(x_gen, verbose=0)
-        y_pred = np.argmax(y_pred, axis=1)
+        y_pred = self.classifier(x_gen, training=False)
+        y_pred = tf.argmax(y_pred, axis=1)
 
-        acc = np.mean(y_pred == y_true)
+        corrects = tf.cast(y_pred == y_true, dtype=tf.float16)
+        acc = tf.reduce_mean(corrects)
 
-        logs["decoder_accuracy"] = acc
+        logs["decoder_accuracy"] = acc.numpy()
 

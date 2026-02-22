@@ -200,8 +200,7 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
         if use_vae:
             x_buffer, y_buffer = vae.generate(
                 samples_per_class=vae_kwargs["samples_per_class"], 
-                onehot_labels=load_dataset_fn_kwargs["onehot_labels"], 
-                verbose=verbose
+                onehot_y_output=load_dataset_fn_kwargs["onehot_labels"], 
             )
 
             if len(x_buffer) > 0:

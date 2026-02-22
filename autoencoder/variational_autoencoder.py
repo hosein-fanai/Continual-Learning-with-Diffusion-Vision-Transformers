@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras import metrics, layers, models, optimizers
 
 import numpy as np
 
@@ -19,9 +19,13 @@ class VariationalAutoencoder(models.Model):
         beta=0.25, 
         conditioned=False, 
         class_num=None, 
+        compile=True, 
         compile_args={}, 
         **kwargs
     ):
+        assert (conditioned and class_num is not None) or (not conditioned and class_num is None)
+
+
         super().__init__(**kwargs)
 
         self.latent_dim = latent_dim
@@ -35,9 +39,9 @@ class VariationalAutoencoder(models.Model):
 
         self.seen_classes = []
 
-        self.total_loss_tracker = tf.keras.metrics.Mean(name="total_loss")
-        self.recon_loss_tracker = tf.keras.metrics.Mean(name="recon_loss")
-        self.kl_loss_tracker = tf.keras.metrics.Mean(name="kl_loss")
+        self.total_loss_tracker = metrics.Mean(name="total_loss")
+        self.recon_loss_tracker = metrics.Mean(name="recon_loss")
+        self.kl_loss_tracker = metrics.Mean(name="kl_loss")
 
         compile_args_default = {
             "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
@@ -45,7 +49,8 @@ class VariationalAutoencoder(models.Model):
         }
         compile_args = {**compile_args_default, **compile_args}
 
-        self.compile(**compile_args)
+        if compile:
+            self.compile(**compile_args)
 
     @property
     def metrics(self):
@@ -81,12 +86,7 @@ class VariationalAutoencoder(models.Model):
                 regularization_losses=self.losses,
             )
 
-            kl_loss = -0.5 * tf.reduce_mean(
-                tf.reduce_sum(
-                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                    axis=1
-                )
-            )
+            kl_loss = self._compute_kl(z_mean, z_log_var)
 
             total_loss = recon_loss + self.beta * kl_loss
 
@@ -98,9 +98,9 @@ class VariationalAutoencoder(models.Model):
         self.kl_loss_tracker.update_state(kl_loss)
 
         return {
-            "loss": self.total_loss_tracker.result(),
+            "loss": self.total_loss_tracker.result(), 
+            "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(),
-            "kl_loss": self.kl_loss_tracker.result(),
         }
 
     def test_step(self, data):
@@ -117,31 +117,27 @@ class VariationalAutoencoder(models.Model):
             regularization_losses=self.losses,
         )
 
-        kl_loss = -0.5 * tf.reduce_mean(
-            tf.reduce_sum(
-                1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                axis=1
-            )
-        )
+        kl_loss = self._compute_kl(z_mean, z_log_var)
 
-        total_loss = recon_loss + self.beta * kl_loss
+        total_loss = self.beta * kl_loss + recon_loss
 
         self.total_loss_tracker.update_state(total_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
         self.kl_loss_tracker.update_state(kl_loss)
+        self.recon_loss_tracker.update_state(recon_loss)
 
         return {
-            "loss": self.total_loss_tracker.result(),
+            "loss": self.total_loss_tracker.result(), 
+            "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(),
-            "kl_loss": self.kl_loss_tracker.result(),
         }
 
-    def generate(self, classes=None, samples_per_class=500, 
-                onehot_labels=False, verbose=0):
+    def generate(self, classes=None, 
+                samples_per_class=500, 
+                onehot_y_output=False):
         if self.conditioned:
             if classes is None:
                 classes = self.seen_classes
-            
+
             if len(classes) == 0:
                 return [], []
 
@@ -149,26 +145,29 @@ class VariationalAutoencoder(models.Model):
             y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.uint8), 
                                     depth=self.class_num) for i in classes], 
                                 axis=0)
-            x = self.decoder.predict((z, y), verbose=verbose)
+            x = self.decoder((z, y), training=False)
 
-            x = np.array(x, dtype="float32")
-            y = np.array(y, dtype="uint8")
+            x = x.numpy()
+            y = y.numpy()
 
-            if not onehot_labels:
+            if not onehot_y_output:
                 y = np.argmax(y, axis=-1)
 
             return x, y
 
         z = tf.random.normal(shape=(samples_per_class, self.latent_dim))
-        x = self.decoder.predict(z, verbose=verbose)
+        x = self.decoder(z, training=False)
 
-        x = np.array(x, dtype="float32")
+        x = x.numpy()
         
         return x
 
-    def train(self, x, y=None, train_num=1_000, 
-            epochs=10, batch_size=512, validation_data=None, 
-            callbacks_list=None, clf=None, verbose=1):
+    def train(self, x, y=None, 
+            train_num=10_000, 
+            epochs=10, batch_size=512, 
+            validation_data=None, 
+            callbacks_list=None, 
+            clf=None, verbose=1):
         assert (self.conditioned and (y is not None)) or (not self.conditioned and (y is None)) 
 
         if train_num != -1:
@@ -184,29 +183,39 @@ class VariationalAutoencoder(models.Model):
             new_classes = np.unique(np.argmax(y, axis=-1))
             self.seen_classes.extend(new_classes)
             self.seen_classes = list(set(self.seen_classes))
-
-        if callbacks_list is None:
-            callbacks_list = get_callbacks(monitor="decoder_accuracy", verbose=verbose)
-        else:
-            callbacks_list = callbacks_list
+        
+        if clf is not None and callbacks_list is None:
+            callbacks_list = [
+                DecoderAccuracyCallback(classifier=clf)
+            ] + get_callbacks(monitor="decoder_accuracy", verbose=verbose)
+        elif clf is not None and callbacks_list is not None:
+            callbacks_list = [
+                DecoderAccuracyCallback(classifier=clf)
+            ] + callbacks_list
+        elif clf is None and callbacks_list is None:
+            callbacks_list = get_callbacks(monitor="val_loss", verbose=verbose)
 
         history = self.fit(
             x, y,
             epochs=epochs,
             batch_size=batch_size,
             validation_data=validation_data, 
-            callbacks=[
-                DecoderAccuracyCallback(classifier=clf)
-            ]+callbacks_list, 
+            callbacks=callbacks_list, 
             verbose=verbose,
         ).history
 
         return history
 
-    def update_seen_classes(self, cls):
-        self.seen_classes.append(cls)
+    def _compute_kl(self, z_mean, z_log_var):
+        return -0.5 * tf.reduce_mean(
+                tf.reduce_sum(
+                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+                    axis=1
+                )
+            )
 
-    def _dense_layer(self, units, actv="selu", use_batch_norm=True, 
+    def _dense_layer(self, units, actv="selu", 
+                    use_batch_norm=True, 
                     kernel_init="he_normal"):
         dlayer = models.Sequential()
 
@@ -276,7 +285,7 @@ if __name__ == "__main__":
 
     x_train, y_train, *_ = load_cifar10(return_features=True, onehot_labels=True, preprocess="normalize", verbose=0)
 
-    vae = VariationalAutoencoder(conditioned=True)
+    vae = VariationalAutoencoder(conditioned=True, class_num=10)
 
     vae.train(
         x_train, y_train, 
