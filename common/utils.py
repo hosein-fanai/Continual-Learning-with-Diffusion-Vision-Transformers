@@ -60,39 +60,150 @@ def CL_plot(class_num, pairs):
     plt.show()
 
 
-def plot_history(history, 
-                range_=(0, None), 
-                indices=None):
+def plot_history(
+    history, 
+    range_=(0, None), 
+    metrics=None, 
+    row=None, col=3, 
+    figsize=None, 
+    x_ticks_rotation=90, 
+    y_ticks_rotation=0, 
+    show_all_x_ticks=True, 
+    y_ticks_num=None, 
+    show_plots=True, 
+    plot_path=None, 
+    csv_path=None
+):
     from matplotlib import pyplot as plt
+
+    import numpy as np
+
+    import pandas as pd
 
 
     range_ = slice(*range_)
-    metrics = list(history.keys())
-    has_val = history.get("val_"+metrics[0])
 
-    if indices is None:
-        indices = list(range(len(metrics)))
+    if metrics is None:
+        metrics = list(history.keys())
 
-    for i, metric in enumerate(metrics):
-        i += 1
-
-        if i-1 not in indices:
+    plotted_metrics = []
+    for metric in metrics:
+        if metric in plotted_metrics:
             continue
 
-        if (i > len(history.keys()) / 2 and has_val):
-            break
-        
-        epochs = range(1, len(history.get(metric))+1)[range_]
+        if metric.startswith("val_") and \
+            metric.replace("val_", '') in metrics:
+                continue
 
-        plt.figure(i)
-        plt.plot(epochs, history.get(metric)[range_], label="Training")
-        if has_val:
-            plt.plot(epochs, history.get("val_"+metric)[range_], label="Validation", marker='v')
+        plotted_metrics.append(metric)
+
+    if row is None:
+        row = -(len(plotted_metrics) // -col)
+
+    if figsize is None:
+        figsize = (20, row*5)
+
+    fig, axes = plt.subplots(row, col, figsize=figsize)
+    axes = axes.flatten()
+
+    for i, metric in enumerate(plotted_metrics):
+        ax = axes[i]
+        epochs = range(1, len(history.get(metric))+1)[range_]
+        show_all_x_ticks = False if len(epochs) > 50 else show_all_x_ticks
+
+        values = history.get(metric)[range_]
+        min_ = min(values)
+        max_ = max(values)
+
+        ax.plot(epochs, values, 
+            label="Training" if not metric.startswith("val_") else "Validation")
+
+        if values:=history.get("val_"+metric, None):
+            min_ = min([min_]+values)
+            max_ = max([max_]+values)
+
+            ax.plot(epochs, values[range_], label="Validation")            
+
+        ax.legend()
+        ax.set_xlabel("epochs")
+        ax.set_ylabel(metric)
+        ax.grid(True)
+        ax.tick_params(axis='x', rotation=x_ticks_rotation)
+        ax.tick_params(axis='y', rotation=y_ticks_rotation)
+
+        if show_all_x_ticks:
+            ax.set_xticks(epochs)
+
+        if y_ticks_num:
+            ax.set_yticks(np.linspace(min_, max_, y_ticks_num))    
+
+    for i in range(len(plotted_metrics), row*col):
+        axes[i].set_visible(False)
     
-        plt.legend()
-        plt.xlabel("Epochs")
-        plt.ylabel(metric.capitalize())
+    plt.tight_layout()
+
+    if plot_path:
+        fig.savefig(
+            plot_path, 
+            dpi=1_000, 
+            bbox_inches="tight"
+        )
+
+    if show_plots:
         plt.show()
+    else:
+        plt.close(fig)
+
+    if csv_path:
+        history_df = pd.DataFrame(history)
+        history_df.insert(0, "epoch", range(1, len(history_df) + 1))
+        history_df.to_csv(csv_path, index=False)
+
+
+def create_gif(
+    output_path, 
+    images1, 
+    images2=None, 
+    duration=100, 
+    loop=0, 
+    verbose=1
+):
+    import numpy as np
+    
+    from PIL import Image
+
+
+    if images2 is None:
+        images = images1
+    else:
+        images = []
+        for image1, image2 in zip(images1, images2):
+            images.append(
+                np.concatenate([
+                    image1, 
+                    np.ones((image1.shape[0], 10, image1.shape[2], image1.shape[3])), 
+                    image2
+                ], axis=1)
+            )
+
+    frames = []
+    for image in images:
+        img = (image*255).astype("uint8")[..., 0]
+        img = np.concatenate(img, axis=1)
+        img = Image.fromarray(img)
+
+        frames.append(img.convert("RGBA"))
+
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration,
+        loop=loop
+    )
+
+    if verbose:
+        print(f"GIF saved to {output_path}")
 
 
 def show_img(x, y=None):
@@ -106,6 +217,45 @@ def show_img(x, y=None):
         plt.title(f"Label: {y[0]}")
 
     plt.show()
+
+
+def plot_images(
+    imgs, 
+    row=1, col=11, 
+    show_images=True, 
+    save_path=None
+):
+    from matplotlib import pyplot as plt
+
+
+    assert show_images or save_path is not None
+
+
+    col = len(imgs) # // row
+    fig, axes = plt.subplots(row, col, figsize=(20, 6))
+    axes = axes.flatten()
+
+    for i in range(len(imgs)):
+        axes[i].imshow(imgs[i, :, :, 0], cmap="gray")
+        axes[i].set_title(f"{i-1}") 
+        axes[i].axis("off")
+
+    for j in range(len(imgs), len(axes)):
+        axes[j].axis("off")
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(
+            save_path, 
+            dpi=1_000, 
+            bbox_inches="tight", 
+        )
+
+    if show_images:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def save_samples(arr, path, type_):

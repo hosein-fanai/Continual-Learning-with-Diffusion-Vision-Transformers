@@ -4,7 +4,14 @@ __pycache__
 old
 data
 
+configs
+gifs
+others
+results
+
 *.h5
 *.tf
+*.yaml
 
 test.ipynb
+schedulers.png
