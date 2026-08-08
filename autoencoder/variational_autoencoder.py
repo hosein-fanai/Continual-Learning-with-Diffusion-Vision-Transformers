@@ -23,19 +23,23 @@ class VariationalAutoencoder(models.Model):
         compile_args={}, 
         **kwargs
     ):
-        assert (conditioned and class_num is not None) or (not conditioned and class_num is None)
-
-
         super().__init__(**kwargs)
+
+        assert (conditioned and class_num is not None) \
+            or (not conditioned and class_num is None), \
+            "When conditioned is True, class_num cannot be None, " \
+            "and when conditioned is False, class_num needs to be None."
+
 
         self.latent_dim = latent_dim
         self.beta = beta
         self.conditioned = conditioned
         self.class_num = class_num
 
-        self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, hiddens_kwargs, class_num)
-        self.decoder = self._build_decoder(data_dim, latent_dim, hiddens_dims[::-1], hiddens_kwargs,
-                                        class_num, last_activation)
+        self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, 
+                                        hiddens_kwargs, class_num)
+        self.decoder = self._build_decoder(data_dim, latent_dim, hiddens_dims[::-1], 
+                                        hiddens_kwargs, class_num, last_activation)
 
         self.seen_classes = []
 
@@ -51,6 +55,75 @@ class VariationalAutoencoder(models.Model):
 
         if compile:
             self.compile(**compile_args)
+
+    def _compute_kl(self, z_mean, z_log_var):
+        return -0.5 * tf.reduce_mean(
+                tf.reduce_sum(
+                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+                    axis=1
+                )
+            )
+
+    def _dense_layer(self, units, actv="selu", 
+                    use_batch_norm=True, 
+                    kernel_init="he_normal"):
+        dlayer = models.Sequential()
+
+        dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
+                                kernel_initializer=kernel_init, use_bias=not use_batch_norm))
+        dlayer.add(layers.Activation(actv)) if (use_batch_norm and actv != "prelu") else None
+        dlayer.add(layers.PReLU()) if actv == "prelu" else None
+        dlayer.add(layers.BatchNormalization()) if use_batch_norm else None
+
+        return dlayer
+
+    def _build_encoder(self, input_dim, latent_dim, 
+                    hiddens_dims, hiddens_kwargs={}, 
+                    class_num=None):
+        x_inputs = layers.Input(shape=(input_dim,), name="x_input")
+
+        if self.conditioned:
+            y_inputs = layers.Input(shape=(class_num,), name="y_input")
+            x = layers.Concatenate()([x_inputs, y_inputs])
+            inputs = [x_inputs, y_inputs]
+        else:
+            x = x_inputs
+            inputs = x_inputs
+
+        for hidden_dim in hiddens_dims:
+            x = self._dense_layer(hidden_dim, **hiddens_kwargs)(x)
+
+        z_mean = layers.Dense(latent_dim, name="z_mean")(x)
+        z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
+
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+        encoder = models.Model(inputs, [z_mean, z_log_var, z], name="encoder")
+
+        return encoder
+
+    def _build_decoder(self, output_dim, latent_dim, 
+                    hiddens_dims, hiddens_kwargs, 
+                    class_num, last_activation):
+        z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
+
+        if self.conditioned:
+            y_inputs = layers.Input(shape=(class_num,), name="y_input")
+            z = layers.Concatenate()([z_inputs, y_inputs])
+            inputs = [z_inputs, y_inputs]
+        else:
+            z = z_inputs
+            inputs = z_inputs
+
+        for hidden_dim in hiddens_dims:
+            z = self._dense_layer(hidden_dim, **hiddens_kwargs)(z)
+
+        outputs = layers.Dense(output_dim, activation=last_activation)(z)
+
+        decoder = models.Model(inputs, outputs, name="decoder")
+
+        return decoder
 
     @property
     def metrics(self):
@@ -209,75 +282,6 @@ class VariationalAutoencoder(models.Model):
 
         return history
 
-    def _compute_kl(self, z_mean, z_log_var):
-        return -0.5 * tf.reduce_mean(
-                tf.reduce_sum(
-                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                    axis=1
-                )
-            )
-
-    def _dense_layer(self, units, actv="selu", 
-                    use_batch_norm=True, 
-                    kernel_init="he_normal"):
-        dlayer = models.Sequential()
-
-        dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
-                        kernel_initializer=kernel_init, use_bias=not use_batch_norm))
-        dlayer.add(layers.Activation(actv)) if (use_batch_norm and actv != "prelu") else None
-        dlayer.add(layers.PReLU()) if actv == "prelu" else None
-        dlayer.add(layers.BatchNormalization()) if use_batch_norm else None
-
-        return dlayer
-
-    def _build_encoder(self, input_dim, latent_dim, 
-                    hiddens_dims, hiddens_kwargs={}, 
-                    class_num=None):
-        x_inputs = layers.Input(shape=(input_dim,), name="x_input")
-
-        if self.conditioned:
-            y_inputs = layers.Input(shape=(class_num,), name="y_input")
-            x = layers.Concatenate()([x_inputs, y_inputs])
-            inputs = [x_inputs, y_inputs]
-        else:
-            x = x_inputs
-            inputs = x_inputs
-
-        for hidden_dim in hiddens_dims:
-            x = self._dense_layer(hidden_dim, **hiddens_kwargs)(x)
-
-        z_mean = layers.Dense(latent_dim, name="z_mean")(x)
-        z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
-
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
-        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
-
-        encoder = models.Model(inputs, [z_mean, z_log_var, z], name="encoder")
-
-        return encoder
-
-    def _build_decoder(self, output_dim, latent_dim, 
-                    hiddens_dims, hiddens_kwargs, 
-                    class_num, last_activation):
-        z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
-
-        if self.conditioned:
-            y_inputs = layers.Input(shape=(class_num,), name="y_input")
-            z = layers.Concatenate()([z_inputs, y_inputs])
-            inputs = [z_inputs, y_inputs]
-        else:
-            z = z_inputs
-            inputs = z_inputs
-
-        for hidden_dim in hiddens_dims:
-            z = self._dense_layer(hidden_dim, **hiddens_kwargs)(z)
-
-        outputs = layers.Dense(output_dim, activation=last_activation)(z)
-
-        decoder = models.Model(inputs, outputs, name="decoder")
-
-        return decoder
-
 
 if __name__ == "__main__":
     from dataloader import load_cifar10
@@ -286,7 +290,10 @@ if __name__ == "__main__":
 
     init()
 
-    x_train, y_train, *_ = load_cifar10(return_features=True, onehot_labels=True, preprocess="normalize", verbose=0)
+    x_train, y_train, *_ = load_cifar10(return_features=True, 
+                                        onehot_labels=True, 
+                                        preprocess="normalize", 
+                                        verbose=0)
 
     vae = VariationalAutoencoder(conditioned=True, class_num=10)
 
