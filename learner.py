@@ -251,4 +251,3 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
         CL_plot(class_num, [(acc_list, " ")])
 
     return acc_list
-

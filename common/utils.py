@@ -60,7 +60,8 @@ def CL_plot(class_num, pairs):
     plt.show()
 
 
-def plot_history(history, range_=(0, None), 
+def plot_history(history, 
+                range_=(0, None), 
                 indices=None):
     from matplotlib import pyplot as plt
 
@@ -157,5 +158,3 @@ def save_logs(model_name, i, search_space=[],
 
     if where_to == "print" or where_to == "both":
         print(txt)
-
-

@@ -28,4 +28,3 @@ class DecoderAccuracyCallback(callbacks.Callback):
         acc = tf.reduce_mean(corrects)
 
         logs["decoder_accuracy"] = acc.numpy()
-

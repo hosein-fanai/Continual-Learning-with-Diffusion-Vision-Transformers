@@ -14,7 +14,7 @@ class VariationalAutoencoder(models.Model):
         data_dim=2048, 
         latent_dim=8, 
         hiddens_dims=(16,), 
-        hiddens_kwargs={},
+        hiddens_kwargs={}, 
         last_activation="tanh", 
         beta=0.25, 
         conditioned=False, 
@@ -40,8 +40,8 @@ class VariationalAutoencoder(models.Model):
         self.seen_classes = []
 
         self.total_loss_tracker = metrics.Mean(name="total_loss")
-        self.recon_loss_tracker = metrics.Mean(name="recon_loss")
         self.kl_loss_tracker = metrics.Mean(name="kl_loss")
+        self.recon_loss_tracker = metrics.Mean(name="recon_loss")
 
         compile_args_default = {
             "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
@@ -55,9 +55,9 @@ class VariationalAutoencoder(models.Model):
     @property
     def metrics(self):
         return [
-            self.total_loss_tracker,
-            self.recon_loss_tracker,
-            self.kl_loss_tracker,
+            self.total_loss_tracker, 
+            self.kl_loss_tracker, 
+            self.recon_loss_tracker, 
         ]
 
     def call(self, inputs, training=False):
@@ -167,6 +167,7 @@ class VariationalAutoencoder(models.Model):
             epochs=10, batch_size=512, 
             validation_data=None, 
             callbacks_list=None, 
+            callbacks_monitor="",
             clf=None, verbose=1):
         assert (self.conditioned and (y is not None)) or (not self.conditioned and (y is None)) 
 
@@ -183,17 +184,19 @@ class VariationalAutoencoder(models.Model):
             new_classes = np.unique(np.argmax(y, axis=-1))
             self.seen_classes.extend(new_classes)
             self.seen_classes = list(set(self.seen_classes))
-        
+
         if clf is not None and callbacks_list is None:
+            callbacks_monitor = "decoder_accuracy" if callbacks_monitor == "" else callbacks_monitor
+
             callbacks_list = [
                 DecoderAccuracyCallback(classifier=clf)
-            ] + get_callbacks(monitor="decoder_accuracy", verbose=verbose)
+            ] + get_callbacks(monitor=callbacks_monitor, verbose=verbose)
         elif clf is not None and callbacks_list is not None:
             callbacks_list = [
                 DecoderAccuracyCallback(classifier=clf)
             ] + callbacks_list
         elif clf is None and callbacks_list is None:
-            callbacks_list = get_callbacks(monitor="val_loss", verbose=verbose)
+            callbacks_list = get_callbacks(monitor=callbacks_monitor, verbose=verbose)
 
         history = self.fit(
             x, y,
@@ -292,4 +295,3 @@ if __name__ == "__main__":
         train_num=-1, 
         clf=models.load_model("./models/hyperas/cifar10_dnn_model_00B.h5")
     )
-

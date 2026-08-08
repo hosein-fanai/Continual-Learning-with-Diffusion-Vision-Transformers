@@ -24,4 +24,3 @@ class MaskedLoss(losses.Loss):
         y_pred_last = y_pred
 
         return self.loss(y_true_last, y_pred_last)
-

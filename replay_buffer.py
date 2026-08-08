@@ -61,4 +61,3 @@ class ReplayBuffer(object):
     def sample_dataset_and_extend_buffer(self, dataset, num):
         items = self.sample(list(zip(*dataset)), num)
         self.extend(items)
-    
