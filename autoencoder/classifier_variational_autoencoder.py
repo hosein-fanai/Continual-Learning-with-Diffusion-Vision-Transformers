@@ -34,6 +34,15 @@ class ClassifierVAE(VariationalAutoencoder):
         if kwargs.get("compile", True):
             self.compile(**compile_args)
 
+    def _compute_accuracy(self, y_true, y_pred):
+        y_true = tf.argmax(y_true, axis=1)
+        y_pred = tf.argmax(y_pred, axis=1)
+        
+        corrects = tf.cast(y_true == y_pred, dtype=tf.float32)
+        accuracy = tf.reduce_mean(corrects)
+
+        return accuracy
+
     @property
     def metrics(self):
         return [
@@ -57,7 +66,7 @@ class ClassifierVAE(VariationalAutoencoder):
             (z_mean, z_log_var, _), x_recon, _ = self(inputs, training=True)
             y_pred = self.classifier(x)
 
-            kl_loss = self._compute_kl(z_mean, z_log_var)
+            kl_loss = self.compute_kl(z_mean, z_log_var)
 
             recon_loss = self.compiled_loss(
                 x, 
@@ -96,7 +105,7 @@ class ClassifierVAE(VariationalAutoencoder):
         (z_mean, z_log_var, _), x_recon, _ = self(inputs, training=False)
         y_pred = self.classifier(x)
 
-        kl_loss = self._compute_kl(z_mean, z_log_var)
+        kl_loss = self.compute_kl(z_mean, z_log_var)
 
         recon_loss = self.compiled_loss(
             x, 
@@ -135,12 +144,3 @@ class ClassifierVAE(VariationalAutoencoder):
         return super().train(x, y, clf=self.classifier, 
                             callbacks_monitor="val_clf_accuracy", 
                             **kwargs)
-
-    def _compute_accuracy(self, y_true, y_pred):
-        y_true = tf.argmax(y_true, axis=1)
-        y_pred = tf.argmax(y_pred, axis=1)
-        
-        corrects = tf.cast(y_true == y_pred, dtype=tf.float32)
-        accuracy = tf.reduce_mean(corrects)
-
-        return accuracy

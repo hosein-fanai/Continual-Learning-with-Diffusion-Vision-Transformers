@@ -21,13 +21,10 @@ class PatchEmbedding(BaseEmbedding):
 
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
-        self.hidden_dim = self.dim // 2 if self.pos_merger_type == "concat" \
-                        else self.dim
+        self.hidden_dim = self.dim // 2 if self.pos_merger_type == "concat" else self.dim
         self.mlp_output_dim = self.hidden_dim if self.mlp_output_dim is None \
-                            and self.embed_freq_dim is not None \
-                            else self.mlp_output_dim
-        self.embed_dim = self.hidden_dim if self.embed_freq_dim is None \
-                        else self.embed_freq_dim
+                            and self.embed_freq_dim is not None else self.mlp_output_dim
+        self.embed_dim = self.hidden_dim if self.embed_freq_dim is None else self.embed_freq_dim
 
         if self.patchify_with_cnn:
             self.patch_projector = models.Sequential([

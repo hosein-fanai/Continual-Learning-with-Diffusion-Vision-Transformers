@@ -10,6 +10,9 @@ from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 
 class DiffusionClassifier(DiffusionModel):
+    """
+    
+    """
 
     def __init__(
         self, 

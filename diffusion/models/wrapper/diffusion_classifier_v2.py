@@ -6,6 +6,7 @@ from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
 class DiffusionClassifierV2(DiffusionClassifier):
     """
+    
     """
 
     def __init__(

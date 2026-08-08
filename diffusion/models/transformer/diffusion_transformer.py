@@ -5,6 +5,8 @@ from tensorflow.keras import layers, models
 
 from common.argument_saver import ArgumentSaverModel
 
+from autoencoder.variational_autoencoder import VariationalAutoencoder
+
 from . import CondType, TokenType, IdsType, IdsDictType
 
 from diffusion.layers import MergeType
@@ -215,7 +217,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         assert local_vars[second_depth_name] == 0 or \
                             (none_is_filler and id_ is None) or \
                             -(local_vars[second_depth_name]+1) <= id_ <= local_vars[second_depth_name], \
-                            f"The ids in each set of {dict_name} can only be None or in [-{second_depth_name}-1, {second_depth_name}] range."
+                            f"The ids in each set of {dict_name} can only be None or in "\
+                            f"[-{second_depth_name}-1, {second_depth_name}] range."
                     else:
                         assert local_vars[second_depth_name] == 0 or \
                         id_ in allowed_values, \

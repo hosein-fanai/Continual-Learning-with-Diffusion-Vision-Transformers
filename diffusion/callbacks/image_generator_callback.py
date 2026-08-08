@@ -11,17 +11,19 @@ class ImageGeneratorCallback(callbacks.Callback):
 
     def __init__(
         self, 
-        show_images=True, 
-        save_gifs=False, 
-        results_path=None, 
-        project_tag=None, 
+        show_images: bool = True, 
+        save_gifs: bool = False, 
+        results_path: str | None = None, 
+        project_tag: str | None = None, 
         **kwargs
     ):
         super().__init__(**kwargs)
 
-        assert show_images or results_path is not None
+        assert show_images or results_path is not None, \
+            "The callback needs to either show images or save them."
         assert (save_gifs and results_path is not None) or \
-            (not save_gifs and results_path is None)
+            (not save_gifs and results_path is None), \
+                "save_gifs needs to be matched with results_path."
 
 
         self.show_images = show_images
