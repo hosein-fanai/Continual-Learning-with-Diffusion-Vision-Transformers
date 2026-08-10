@@ -86,12 +86,12 @@ class BaseLayer(ArgumentSaverLayer):
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{self.name}/mlp/first_layer"
+                    name=f"{self.name}/{mlp.name}/first_layer"
                 ))
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
-                name=f"{self.name}/mlp/final_layer"
+                name=f"{self.name}/{mlp.name}/final_layer"
             ))
         else:
             self.output_dim = prev_output_dim

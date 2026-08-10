@@ -262,17 +262,19 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
 
         with tf.GradientTape() as tape:
-            classes_pred, *_, clf_regs_list = self.network.predict_class(
+            classes_pred, *_, clf_regs_list, clf_z_vals = self.network.predict_class(
                 (x_t, t, uncond_labels), 
                 full_return=True, 
                 training=True
             )
-            loss, clf_loss, ctr_loss, classes_pred, ctr_preds = self.compute_clf_ctr_loss(
-                classes, 
-                None, None, 
-                classes_pred, 
+            (loss, clf_loss, kl_loss, 
+            ctr_loss, classes_pred, 
+            ctr_preds) = self.compute_clf_kl_ctr_loss(
+                classes, None, None, None, 
+                classes_pred, clf_z_vals, 
                 clf_regs_list, 
                 clf_train_type="uncond", 
+                kl_train_type="uncond", 
                 ctr_train_type="uncond", 
                 training=True
             )
@@ -284,6 +286,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             classes, 
             classes_pred, 
             total_loss=loss, 
+            clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
             clf_ctr_preds=ctr_preds
         )
@@ -296,17 +299,21 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self.clf_test_noisified_max_timesteps
         )
 
-        classes_pred, *_, clf_regs_list = self.test_network.predict_class(
+        (classes_pred, *_, 
+        clf_regs_list, 
+        clf_z_vals) = self.get_network(self.test_network_name).predict_class(
             (x_t, t, uncond_labels), 
             full_return=True, 
             training=False
         )
-        loss, clf_loss, ctr_loss, classes_pred, ctr_preds = self.compute_clf_ctr_loss(
-            classes, 
-            None, None, 
-            classes_pred, 
+        (loss, clf_loss, kl_loss, 
+        ctr_loss, classes_pred, 
+        ctr_preds) = self.compute_clf_kl_ctr_loss(
+            classes, None, None, None, 
+            classes_pred, clf_z_vals, 
             clf_regs_list, 
             clf_train_type="uncond", 
+            kl_train_type="uncond", 
             ctr_train_type="uncond", 
             training=False
         )
@@ -316,6 +323,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             classes, 
             classes_pred, 
             total_loss=loss, 
+            clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
             clf_ctr_preds=ctr_preds
         )
@@ -330,8 +338,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         classes) = self.prep_inputs(inputs)
 
         with tf.GradientTape() as tape:
-            loss, noise_loss, image_loss, ctr_loss, ctr_preds = self.forward_and_compute_loss(
-                self.network, 
+            (loss, noise_loss, image_loss, 
+            kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+                "raw", 
                 x0, noises, t, x_t, 
                 cond_labels=cfg_labels, 
                 uncond_labels=uncond_labels, 
@@ -346,6 +355,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             noise_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
+            kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes
@@ -360,8 +370,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         uncond_labels, 
         classes) = self.prep_inputs(inputs)
 
-        loss, noise_loss, image_loss, ctr_loss, ctr_preds = self.forward_and_compute_loss(
-            self.test_network, 
+        (loss, noise_loss, image_loss, 
+        kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+            self.test_network_name, 
             x0, noises, t, x_t,  
             cond_labels=cond_labels, 
             uncond_labels=uncond_labels, 
@@ -375,6 +386,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             noise_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
+            kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes, 

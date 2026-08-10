@@ -58,7 +58,8 @@ class DiTClassifier(DiffusionTransformer):
         clf_downsample_kwargs: dict | None = None, 
         clf_upsample_ids: IdsType = [], 
         clf_upsample_kwargs: dict | None = None, 
-        clf_reshaper_ids_dict: dict[Literal["flatten", "unflatten"]] = {}, 
+        clf_reshaper_ids_dict: dict[int] = {}, 
+        clf_reshaper_kwargs: dict = {}, 
         clf_cls_token_regularizer_ids: IdsType = [], 
         clf_cls_token_regularizer_kwargs: dict | None = None, 
         force_global_avg_pooling: bool = False, 
@@ -68,9 +69,10 @@ class DiTClassifier(DiffusionTransformer):
         build: bool = True, 
         **kwargs
     ):
+        cls_token_type = None if classifier_only_cls_token else kwargs.get("cls_token_type", None)
+        kwargs.pop("cls_token_type", None)
         super().__init__(
-            cls_token_type=None if classifier_only_cls_token \
-                        else kwargs.get("cls_token_type", None), 
+            cls_token_type=cls_token_type, 
             build=False, 
             **kwargs
         )
@@ -132,7 +134,7 @@ class DiTClassifier(DiffusionTransformer):
                     base_dim=self.clf_dim, 
                 ) * self.classifier_mlp_ratio, 
                 activation=self.classifier_mlp_activation_func, 
-                name="first_layer"
+                name=f"{self.classifier.name}/first_layer"
             ))
         if self.dropout_rate > 0.:
             self.classifier.add(layers.Dropout(
@@ -142,7 +144,7 @@ class DiTClassifier(DiffusionTransformer):
         self.classifier.add(layers.Dense(
             self.num_classes, 
             activation="softmax", 
-            name="final_layer"
+            name=f"{self.classifier.name}/final_layer"
         ))
 
         if self.build_:
@@ -284,6 +286,39 @@ class DiTClassifier(DiffusionTransformer):
             allowed_keys=self.upsample_kwargs_allowed_vals, 
             check_values=False, 
         ) if local_vars[key:="clf_upsample_kwargs"] is not None else None
+        self._check_dict_assertions(
+            local_vars, 
+            "clf_reshaper_ids_dict", 
+            id_less_than_key=False, 
+            check_values=False, 
+            none_is_filler=False, 
+            depth_name="clf_depth", 
+            second_depth_name="clf_depth", 
+        )
+        self._check_dict_assertions(
+            local_vars, 
+            key, 
+            check_items_num=False, 
+            id_less_than_key=False, 
+            allowed_keys=self.reshaper_kwargs_allowed_vals, 
+            check_values=False, 
+        ) if local_vars[key:="clf_reshaper_kwargs"] is not None else None
+        self._check_dict_assertions(
+            local_vars, 
+            "clf_cls_token_regularizer_ids", 
+            id_less_than_key=False, 
+            depth_name="clf_depth", 
+            second_depth_name="clf_depth", 
+            allowed_values=[None]+list(range(local_vars["clf_depth"]+1))
+        )
+        self._check_dict_assertions(
+            local_vars, 
+            key, 
+            check_items_num=False, 
+            id_less_than_key=False, 
+            allowed_keys=self.cls_token_regularizer_kwargs_allowed_vals, 
+            check_values=False, 
+        ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
 
         assert local_vars["clf_cross_attention_plug_type"] \
             in (None, "values", "queries"), \
@@ -582,6 +617,9 @@ class DiTClassifier(DiffusionTransformer):
                     i=i, layers_dicts=self.clf_layers_dicts, 
                     layers_dict=layers_dict, base_dim=self.clf_dim, 
                     base_grid_size=self.clf_grid_size, 
+                    grid_has_cls_token=(self.clf_cls_token_type is not None and self.classifier_only_cls_token) or \
+                                    (self.cls_token_type is not None and not self.classifier_only_cls_token), 
+                    kwargs=self.clf_reshaper_kwargs, 
                     name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
                 )
 
@@ -620,9 +658,11 @@ class DiTClassifier(DiffusionTransformer):
     def compute_class(
         self, 
         features_list: list[tf.Tensor], 
-        times: tf.Tensor, labels: tf.Tensor, 
+        times: tf.Tensor, 
+        labels: tf.Tensor, 
         training: bool | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor]]:
+    ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
+        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
             times, labels, 
             self.clf_cond_type, 
@@ -637,6 +677,7 @@ class DiTClassifier(DiffusionTransformer):
 
         clf_features_list = []
         clf_regs_list = [z]
+        clf_z_vals = (None, None)
         for i, layers_dict in enumerate(self.clf_layers_dicts):
             x = layers_dict[self.FA](
                 features_list, 
@@ -696,10 +737,10 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.US in layers_dict else x
 
-            x = layers_dict[self.R](
+            x, x_mean, x_log_var = layers_dict[self.R](
                 x, 
                 training=training
-            ) if self.R in layers_dict else x
+            ) if self.R in layers_dict else (x, None, None)
 
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
@@ -712,6 +753,10 @@ class DiTClassifier(DiffusionTransformer):
 
             clf_features_list.append(x)
             clf_regs_list.append(z)
+            clf_z_vals = (
+                x_mean, x_log_var
+            ) if x_mean is not None and \
+            self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else clf_z_vals
 
         x = self.classifier_feature_extractor(
             x, 
@@ -722,7 +767,7 @@ class DiTClassifier(DiffusionTransformer):
             training=training
         )
 
-        return x, clf_cond, clf_features_list, clf_regs_list
+        return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
 
     def predict_class(
         self, 
@@ -730,15 +775,16 @@ class DiTClassifier(DiffusionTransformer):
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
         training: bool | None = None
-    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor]]:
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
+        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
 
-        *_, features_list, _ = self.encode(
+        *_, features_list, _, _ = self.encode(
             inputs, 
             max_depth=max_encoder_num, 
             training=training
         )
-        x, clf_cond, clf_features_list, clf_regs_list = self.compute_class(
+        x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals = self.compute_class(
             features_list, 
             times=inputs[1], 
             labels=inputs[2], 
@@ -746,7 +792,7 @@ class DiTClassifier(DiffusionTransformer):
         )
 
         if full_return:
-            return x, clf_cond, clf_features_list, clf_regs_list
+            return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
         return x
 
     def call(
@@ -755,7 +801,7 @@ class DiTClassifier(DiffusionTransformer):
         full_return: bool = False, 
         training: bool | None = None
     ) -> dict:
-        noises, cond, features_list, regs_list = super().call(
+        noises, cond, features_list, regs_list, z_vals = super().call(
             inputs, 
             full_return=True, 
             training=training
@@ -774,10 +820,12 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["cond"] = cond
             output_dict["features_list"] = features_list
             output_dict["regs_list"] = regs_list
+            output_dict["z_vals"] = z_vals
             output_dict["classes"] = outputs[0]
             output_dict["clf_cond"] = outputs[1]
             output_dict["clf_features_list"] = outputs[2]
             output_dict["clf_regs_list"] = outputs[3]
+            output_dict["clf_z_vals"] = outputs[4]
         else:
             output_dict["classes"] = outputs
 

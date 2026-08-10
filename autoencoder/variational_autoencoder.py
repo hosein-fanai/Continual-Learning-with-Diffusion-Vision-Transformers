@@ -56,14 +56,6 @@ class VariationalAutoencoder(models.Model):
         if compile:
             self.compile(**compile_args)
 
-    def _compute_kl(self, z_mean, z_log_var):
-        return -0.5 * tf.reduce_mean(
-                tf.reduce_sum(
-                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                    axis=1
-                )
-            )
-
     def _dense_layer(self, units, actv="selu", 
                     use_batch_norm=True, 
                     kernel_init="he_normal"):
@@ -95,9 +87,7 @@ class VariationalAutoencoder(models.Model):
 
         z_mean = layers.Dense(latent_dim, name="z_mean")(x)
         z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
-
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
-        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
+        z = VariationalAutoencoder.compute_z(z_mean, z_log_var)
 
         encoder = models.Model(inputs, [z_mean, z_log_var, z], name="encoder")
 
@@ -124,6 +114,22 @@ class VariationalAutoencoder(models.Model):
         decoder = models.Model(inputs, outputs, name="decoder")
 
         return decoder
+
+    @staticmethod
+    def compute_z(z_mean, z_log_var):
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+        return z
+
+    @staticmethod
+    def compute_kl(z_mean, z_log_var):
+        return -0.5 * tf.reduce_mean(
+            tf.reduce_sum(
+                1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+                axis=1
+            )
+        )
 
     @property
     def metrics(self):
@@ -159,7 +165,7 @@ class VariationalAutoencoder(models.Model):
                 regularization_losses=self.losses,
             )
 
-            kl_loss = self._compute_kl(z_mean, z_log_var)
+            kl_loss = VariationalAutoencoder.compute_kl(z_mean, z_log_var)
 
             total_loss = recon_loss + self.beta * kl_loss
 
@@ -190,7 +196,7 @@ class VariationalAutoencoder(models.Model):
             regularization_losses=self.losses,
         )
 
-        kl_loss = self._compute_kl(z_mean, z_log_var)
+        kl_loss = VariationalAutoencoder.compute_kl(z_mean, z_log_var)
 
         total_loss = self.beta * kl_loss + recon_loss
 

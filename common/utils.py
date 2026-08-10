@@ -14,8 +14,9 @@ def init():
 
     if gpus:=tf.config.list_physical_devices("GPU"):
         try:
-            tf.config.set_logical_device_configuration(gpus[0],
-                [tf.config.LogicalDeviceConfiguration(memory_limit=6144)])
+            tf.config.set_logical_device_configuration(gpus[0], [
+                tf.config.LogicalDeviceConfiguration(memory_limit=6144)
+            ])
         except RuntimeError as e:
             print(e)
             print("Could not limit gpu memory.")

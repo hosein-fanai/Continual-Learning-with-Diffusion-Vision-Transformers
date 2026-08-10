@@ -7,6 +7,8 @@ import numpy as np
 
 from common.argument_saver import ArgumentSaverModel
 
+from autoencoder.variational_autoencoder import VariationalAutoencoder
+
 from . import NetworkName, TrainType
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
@@ -15,6 +17,9 @@ from diffusion.schedulers import make_schedule, SchedulerName
 
 # @tf.keras.saving.register_keras_serializable()
 class DiffusionModel(ArgumentSaverModel):
+    """
+    
+    """
 
     def __init__(
         self, 
@@ -30,7 +35,9 @@ class DiffusionModel(ArgumentSaverModel):
         test_eta: float = 0., 
         noise_loss_coef: float = 1., 
         image_loss_coef: float = 0., 
+        kl_loss_coef: float = 0., 
         ctr_loss_coef: float = 0., 
+        kl_train_type: TrainType = "cond", 
         ctr_train_type: TrainType = "cond", 
         **kwargs
     ):
@@ -48,20 +55,23 @@ class DiffusionModel(ArgumentSaverModel):
         else:
             self.ema_network = None
 
-        self.test_network = self.get_network(self.test_network_name)
         self.image_size = self.network.image_size
         self.channels = self.network.channels
         self.timesteps = self.network.timesteps
         self.use_cfg = self.network.use_cfg
         self.p_uncond = 0. if not self.use_cfg else self.p_uncond
         self.test_cfg_scale = 1. if not self.use_cfg else self.test_cfg_scale
-        self.use_image_loss = bool(self.image_loss_coef > 0.)
-        self.use_ctr_loss = bool(self.ctr_loss_coef > 0.)
         self.noise_loss_coef = tf.constant(self.noise_loss_coef, dtype=tf.float32)
         self.image_loss_coef = tf.constant(self.image_loss_coef, dtype=tf.float32)
+        self.kl_loss_coef = tf.constant(self.kl_loss_coef, dtype=tf.float32)
         self.ctr_loss_coef = tf.constant(self.ctr_loss_coef, dtype=tf.float32)
 
-        self.load_schedules()
+        self.use_image_loss = bool(self.image_loss_coef > 0.)
+        self.use_kl_loss = bool(self.kl_loss_coef > 0. and 
+                                self.network.reshaper_kwargs.get("add_kl", False))
+        self.use_ctr_loss = bool(self.ctr_loss_coef > 0. and 
+                                len(self.network.cls_token_regularizer_ids) > 0)
+
         self.build(())
 
     def _check_assertions(self, local_vars: dict):
@@ -87,6 +97,7 @@ class DiffusionModel(ArgumentSaverModel):
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
             self.image_loss_tracker, 
+            self.kl_loss_tracker, 
             self.ctr_loss_tracker, 
             self.ctr_accuracy_tracker
         ]
@@ -95,11 +106,14 @@ class DiffusionModel(ArgumentSaverModel):
                 **kwargs):
         super().compile(loss=loss, **kwargs)
 
+        self.load_schedules()
+
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
 
         self.total_loss_tracker = metrics.Mean(name="loss")
         self.noise_loss_tracker = metrics.Mean(name="noise_loss")
         self.image_loss_tracker = metrics.Mean(name="image_loss")
+        self.kl_loss_tracker = metrics.Mean(name="kl_loss")
         self.ctr_loss_tracker = metrics.Mean(name="ctr_loss")
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(name="ctr_accuracy")
 
@@ -107,13 +121,17 @@ class DiffusionModel(ArgumentSaverModel):
                 y: tf.data.Dataset | None = None, 
                 network_name: NetworkName = "ema", 
                 **kwargs) -> dict | list[float]:
-        self.test_network = self.get_network(network_name)
-        self.test_function = None # to force tf recreate compute graph for test_step
+        prev_test_network_name = self.test_network_name
+
+        if network_name != self.test_network_name:
+            self.test_network_name = network_name
+            self.test_function = None # to force tf recreate compute graph for test_step
 
         eval_results = super().evaluate(x=x, y=y, **kwargs)
 
-        self.test_network = self.get_network(self.test_network_name)
-        self.test_function = None
+        if prev_test_network_name != self.test_network_name:
+            self.test_network = prev_test_network_name
+            self.test_function = None
 
         return eval_results
 
@@ -132,8 +150,9 @@ class DiffusionModel(ArgumentSaverModel):
         classes) = self.prep_inputs(inputs)
 
         with tf.GradientTape() as tape:
-            loss, noise_loss, image_loss, ctr_loss, ctr_preds = self.forward_and_compute_loss(
-                self.network, x0, noises, t, x_t, 
+            (loss, noise_loss, image_loss, 
+            kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+                "raw", x0, noises, t, x_t, 
                 cond_labels=cfg_labels, 
                 uncond_labels=uncond_labels, 
                 classes=classes, 
@@ -147,6 +166,7 @@ class DiffusionModel(ArgumentSaverModel):
             noise_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
+            kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes
@@ -162,9 +182,10 @@ class DiffusionModel(ArgumentSaverModel):
         uncond_labels, 
         classes) = self.prep_inputs(inputs)
 
-        loss, noise_loss, image_loss, ctr_loss, ctr_preds = self.forward_and_compute_loss(
-            self.test_network, x0, 
-            noises, t, x_t, 
+        (loss, noise_loss, image_loss, 
+        kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+            self.test_network_name, 
+            x0, noises, t, x_t, 
             cond_labels=cond_labels, 
             uncond_labels=uncond_labels, 
             classes=classes, 
@@ -177,6 +198,7 @@ class DiffusionModel(ArgumentSaverModel):
             noise_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
+            kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes, 
@@ -249,7 +271,14 @@ class DiffusionModel(ArgumentSaverModel):
                 "network_name cannot be ema when use_ema is False."
 
 
-        network = self.ema_network if network_name == "ema" else self.network
+        if network_name == "ema":
+            network = self.ema_network
+        elif network_name == "raw":
+            network = self.network
+        else:
+            raise ValueError(
+                f"network_name needs to be one of {NetworkName}, but not: {network_name}"
+            )
 
         return network
 
@@ -322,18 +351,22 @@ class DiffusionModel(ArgumentSaverModel):
 
         return ctr_loss, ctr_preds
 
-    def compute_noise_image_ctr_loss(
+    def compute_noise_image_kl_ctr_loss(
         self, 
         x0: tf.Tensor, 
         noises: tf.Tensor, 
         classes: tf.Tensor, 
         x0_pred: tf.Tensor, 
         noises_pred: tf.Tensor, 
+        z_vals_c: tuple[tf.Tensor, tf.Tensor], 
         regs_list_c: list[tf.Tensor], 
+        z_vals_u: tuple[tf.Tensor, tf.Tensor] | None = None, 
         regs_list_u: list[tf.Tensor] = None, 
+        kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
 
@@ -345,6 +378,10 @@ class DiffusionModel(ArgumentSaverModel):
             x0, 
             x0_pred
         ) if use_image_loss else 0.
+        kl_loss = VariationalAutoencoder.compute_kl(
+            z_mean=z_vals_c[0] if kl_train_type == "cond" else z_vals_u[0], 
+            z_log_var=z_vals_c[1] if kl_train_type == "cond" else z_vals_u[1]
+        ) if self.use_kl_loss else 0.
         ctr_loss, ctr_preds = self.compute_ctr_loss(
             classes, 
             regs_list_c if ctr_train_type == "cond" else regs_list_u
@@ -353,10 +390,11 @@ class DiffusionModel(ArgumentSaverModel):
         loss = (
             noise_loss * self.noise_loss_coef + 
             image_loss * self.image_loss_coef + 
+            kl_loss * self.kl_loss_coef + 
             ctr_loss * self.ctr_loss_coef
         )
 
-        return loss, noise_loss, image_loss, ctr_loss, ctr_preds
+        return loss, noise_loss, image_loss, kl_loss, ctr_loss, ctr_preds
 
     def call_network(
         self, 
@@ -367,21 +405,24 @@ class DiffusionModel(ArgumentSaverModel):
         scale: float | None = None, 
         network_name: NetworkName = "raw", 
         training: bool = False
-    ) -> tuple[tuple[tf.Tensor, tf.Tensor], tuple[list[tf.Tensor], list[tf.Tensor]]]:
+    ) -> tuple[tuple[tf.Tensor, tf.Tensor], 
+        tuple[list[tf.Tensor], list[tf.Tensor]]]:
         network = self.get_network(network_name)
 
-        eps_c, *_, regs_list_c = network(
+        eps_c, *_, regs_list_c, z_vals_c = network(
             (x_t, t_batch, cond_labels), 
             full_return=True, 
             training=training
         )
-        eps_u, *_, regs_list_u = network(
+        eps_u, *_, regs_list_u, z_vals_u = network(
             (x_t, t_batch, uncond_labels), 
             full_return=True, 
             training=training
-        ) if self.use_cfg and scale is not None else (None, None)
+        ) if self.use_cfg and scale is not None else (None, None, (None, None))
 
-        return (eps_c, eps_u), (regs_list_c, regs_list_u)
+        return ((eps_c, eps_u), 
+                (regs_list_c, regs_list_u), 
+                (z_vals_c, z_vals_u))
 
     def compute_eps(
         self, 
@@ -462,6 +503,7 @@ class DiffusionModel(ArgumentSaverModel):
         uncond_labels: tf.Tensor, 
         classes: tf.Tensor, 
         cfg_scale: float, 
+        kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         training: bool | None = None
@@ -474,11 +516,14 @@ class DiffusionModel(ArgumentSaverModel):
             scale=cfg_scale, 
             training=training
         )
-        outputs = self.compute_noise_image_ctr_loss(
+        outputs = self.compute_noise_image_kl_ctr_loss(
             x0, noises, classes, 
             x0_pred, noises_pred, 
+            z_vals_c=others[1][0], 
             regs_list_c=others[0][0], 
+            z_vals_u=others[1][1], 
             regs_list_u=others[0][1], 
+            kl_train_type=kl_train_type, 
             ctr_train_type=ctr_train_type, 
             use_image_loss=use_image_loss
         )
@@ -490,17 +535,19 @@ class DiffusionModel(ArgumentSaverModel):
         noise_loss: tf.Tensor, 
         total_loss: tf.Tensor | None = None, 
         image_loss: tf.Tensor | None = None, 
+        kl_loss: tf.Tensor | None = None, 
         ctr_loss: tf.Tensor | None = None, 
         ctr_preds: tf.Tensor | None = None, 
         classes: tf.Tensor | None = None, 
         use_total_loss: bool | None = None, 
         use_image_loss: bool | None = None, 
+        use_kl_loss: bool | None = None, 
         use_ctr_loss: bool | None = None, 
     ) -> dict:
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
-        use_ctr_loss = self.use_ctr_loss and len(self.network.cls_token_regularizer_ids) > 0 \
-                    if use_ctr_loss is None else use_ctr_loss
-        use_total_loss = use_image_loss or use_ctr_loss if use_total_loss is None else use_total_loss
+        use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
+        use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
+        use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss if use_total_loss is None else use_total_loss
 
         results = {}
 
@@ -532,6 +579,17 @@ class DiffusionModel(ArgumentSaverModel):
             results.update({
                 self.image_loss_tracker.name: 
                 self.image_loss_tracker.result(), 
+            })
+
+        if use_kl_loss:
+            assert kl_loss is not None, \
+                "When use_kl_loss is True, kl_loss cannot be None."
+
+
+            self.kl_loss_tracker.update_state(kl_loss)
+            results.update({
+                self.kl_loss_tracker.name: 
+                self.kl_loss_tracker.result(), 
             })
 
         if use_ctr_loss:

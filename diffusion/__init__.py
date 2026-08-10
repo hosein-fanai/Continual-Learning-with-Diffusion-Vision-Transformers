@@ -1,7 +1,3 @@
-import tensorflow as tf
-
-# from .models.convolution.unet import UNet
-
 from .models.transformer.diffusion_transformer import DiffusionTransformer
 from .models.transformer.di_t_classifier import DiTClassifier
 from .models.transformer.di_t_decoder import DiTDecoder
@@ -34,12 +30,4 @@ from .callbacks.image_generator_callback import ImageGeneratorCallback
 
 from .schedulers import make_schedule, SchedulerName
 
-
-if gpus:=tf.config.list_physical_devices("GPU"):
-    try:
-        tf.config.set_logical_device_configuration(gpus[0], [
-            tf.config.LogicalDeviceConfiguration(memory_limit=6144)
-        ])
-    except RuntimeError as e:
-        print(e)
-        print("Could not limit gpu memory.")
+# from .models.convolution.unet import UNet

@@ -91,6 +91,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         upsample_ids: IdsType = [], 
         upsample_kwargs: dict = {}, 
         reshaper_ids_dict: dict[int] = {}, 
+        reshaper_kwargs: dict = {}, 
         cls_token_regularizer_ids: IdsType = [], 
         cls_token_regularizer_kwargs: dict = {"start": 0, "end": 1}, 
         final_ffn_activation_func: str = "linear", 
@@ -123,7 +124,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
             self.cls_token_type
-        ) if self.cls_token_type is not None else None
+        )
         self._create_layers()
 
         if self.use_unpatchify: # TODO: make it one functional model
@@ -363,6 +364,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         )
         self._check_dict_assertions(
             local_vars, 
+            "reshaper_kwargs", 
+            check_items_num=False, 
+            id_less_than_key=False, 
+            allowed_keys=(reshaper_kwargs_allowed_vals:=(
+                "add_kl", "latent_dim_ratio"
+            )), 
+            check_values=False, 
+        ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
+        self._check_dict_assertions(
+            local_vars, 
             "cls_token_regularizer_ids", 
             id_less_than_key=False, 
             allowed_values=[None]+list(range(local_vars["depth"]+1))
@@ -372,11 +383,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "cls_token_regularizer_kwargs", 
             check_items_num=False, 
             id_less_than_key=False, 
-            allowed_keys=(cls_token_regularizer_kwargs:=(
+            allowed_keys=(cls_token_regularizer_kwargs_allowed_vals:=(
                 "start", "end"
             )), 
             check_values=False, 
-        ); self.cls_token_regularizer_kwargs = cls_token_regularizer_kwargs
+        ); self.cls_token_regularizer_kwargs_allowed_vals = cls_token_regularizer_kwargs_allowed_vals
 
         assert local_vars["cross_attention_plug_type"] in ("values", "queries"), \
             "cross_attention_plug_type can only be values or queries."
@@ -488,7 +499,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if (key:=self.US) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
         if (key:=self.R) in layers_dict and not skip_reshaper:
-            last_output_dim = layers_dict[key].target_shape[-1]
+            last_output_dim = layers_dict[key].output_shape[0][-1]
 
         return last_output_dim
 
@@ -573,9 +584,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             if (key:=self.US) in layers_dicts[i]:
                 grid_size = layers_dicts[i][key].output_grid_size
             if (key:=self.R) in layers_dicts[i] and not skip_reshaper:
-                grid_size = target_shape[1] \
-                            if len(target_shape:=layers_dicts[i][key].target_shape) == 3 else \
-                            None
+                grid_size = int(output_shape[1] ** 0.5) if \
+                            len(output_shape:=layers_dicts[i][key].output_shape[0]) == 3 \
+                            else None
 
         grid_size = self._get_last_grid_size(
             i-1, 
@@ -723,7 +734,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             mlp_ratio=cls_token_mlp_ratio, 
             input_as_token=cls_token_type in ("time_label", "time", "label"), 
             name=f"{self.name_prefix}{name_prefix}depth_0_cls_token"
-        )
+        ) if cls_token_type is not None else None
 
         return cls_token
 
@@ -893,10 +904,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
     def _create_reshaper(self, reshape_type: str, 
                         i: int, layers_dicts: list[dict], 
-                        layers_dict: dict, 
-                        base_dim: int, 
-                        base_grid_size: int, 
-                        name: str | None = None):
+                        layers_dict: dict, base_dim: int, 
+                        base_grid_size: int, grid_has_cls_token: bool, 
+                        kwargs: dict = {}, name: str | None = None):
         grid_size = self._get_current_grid_size(
             i=i, 
             layers_dicts=layers_dicts, 
@@ -911,23 +921,69 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             base_dim=base_dim, 
             skip_reshaper=True
         )
+        shape1 = (
+            (grid_size * grid_size + int(grid_has_cls_token)) * dim, 
+        )
+        shape2 = (
+            grid_size * grid_size + int(grid_has_cls_token), 
+            dim
+        )
 
         if reshape_type == "flatten":
-            shape = (
-                grid_size * grid_size * dim, 
-            )
+            source_shape = shape2
+            target_shape = shape1
         elif reshape_type == "unflatten":
-            shape = (
-                grid_size * grid_size, 
-                dim
-            )
+            source_shape = shape1
+            target_shape = shape2
         else:
             raise ValueError("reshape_type needs to be either flatten or unflatten.")
 
-        reshaper = layers.Reshape(
-            shape, 
+        reshaper_layer = layers.Reshape(
+            target_shape, 
             name=name
         )
+
+        if kwargs.get("add_kl", False) and reshape_type == "flatten":
+            latent_dim_ratio = kwargs.get("latent_dim_ratio", 1)
+            latent_dim = int(
+                target_shape[-1] * latent_dim_ratio
+            )
+
+            inputs = layers.Input(source_shape)
+
+            x = reshaper_layer(inputs)
+            z_mean = layers.Dense(
+                latent_dim, 
+                name=name+"/z_mean"
+            )(x)
+            z_log_var = layers.Dense(
+                latent_dim, 
+                name=name+"/z_log_var"
+            )(x)
+            z = VariationalAutoencoder.compute_z(
+                z_mean, z_log_var
+            )
+            z = layers.Dense(
+                target_shape[-1], 
+                name=name+"/z"
+            )(z) if latent_dim_ratio != 1 else z
+
+            reshaper = models.Model(
+                inputs, 
+                [z, z_mean, z_log_var], 
+                name=name+"_"+reshape_type+"_z"
+            )
+        else:
+            inputs = layers.Input(source_shape)
+
+            x = reshaper_layer(inputs)
+            dummy_outputs = tf.shape(inputs)[0]
+
+            reshaper = models.Model(
+                inputs, 
+                [x, dummy_outputs, dummy_outputs], 
+                name=name+"_"+reshape_type
+            )
 
         return reshaper
 
@@ -1047,6 +1103,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     i=i, layers_dicts=self.layers_dicts, 
                     layers_dict=layers_dict, base_dim=self.dim, 
                     base_grid_size=self.grid_size, 
+                    grid_has_cls_token=self.cls_token_type is not None, 
+                    kwargs=self.reshaper_kwargs, 
                     name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
                 )
 
@@ -1197,14 +1255,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x
 
-    def slice_and_flatten_tokens(self, x, end, start):
-        x = tf.reshape(
-            x[:, start: end, :], 
-            (
-                -1, 
-                tf.shape(x)[-1] * (end-start)
-            )
-        )
+    def slice_and_flatten_tokens(self, x: tf.Tensor, 
+                                start: int, end: int):
+        if x.shape.rank == 3:
+            x = x[:, start: end, :]
+
+        x_shape = tf.shape(x)
+
+        x = tf.reshape(x, (
+            x_shape[0], 
+            x_shape[-1] * (end-start)
+        ))
 
         return x
 
@@ -1264,7 +1325,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         max_depth: int = -1, 
         training: bool | None = None
-    ):
+    ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
+        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         x, (cond, time_embeds, label_embeds) = self.embed_inputs(
             inputs, 
             self.cond_type, 
@@ -1287,6 +1349,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         features_list = [x]
         regs_list = [z]
+        z_vals = (None, None)
         for i, layers_dict in enumerate(self.layers_dicts):
             if i == max_depth:
                 break
@@ -1325,10 +1388,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             ) if self.US in layers_dict else x
 
-            x = layers_dict[self.R](
+            x, x_mean, x_log_var = layers_dict[self.R](
                 x, 
                 training=training
-            ) if self.R in layers_dict else x
+            ) if self.R in layers_dict else (x, None, None)
 
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
@@ -1341,18 +1404,23 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
+            z_vals = (
+                x_mean, x_log_var
+            ) if x_mean is not None and \
+            self.reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else z_vals
 
         x = x[:, 1:] if self.cls_token_type is not None else x
 
-        return x, cond, features_list, regs_list
+        return x, cond, features_list, regs_list, z_vals
 
     def call(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         training: bool | None = None
-    ):
-        x, cond, features_list, regs_list = self.encode(
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
+        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        x, cond, features_list, regs_list, z_vals = self.encode(
             inputs, 
             training=training
         )
@@ -1362,5 +1430,5 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ) if self.use_unpatchify else x
 
         if full_return:
-            return noises, cond, features_list, regs_list
+            return noises, cond, features_list, regs_list, z_vals 
         return noises
