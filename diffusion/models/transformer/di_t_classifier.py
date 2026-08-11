@@ -69,10 +69,10 @@ class DiTClassifier(DiffusionTransformer):
         build: bool = True, 
         **kwargs
     ):
-        cls_token_type = None if classifier_only_cls_token else kwargs.get("cls_token_type", None)
-        kwargs.pop("cls_token_type", None)
         super().__init__(
-            cls_token_type=cls_token_type, 
+            cls_token_type=None if classifier_only_cls_token and \
+                        (temp_val:=kwargs.pop("cls_token_type", None)) \
+                        is not None else temp_val, 
             build=False, 
             **kwargs
         )
@@ -95,8 +95,7 @@ class DiTClassifier(DiffusionTransformer):
             base_grid_size=self.grid_size, 
             must_be_same=True
         )
-        self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict[-1]
-        del self.clf_connection_ids_dict[-1]
+        self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, (-1,))
 
         self._create_clf_embedders()
         self.cls_token = self._create_cls_token(

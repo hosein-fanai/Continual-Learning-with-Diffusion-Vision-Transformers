@@ -11,7 +11,7 @@ class ArgumentSaver:
     def _save_init_args(
         self, 
         local_vars, 
-        exclude=("self", "kwargs", "__class__"), 
+        exclude=("self", "kwargs", "__class__", "temp_val"), 
         rename={"build": "build_"}, 
     ):
         if not hasattr(self, "_init_config"):

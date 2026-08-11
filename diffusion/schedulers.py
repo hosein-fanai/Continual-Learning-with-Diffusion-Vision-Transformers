@@ -19,7 +19,7 @@ Covered schedules:
 The module exposes a common API:
 - betas = generate_betas(...)
 - sigmas = generate_sigmas(...)
-- alpha_cumprod = betas_to_alpha_cumprod(betas)
+- alpha_bar = betas_to_alpha_bar(betas)
 - timesteps = schedule_timesteps(...)
 
 Notes:
@@ -64,9 +64,9 @@ class ScheduleConfig:
     # Cosine schedule offset.
     cosine_s: float = 0.008
 
-    # Clipped cosine schedule bounds on sqrt(alpha_cumprod).
-    min_sqrt_alpha_cumprod: float = 0.02
-    max_sqrt_alpha_cumprod: float = 0.95
+    # Clipped cosine schedule bounds on sqrt(alpha_bar).
+    min_sqrt_alpha_bar: float = 0.02
+    max_sqrt_alpha_bar: float = 0.95
 
     # Sigma-space schedules.
     sigma_min: float = 0.002
@@ -88,7 +88,7 @@ def _as_float64(x: np.ndarray | Iterable[float]) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
 
 
-def betas_to_alpha_cumprod(betas: np.ndarray) -> np.ndarray:
+def betas_to_alpha_bar(betas: np.ndarray) -> np.ndarray:
     """Convert per-step betas to cumulative alpha products."""
     betas = _as_float64(betas)
     if np.any(betas <= 0) or np.any(betas >= 1):
@@ -97,33 +97,33 @@ def betas_to_alpha_cumprod(betas: np.ndarray) -> np.ndarray:
     return np.cumprod(alphas)
 
 
-def alpha_cumprod_to_betas(
-    alpha_cumprod: np.ndarray,
+def alpha_bar_to_betas(
+    alpha_bar: np.ndarray,
     clip_min: float = 1e-8,
     clip_max: float = 0.999,
 ) -> np.ndarray:
-    """Convert a desired alpha_cumprod trajectory to per-step betas.
+    """Convert a desired alpha_bar trajectory to per-step betas.
 
-    beta[0] is chosen so that cumprod(1 - beta)[0] == alpha_cumprod[0].
+    beta[0] is chosen so that cumprod(1 - beta)[0] == alpha_bar[0].
     For later steps:
-        beta[t] = 1 - alpha_cumprod[t] / alpha_cumprod[t - 1]
+        beta[t] = 1 - alpha_bar[t] / alpha_bar[t - 1]
     """
-    alpha_cumprod = np.clip(_as_float64(alpha_cumprod), 1e-12, 1.0)
+    alpha_bar = np.clip(_as_float64(alpha_bar), 1e-12, 1.0)
 
-    if np.any(np.diff(alpha_cumprod) > 1e-12):
-        raise ValueError("alpha_cumprod must be monotonically non-increasing.")
+    if np.any(np.diff(alpha_bar) > 1e-12):
+        raise ValueError("alpha_bar must be monotonically non-increasing.")
 
-    betas = np.empty_like(alpha_cumprod)
-    betas[0] = 1.0 - alpha_cumprod[0]
-    betas[1:] = 1.0 - alpha_cumprod[1:] / alpha_cumprod[:-1]
+    betas = np.empty_like(alpha_bar)
+    betas[0] = 1.0 - alpha_bar[0]
+    betas[1:] = 1.0 - alpha_bar[1:] / alpha_bar[:-1]
 
     return np.clip(betas, clip_min, clip_max)
 
 
-def alpha_cumprod_to_sigmas(alpha_cumprod: np.ndarray) -> np.ndarray:
-    """Convert alpha_cumprod to sigma values: sigma = sqrt(1 - alpha_bar)."""
-    alpha_cumprod = np.clip(_as_float64(alpha_cumprod), 0.0, 1.0)
-    return np.sqrt(np.maximum(1.0 - alpha_cumprod, 0.0))
+def alpha_bar_to_sigmas(alpha_bar: np.ndarray) -> np.ndarray:
+    """Convert alpha_bar to sigma values: sigma = sqrt(1 - alpha_bar)."""
+    alpha_bar = np.clip(_as_float64(alpha_bar), 0.0, 1.0)
+    return np.sqrt(np.maximum(1.0 - alpha_bar, 0.0))
 
 
 def sigmas_to_betas(sigmas: np.ndarray) -> np.ndarray:
@@ -135,7 +135,7 @@ def sigmas_to_betas(sigmas: np.ndarray) -> np.ndarray:
     sigmas = np.clip(_as_float64(sigmas), 0.0, 1.0 - 1e-12)
     alpha_bar = 1.0 - sigmas**2
     alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
-    betas = alpha_cumprod_to_betas(alpha_bar)
+    betas = alpha_bar_to_betas(alpha_bar)
     return np.clip(betas, 1e-8, 0.999)
 
 
@@ -196,7 +196,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = _cosine_alpha_bar(t, s=config.cosine_s)
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
-        return alpha_cumprod_to_betas(
+        return alpha_bar_to_betas(
             alpha_bar,
             clip_min=config.clip_min,
             clip_max=config.clip_max,
@@ -204,25 +204,25 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
     if config.kind == ScheduleKind.CLIPPED_COSINE:
         # Matches:
-        #   min_sqrt_alpha_cumprod = 0.02
-        #   max_sqrt_alpha_cumprod = 0.95
-        #   start_angle = tf.acos(max_sqrt_alpha_cumprod)
-        #   end_angle = tf.acos(min_sqrt_alpha_cumprod)
+        #   min_sqrt_alpha_bar = 0.02
+        #   max_sqrt_alpha_bar = 0.95
+        #   start_angle = tf.acos(max_sqrt_alpha_bar)
+        #   end_angle = tf.acos(min_sqrt_alpha_bar)
         #
         #   diffusion_times = tf.range(0, timesteps, dtype=tf.float32) / timesteps
         #   diffusion_angles = start_angle + diffusion_times * (end_angle - start_angle)
         #
-        #   sqrt_alpha_cumprod = tf.cos(diffusion_angles)
-        #   sqrt_one_minus_alpha_cumprod = tf.sin(diffusion_angles)
+        #   sqrt_alpha_bar = tf.cos(diffusion_angles)
+        #   sqrt_one_minus_alpha_bar = tf.sin(diffusion_angles)
         #
-        # The bounds are directly imposed on sqrt(alpha_cumprod), not alpha_cumprod.
-        min_sqrt_alpha = float(config.min_sqrt_alpha_cumprod)
-        max_sqrt_alpha = float(config.max_sqrt_alpha_cumprod)
+        # The bounds are directly imposed on sqrt(alpha_bar), not alpha_bar.
+        min_sqrt_alpha = float(config.min_sqrt_alpha_bar)
+        max_sqrt_alpha = float(config.max_sqrt_alpha_bar)
 
         if not (0.0 < min_sqrt_alpha < max_sqrt_alpha < 1.0):
             raise ValueError(
-                "Expected 0 < min_sqrt_alpha_cumprod < "
-                "max_sqrt_alpha_cumprod < 1."
+                "Expected 0 < min_sqrt_alpha_bar < "
+                "max_sqrt_alpha_bar < 1."
             )
 
         start_angle = np.arccos(max_sqrt_alpha)
@@ -230,11 +230,11 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         diffusion_times = np.arange(n, dtype=np.float64) / float(n)
         diffusion_angles = start_angle + diffusion_times * (end_angle - start_angle)
 
-        sqrt_alpha_cumprod = np.cos(diffusion_angles)
-        alpha_bar = sqrt_alpha_cumprod**2
+        sqrt_alpha_bar = np.cos(diffusion_angles)
+        alpha_bar = sqrt_alpha_bar**2
 
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
-        return alpha_cumprod_to_betas(
+        return alpha_bar_to_betas(
             alpha_bar,
             clip_min=config.clip_min,
             clip_max=config.clip_max,
@@ -245,7 +245,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = 1.0 - _sigmoid01(t, k=config.logistic_k)
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
-        return alpha_cumprod_to_betas(
+        return alpha_bar_to_betas(
             alpha_bar,
             clip_min=config.clip_min,
             clip_max=config.clip_max,
@@ -256,7 +256,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = 1.0 / (1.0 + np.exp(config.logistic_k * (t - 0.5)))
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
-        return alpha_cumprod_to_betas(
+        return alpha_bar_to_betas(
             alpha_bar,
             clip_min=config.clip_min,
             clip_max=config.clip_max,
@@ -314,8 +314,8 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
             beta_start=config.beta_start,
             beta_end=config.beta_end,
             cosine_s=config.cosine_s,
-            min_sqrt_alpha_cumprod=config.min_sqrt_alpha_cumprod,
-            max_sqrt_alpha_cumprod=config.max_sqrt_alpha_cumprod,
+            min_sqrt_alpha_bar=config.min_sqrt_alpha_bar,
+            max_sqrt_alpha_bar=config.max_sqrt_alpha_bar,
             sigma_min=config.sigma_min,
             sigma_max=config.sigma_max,
             rho=config.rho,
@@ -325,8 +325,8 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
             clip_max=config.clip_max,
         )
     )
-    alpha_bar = betas_to_alpha_cumprod(betas)
-    return alpha_cumprod_to_sigmas(alpha_bar)
+    alpha_bar = betas_to_alpha_bar(betas)
+    return alpha_bar_to_sigmas(alpha_bar)
 
 
 def schedule_timesteps(config: ScheduleConfig) -> np.ndarray:
@@ -339,7 +339,7 @@ def make_schedule(
     num_steps: int = 1000,
     **kwargs,
 ) -> dict[str, np.ndarray]:
-    """Convenience wrapper that returns betas, alpha_cumprod, and sigmas.
+    """Convenience wrapper that returns betas, alpha_bar, and sigmas.
 
     Parameters
     ----------
@@ -351,17 +351,17 @@ def make_schedule(
     kwargs:
         Optional parameters such as beta_start, beta_end, sigma_min, sigma_max,
         rho, snr_shift, cosine_s, logistic_k,
-        min_sqrt_alpha_cumprod, max_sqrt_alpha_cumprod.
+        min_sqrt_alpha_bar, max_sqrt_alpha_bar.
     """
     cfg = ScheduleConfig(kind=ScheduleKind(kind), num_steps=num_steps, **kwargs)
     betas = generate_betas(cfg)
-    alpha_cumprod = betas_to_alpha_cumprod(betas)
-    sigmas = alpha_cumprod_to_sigmas(alpha_cumprod)
+    alpha_bar = betas_to_alpha_bar(betas)
+    sigmas = alpha_bar_to_sigmas(alpha_bar)
     return {
         "betas": betas,
-        "alpha_cumprod": alpha_cumprod,
-        "sqrt_alpha_cumprod": np.sqrt(alpha_cumprod),
-        "sqrt_one_minus_alpha_cumprod": np.sqrt(1.0 - alpha_cumprod),
+        "alpha_bar": alpha_bar,
+        "sqrt_alpha_bar": np.sqrt(alpha_bar),
+        "sqrt_one_minus_alpha_bar": np.sqrt(1.0 - alpha_bar),
         "sigmas": sigmas,
         "timesteps": schedule_timesteps(cfg),
     }
@@ -394,5 +394,5 @@ if __name__ == "__main__":
         print(f"\n{name}")
         print("betas      :", np.round(out["betas"], 6))
         print("sigmas     :", np.round(out["sigmas"], 6))
-        print("alpha_bar  :", np.round(out["alpha_cumprod"], 6))
-        print("sqrt_alpha :", np.round(out["sqrt_alpha_cumprod"], 6))
+        print("alpha_bar  :", np.round(out["alpha_bar"], 6))
+        print("sqrt_alpha :", np.round(out["sqrt_alpha_bar"], 6))

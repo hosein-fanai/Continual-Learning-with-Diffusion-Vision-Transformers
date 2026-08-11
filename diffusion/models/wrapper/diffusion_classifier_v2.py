@@ -208,6 +208,20 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().fit(**kwargs)
 
+    def fit_generator_progressively(self, **kwargs):
+        """Progressively train only the generative diffusion objective.
+
+        This mirrors ``fit_generator`` but dispatches to DiffusionModel's
+        timestep-curriculum trainer. The classifier/discriminator phase can be
+        trained normally afterwards with ``fit_discriminator``.
+        """
+
+        active_part_name = "generator"
+        self._switch_train_part(active_part_name)
+        self._switch_test_part(active_part_name)
+
+        return super().fit_progressively(**kwargs)
+
     def fit_discriminator(self, **kwargs):
         active_part_name = "discriminator"
         self._switch_train_part(active_part_name)
@@ -254,6 +268,71 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
 
         return merged_history
+
+    def generator_train_step(self, inputs):
+        (x0, noises, 
+        t, x_t, 
+        cfg_labels, 
+        uncond_labels, 
+        classes) = self.prep_inputs(inputs)
+
+        with tf.GradientTape() as tape:
+            (loss, noise_loss, image_loss, 
+            kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+                "raw", 
+                x0, noises, t, x_t, 
+                cond_labels=cfg_labels, 
+                uncond_labels=uncond_labels, 
+                classes=classes, 
+                cfg_scale=self.train_cfg_scale, 
+                training=True
+            )
+
+        self.apply_grads(tape, loss, self.gen_trainable_variables)
+        self.update_ema()
+        results = self.get_results_dict(
+            noise_loss, 
+            total_loss=loss, 
+            image_loss=image_loss, 
+            kl_loss=kl_loss, 
+            ctr_loss=ctr_loss, 
+            ctr_preds=ctr_preds, 
+            classes=classes
+        )
+
+        return results
+
+    def generator_test_step(self, inputs):
+        (x0, noises, 
+        t, x_t, 
+        cond_labels, 
+        uncond_labels, 
+        classes) = self.prep_inputs(inputs)
+
+        (loss, noise_loss, image_loss, 
+        kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+            self.test_network_name, 
+            x0, noises, t, x_t,  
+            cond_labels=cond_labels, 
+            uncond_labels=uncond_labels, 
+            classes=classes, 
+            cfg_scale=self.test_cfg_scale, 
+            use_image_loss=True, 
+            training=False
+        )
+
+        results = self.get_results_dict(
+            noise_loss, 
+            total_loss=loss, 
+            image_loss=image_loss, 
+            kl_loss=kl_loss, 
+            ctr_loss=ctr_loss, 
+            ctr_preds=ctr_preds, 
+            classes=classes, 
+            use_image_loss=True
+        )
+
+        return results
 
     def discriminator_train_step(self, inputs):
         t, x_t, uncond_labels, classes = self.prep_clfv2_inputs(
@@ -326,71 +405,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
             clf_ctr_preds=ctr_preds
-        )
-
-        return results
-
-    def generator_train_step(self, inputs):
-        (x0, noises, 
-        t, x_t, 
-        cfg_labels, 
-        uncond_labels, 
-        classes) = self.prep_inputs(inputs)
-
-        with tf.GradientTape() as tape:
-            (loss, noise_loss, image_loss, 
-            kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
-                "raw", 
-                x0, noises, t, x_t, 
-                cond_labels=cfg_labels, 
-                uncond_labels=uncond_labels, 
-                classes=classes, 
-                cfg_scale=self.train_cfg_scale, 
-                training=True
-            )
-
-        self.apply_grads(tape, loss, self.gen_trainable_variables)
-        self.update_ema()
-        results = self.get_results_dict(
-            noise_loss, 
-            total_loss=loss, 
-            image_loss=image_loss, 
-            kl_loss=kl_loss, 
-            ctr_loss=ctr_loss, 
-            ctr_preds=ctr_preds, 
-            classes=classes
-        )
-
-        return results
-
-    def generator_test_step(self, inputs):
-        (x0, noises, 
-        t, x_t, 
-        cond_labels, 
-        uncond_labels, 
-        classes) = self.prep_inputs(inputs)
-
-        (loss, noise_loss, image_loss, 
-        kl_loss, ctr_loss, ctr_preds) = self.forward_and_compute_loss(
-            self.test_network_name, 
-            x0, noises, t, x_t,  
-            cond_labels=cond_labels, 
-            uncond_labels=uncond_labels, 
-            classes=classes, 
-            cfg_scale=self.test_cfg_scale, 
-            use_image_loss=True, 
-            training=False
-        )
-
-        results = self.get_results_dict(
-            noise_loss, 
-            total_loss=loss, 
-            image_loss=image_loss, 
-            kl_loss=kl_loss, 
-            ctr_loss=ctr_loss, 
-            ctr_preds=ctr_preds, 
-            classes=classes, 
-            use_image_loss=True
         )
 
         return results

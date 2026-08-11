@@ -41,9 +41,9 @@ class DiffusionClassifier(DiffusionModel):
         )
 
         self.use_clf_kl_loss = bool(self.kl_loss_coef > 0. and 
-                                self.network.clf_reshaper_kwargs.get("add_kl", False))
+                            self.network.clf_reshaper_kwargs.get("add_kl", False))
         self.use_clf_ctr_loss = bool(self.ctr_loss_coef > 0. and 
-                                len(self.network.clf_cls_token_regularizer_ids) > 0)
+                            len(self.network.clf_cls_token_regularizer_ids) > 0)
 
     def _check_clf_assertions(self, local_vars: dict):
         if local_vars["mask_by_nulls"]:
@@ -225,18 +225,18 @@ class DiffusionClassifier(DiffusionModel):
         super().load_schedules(**kwargs)
 
         if self.modify_first_t:
-            self.schedules["sqrt_alpha_cumprod"] = tf.tensor_scatter_nd_update(
-                self.schedules["sqrt_alpha_cumprod"], 
+            self.schedules["sqrt_alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["sqrt_alpha_bar"], 
                 indices=[[0]], 
                 updates=[1.]
             )
-            self.schedules["sqrt_one_minus_alpha_cumprod"] = tf.tensor_scatter_nd_update(
-                self.schedules["sqrt_one_minus_alpha_cumprod"], 
+            self.schedules["sqrt_one_minus_alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["sqrt_one_minus_alpha_bar"], 
                 indices=[[0]], 
                 updates=[0.]
             )
-            self.schedules["alpha_cumprod"] = tf.tensor_scatter_nd_update(
-                self.schedules["alpha_cumprod"], 
+            self.schedules["alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["alpha_bar"], 
                 indices=[[0]], 
                 updates=[1.]
             )

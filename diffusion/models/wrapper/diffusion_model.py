@@ -1,7 +1,7 @@
-from typing import get_args
+from typing import Literal, get_args
 
 import tensorflow as tf
-from tensorflow.keras import metrics, losses
+from tensorflow.keras import metrics, losses, callbacks
 
 import numpy as np
 
@@ -9,7 +9,9 @@ from common.argument_saver import ArgumentSaverModel
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
-from . import NetworkName, TrainType
+from . import NetworkName, TrainType, ClusteringType
+
+from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 from diffusion.schedulers import make_schedule, SchedulerName
@@ -39,6 +41,11 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_loss_coef: float = 0., 
         kl_train_type: TrainType = "cond", 
         ctr_train_type: TrainType = "cond", 
+        train_noisified_min_timesteps: int = 0, 
+        train_noisified_max_timesteps: int | None = None, 
+        test_noisified_min_timesteps: int = 0, 
+        test_noisified_max_timesteps: int | None = None, 
+        seed: int | None = None, 
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -65,6 +72,10 @@ class DiffusionModel(ArgumentSaverModel):
         self.image_loss_coef = tf.constant(self.image_loss_coef, dtype=tf.float32)
         self.kl_loss_coef = tf.constant(self.kl_loss_coef, dtype=tf.float32)
         self.ctr_loss_coef = tf.constant(self.ctr_loss_coef, dtype=tf.float32)
+        self.train_noisified_max_timesteps = self.timesteps if self.train_noisified_max_timesteps is None \
+                                            else self.train_noisified_max_timesteps
+        self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps is None \
+                                            else self.test_noisified_max_timesteps
 
         self.use_image_loss = bool(self.image_loss_coef > 0.)
         self.use_kl_loss = bool(self.kl_loss_coef > 0. and 
@@ -72,6 +83,7 @@ class DiffusionModel(ArgumentSaverModel):
         self.use_ctr_loss = bool(self.ctr_loss_coef > 0. and 
                                 len(self.network.cls_token_regularizer_ids) > 0)
 
+        self.set_timestep_bounds()
         self.build(())
 
     def _check_assertions(self, local_vars: dict):
@@ -90,6 +102,69 @@ class DiffusionModel(ArgumentSaverModel):
         if local_vars["ctr_train_type"] == "uncond":
             assert local_vars["train_cfg_scale"] is not None, \
                 "ctr_train_type can be uncond only when train_cfg_scale is not None."
+
+    def _get_progressive_timestep_boundaries(
+        self, 
+        num_stages: int, 
+        clustering_type: ClusteringType = "log_snr", 
+    ) -> list[int]:
+        """Return N+1 monotonically increasing curriculum boundaries.
+
+        ``uniform`` reproduces the simple equal-timestep partition.
+
+        ``log_snr`` is a practical SNR-aware partition: boundaries are chosen
+        at approximately equal intervals of log-SNR under the *existing full*
+        diffusion schedule.  It keeps the original T and schedule unchanged;
+        only the timesteps sampled for a curriculum stage are restricted.
+        """
+
+        assert 1 <= num_stages <= self.timesteps, \
+            f"num_stages must be in [1, {self.timesteps}] range, "\
+            f"but got {num_stages}."
+
+
+        if clustering_type == "uniform":
+            boundaries = np.rint(
+                np.linspace(0, self.timesteps, num_stages + 1)
+            ).astype(np.int32)
+        elif clustering_type == "log_snr": # This is just an estimation
+            alpha_bar = np.asarray(
+                self.schedules["alpha_bar"].numpy(),
+                dtype=np.float64,
+            )
+            eps = np.finfo(np.float64).eps
+            alpha_bar = np.clip(alpha_bar, eps, 1. - eps)
+            log_snr = np.log(alpha_bar) - np.log1p(-alpha_bar)
+
+            targets = np.linspace(
+                log_snr[0], log_snr[-1], num_stages + 1
+            )
+            boundaries = np.asarray([
+                int(np.argmin(np.abs(log_snr - target)))
+                for target in targets
+            ], dtype=np.int32)
+            boundaries[0] = 0
+            boundaries[-1] = self.timesteps
+
+            # Nearest-neighbour projection can create duplicate indices when
+            # T is small or the SNR curve is very steep. Make the boundaries
+            # strictly increasing while preserving both endpoints.
+            for i in range(1, len(boundaries) - 1):
+                boundaries[i] = max(boundaries[i], boundaries[i - 1] + 1)
+            for i in range(len(boundaries) - 2, 0, -1):
+                boundaries[i] = min(boundaries[i], boundaries[i + 1] - 1)
+        else:
+            raise ValueError(
+                f"clustering must be one of {ClusteringType}."
+            )
+
+        if np.any(np.diff(boundaries) <= 0):
+            raise ValueError(
+                "Could not construct strictly increasing timestep clusters. "
+                "Use fewer stages or uniform clustering."
+            )
+
+        return boundaries.tolist()
 
     @property
     def metrics(self):
@@ -117,10 +192,46 @@ class DiffusionModel(ArgumentSaverModel):
         self.ctr_loss_tracker = metrics.Mean(name="ctr_loss")
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(name="ctr_accuracy")
 
+    def fit(self, x: tf.data.Dataset | None = None, 
+            y: tf.data.Dataset | None = None, **kwargs) -> dict | list[float]:
+        prev_t_min = self._active_min_timestep
+        prev_t_max = self._active_max_timestep
+
+        if self._active_min_timestep != self.train_noisified_min_timesteps or \
+        self._active_max_timestep != self.train_noisified_max_timesteps:
+            self.set_timestep_bounds(
+                self.train_noisified_min_timesteps, 
+                self.train_noisified_max_timesteps, 
+            )
+            self.train_function = None
+
+        fit_results = super().fit(x=x, y=y, **kwargs)
+
+        if self._active_min_timestep != prev_t_min or \
+        self._active_max_timestep != prev_t_max:
+            self.set_timestep_bounds(
+                prev_t_min, 
+                prev_t_max, 
+            )
+            self.train_function = None
+
+        return fit_results
+
     def evaluate(self, x: tf.data.Dataset | None = None, 
                 y: tf.data.Dataset | None = None, 
                 network_name: NetworkName = "ema", 
                 **kwargs) -> dict | list[float]:
+        prev_t_min = self._active_min_timestep
+        prev_t_max = self._active_max_timestep
+
+        if self._active_min_timestep != self.test_noisified_min_timesteps or \
+        self._active_max_timestep != self.test_noisified_max_timesteps:
+            self.set_timestep_bounds(
+                self.test_noisified_min_timesteps, 
+                self.test_noisified_max_timesteps, 
+            )
+            self.test_function = None
+
         prev_test_network_name = self.test_network_name
 
         if network_name != self.test_network_name:
@@ -128,6 +239,14 @@ class DiffusionModel(ArgumentSaverModel):
             self.test_function = None # to force tf recreate compute graph for test_step
 
         eval_results = super().evaluate(x=x, y=y, **kwargs)
+
+        if self._active_min_timestep != prev_t_min or \
+        self._active_max_timestep != prev_t_max:
+            self.set_timestep_bounds(
+                prev_t_min, 
+                prev_t_max, 
+            )
+            self.test_function = None
 
         if prev_test_network_name != self.test_network_name:
             self.test_network = prev_test_network_name
@@ -137,9 +256,6 @@ class DiffusionModel(ArgumentSaverModel):
 
     def summary(self, **kwargs):
         return self.network.summary(**kwargs)
-
-    def fit_progressively(self, **kwargs):
-        pass
 
     def train_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
@@ -207,9 +323,193 @@ class DiffusionModel(ArgumentSaverModel):
 
         return results
 
+    def fit_progressively(
+        self, 
+        num_stages: int = 20, 
+        stage_epochs: int = 1, 
+        final_epochs: int | None = None, 
+        clustering_type: ClusteringType = "log_snr", 
+        pacing_type: Literal["fixed", "plateau"] = "fixed", 
+        timestep_boundaries: list[int] | tuple[int, ...] | None = None, 
+        earlystopping_type: Literal["batch_wise", "epoch_wise"] = "epoch_wise", 
+        monitor: str = "noise_loss", 
+        patience: int = 10, 
+        min_delta: float = 0., 
+        stopper_mode: str = "min", 
+        verbose_stages: bool = True, 
+        **fit_kwargs
+    ):
+        """Train with an easy-to-hard diffusion-timestep curriculum.
+
+        Stage 1 samples only the highest-timestep (highest-noise) cluster.
+        Each following stage *accumulates* one harder, lower-timestep cluster:
+
+            [l_N, T) -> [l_{N-1}, T) -> ... -> [0, T).
+
+        The network, optimizer, EMA weights, timestep embedding table and noise
+        schedule are kept intact across stages. Only the random training
+        timestep support changes. After the curriculum, ``final_epochs`` can
+        continue ordinary full-range diffusion training, as done in the
+        task-difficulty curriculum literature.
+
+        ``pacing='fixed'`` trains every curriculum stage for ``stage_epochs``.
+        ``pacing='plateau'`` treats ``stage_epochs`` as a maximum and advances
+        when the monitored batch log has not improved for ``patience_batches``.
+
+        Any normal Keras ``fit`` arguments (x, validation_data, callbacks, 
+        steps_per_epoch, verbose, ...) are passed through ``fit_kwargs``.
+        """
+
+        assert "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, \
+            "Do not pass epochs/initial_epoch to fit_progressively(); "\
+            "use stage_epochs and final_epochs instead."
+
+
+        final_epochs = stage_epochs if final_epochs is None else int(final_epochs)
+        boundaries = self._get_progressive_timestep_boundaries(
+            num_stages=num_stages, 
+            clustering_type=clustering_type, 
+        ) if timestep_boundaries is None else timestep_boundaries
+        num_stages = len(boundaries) - 1
+
+        boundaries = [int(v) for v in boundaries]
+        if len(boundaries) < 2:
+            raise ValueError("timestep_boundaries needs at least two values.")
+        if boundaries[0] != 0 or boundaries[-1] != self.timesteps:
+            raise ValueError(
+                "timestep_boundaries must start at 0 and end at self.timesteps."
+            )
+        if any(b <= a for a, b in zip(boundaries[:-1], boundaries[1:])):
+            raise ValueError("timestep_boundaries must be strictly increasing.")
+
+        if verbose_stages:
+            print("Initiated boundaries:", boundaries)
+
+        user_callbacks = list(fit_kwargs.pop("callbacks", []) or [])
+        merged_history = {}
+        stage_records = []
+        all_epochs = []
+        epoch_cursor = 0
+
+
+        def run_stage(stage_id, min_t, max_t, epochs, final=False):
+            nonlocal epoch_cursor
+
+
+            self.set_timestep_bounds(min_t, max_t)
+            self.train_function = None
+            self.test_function = None
+
+            stage_callbacks = list(user_callbacks)
+            if pacing_type == "plateau" and not final:
+                if earlystopping_type == "epoch_wise":
+                    stage_callbacks.append(callbacks.EarlyStopping(
+                        monitor=monitor, 
+                        min_delta=min_delta, 
+                        patience=patience, 
+                        mode=stopper_mode, 
+                        verbose=verbose_stages
+                    ))
+                elif earlystopping_type == "batch_size":
+                    stage_callbacks.append(BatchLossPlateau(
+                        monitor=monitor, 
+                        patience=patience, 
+                        min_delta=min_delta, 
+                        # mode=stopper_mode
+                    ))
+                else:
+                    raise ValueError(
+                        f"earlystopping_type must be one of (epoch_wise, batch_wise), but not {earlystopping_type}"
+                    )
+            elif pacing_type != "fixed":
+                raise ValueError("pacing_type must be one of ('plateau', 'fixed').")
+
+            if verbose_stages:
+                name = "final/full-range" if final else f"{stage_id}/{num_stages}"
+                print(
+                    f"Progressive stage {name}: sampling t in "
+                    f"[{min_t}, {max_t}) range."
+                )
+
+            history = super(DiffusionModel, self).fit(
+                callbacks=stage_callbacks, 
+                initial_epoch=epoch_cursor, 
+                epochs=epoch_cursor + epochs, 
+                **fit_kwargs,
+            )
+
+            actual_epochs = list(history.epoch)
+            all_epochs.extend(actual_epochs)
+            epoch_cursor += len(actual_epochs)
+
+            for key, values in history.history.items():
+                merged_history.setdefault(key, []).extend(values)
+
+            stage_records.append({
+                "stage": "final" if final else stage_id, 
+                "min_timestep": min_t, 
+                "max_timestep": max_t, 
+                "epochs_ran": len(actual_epochs), 
+                "history": history.history, 
+            })
+
+
+        try:
+            # C_N is easiest.  The paper's task-accumulation version then adds
+            # C_{N-1}, C_{N-2}, ... until the full support is present.
+            for stage_id in range(1, num_stages + 1):
+                boundary_id = num_stages - stage_id
+                run_stage(
+                    stage_id=stage_id, 
+                    min_t=boundaries[boundary_id], 
+                    max_t=self.timesteps, 
+                    epochs=stage_epochs, 
+                )
+
+            if final_epochs > 0:
+                run_stage(
+                    stage_id=num_stages + 1, 
+                    min_t=0, 
+                    max_t=self.timesteps, 
+                    epochs=final_epochs, 
+                    final=True, 
+                )
+        finally:
+            # Normal fit/evaluate/noisify behavior must remain unchanged after
+            # the progressive call, even if training was interrupted.
+            self.set_timestep_bounds()
+            self.train_function = None
+            self.test_function = None
+
+        history = callbacks.History()
+        history.set_model(self)
+        history.history = merged_history
+        history.epoch = all_epochs
+        history.progressive_stages = stage_records
+        history.timestep_boundaries = boundaries
+
+        return history
+
+    def set_timestep_bounds(
+        self, 
+        min_timesteps: int | None = None, 
+        max_timesteps: int | None = None
+    ):
+        min_timesteps = 0 if min_timesteps is None else min_timesteps
+        max_timesteps = self.timesteps if max_timesteps is None else max_timesteps
+
+
+        assert 0 <= min_timesteps < max_timesteps <= self.timesteps, \
+            "Expected 0 <= min_timesteps < max_timesteps <= timesteps, "\
+            f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
+
+
+        self._active_min_timestep = min_timesteps
+        self._active_max_timestep = max_timesteps
+
     def load_schedules(
         self, 
-        scheduler_name: SchedulerName | None = None,  
+        scheduler_name: SchedulerName | None = None, 
         timesteps: int | None = None
     ):
         scheduler_name = self.scheduler_name if scheduler_name is None else scheduler_name
@@ -223,41 +523,61 @@ class DiffusionModel(ArgumentSaverModel):
         self.timesteps = timesteps
 
         for keys in self.schedules.keys():
-            self.schedules[keys] = tf.constant(self.schedules[keys], dtype=tf.float32)
+            self.schedules[keys] = tf.constant(
+                self.schedules[keys], 
+                dtype=tf.float32
+            )
 
-    def get_noise_and_signal_rates(self, t: tf.Tensor):
-        a = tf.gather(self.schedules["sqrt_alpha_cumprod"], t)
-        b = tf.gather(self.schedules["sqrt_one_minus_alpha_cumprod"], t)
+    def get_noise_and_signal_rates(self, t: int | tf.Tensor):
+        a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
+        b = tf.gather(self.schedules["sqrt_one_minus_alpha_bar"], t)
 
         return a, b
 
-    def q_sample(self, x0: tf.Tensor, 
-                t: int, noise):
+    def q_sample(
+        self, 
+        x0: tf.Tensor, 
+        t: tf.Tensor, 
+        noises: tf.Tensor
+    ):
         a, b = self.get_noise_and_signal_rates(t)
-
         a = tf.reshape(a, (-1, 1, 1, 1))
         b = tf.reshape(b, (-1, 1, 1, 1))
 
-        return a * x0 + b * noise
+        return a * x0 + b * noises
 
-    def noisify(self, x0: tf.Tensor, 
-                t: tf.Tensor | None = None, 
-                max_timesteps: int | None = None, 
-                seed: int | None = None):
-        max_timesteps = self.timesteps if max_timesteps is None else max_timesteps
+    def noisify(
+        self, 
+        x0: tf.Tensor, 
+        t: tf.Tensor | None = None, 
+        min_timesteps: int | None = None, 
+        max_timesteps: int | None = None, 
+        seed: int | None = None
+    ):
+        min_timesteps = self._active_min_timestep if min_timesteps is None else min_timesteps
+        max_timesteps = self._active_max_timestep if max_timesteps is None else max_timesteps
+        seed = self.seed if seed is None else seed
+
+        x_shape = tf.shape(x0)
 
         t = tf.random.uniform(
-            (tf.shape(x0)[0],), 
-            minval=0, 
+            (x_shape[0],), 
+            minval=min_timesteps, 
             maxval=max_timesteps, 
             dtype=tf.int32, 
             seed=seed, 
         ) if t is None else t
+        noises = tf.random.normal(
+            x_shape, 
+            mean=0., 
+            stddev=1., 
+            dtype=tf.float32, 
+            seed=seed, 
+            name="noises"
+        )
+        x_t = self.q_sample(x0, t, noises)
 
-        noise = tf.random.normal(tf.shape(x0), dtype=tf.float32)
-        x_t = self.q_sample(x0, t, noise)
-
-        return x_t, noise, t
+        return x_t, noises, t
 
     def postprocess(self, x: tf.Tensor) -> tf.Tensor:
         x = (x + 1) / 2
@@ -301,9 +621,13 @@ class DiffusionModel(ArgumentSaverModel):
         grads = tape.gradient(loss, variables)
         self.optimizer.apply_gradients(zip(grads, variables))
 
-    def get_cfg_labels(self, labels: tf.Tensor):
+    def get_cfg_labels(self, labels: tf.Tensor, 
+                       seed: int | None = None):
+        seed = self.seed if seed is None else seed
+
         mask = tf.random.uniform(
-            (tf.shape(labels)[0],)
+            (tf.shape(labels)[0],), 
+            seed=seed
         ) < self.p_uncond
         masked_labels = tf.where(
             mask, 
@@ -624,6 +948,7 @@ class DiffusionModel(ArgumentSaverModel):
         eta: float | None = None, 
         return_x_ts: bool = False, 
         return_x0s: bool = False, 
+        seed: int | None = None, 
         verbose: bool = False
     ):
         """
@@ -638,12 +963,13 @@ class DiffusionModel(ArgumentSaverModel):
             range(self.network.num_labels)
         ) if labels is None else labels
         n = len(labels)
+        seed = self.seed if seed is None else seed
         x_t = tf.random.normal((
             n, 
             self.image_size, 
             self.image_size, 
             self.channels
-        )) if x_t is None else x_t
+        ), seed=seed) if x_t is None else x_t
         steps = self.test_steps if steps is None else steps
         scale = self.test_cfg_scale if scale is None else scale
         eta = self.test_eta if eta is None else eta
@@ -681,8 +1007,8 @@ class DiffusionModel(ArgumentSaverModel):
             if return_x0s:
                 x0s.append(self.postprocess(x0).numpy())
 
-            alpha_bar_t = self.schedules["alpha_cumprod"][t]
-            alpha_bar_t_next = self.schedules["alpha_cumprod"][t_next]
+            alpha_bar_t = self.schedules["alpha_bar"][t]
+            alpha_bar_t_next = self.schedules["alpha_bar"][t_next]
             x0_coef = tf.sqrt(alpha_bar_t_next)
             sigma_t = tf.cast(
                 eta * tf.sqrt(
@@ -701,7 +1027,10 @@ class DiffusionModel(ArgumentSaverModel):
 
             x_t = x0_coef * x0 + eps_coeff * eps
             if eta > 0. and t_next > 0:
-                x_t = x_t + sigma_t * tf.random.normal(tf.shape(x_t))
+                x_t += sigma_t * tf.random.normal(
+                    tf.shape(x_t), 
+                    seed=seed
+                )
 
         if verbose:
             print()
