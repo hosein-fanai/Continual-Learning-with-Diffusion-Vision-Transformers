@@ -148,4 +148,3 @@ def copy_model(prev_model, new_model): # , copy_opt_states=False
     # new_model.optimizer.set_weights(new_states)
 
     pass
-

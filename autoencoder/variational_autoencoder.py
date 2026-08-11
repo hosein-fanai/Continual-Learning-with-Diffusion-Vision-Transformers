@@ -3,8 +3,9 @@ from tensorflow.keras import metrics, layers, models, optimizers
 
 import numpy as np
 
+from common.model import get_callbacks
+
 from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
-from model import get_callbacks
 
 
 class VariationalAutoencoder(models.Model):
@@ -290,7 +291,7 @@ class VariationalAutoencoder(models.Model):
 
 
 if __name__ == "__main__":
-    from dataloader import load_cifar10
+    from common.dataloader import load_cifar10
     from common.utils import init
 
 

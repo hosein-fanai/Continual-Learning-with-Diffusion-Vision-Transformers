@@ -98,8 +98,8 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
     from matplotlib import pyplot as plt
 
     from common.utils import CL_plot, plot_history
-    from model import get_model, copy_model, get_callbacks
-    from replay_buffer import ReplayBuffer
+    from common.model import get_model, copy_model, get_callbacks
+    from common.replay_buffer import ReplayBuffer
     from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 

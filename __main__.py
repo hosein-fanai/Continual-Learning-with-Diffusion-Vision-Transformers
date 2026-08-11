@@ -1,8 +1,7 @@
 from argparse import ArgumentParser
 
-from .config import load_config
-
-from .train import main
+from .common.config import load_config
+from .common.train import main
 
 
 if __name__ == "__main__":

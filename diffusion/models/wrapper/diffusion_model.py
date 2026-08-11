@@ -208,9 +208,9 @@ class DiffusionModel(ArgumentSaverModel):
         return results
 
     def load_schedules(
-            self, 
-            scheduler_name: SchedulerName | None = None,  
-            timesteps: int | None = None
+        self, 
+        scheduler_name: SchedulerName | None = None,  
+        timesteps: int | None = None
     ):
         scheduler_name = self.scheduler_name if scheduler_name is None else scheduler_name
         timesteps = self.timesteps if timesteps is None else timesteps
