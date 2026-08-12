@@ -26,6 +26,7 @@ from .layers.single_token_layer import SingleTokenLayer
 from .metrics.ensemble_accuracy import EnsembleAccuracy
 
 from .callbacks.image_generator_callback import ImageGeneratorCallback
+from .callbacks.batch_loss_plateau import BatchLossPlateau
 # from .callbacks.raw_network_validation_callback import RawNetworkValidationCallback
 
 from .schedulers import make_schedule, SchedulerName

@@ -9,9 +9,9 @@ from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 from . import CondType, TokenType, IdsType, IdsDictType
 
-from diffusion.layers import MergeType
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
+from diffusion.layers.embedding import MergeType
 from diffusion.layers.embedding.base_embedding import PosEmbedType
 from diffusion.layers.embedding.patch_embedding import PatchEmbedding
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
@@ -95,9 +95,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         cls_token_regularizer_ids: IdsType = [], 
         cls_token_regularizer_kwargs: dict = {"start": 0, "end": 1}, 
         final_ffn_activation_func: str = "linear", 
-        use_final_cnn: bool = False, 
-        final_cnn_hidden_dim: int | None = None, 
-        final_cnn_residual: bool = True, 
+        use_refiner_cnn: bool = False, 
+        refiner_cnn_hidden_dim: int | None = None, 
+        refiner_cnn_residual: bool = True, 
         final_activation_func: str = "linear", 
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
@@ -108,6 +108,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._check_assertions(locals())
         self._save_init_args(locals())
         self._handle_all_ids()
+        self.set_current_resolution()
 
         self.num_labels = self.num_classes + int(self.use_cfg)
         self.grid_size = self.image_size // self.patch_size
@@ -126,52 +127,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             self.cls_token_type
         )
         self._create_layers()
-
-        if self.use_unpatchify: # TODO: make it one functional model
-            self.final_layer_norm = AdaLNZero(
-                dim=self._get_unforced_total_dim(
-                    [self.depth], 
-                    self.layers_dicts, 
-                    self.dim
-                ), 
-                return_gate=False, 
-                mlp_ratio=self.ln_mlp_ratio, 
-                no_adaptation=self.ln_no_adaptation, 
-                name=f"{self.name_prefix}final_layer_norm"
-            )
-            self.final_ffn = layers.Dense(
-                self.patch_size * self.patch_size * self.channels, 
-                kernel_initializer="zeros", 
-                activation=self.final_ffn_activation_func, 
-                name=f"{self.name_prefix}final_ffn"
-            )
-
-            if self.use_final_cnn:
-                hidden_dim = self.dim if self.final_cnn_hidden_dim is None \
-                            else self.final_cnn_hidden_dim
-
-                self.final_cnn = models.Sequential([
-                    layers.Conv2D(
-                        hidden_dim, 
-                        kernel_size=3, 
-                        padding="same", 
-                        activation="swish", 
-                        name="refine_conv_1"
-                    ),
-                    layers.Conv2D(
-                        self.channels, 
-                        kernel_size=3, 
-                        padding="same", 
-                        kernel_initializer="zeros", 
-                        bias_initializer="zeros", 
-                        name="refine_conv_2"
-                    ),
-                ], name=f"{self.name_prefix}final_cnn_refiner")         
-
-            self.final_activation = layers.Activation(
-                self.final_activation_func, 
-                name=f"{self.name_prefix}noises"
-            )
+        self._create_unpatchifier()
 
         if self.build_:
             self.build()
@@ -1115,6 +1071,94 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             self.layers_dicts.append(layers_dict)
 
+    def _create_unpatchifier(self):
+        if self.use_unpatchify:
+            dim = self._get_unforced_total_dim(
+                [self.depth], 
+                self.layers_dicts, 
+                self.dim
+            )
+
+            token_inputs = layers.Input(
+                shape=(None, dim), # (grid_size * grid_size, dim)
+                name="token_inputs"
+            )
+            cond_inputs = layers.Input(
+                shape=(self.cond_dim,), 
+                name="cond_inputs"
+            )
+
+            name = f"{self.name_prefix}unpatchifier"
+
+            x = AdaLNZero(
+                dim=dim, 
+                return_gate=False, 
+                mlp_ratio=self.ln_mlp_ratio, 
+                no_adaptation=self.ln_no_adaptation, 
+                name=f"{name}/layer_norm"
+            )((token_inputs, cond_inputs))
+            x = layers.Dense(
+                self.patch_size * self.patch_size * self.channels, 
+                kernel_initializer="zeros", 
+                activation=self.final_ffn_activation_func, 
+                name=f"{name}/ffn"
+            )(x)
+            x = layers.Lambda(lambda x: tf.reshape(x, (
+                -1, 
+                self._current_resolution // self.patch_size, # self.grid_size, 
+                self._current_resolution // self.patch_size, # self.grid_size, 
+                self.patch_size, 
+                self.patch_size, 
+                self.channels
+            )), name=f"{name}/reshape_1")(x)
+            x = tf.transpose(x, 
+                perm=(0, 1, 3, 2, 4, 5), 
+                name=f"{name}/transpose"
+            )
+            x = layers.Lambda(lambda x: tf.reshape(x, (
+                -1, 
+                self._current_resolution, # self.image_size, 
+                self._current_resolution, # self.image_size, 
+                self.channels
+            )), name=f"{name}/reshape_2")(x)
+
+            if self.use_refiner_cnn:
+                hidden_dim = dim if self.refiner_cnn_hidden_dim is None \
+                            else self.refiner_cnn_hidden_dim
+
+                h = layers.Conv2D(
+                    hidden_dim, 
+                    kernel_size=3, 
+                    padding="same", 
+                    activation="swish", 
+                    name=f"{name}/refiner_conv_1"
+                )(x)
+                h = layers.Conv2D(
+                    self.channels, 
+                    kernel_size=3, 
+                    padding="same", 
+                    kernel_initializer="zeros", 
+                    bias_initializer="zeros", 
+                    name=f"{name}/refiner_conv_2"
+                )(h)
+                x = x + h if self.refiner_cnn_residual else h 
+
+            x = layers.Activation(
+                self.final_activation_func, 
+                name=f"{name}/noises"
+            )(x)
+
+            self.unpatchifier = models.Model(
+                inputs=[token_inputs, cond_inputs], 
+                outputs=x, 
+                name=name
+            )
+
+    def set_current_resolution(self, resolution: int | None = None):
+        resolution = self.image_size if resolution is None else resolution
+
+        self._current_resolution = resolution
+
     def get_variables_names(self, vars: list[tf.Variable] | None = None):
         vars = self.trainable_variables if vars is None else vars
         names = [var.name for var in vars]
@@ -1206,6 +1250,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         x = self.patch_embedder(
             images, 
+            output_grid_size=self._current_resolution // self.patch_size if \
+                            self.image_size != self._current_resolution \
+                            else None, 
             training=training
         )
         x = self.patches_conds_merger((
@@ -1266,57 +1313,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             x_shape[0], 
             x_shape[-1] * (end-start)
         ))
-
-        return x
-
-    def refine_with_cnn(self, x: tf.Tensor, 
-                        training: bool | None = None):
-        h = self.final_cnn(
-            x, 
-            training=training
-        )
-        x = x + h if self.final_cnn_residual else h 
-
-        return x
-
-    def unpatchify(self, x: tf.Tensor, 
-                cond: tf.Tensor, 
-                training: bool | None = None):
-        x = self.final_layer_norm(
-            (x, cond), 
-            training=training
-        )
-        x = self.final_ffn(
-            x, 
-            training=training
-        )
-
-        x = tf.reshape(x, (
-            -1, 
-            self.grid_size, 
-            self.grid_size, 
-            self.patch_size, 
-            self.patch_size, 
-            self.channels
-        ))
-        x = tf.transpose(x, 
-            (0, 1, 3, 2, 4, 5)
-        )
-        x = tf.reshape(x, (
-            -1, 
-            self.image_size, 
-            self.image_size, 
-            self.channels
-        ))
-
-        x = self.refine_with_cnn(
-            x, 
-            training=training
-        ) if self.use_final_cnn else x
-        x = self.final_activation(
-            x, 
-            training=training
-        )
 
         return x
 
@@ -1424,8 +1420,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             inputs, 
             training=training
         )
-        noises = self.unpatchify(
-            x, cond, 
+        noises = self.unpatchifier(
+            (x, cond), 
             training=training
         ) if self.use_unpatchify else x
 

@@ -7,6 +7,7 @@ from diffusion.layers.single_token_layer import SingleTokenLayer
 
 class PatchEmbedding(BaseEmbedding):
     """
+
     """
 
     def __init__(
@@ -25,6 +26,7 @@ class PatchEmbedding(BaseEmbedding):
         self.mlp_output_dim = self.hidden_dim if self.mlp_output_dim is None \
                             and self.embed_freq_dim is not None else self.mlp_output_dim
         self.embed_dim = self.hidden_dim if self.embed_freq_dim is None else self.embed_freq_dim
+        self.output_grid_size = self.grid_size
 
         if self.patchify_with_cnn:
             self.patch_projector = models.Sequential([
@@ -64,17 +66,20 @@ class PatchEmbedding(BaseEmbedding):
             self.embed_dim
         )
 
-    def call(self, x, training=None):
-        B = tf.shape(x)[0]
-
+    def call(self, x: tf.Tensor, 
+            output_grid_size: int | None = None, 
+            training: bool | None = None):
         x = self.patch_projector(
             x, 
             training=training
         )
+
+        x_shape = tf.shape(x)
+
         x = tf.reshape(x, (
-            B, 
-            self.grid_size * self.grid_size, 
-            -1
+            x_shape[0], 
+            x_shape[1] * x_shape[2], 
+            x_shape[3]
         ))
         x = tf.concat([
             self.shift_right_token(
@@ -85,6 +90,7 @@ class PatchEmbedding(BaseEmbedding):
         ], axis=1) if self.shift_right_token is not None else x
         x = self._pos_merger(
             x, 
+            output_grid_size=output_grid_size, 
             training=training
         )
 

@@ -45,6 +45,8 @@ class DiffusionModel(ArgumentSaverModel):
         train_noisified_max_timesteps: int | None = None, 
         test_noisified_min_timesteps: int = 0, 
         test_noisified_max_timesteps: int | None = None, 
+        resize_method: str = "area", 
+        resize_antialias: bool = True, 
         seed: int | None = None, 
         **kwargs
     ):
@@ -84,6 +86,7 @@ class DiffusionModel(ArgumentSaverModel):
                                 len(self.network.cls_token_regularizer_ids) > 0)
 
         self.set_timestep_bounds()
+        self.set_current_resolution()
         self.build(())
 
     def _check_assertions(self, local_vars: dict):
@@ -507,6 +510,20 @@ class DiffusionModel(ArgumentSaverModel):
         self._active_min_timestep = min_timesteps
         self._active_max_timestep = max_timesteps
 
+    def set_current_resolution(self, resolution: int | None = None):
+        resolution = self.image_size if resolution is None else resolution
+
+        self._current_resolution = resolution
+        self.network.set_current_resolution(
+            resolution
+        )
+        self.ema_network.set_current_resolution(
+            resolution
+        ) if self.ema_network is not None else None
+
+        self.train_function = None
+        self.test_function = None
+
     def load_schedules(
         self, 
         scheduler_name: SchedulerName | None = None, 
@@ -611,7 +628,7 @@ class DiffusionModel(ArgumentSaverModel):
             ew.assign(self.ema_decay * ew + (1 - self.ema_decay) * w)
 
         return True
-    
+
     def apply_grads(self, tape: tf.GradientTape, 
                     loss: tf.Tensor, 
                     variables: tf.Variable | None = None):
@@ -636,16 +653,27 @@ class DiffusionModel(ArgumentSaverModel):
         )
 
         return masked_labels
-    
+
     def prep_inputs(self, inputs: tuple[tf.Tensor, tf.Tensor], 
-                    use_label_dropout: bool = True):
+                    use_label_dropout: bool = True, 
+                    seed: int | None = None):
         x0, labels = inputs
+
+        x0 = tf.image.resize(x0, 
+            size=(
+                self._current_resolution, 
+                self._current_resolution
+            ), 
+            method=self.resize_method, 
+            antialias=self.resize_antialias
+        ) if self._current_resolution != self.image_size else x0
 
         classes = labels
         labels = labels + int(self.use_cfg)
-        x_t, noises, t = self.noisify(x0)
+        x_t, noises, t = self.noisify(x0, seed=seed)
         cfg_labels = self.get_cfg_labels(
-            labels
+            labels, 
+            seed=seed
         ) if use_label_dropout else labels
         uncond_labels = tf.zeros_like(labels)
 
@@ -966,8 +994,8 @@ class DiffusionModel(ArgumentSaverModel):
         seed = self.seed if seed is None else seed
         x_t = tf.random.normal((
             n, 
-            self.image_size, 
-            self.image_size, 
+            self._current_resolution, # self.image_size, 
+            self._current_resolution, # self.image_size, 
             self.channels
         ), seed=seed) if x_t is None else x_t
         steps = self.test_steps if steps is None else steps

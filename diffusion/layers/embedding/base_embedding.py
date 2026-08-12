@@ -7,7 +7,7 @@ import numpy as np
 
 from . import PosEmbedType
 
-from diffusion.layers import MergeType
+from diffusion.layers.embedding import MergeType
 from diffusion.layers.base_layer import BaseLayer
 
 
@@ -200,9 +200,9 @@ class BaseEmbedding(BaseLayer):
                     grid_size, 
                     grid_size, 
                     embed_dim
-                ),
-                initializer="zeros",
-                trainable=True,
+                ), 
+                initializer="zeros", 
+                trainable=True, 
                 name=name
             )
 
@@ -240,6 +240,7 @@ class BaseEmbedding(BaseLayer):
 
     def _pos_merger(self, x: tf.Tensor, 
                     batch_size: int | None = None, 
+                    output_grid_size: int | None = None, 
                     training: bool | None = None) -> tf.Tensor:
         """Resolve, batch-broadcast, and merge a spatial positional embedding.
         """
@@ -248,6 +249,16 @@ class BaseEmbedding(BaseLayer):
             return x
 
         batch_size = tf.shape(x)[0] if batch_size is None else batch_size
+        output_grid_size = self.output_grid_size if output_grid_size is None else output_grid_size
+
+        pos_embed_type = self.pos_embed_type
+        if output_grid_size != self.output_grid_size:
+            if pos_embed_type == "new_weight":
+                pos_embed_type = "learned_interpolate"
+            elif pos_embed_type == "2d_sincos":
+                pos_embed_type = "interpolate"
+            else:
+                raise NotImplemented
 
         pos_embed = self.pos_embed
         pos_embed = tf.reshape(pos_embed, (
@@ -255,18 +266,18 @@ class BaseEmbedding(BaseLayer):
                 self.grid_size, 
                 self.grid_size, 
                 self.output_dim
-        )) if self.pos_embed_type == "interpolate" else pos_embed
-        if self.pos_embed_type in ("interpolate", "learned_interpolate"):
+        )) if pos_embed_type == "interpolate" else pos_embed
+        if pos_embed_type in ("interpolate", "learned_interpolate"):
             pos_embed = tf.image.resize(pos_embed, 
                 size=(
-                    self.output_grid_size, 
-                    self.output_grid_size
+                    output_grid_size, 
+                    output_grid_size
                 ), 
                 method=self.pos_interpolation_method
             )
             pos_embed = tf.reshape(pos_embed, (
                 1, 
-                self.output_grid_size * self.output_grid_size, 
+                output_grid_size * output_grid_size, 
                 self.output_dim
             ))
         pos_embed = self.pos_embed_mlp(
