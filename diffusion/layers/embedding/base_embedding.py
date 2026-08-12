@@ -1,21 +1,14 @@
-from typing import TypeAlias, Literal, get_args
+from typing import get_args
 
 import tensorflow as tf
 from tensorflow.keras import layers
 
 import numpy as np
 
+from . import PosEmbedType
+
 from diffusion.layers import MergeType
 from diffusion.layers.base_layer import BaseLayer
-
-
-PosEmbedType: TypeAlias = Literal[
-    "new_weight", 
-    "interpolate", 
-    "learned_interpolate", 
-    "2d_sincos", 
-    "1d_sincos", 
-]
 
 
 class BaseEmbedding(BaseLayer):
