@@ -81,17 +81,17 @@ class BaseLayer(ArgumentSaverLayer):
         self.prev_output_dim = int(prev_output_dim)
         if mlp_output_dim is not None:
             self.output_dim = mlp_output_dim
-            mlp = models.Sequential(name="mlp")
+            mlp = models.Sequential(name=f"{self.name}/mlp")
             if mlp_ratio is not None:
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{self.name}/{mlp.name}/first_layer"
+                    name=f"{mlp.name}/first_layer"
                 ))
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
-                name=f"{self.name}/{mlp.name}/final_layer"
+                name=f"{mlp.name}/final_layer"
             ))
         else:
             self.output_dim = prev_output_dim

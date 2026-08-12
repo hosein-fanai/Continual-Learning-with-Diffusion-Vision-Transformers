@@ -570,8 +570,10 @@ class DiTClassifier(DiffusionTransformer):
                     base_grid_size=self.clf_grid_size, 
                     ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                     ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=self.classifier_only_cls_token \
-                                        and self.clf_cls_token_type is not None, 
+                    circumvent_cls_token=(self.classifier_only_cls_token and \
+                                        self.clf_cls_token_type is not None) or \
+                                        (not self.classifier_only_cls_token and \
+                                        self.cls_token_type is not None),
                     kwargs=self.clf_local_mixer_kwargs, 
                     name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
                 )
@@ -587,8 +589,10 @@ class DiTClassifier(DiffusionTransformer):
                     base_grid_size=self.clf_grid_size, 
                     ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                     ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=self.classifier_only_cls_token \
-                                        and self.clf_cls_token_type is not None, 
+                    circumvent_cls_token=(self.classifier_only_cls_token and \
+                                        self.clf_cls_token_type is not None) or \
+                                        (not self.classifier_only_cls_token and \
+                                        self.cls_token_type is not None),
                     kwargs=self.clf_downsample_kwargs, 
                     name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
                 )
@@ -604,8 +608,10 @@ class DiTClassifier(DiffusionTransformer):
                     base_grid_size=self.clf_grid_size, 
                     ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                     ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=self.classifier_only_cls_token \
-                                        and self.clf_cls_token_type is not None, 
+                    circumvent_cls_token=(self.classifier_only_cls_token and \
+                                        self.clf_cls_token_type is not None) or \
+                                        (not self.classifier_only_cls_token and \
+                                        self.cls_token_type is not None),
                     kwargs=self.clf_upsample_kwargs, 
                     name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
                 )
@@ -616,8 +622,10 @@ class DiTClassifier(DiffusionTransformer):
                     i=i, layers_dicts=self.clf_layers_dicts, 
                     layers_dict=layers_dict, base_dim=self.clf_dim, 
                     base_grid_size=self.clf_grid_size, 
-                    grid_has_cls_token=(self.clf_cls_token_type is not None and self.classifier_only_cls_token) or \
-                                    (self.cls_token_type is not None and not self.classifier_only_cls_token), 
+                    grid_has_cls_token=(self.clf_cls_token_type is not None and \
+                                        self.classifier_only_cls_token) or \
+                                        (self.cls_token_type is not None and \
+                                        not self.classifier_only_cls_token), 
                     kwargs=self.clf_reshaper_kwargs, 
                     name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
                 )

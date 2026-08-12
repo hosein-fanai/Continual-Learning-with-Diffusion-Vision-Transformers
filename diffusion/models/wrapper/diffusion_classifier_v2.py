@@ -186,6 +186,15 @@ class DiffusionClassifierV2(DiffusionClassifier):
                         noisified_max_timesteps):
         x0, labels = inputs
 
+        x0 = tf.image.resize(x0,
+            size=(
+                self._current_resolution,
+                self._current_resolution
+            ),
+            method=self.resize_method,
+            antialias=self.resize_antialias
+        ) if self._current_resolution != self.image_size else x0
+
         classes = labels
         labels = labels + int(self.use_cfg)
         uncond_labels = tf.zeros_like(labels, dtype=tf.uint8)

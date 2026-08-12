@@ -44,7 +44,7 @@ class Upsample(BaseEmbedding):
             return_gate=False
         )
 
-        name = "scaling_layer"
+        name = f"{self.name}/scaling_layer"
         if self.scaling_method == "cnn_transpose":
             self.output_dim = self.dim * self.cnn_dim_ratio
             self.scaling_layer = layers.Conv2DTranspose(
@@ -87,12 +87,11 @@ class Upsample(BaseEmbedding):
         )
 
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
-                        self.pos_merger_type == "concat" and self.mlp is None else \
-                        self.output_dim
+                        self.pos_merger_type == "concat" else self.output_dim
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name="token_projector"
+            name=f"{self.name}/token_projector"
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim
@@ -108,23 +107,35 @@ class Upsample(BaseEmbedding):
         x, token = (
             x[:, 1:, :], x[:, 0: 1, :]
         ) if self.circumvent_cls_token else (x, None)
+
+        x_shape = tf.shape(x)
+        input_grid_size = tf.cast(
+            tf.sqrt(tf.cast(x_shape[1], dtype=tf.float32)),
+            dtype=tf.int32
+        )
+    
         x = tf.reshape(x, (
-            -1, 
-            self.grid_size, 
-            self.grid_size, 
+            x_shape[0], 
+            input_grid_size, 
+            input_grid_size, 
             self.dim
         ))
         x = self.scaling_layer(
             x, 
             training=training
         )
+
+        x_shape = tf.shape(x)
+        output_grid_size = x_shape[1]
+
         x = tf.reshape(x, (
-            -1, 
-            self.output_grid_size * self.output_grid_size, 
-            self.prev_output_dim
+            x_shape[0], 
+            output_grid_size * output_grid_size, 
+            x.shape[-1]
         ))
         x = self._pos_merger(
             x, 
+            output_grid_size=output_grid_size,
             training=training
         )
         x = tf.concat([

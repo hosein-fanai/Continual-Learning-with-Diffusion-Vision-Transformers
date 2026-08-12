@@ -23,6 +23,7 @@ class LocalMixer(BaseEmbedding):
         use_layer_norm: bool = True, 
         kernel_size: int = 3, 
         strides: int = 1, 
+        padding: str = "same", 
         depth_multiplier: int = 1, 
         pointwise_dim_ratio: int = 1, 
         use_pointwise: bool = True, 
@@ -38,46 +39,53 @@ class LocalMixer(BaseEmbedding):
 
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
-        self.output_grid_size = self.grid_size // self.strides
-        self.add_residual = self.strides == 1 # and \
-                            # self.use_layer_norm and \
-                            # not self.ln_no_adaptation
+        self.output_grid_size = (
+            self.grid_size + self.strides - 1
+        ) // self.strides if self.padding == "same" \
+                        else self.grid_size // self.strides
+        self.add_residual = self.strides == 1
 
         self.layer_norm = self._create_layer_norm(
             gate_dim=self.output_dim if self.add_residual else 0, 
             return_gate=True
         )
-
         self.depthwise = layers.DepthwiseConv2D(
             kernel_size=self.kernel_size, 
             strides=self.strides, 
-            padding="same", 
+            padding=self.padding, 
             depth_multiplier=self.depth_multiplier, 
             depthwise_initializer="zeros" if self.zero_init else "glorot_uniform", 
-            name="depthwise"
+            name=f"{self.name}/depthwise"
         )
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
             padding="same", 
-            name="pointwise"
+            name=f"{self.name}/pointwise"
         ) if self.use_pointwise else None
         self.residual_projector = layers.Dense(
             self.output_dim, 
-            name="residual_projector"
+            name=f"{self.name}/residual_projector"
         ) if self.dim != self.output_dim and self.add_residual else None
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
             output_grid_size=self.output_grid_size
         )
 
+        residual_token_dim = self.output_dim \
+                            if self.residual_projector is not None else self.dim
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
-                        self.pos_merger_type == "concat" and self.mlp is None else self.output_dim
+                        self.pos_merger_type == "concat" else self.output_dim
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name="token_projector"
+            name=f"{self.name}/token_projector"
         ) if self.dim != self.output_dim else None
+        self.residual_token_projector = layers.Dense(
+            self.output_dim, 
+            name=f"{self.name}/residual_token_projector"
+        ) if residual_token_dim != self.output_dim and \
+            self.circumvent_cls_token else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
@@ -92,10 +100,17 @@ class LocalMixer(BaseEmbedding):
         h, h_token = (
             h[:, 1:, :], h[:, 0: 1, :]
         ) if self.circumvent_cls_token else (h, None)
+
+        h_shape = tf.shape(h)
+        input_grid_size = tf.cast(
+            tf.sqrt(tf.cast(h_shape[1], dtype=tf.float32)), 
+            dtype=tf.int32
+        )
+
         h = tf.reshape(h, (
-            -1, 
-            self.grid_size, 
-            self.grid_size, 
+            h_shape[0], 
+            input_grid_size, 
+            input_grid_size, 
             self.dim
         ))
         h = self.depthwise(
@@ -106,12 +121,15 @@ class LocalMixer(BaseEmbedding):
             h, 
             training=training
         ) if self.pointwise is not None else h
-        h = tf.reshape(h, (
-            -1, 
-            self.output_grid_size * self.output_grid_size, 
-            self.prev_output_dim
-        ))
 
+        h_shape = tf.shape(h)
+        output_grid_size = h_shape[1]
+
+        h = tf.reshape(h, (
+            h_shape[0], 
+            output_grid_size * output_grid_size, 
+            h.shape[-1]
+        ))
         x = self.residual_projector(
             x, 
             training=training
@@ -120,15 +138,21 @@ class LocalMixer(BaseEmbedding):
             x[:, 1:, :], x[:, 0: 1, :]
         ) if self.circumvent_cls_token else (x, None)
         x = x + gate * h if self.add_residual else h
+
         x = self._pos_merger(
             x, 
+            output_grid_size=output_grid_size, 
             training=training
         )
+        x_token = self.residual_token_projector(
+            x_token, 
+            training=training
+        ) if self.residual_token_projector is not None else x_token
         x = tf.concat([
-            x_token + self.token_projector(
+            (x_token + self.token_projector(
                 h_token, 
                 training=training
-            ) if self.token_projector is not None else x_token + h_token, 
+            )) if self.token_projector is not None else (x_token + h_token), 
             x
         ], axis=1) if self.circumvent_cls_token else x
         x = self.mlp(

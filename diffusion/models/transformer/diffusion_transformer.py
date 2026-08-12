@@ -547,7 +547,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         grid_size = self._get_last_grid_size(
             i-1, 
             layers_dicts, 
-            base_grid_size
+            base_grid_size,
+            skip_reshaper=skip_reshaper
         ) if grid_size is None else grid_size
 
         return grid_size
@@ -858,6 +859,59 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return scaler
 
+    def _resize_reshaper_tokens(
+        self, 
+        x: tf.Tensor, 
+        input_grid_size: int | None, 
+        output_grid_size: int, 
+        dim: int, 
+        grid_has_cls_token: bool
+    ) -> tf.Tensor:
+        if self._current_resolution == self.image_size:
+            return x
+
+        x, token = (
+            x[:, 1:, :], x[:, :1, :]
+        ) if grid_has_cls_token else (x, None)
+
+        x_shape = tf.shape(x)
+        input_grid_size = tf.cast(
+            tf.sqrt(tf.cast(x_shape[1], dtype=tf.float32)),
+            dtype=tf.int32
+        ) if input_grid_size is None else input_grid_size
+
+        x = tf.reshape(x, (
+            x_shape[0], 
+            input_grid_size, 
+            input_grid_size, 
+            dim
+        ))
+        x = tf.image.resize(x,
+            size=(
+                output_grid_size, 
+                output_grid_size
+            )
+        )
+        x = tf.reshape(x, (
+            x_shape[0], 
+            output_grid_size * output_grid_size, 
+            dim
+        ))
+        x.set_shape(
+            (None, output_grid_size * output_grid_size, dim)
+        )
+
+        x = tf.concat([
+            token, x
+        ], axis=1) if grid_has_cls_token else x
+        x.set_shape((
+            None, 
+            output_grid_size * output_grid_size + int(grid_has_cls_token), 
+            dim
+        ))
+
+        return x
+
     def _create_reshaper(self, reshape_type: str, 
                         i: int, layers_dicts: list[dict], 
                         layers_dict: dict, base_dim: int, 
@@ -899,15 +953,39 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             name=name
         )
 
+        inputs = layers.Input(
+            shape=(None, dim) if reshape_type == "flatten" else source_shape
+        )
+        x = layers.Lambda(
+            lambda x: self._resize_reshaper_tokens(
+                x, 
+                input_grid_size=None, 
+                output_grid_size=grid_size, 
+                dim=dim, 
+                grid_has_cls_token=grid_has_cls_token
+            ), 
+            name=name+"/resize_to_base"
+        )(inputs) if reshape_type == "flatten" else inputs
+        x = reshaper_layer(x)
+        x = layers.Lambda(
+            lambda x: self._resize_reshaper_tokens(
+                x, 
+                input_grid_size=grid_size, 
+                output_grid_size=(
+                    grid_size * self._current_resolution // self.image_size
+                ), 
+                dim=dim, 
+                grid_has_cls_token=grid_has_cls_token
+            ), 
+            name=name+"/resize_from_base"
+        )(x) if reshape_type == "unflatten" else x
+
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
             latent_dim_ratio = kwargs.get("latent_dim_ratio", 1)
             latent_dim = int(
                 target_shape[-1] * latent_dim_ratio
             )
 
-            inputs = layers.Input(source_shape)
-
-            x = reshaper_layer(inputs)
             z_mean = layers.Dense(
                 latent_dim, 
                 name=name+"/z_mean"
@@ -930,9 +1008,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=name+"_"+reshape_type+"_z"
             )
         else:
-            inputs = layers.Input(source_shape)
-
-            x = reshaper_layer(inputs)
             dummy_outputs = tf.shape(inputs)[0]
 
             reshaper = models.Model(
@@ -1104,7 +1179,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{name}/ffn"
             )(x)
             x = layers.Lambda(lambda x: tf.reshape(x, (
-                -1, 
+                tf.shape(x)[0], 
                 self._current_resolution // self.patch_size, # self.grid_size, 
                 self._current_resolution // self.patch_size, # self.grid_size, 
                 self.patch_size, 
@@ -1116,7 +1191,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{name}/transpose"
             )
             x = layers.Lambda(lambda x: tf.reshape(x, (
-                -1, 
+                tf.shape(x)[0], 
                 self._current_resolution, # self.image_size, 
                 self._current_resolution, # self.image_size, 
                 self.channels
@@ -1157,7 +1232,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def set_current_resolution(self, resolution: int | None = None):
         resolution = self.image_size if resolution is None else resolution
 
+        assert int(resolution) == resolution, \
+            "resolution must be an integer."
+        resolution = int(resolution)
+        assert resolution > 0, \
+            "resolution must be positive."
+        assert resolution % self.patch_size == 0, \
+            "resolution must be divisible by patch_size."
+
         self._current_resolution = resolution
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
 
     def get_variables_names(self, vars: list[tf.Variable] | None = None):
         vars = self.trainable_variables if vars is None else vars

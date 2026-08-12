@@ -249,25 +249,22 @@ class BaseEmbedding(BaseLayer):
             return x
 
         batch_size = tf.shape(x)[0] if batch_size is None else batch_size
-        output_grid_size = self.output_grid_size if output_grid_size is None else output_grid_size
-
-        pos_embed_type = self.pos_embed_type
-        if output_grid_size != self.output_grid_size:
-            if pos_embed_type == "new_weight":
-                pos_embed_type = "learned_interpolate"
-            elif pos_embed_type == "2d_sincos":
-                pos_embed_type = "interpolate"
-            else:
-                raise NotImplemented
-
+        interpolated_pos_embed = "interpolate" in self.pos_embed_type
         pos_embed = self.pos_embed
-        pos_embed = tf.reshape(pos_embed, (
+
+        if output_grid_size is not None or interpolated_pos_embed:
+            output_grid_size = self.output_grid_size if output_grid_size is None \
+                            else output_grid_size
+            source_grid_size = self.grid_size if interpolated_pos_embed\
+                             else self.output_grid_size
+            pos_embed_dim = pos_embed.shape[-1]
+
+            pos_embed = tf.reshape(pos_embed, (
                 1, 
-                self.grid_size, 
-                self.grid_size, 
-                self.output_dim
-        )) if pos_embed_type == "interpolate" else pos_embed
-        if pos_embed_type in ("interpolate", "learned_interpolate"):
+                source_grid_size, 
+                source_grid_size, 
+                pos_embed_dim
+            ))
             pos_embed = tf.image.resize(pos_embed, 
                 size=(
                     output_grid_size, 
@@ -278,8 +275,10 @@ class BaseEmbedding(BaseLayer):
             pos_embed = tf.reshape(pos_embed, (
                 1, 
                 output_grid_size * output_grid_size, 
-                self.output_dim
+                pos_embed_dim
             ))
+            pos_embed.set_shape((1, None, pos_embed_dim))
+
         pos_embed = self.pos_embed_mlp(
             pos_embed, 
             training=training

@@ -513,7 +513,14 @@ class DiffusionModel(ArgumentSaverModel):
     def set_current_resolution(self, resolution: int | None = None):
         resolution = self.image_size if resolution is None else resolution
 
-        self._current_resolution = resolution
+        assert int(resolution) == resolution, \
+            "resolution must be an integer."
+        resolution = int(resolution)
+        assert resolution > 0, \
+            "resolution must be positive."
+        assert resolution % self.network.patch_size == 0, \
+            "resolution must be divisible by patch_size."
+
         self.network.set_current_resolution(
             resolution
         )
@@ -521,8 +528,10 @@ class DiffusionModel(ArgumentSaverModel):
             resolution
         ) if self.ema_network is not None else None
 
+        self._current_resolution = resolution
         self.train_function = None
         self.test_function = None
+        self.predict_function = None
 
     def load_schedules(
         self, 
