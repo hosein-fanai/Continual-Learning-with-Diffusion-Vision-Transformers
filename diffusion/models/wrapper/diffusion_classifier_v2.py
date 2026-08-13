@@ -37,6 +37,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             min_id=1, 
             max_id=self.network.depth, 
         )
+        self._progressive_clf_vars_noise_part_ids = list(
+            self.clf_vars_noise_part_ids
+        )
         self.network.set_max_encoder_num(max([
             self.network.max_encoder_num, 
             *self.clf_vars_noise_part_ids
@@ -150,8 +153,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             for key in set(same_keys):
                 merged_dict[f"{name}_{key}"] = dict_[key]
                 del dict_[key]
-                # merged_dict.update(dict_)
-                # del merged_dict[key]
 
             merged_dict.update(dict_)
 
@@ -180,6 +181,29 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.gen_optimizer = self.optimizer
         self.clf_optimizer = optimizers.deserialize(
             optimizers.serialize(self.optimizer)
+        )
+
+    def _register_optimizer_variables(self):
+        self.clf_vars_noise_part_ids = self.network._handle_ids(
+            self._progressive_clf_vars_noise_part_ids, 
+            depth=self.network.depth, 
+            min_id=1, 
+            max_id=self.network.depth, 
+        )
+        self.network.set_max_encoder_num(max([
+            self.network.max_encoder_num, 
+            *self.clf_vars_noise_part_ids
+        ]))
+        self._set_clf_variables()
+        self._set_gen_variables()
+
+        super()._register_optimizer_variables(
+            getattr(self, "gen_optimizer", getattr(self, "optimizer", None)), 
+            self.gen_trainable_variables
+        )
+        super()._register_optimizer_variables(
+            getattr(self, "clf_optimizer", None), 
+            self.clf_trainable_variables
         )
 
     def prep_clfv2_inputs(self, inputs, 

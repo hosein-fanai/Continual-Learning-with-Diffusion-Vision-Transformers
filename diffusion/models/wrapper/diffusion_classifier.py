@@ -30,6 +30,7 @@ class DiffusionClassifier(DiffusionModel):
         super().__init__(**kwargs)
         self._check_clf_assertions(locals())
         self._save_init_args(locals())
+        self._refresh_loss_flags()
 
         self.clf_loss_coef = tf.constant(
             self.clf_loss_coef, 
@@ -39,11 +40,6 @@ class DiffusionClassifier(DiffusionModel):
             int(self.mask_t_percentage / 100 * self.timesteps), 
             dtype=tf.int32
         )
-
-        self.use_clf_kl_loss = bool(self.kl_loss_coef > 0. and 
-                            self.network.clf_reshaper_kwargs.get("add_kl", False))
-        self.use_clf_ctr_loss = bool(self.ctr_loss_coef > 0. and 
-                            len(self.network.clf_cls_token_regularizer_ids) > 0)
 
     def _check_clf_assertions(self, local_vars: dict):
         if local_vars["mask_by_nulls"]:
@@ -55,6 +51,18 @@ class DiffusionClassifier(DiffusionModel):
         if local_vars["clf_train_type"] == "uncond":
             assert local_vars["train_cfg_scale"] is not None, \
                 "clf_train_type can be uncond only when train_cfg_scale is not None."
+
+    def _refresh_loss_flags(self):
+        super()._refresh_loss_flags()
+
+        self.use_clf_kl_loss = bool(
+            self.kl_loss_coef > 0. and
+            self.network.clf_reshaper_kwargs.get("add_kl", False)
+        ) if getattr(self.network, "clf_reshaper_kwargs", None) is not None else None
+        self.use_clf_ctr_loss = bool(
+            self.ctr_loss_coef > 0. and
+            len(self.network.clf_cls_token_regularizer_ids) > 0
+        ) if getattr(self.network, "clf_cls_token_regularizer_ids", None) is not None else None
 
     @property
     def metrics(self):

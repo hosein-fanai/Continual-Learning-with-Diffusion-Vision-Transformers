@@ -1,7 +1,9 @@
-from typing import Literal
-
 import tensorflow as tf
 from tensorflow.keras import layers, models
+
+from copy import deepcopy
+
+from typing import Literal
 
 from . import CondType, TokenType, IdsType, IdsDictType
 
@@ -455,187 +457,421 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
 
+    def _create_clf_layer_dict(self, i: int, layers_dicts: list[dict]):
+        layers_dict = {}
+        key = i+1
+
+        if key in self.feature_aggregation_ids_dict:
+            layers_dict[self.FA] = self._create_feature_handler(
+                ids_set=self.feature_aggregation_ids_dict[key], 
+                layers_dicts=self.layers_dicts, 
+                base_dim=self.clf_dim, 
+                dim_forced=self.clf_dim_forced, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                zero_index_base_dim=self.dim, 
+                increased_dim=self._get_last_output_dim(
+                    i=i-1, 
+                    layers_dicts=layers_dicts, 
+                    base_dim=self.clf_dim
+                ) if key not in self.clf_connection_ids_dict and i != 0 else 0, 
+                output_dim_flag=key not in self.clf_connection_ids_dict, 
+                kwargs=self.feature_aggregation_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.FA[2:]}"
+            )
+
+        if key in self.clf_connection_ids_dict:
+            layers_dict[self.FC] = self._create_feature_handler(
+                ids_set=self.clf_connection_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.clf_dim, 
+                dim_forced=self.clf_dim_forced, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                zero_index_base_dim=self.first_aggregated_dim, 
+                increased_dim=self._get_unforced_total_dim(
+                    ids_set=self.feature_aggregation_ids_dict.get(key, []), 
+                    layers_dicts=self.layers_dicts, 
+                    base_dim=self.dim, 
+                    kwargs=self.feature_aggregation_kwargs
+                ), 
+                kwargs=self.clf_connection_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.FC[2:]}"
+            )
+
+        if key in self.cross_attention_aggregation_ids_dict:
+            layers_dict[self.CAA] = self._create_feature_handler(
+                ids_set=self.cross_attention_aggregation_ids_dict[key], 
+                layers_dicts=self.layers_dicts, 
+                base_dim=self.clf_dim, 
+                dim_forced=self.clf_dim_forced, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                zero_index_base_dim=self.dim, 
+                output_dim_flag=key not in self.clf_cross_attention_ids_dict, 
+                kwargs=self.cross_attention_aggregation_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.CAA[2:]}"
+            )
+
+        if key in self.clf_cross_attention_ids_dict:
+            layers_dict[self.CAC] = self._create_feature_handler(
+                ids_set=self.clf_cross_attention_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.clf_dim, 
+                dim_forced=self.clf_dim_forced, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                zero_index_base_dim=self.first_aggregated_dim, 
+                increased_dim=self._get_unforced_total_dim(
+                    ids_set=self.cross_attention_aggregation_ids_dict.get(key, []), 
+                    layers_dicts=self.layers_dicts, 
+                    base_dim=self.dim, 
+                    kwargs=self.cross_attention_aggregation_kwargs
+                ), 
+                kwargs=self.clf_cross_attention_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.CAC[2:]}"
+            )
+
+        if key in self.clf_vit_block_ids:
+            mha_query_dim = layers_dict[self.CAA].output_dim if \
+                            key in self.cross_attention_aggregation_ids_dict and \
+                            self.clf_cross_attention_plug_type == "queries" \
+                            else None
+            mha_query_dim = layers_dict[self.CAC].output_dim if \
+                            key in self.clf_cross_attention_ids_dict and \
+                            self.clf_cross_attention_plug_type == "queries" \
+                            else mha_query_dim
+
+            layers_dict[self.VTB] = self._create_vit_block(
+                i=i, layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, base_dim=self.clf_dim, 
+                mha_key_dim=self.clf_mha_key_dim, 
+                mha_value_dim=self.clf_mha_value_dim, 
+                mha_query_dim=mha_query_dim, 
+                mha_num_heads=self.clf_mha_num_heads, 
+                mlp_ratio=self.clf_vit_block_mlp_ratio, 
+                mlp_output_dim=self.clf_vit_block_mlp_output_dims.get(key, None), 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                drop_prob=self.clf_drop_prob, 
+                drop_per_sample=self.clf_drop_per_sample, 
+                use_decoder=key in self.clf_use_decoder_ids, 
+                name_prefix=f"{self.name_prefix}clf_depth_{key}_"
+            )
+
+        if key in self.clf_local_mixer_ids:
+            layers_dict[self.LM] = self._create_local_mixer(
+                i=i, 
+                dim_forced=self.clf_dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                circumvent_cls_token=(self.classifier_only_cls_token and \
+                                    self.clf_cls_token_type is not None) or \
+                                    (not self.classifier_only_cls_token and \
+                                    self.cls_token_type is not None),
+                kwargs=self.clf_local_mixer_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
+            )
+
+        if key in self.clf_downsample_ids:
+            layers_dict[self.DS] = self._create_scaler(
+                scaler_type="downsample", 
+                i=i, 
+                dim_forced=self.clf_dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                circumvent_cls_token=(self.classifier_only_cls_token and \
+                                    self.clf_cls_token_type is not None) or \
+                                    (not self.classifier_only_cls_token and \
+                                    self.cls_token_type is not None),
+                kwargs=self.clf_downsample_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
+            )
+
+        if key in self.clf_upsample_ids:
+            layers_dict[self.US] = self._create_scaler(
+                scaler_type="upsample", 
+                i=i, 
+                dim_forced=self.clf_dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
+                ln_mlp_ratio=self.clf_ln_mlp_ratio, 
+                ln_no_adaptation=self.clf_ln_no_adaptation, 
+                circumvent_cls_token=(self.classifier_only_cls_token and \
+                                    self.clf_cls_token_type is not None) or \
+                                    (not self.classifier_only_cls_token and \
+                                    self.cls_token_type is not None),
+                kwargs=self.clf_upsample_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
+            )
+
+        if key in self.clf_reshaper_ids_dict:
+            layers_dict[self.R] = self._create_reshaper(
+                reshape_type=self.clf_reshaper_ids_dict[key], 
+                i=i, layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
+                grid_has_cls_token=(self.clf_cls_token_type is not None and \
+                                    self.classifier_only_cls_token) or \
+                                    (self.cls_token_type is not None and \
+                                    not self.classifier_only_cls_token), 
+                kwargs=self.clf_reshaper_kwargs, 
+                name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
+            )
+
+        if key in self.clf_cls_token_regularizer_ids:
+            layers_dict[self.CTR] = self._create_token_regularizer(
+                name=f"{self.name_prefix}clf_depth_{key}_{self.CTR[2:]}"
+            )
+
+        return layers_dict
+
     def _create_clf_layers(self):
         self.clf_layers_dicts = []
 
         for i in range(self.clf_depth+1):
-            layers_dict = {}
-            key = i+1
+            self.clf_layers_dicts.append(
+                self._create_clf_layer_dict(i, self.clf_layers_dicts)
+            )
 
-            if key in self.feature_aggregation_ids_dict:
-                layers_dict[self.FA] = self._create_feature_handler(
-                    ids_set=self.feature_aggregation_ids_dict[key], 
-                    layers_dicts=self.layers_dicts, 
-                    base_dim=self.clf_dim, 
-                    dim_forced=self.clf_dim_forced, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    zero_index_base_dim=self.dim, 
-                    increased_dim=self._get_last_output_dim(
-                        i=i-1, 
-                        layers_dicts=self.clf_layers_dicts, 
-                        base_dim=self.clf_dim
-                    ) if key not in self.clf_connection_ids_dict and i != 0 else 0, 
-                    output_dim_flag=key not in self.clf_connection_ids_dict, 
-                    kwargs=self.feature_aggregation_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.FA[2:]}"
+    def _register_clf_depth_layer_spec(self, layer_spec, key: int):
+        aliases = {
+            "feature_aggregation": "feature_aggregator", 
+            "aggregation": "feature_aggregator", 
+            "connection": "feature_connector", 
+            "cross_attention_aggregation": "cross_attention_aggregator", 
+            "cross_attention": "cross_attention_connector", 
+            "vit_block": "vision_transformer_block", 
+            "encoder_block": "vision_transformer_block", 
+            "downsample": "downsampler", 
+            "upsample": "upsampler", 
+        }
+        allowed = {
+            "feature_aggregator", "feature_connector", 
+            "cross_attention_aggregator", 
+            "cross_attention_connector", 
+            "vision_transformer_block", "decoder_block", 
+            "local_mixer", "downsampler", "upsampler", 
+            "reshaper", "cls_token_regularizer", 
+        }
+
+        for layer_name, options in self._normalize_depth_layer_spec(
+            layer_spec
+        ).items():
+            layer_name = aliases.get(layer_name, layer_name)
+            assert layer_name in allowed, \
+                f"Unknown progressive classifier layer: {layer_name}."
+            if options is False:
+                continue
+
+            ids = options.get("ids") \
+                  if isinstance(options, dict) else options
+            if layer_name == "feature_aggregator":
+                self.feature_aggregation_ids_dict[key] = \
+                    self._resolve_progressive_ids(ids, self.depth+1)
+            elif layer_name == "feature_connector":
+                self.clf_connection_ids_dict[key] = \
+                    self._resolve_progressive_ids(ids, key)
+            elif layer_name == "cross_attention_aggregator":
+                self.cross_attention_aggregation_ids_dict[key] = \
+                    self._resolve_progressive_ids(ids, self.depth+1)
+            elif layer_name == "cross_attention_connector":
+                self.clf_cross_attention_ids_dict[key] = \
+                    self._resolve_progressive_ids(ids, key)
+            elif layer_name in (
+                "vision_transformer_block", "decoder_block"
+            ):
+                self.clf_vit_block_ids = [*self.clf_vit_block_ids, key]
+                block_options = options if isinstance(options, dict) else {}
+                if layer_name == "decoder_block" or \
+                block_options.get("use_decoder", False):
+                    self.clf_use_decoder_ids = [
+                        *self.clf_use_decoder_ids, key
+                    ]
+                if block_options.get("mlp_output_dim") is not None:
+                    self.clf_vit_block_mlp_output_dims[key] = \
+                        block_options["mlp_output_dim"]
+            elif layer_name == "local_mixer":
+                self.clf_local_mixer_ids = [*self.clf_local_mixer_ids, key]
+            elif layer_name == "downsampler":
+                self.clf_downsample_ids = [*self.clf_downsample_ids, key]
+            elif layer_name == "upsampler":
+                self.clf_upsample_ids = [*self.clf_upsample_ids, key]
+            elif layer_name == "reshaper":
+                reshape_type = options.get("reshape_type") \
+                               if isinstance(options, dict) else options
+                assert reshape_type in ("flatten", "unflatten"), \
+                    "A progressive classifier reshaper must be flatten "\
+                    "or unflatten."
+                self.clf_reshaper_ids_dict[key] = reshape_type
+            elif layer_name == "cls_token_regularizer":
+                self.clf_cls_token_regularizer_ids = [
+                    *self.clf_cls_token_regularizer_ids, key
+                ]
+
+    def _update_clf_depth_config(self):
+        for name in self._clf_depth_metadata_names():
+            self._init_config[name] = deepcopy(getattr(self, name))
+
+        connection_ids = deepcopy(self.clf_connection_ids_dict)
+        connection_ids[-1] = connection_ids.pop(self.clf_depth+1)
+        self._init_config["clf_connection_ids_dict"] = connection_ids
+
+    def _clf_depth_metadata_names(self):
+        return (
+            "clf_depth", "feature_aggregation_ids_dict", 
+            "cross_attention_aggregation_ids_dict", 
+            "clf_connection_ids_dict", 
+            "clf_cross_attention_ids_dict", "clf_vit_block_ids", 
+            "clf_use_decoder_ids", "clf_vit_block_mlp_output_dims", 
+            "clf_local_mixer_ids", "clf_downsample_ids", 
+            "clf_upsample_ids", "clf_reshaper_ids_dict", 
+            "clf_cls_token_regularizer_ids", 
+        )
+
+    def _append_classifier_depths(self, depth_specs):
+        depth_specs = depth_specs if isinstance(depth_specs, list) \
+                      else [depth_specs]
+        depth_specs = [spec for spec in depth_specs if spec is not None]
+        if len(depth_specs) == 0:
+            return 0
+
+        metadata_names = self._clf_depth_metadata_names()[1:]
+        metadata = {
+            name: deepcopy(getattr(self, name)) for name in metadata_names
+        }
+        old_depth = self.clf_depth
+        old_terminal_key = old_depth+1
+        terminal_layers = dict(self.clf_layers_dicts[-1])
+        assert set(terminal_layers) == {self.FC}, \
+            "The terminal classifier depth must only contain its feature "\
+            "connector."
+        old_terminal_input_dim = self._get_last_output_dim(
+            old_depth-1, self.clf_layers_dicts, self.clf_dim
+        )
+        old_head_dim = self._get_last_output_dim(
+            old_depth, self.clf_layers_dicts, self.clf_dim
+        )
+        planned_layers = list(self.clf_layers_dicts[:-1])
+        added_layers = []
+
+        try:
+            terminal_ids = self.clf_connection_ids_dict.pop(
+                old_terminal_key
+            )
+            for layer_spec in depth_specs:
+                key = len(planned_layers) + 1
+                self._register_clf_depth_layer_spec(layer_spec, key)
+                layers_dict = self._create_clf_layer_dict(
+                    key-1, planned_layers
                 )
+                assert len(layers_dict) > 0, \
+                    f"No layer was enabled for added classifier depth {key}."
+                planned_layers.append(layers_dict)
+                added_layers.append(layers_dict)
 
-            if key in self.clf_connection_ids_dict:
-                layers_dict[self.FC] = self._create_feature_handler(
-                    ids_set=self.clf_connection_ids_dict[key], 
-                    layers_dicts=self.clf_layers_dicts, 
-                    base_dim=self.clf_dim, 
-                    dim_forced=self.clf_dim_forced, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    zero_index_base_dim=self.first_aggregated_dim, 
-                    increased_dim=self._get_unforced_total_dim(
-                        ids_set=self.feature_aggregation_ids_dict.get(key, []), 
-                        layers_dicts=self.layers_dicts, 
-                        base_dim=self.dim, 
-                        kwargs=self.feature_aggregation_kwargs
-                    ), 
-                    kwargs=self.clf_connection_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.FC[2:]}"
-                )
+            new_depth = old_depth + len(added_layers)
+            if terminal_ids == [old_depth]:
+                terminal_ids = [new_depth]
+            self.clf_connection_ids_dict[new_depth+1] = terminal_ids
 
-            if key in self.cross_attention_aggregation_ids_dict:
-                layers_dict[self.CAA] = self._create_feature_handler(
-                    ids_set=self.cross_attention_aggregation_ids_dict[key], 
-                    layers_dicts=self.layers_dicts, 
-                    base_dim=self.clf_dim, 
-                    dim_forced=self.clf_dim_forced, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    zero_index_base_dim=self.dim, 
-                    output_dim_flag=key not in self.clf_cross_attention_ids_dict, 
-                    kwargs=self.cross_attention_aggregation_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.CAA[2:]}"
-                )
+            output_dim = self._get_last_output_dim(
+                len(planned_layers)-1, planned_layers, self.clf_dim
+            )
+            assert output_dim == old_terminal_input_dim, \
+                "Added classifier depths must preserve the feature "\
+                "dimension expected by the terminal connector."
+            final_layers = planned_layers + [terminal_layers]
+            assert self._get_last_output_dim(
+                len(final_layers)-1, final_layers, self.clf_dim
+            ) == old_head_dim, \
+                "Added classifier depths must preserve the feature "\
+                "dimension used by the classifier head."
+        except Exception:
+            for name, value in metadata.items():
+                setattr(self, name, value)
+            raise
 
-            if key in self.clf_cross_attention_ids_dict:
-                layers_dict[self.CAC] = self._create_feature_handler(
-                    ids_set=self.clf_cross_attention_ids_dict[key], 
-                    layers_dicts=self.clf_layers_dicts, 
-                    base_dim=self.clf_dim, 
-                    dim_forced=self.clf_dim_forced, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    zero_index_base_dim=self.first_aggregated_dim, 
-                    increased_dim=self._get_unforced_total_dim(
-                        ids_set=self.cross_attention_aggregation_ids_dict.get(key, []), 
-                        layers_dicts=self.layers_dicts, 
-                        base_dim=self.dim, 
-                        kwargs=self.cross_attention_aggregation_kwargs
-                    ), 
-                    kwargs=self.clf_cross_attention_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.CAC[2:]}"
-                )
+        terminal_connector = terminal_layers[self.FC]
+        terminal_connector.ids = terminal_ids
+        terminal_connector._init_config["ids"] = deepcopy(terminal_ids)
 
-            if key in self.clf_vit_block_ids:
-                mha_query_dim = layers_dict[self.CAA].output_dim if \
-                                key in self.cross_attention_aggregation_ids_dict and \
-                                self.clf_cross_attention_plug_type == "queries" \
-                                else None
-                mha_query_dim = layers_dict[self.CAC].output_dim if \
-                                key in self.clf_cross_attention_ids_dict and \
-                                self.clf_cross_attention_plug_type == "queries" \
-                                else mha_query_dim
+        current_terminal = self.clf_layers_dicts[-1]
+        current_terminal.clear()
+        current_terminal.update(added_layers[0])
+        self.clf_layers_dicts.extend(added_layers[1:])
+        self.clf_layers_dicts.append(terminal_layers)
+        self.clf_depth = old_depth + len(added_layers)
+        self._update_clf_depth_config()
+        self.set_max_encoder_num()
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
 
-                layers_dict[self.VTB] = self._create_vit_block(
-                    i=i, layers_dicts=self.clf_layers_dicts, 
-                    layers_dict=layers_dict, base_dim=self.clf_dim, 
-                    mha_key_dim=self.clf_mha_key_dim, 
-                    mha_value_dim=self.clf_mha_value_dim, 
-                    mha_query_dim=mha_query_dim, 
-                    mha_num_heads=self.clf_mha_num_heads, 
-                    mlp_ratio=self.clf_vit_block_mlp_ratio, 
-                    mlp_output_dim=self.clf_vit_block_mlp_output_dims.get(key, None), 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    drop_prob=self.clf_drop_prob, 
-                    drop_per_sample=self.clf_drop_per_sample, 
-                    use_decoder=key in self.clf_use_decoder_ids, 
-                    name_prefix=f"{self.name_prefix}clf_depth_{key}_"
-                )
+        return self.clf_depth - old_depth
 
-            if key in self.clf_local_mixer_ids:
-                layers_dict[self.LM] = self._create_local_mixer(
-                    i=i, 
-                    dim_forced=self.clf_dim_forced, 
-                    layers_dicts=self.clf_layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.clf_dim, 
-                    base_grid_size=self.clf_grid_size, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=(self.classifier_only_cls_token and \
-                                        self.clf_cls_token_type is not None) or \
-                                        (not self.classifier_only_cls_token and \
-                                        self.cls_token_type is not None),
-                    kwargs=self.clf_local_mixer_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
-                )
+    def add_depths(self, depth_spec):
+        """Append network and/or classifier layer dictionaries."""
 
-            if key in self.clf_downsample_ids:
-                layers_dict[self.DS] = self._create_scaler(
-                    scaler_type="downsample", 
-                    i=i, 
-                    dim_forced=self.clf_dim_forced, 
-                    layers_dicts=self.clf_layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.clf_dim, 
-                    base_grid_size=self.clf_grid_size, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=(self.classifier_only_cls_token and \
-                                        self.clf_cls_token_type is not None) or \
-                                        (not self.classifier_only_cls_token and \
-                                        self.cls_token_type is not None),
-                    kwargs=self.clf_downsample_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
-                )
+        targeted = isinstance(depth_spec, dict) and any(
+            name in depth_spec for name in ("network", "classifier")
+        )
+        if not targeted:
+            return super().add_depths(depth_spec)
 
-            if key in self.clf_upsample_ids:
-                layers_dict[self.US] = self._create_scaler(
-                    scaler_type="upsample", 
-                    i=i, 
-                    dim_forced=self.clf_dim_forced, 
-                    layers_dicts=self.clf_layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.clf_dim, 
-                    base_grid_size=self.clf_grid_size, 
-                    ln_mlp_ratio=self.clf_ln_mlp_ratio, 
-                    ln_no_adaptation=self.clf_ln_no_adaptation, 
-                    circumvent_cls_token=(self.classifier_only_cls_token and \
-                                        self.clf_cls_token_type is not None) or \
-                                        (not self.classifier_only_cls_token and \
-                                        self.cls_token_type is not None),
-                    kwargs=self.clf_upsample_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
-                )
+        unknown_targets = set(depth_spec) - {"network", "classifier"}
+        assert not unknown_targets, \
+            f"Unknown progressive depth targets: {unknown_targets}."
 
-            if key in self.clf_reshaper_ids_dict:
-                layers_dict[self.R] = self._create_reshaper(
-                    reshape_type=self.clf_reshaper_ids_dict[key], 
-                    i=i, layers_dicts=self.clf_layers_dicts, 
-                    layers_dict=layers_dict, base_dim=self.clf_dim, 
-                    base_grid_size=self.clf_grid_size, 
-                    grid_has_cls_token=(self.clf_cls_token_type is not None and \
-                                        self.classifier_only_cls_token) or \
-                                        (self.cls_token_type is not None and \
-                                        not self.classifier_only_cls_token), 
-                    kwargs=self.clf_reshaper_kwargs, 
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
-                )
+        with tf.device("/CPU:0"):
+            probe = self.__class__.from_config(deepcopy(self.get_config()))
+            probe._add_depths(depth_spec)
+        del probe
 
-            if key in self.clf_cls_token_regularizer_ids:
-                layers_dict[self.CTR] = self._create_token_regularizer(
-                    name=f"{self.name_prefix}clf_depth_{key}_{self.CTR[2:]}"
-                )
+        return self._add_depths(depth_spec)
 
-            self.clf_layers_dicts.append(layers_dict)
+    def _add_depths(self, depth_spec):
+        targeted = isinstance(depth_spec, dict) and any(
+            name in depth_spec for name in ("network", "classifier")
+        )
+        if not targeted:
+            return super()._add_depths(depth_spec)
+
+        unknown_targets = set(depth_spec) - {"network", "classifier"}
+        assert not unknown_targets, \
+            f"Unknown progressive depth targets: {unknown_targets}."
+
+        old_depth = self.depth
+        old_clf_depth = self.clf_depth
+        network_added = self._append_network_depths(
+            depth_spec.get("network", [])
+        )
+        classifier_added = self._append_classifier_depths(
+            depth_spec.get("classifier", [])
+        )
+
+        return {
+            "network": {
+                "before": old_depth, 
+                "added": network_added, 
+                "after": self.depth, 
+            }, 
+            "classifier": {
+                "before": old_clf_depth, 
+                "added": classifier_added, 
+                "after": self.clf_depth, 
+            }, 
+        }
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None):
         aggregation_ids = []

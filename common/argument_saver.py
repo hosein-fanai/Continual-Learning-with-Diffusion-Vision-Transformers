@@ -39,6 +39,8 @@ class ArgumentSaver:
 
     @classmethod
     def from_config(cls, config):
+        config = deepcopy(config)
+
         return cls(**config)
 
 

@@ -1,9 +1,9 @@
-from typing import Literal, Sequence, get_args
-
 import tensorflow as tf
-from tensorflow.keras import metrics, losses, callbacks
+from tensorflow.keras import metrics, losses, callbacks, optimizers
 
 import numpy as np
+
+from typing import Literal, Sequence, get_args
 
 from common.argument_saver import ArgumentSaverModel
 
@@ -53,6 +53,7 @@ class DiffusionModel(ArgumentSaverModel):
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
+        self._refresh_loss_flags()
 
         if self.use_ema:
             self.ema_network = self.network.__class__.from_config(
@@ -78,12 +79,7 @@ class DiffusionModel(ArgumentSaverModel):
                                             else self.train_noisified_max_timesteps
         self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps is None \
                                             else self.test_noisified_max_timesteps
-
         self.use_image_loss = bool(self.image_loss_coef > 0.)
-        self.use_kl_loss = bool(self.kl_loss_coef > 0. and 
-                                self.network.reshaper_kwargs.get("add_kl", False))
-        self.use_ctr_loss = bool(self.ctr_loss_coef > 0. and 
-                                len(self.network.cls_token_regularizer_ids) > 0)
 
         self.set_timestep_bounds()
         self.set_current_resolution()
@@ -168,6 +164,76 @@ class DiffusionModel(ArgumentSaverModel):
             )
 
         return boundaries.tolist()
+
+    def _register_optimizer_variables(
+        self, 
+        optimizer: optimizers.Optimizer | None = None, 
+        variables: list[tf.Variable] | None = None
+    ) -> None:
+        optimizer = getattr(self, "optimizer", None) if optimizer is None else optimizer
+        variables = self.network.trainable_variables if variables is None else variables
+
+        if optimizer is None:
+            return
+
+        if hasattr(optimizer, "_create_all_weights"):
+            optimizer._create_all_weights(variables)
+        elif hasattr(optimizer, "build"):
+            optimizer.build(variables)
+
+    def _refresh_loss_flags(self):
+        self.use_kl_loss = bool(
+            self.kl_loss_coef > 0. and
+            self.network.reshaper_kwargs.get("add_kl", False)
+        )
+        self.use_ctr_loss = bool(
+            self.ctr_loss_coef > 0. and
+            len(self.network.cls_token_regularizer_ids) > 0
+        )
+
+    def _add_depths(self, depth_spec):
+        raw_weight_ids = {id(weight) for weight in self.network.weights}
+        ema_weight_ids = {id(weight) for weight in self.ema_network.weights} \
+                        if self.ema_network is not None else set()
+
+        growth = self.network._add_depths(depth_spec)
+        self.network.build_model()
+
+        if self.ema_network is not None:
+            self.ema_network._add_depths(
+                depth_spec
+            )
+            self.ema_network.build_model()
+
+            raw_weights = [
+                weight for weight in self.network.weights
+                if id(weight) not in raw_weight_ids
+            ]
+            ema_weights = [
+                weight for weight in self.ema_network.weights
+                if id(weight) not in ema_weight_ids
+            ]
+
+            if len(raw_weights) != len(ema_weights):
+                raise ValueError(
+                    "Raw and EMA progressive depths have different weights."
+                )
+
+            for raw_weight, ema_weight in zip(raw_weights, ema_weights):
+                if raw_weight.shape != ema_weight.shape:
+                    raise ValueError(
+                        "Raw and EMA progressive depth weight shapes differ."
+                    )
+
+                ema_weight.assign(raw_weight)
+
+        self._refresh_loss_flags()
+        self._register_optimizer_variables()
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
+
+        return growth
 
     @property
     def metrics(self):
@@ -316,7 +382,11 @@ class DiffusionModel(ArgumentSaverModel):
     def fit_progressively(
         self, 
         stage_tasks: Sequence[str | tuple | set | dict] | 
-                    Literal["timesteps_only", "resolutions_only"], 
+                    Literal[
+                        "timesteps_only", 
+                        "resolutions_only", 
+                        "depths_only"
+                    ], 
         stages_num: int | None = None, 
         stages_verbose: bool = True, 
         stage_epochs: int = 1, 
@@ -324,6 +394,7 @@ class DiffusionModel(ArgumentSaverModel):
         timestep_boundaries: Sequence[tuple[int, int] | None] | None = None, 
         timestep_clustering_type: ClusteringType = "log_snr", 
         resolutions: Sequence[int | None] | None = None, 
+        depths: Sequence[object | None] | None = None, 
         pacing_type: Literal["fixed", "plateau"] = "fixed", 
         earlystopping_type: Literal["batch_wise", "epoch_wise"] = "epoch_wise", 
         monitor: str = "val_noise_loss", 
@@ -331,30 +402,41 @@ class DiffusionModel(ArgumentSaverModel):
         min_delta: float = 1e-3, 
         stopper_mode: str = "min", 
         **fit_kwargs
-    ):
+    ) -> callbacks.History:
         """Train through a user-defined sequence of progressive stages.
 
         Pass ``stage_tasks`` as a list for a mixed curriculum. Each element
         describes only the values that change before that training stage. A
         value not mentioned by the element keeps its value from the previous
-        stage. Timestep ranges and resolutions can therefore move in any
-        direction and can be changed separately or at the same stage.
+        stage. Timestep ranges, resolutions, and model depth can therefore be
+        changed separately or together without one strategy taking priority.
+        Timestep and resolution updates are applied before their stage. A
+        depth update is appended after its stage has completed successfully,
+        so the new layers start training in the next stage. This makes the
+        last depth update train during ``final_epochs`` when it is nonzero.
 
         ``stage_tasks="timesteps_only"`` creates one timestep task for every
         entry in ``timestep_boundaries``. If those boundaries are omitted,
-        ``stage_num`` stages are generated with
+        ``stages_num`` stages are generated with
         ``_get_progressive_timestep_boundaries``. Likewise,
         ``stage_tasks="resolutions_only"`` uses every entry in ``resolutions``
-        or generates ``stage_num`` low-to-high power-of-two resolution stages.
+        or generates ``stages_num`` low-to-high power-of-two resolution stages.
         For example, three generated resolution stages are
         ``[image_size // 4, image_size // 2, image_size]``.
+        ``stage_tasks="depths_only"`` creates one stage for every entry in
+        ``depths``; depth specifications cannot be generated automatically.
 
         Examples:
 
-            fit_progressively("timesteps_only", stage_num=4, x=dataset)
-            fit_progressively("resolutions_only", stage_num=3, x=dataset)
+            fit_progressively("timesteps_only", stages_num=4, x=dataset)
+            fit_progressively("resolutions_only", stages_num=3, x=dataset)
             fit_progressively(
                 "resolutions_only", resolutions=[16, 32, 64], x=dataset
+            )
+            fit_progressively(
+                "depths_only", 
+                depths=["vit_block", {"local_mixer", "vit_block"}], 
+                final_epochs=1, x=dataset
             )
 
         Supported stage elements are:
@@ -363,40 +445,82 @@ class DiffusionModel(ArgumentSaverModel):
             ("timesteps", (lower_bound, upper_bound))
             "resolution"
             ("resolution", resolution_value)
-            {"timesteps", "resolution"}
+            "depth"
+            ("depth", depth_specification)
+            {"timesteps", "resolution", "depth"}
             {
                 "timesteps": (lower_bound, upper_bound), 
                 "resolution": resolution_value, 
+                "depth": depth_specification, 
             }
 
         A string or set names changes without providing their values. Their
         values are read from ``timestep_boundaries[stage_index]`` and
-        ``resolutions[stage_index]`` respectively. A dictionary value of
-        ``None`` has the same meaning. Inline tuple or dictionary values take
-        precedence over the companion sequences. For example:
+        ``resolutions[stage_index]`` or ``depths[stage_index]`` respectively.
+        A dictionary value of ``None`` has the same meaning. Inline tuple or
+        dictionary values take precedence over the companion sequences.
+
+        A depth specification names layers supported by the transformer's
+        normal layer factories. A string adds one depth containing that layer;
+        a list adds several depths; and a set or dictionary puts several layer
+        types in one depth. A specification without a target applies to the
+        main network branch. Use a target dictionary to choose the main branch,
+        classifier branch, or both::
+
+            depth_specification = {
+                "network": [
+                    "vit_block", 
+                    {"connection": {"ids": [-1]}, "local_mixer": True}, 
+                ], 
+                "classifier": ["vit_block"],
+            }
+
+        Supported main-branch names are ``connection``, ``cross_attention``,
+        ``vit_block``/``decoder_block``, ``local_mixer``, ``downsample``,
+        ``upsample``, ``reshaper``, and ``cls_token_regularizer``. Classifier
+        transformers additionally support ``feature_aggregator`` and
+        ``cross_attention_aggregator``. The existing model-wide layer kwargs
+        are reused. Connector dictionaries may provide ``ids``; transformer
+        block dictionaries may provide ``use_decoder`` and
+        ``mlp_output_dim``; a reshaper value is ``"flatten"`` or
+        ``"unflatten"``. Added sequences must leave the final feature shape
+        compatible with the already-trained output or classifier head. This
+        API deliberately accepts the project's supported layer types rather
+        than arbitrary Keras layers, because each supported type has a defined
+        call signature and location in the transformer depth. New layers are
+        built in both raw and EMA networks, their initial weights are copied
+        into EMA, and their variables are registered with the active optimizer
+        before the following training stage.
+
+        For example:
 
             stage_tasks = [
                 {"timesteps": (700, 1000), "resolution": 16}, 
                 "timesteps", 
                 ("resolution", 32), 
-                {"timesteps", "resolution"}, 
+                {
+                    "timesteps", "resolution", "depth"
+                }, 
             ]
             timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
             resolutions = [None, None, None, 64]
+            depths = [None, None, None, "vit_block"]
 
-        This produces stages ``(700:1000, 16)``, ``(300:1000, 16)``,
-        ``(300:1000, 32)``, and ``(0:1000, 64)``. No direction, native-size
-        ceiling, or implicit priority between the two strategies is imposed.
+        This produces stages ``(700: 1000, 16)``, ``(300: 1000, 16)``,
+        ``(300: 1000, 32)``, and ``(0: 1000, 64)``, then appends a transformer
+        block. No direction, native-size ceiling, or implicit priority between
+        the strategies is imposed.
 
         Args:
             stage_tasks: A list of ordered stage descriptions, or
-                ``"timesteps_only"`` / ``"resolutions_only"``. A list's length
-                is the number of training stages. Strings and two-item tuples
-                change one value; sets and dictionaries may change both.
+                ``"timesteps_only"``, ``"resolutions_only"``, or
+                ``"depths_only"``. A list's length is the number of training
+                stages. Strings and two-item tuples change one value; sets and
+                dictionaries may combine all three progressive operations.
             stages_num: Optional number of generated stages. For an explicit
                 mixed task list, its length determines the stage count. In
                 either ``*_only`` mode, supplied values determine the count.
-                ``stage_num`` is therefore needed only when values must be
+                ``stages_num`` is therefore needed only when values must be
                 generated.
             stages_verbose: Whether to print each stage's resolved state.
             stage_epochs: Number of epochs allocated to every listed stage.
@@ -407,7 +531,7 @@ class DiffusionModel(ArgumentSaverModel):
                 ``(lower_bound, upper_bound)`` pairs. An entry is read only when
                 the corresponding task requests ``"timesteps"`` without an
                 inline pair, so unused positions may be ``None``. When omitted,
-                cumulative easy-to-hard ranges are generated from ``stage_num``.
+                cumulative easy-to-hard ranges are generated from ``stages_num``.
             timestep_clustering_type: It is only used when the method automatically 
                 generates timestep boundaries, and it can be one of ('uniform', 'log_snr').
             resolutions: Optional stage-indexed resolution values. An entry is
@@ -415,8 +539,14 @@ class DiffusionModel(ArgumentSaverModel):
                 without an inline value, so unused positions may be ``None``.
                 Values may increase, decrease, repeat, or exceed ``image_size``;
                 the network's normal resolution requirements still apply. When
-                omitted, ``stage_num`` low-to-high resolutions are generated by
+                omitted, ``stages_num`` low-to-high resolutions are generated by
                 repeatedly dividing ``image_size`` by powers of two.
+            depths: Optional stage-indexed depth specifications. An entry is
+                read only when the corresponding task requests ``"depth"``
+                without an inline value. A specification may add any number of
+                supported layer dictionaries to ``network.layers_dicts`` and,
+                for classifier transformers, ``network.clf_layers_dicts``.
+                Appended depths persist after this method returns.
             pacing_type: ``"fixed"`` always runs ``stage_epochs``. ``"plateau"``
                 may advance sooner using the selected early-stopping callback.
             earlystopping_type: Under plateau pacing, ``"epoch_wise"`` uses
@@ -433,18 +563,21 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             A Keras ``History`` containing merged metrics and a
-            ``progressive_stages`` record of every resolved stage. The model's
+            ``progressive_stages`` record of every resolved stage, including
+            its pre-addition depths and any ``depth_growth`` result. The model's
             timestep bounds and resolution are restored to their entry values
-            after completion or interruption. Input data must be reiterable
+            after completion or interruption; completed structural depth
+            additions are intentionally retained. Input data must be reiterable
             because each stage invokes a separate Keras ``fit`` call.
         """
 
         assert "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, \
             "Do not pass epochs/initial_epoch to fit_progressively(); "\
             "use stage_epochs and final_epochs instead."
-        assert timestep_clustering_type in ClusteringType, \
+        assert timestep_clustering_type in get_args(ClusteringType), \
                     "timestep_clustering_type must be one of "\
-                    f"{ClusteringType} but not {timestep_clustering_type}."
+                    f"{get_args(ClusteringType)} but not "\
+                    f"{timestep_clustering_type}."
         assert pacing_type in (vals:=("fixed", "plateau")), \
             f"pacing_type must be one of {vals} but not {pacing_type}."
         assert earlystopping_type in (vals:=("batch_wise", "epoch_wise")), \
@@ -454,17 +587,24 @@ class DiffusionModel(ArgumentSaverModel):
 
 
         only_task = stage_tasks if stage_tasks in (
-            "timesteps_only", "resolutions_only"
+            "timesteps_only", "resolutions_only", "depths_only"
         ) else None
         if only_task == "timesteps_only" and timestep_boundaries is not None:
             stages_num = len(timestep_boundaries)
         elif only_task == "resolutions_only" and resolutions is not None:
             stages_num = len(resolutions)
+        elif only_task == "depths_only" and depths is not None:
+            stages_num = len(depths)
         elif only_task is None:
             stages_num = len(stage_tasks)
         elif stages_num is None:
             raise ValueError(
-                f"stage_num is required when {only_task!r} values are omitted."
+                f"stages_num is required when {only_task!r} values are omitted."
+            )
+
+        if only_task == "depths_only" and depths is None:
+            raise ValueError(
+                "depths must be provided for depths_only training."
             )
 
         stages_num = int(stages_num)
@@ -506,8 +646,11 @@ class DiffusionModel(ArgumentSaverModel):
             ]
 
         if only_task is not None:
-            task_name = "timesteps" if only_task == "timesteps_only" \
-                        else "resolution"
+            task_name = {
+                "timesteps_only": "timesteps", 
+                "resolutions_only": "resolution", 
+                "depths_only": "depth", 
+            }[only_task]
             stage_tasks = [task_name] * stages_num
 
         user_callbacks = list(fit_kwargs.pop("callbacks", []) or [])
@@ -572,10 +715,14 @@ class DiffusionModel(ArgumentSaverModel):
                 "min_timestep": self._active_min_timestep, 
                 "max_timestep": self._active_max_timestep, 
                 "resolution": self._current_resolution, 
+                "network_depth": self.network.depth, 
+                "classifier_depth": getattr(self.network, "clf_depth", None), 
                 "epochs_ran": len(actual_epochs), 
                 "history": history.history, 
             }
             stage_records.append(stage_record)
+
+            return stage_record
 
 
         try:
@@ -589,7 +736,7 @@ class DiffusionModel(ArgumentSaverModel):
                 elif (
                     isinstance(task, (tuple, list)) and len(task) == 2
                     and isinstance(task[0], str)
-                    and task[0] in ("timesteps", "resolution")
+                    and task[0] in ("timesteps", "resolution", "depth")
                 ):
                     updates = {task[0]: task[1]}
                 else:
@@ -602,20 +749,34 @@ class DiffusionModel(ArgumentSaverModel):
                     bounds = timestep_boundaries[stage_index] if bounds is None else bounds
                     bounds = tuple(bounds)
                     self.set_timestep_bounds(*bounds)
-                    updates["timesteps"] = bounds
+                    updates["timesteps"] = (self._active_min_timestep, self._active_max_timestep)
 
                 if "resolution" in updates:
                     resolution = updates["resolution"]
-                    resolution = resolutions[stage_index] \
-                                 if resolution is None else resolution
+                    resolution = resolutions[stage_index] if resolution is None else resolution
+                    resolution = int(resolution)
                     self.set_current_resolution(resolution)
                     updates["resolution"] = resolution
 
-                run_stage(
+                if "depth" in updates:
+                    depth_spec = updates["depth"]
+                    depth_spec = depths[stage_index] if depth_spec is None else depth_spec
+                    updates["depth"] = depth_spec
+
+                stage_record = run_stage(
                     stage_id=stage_index + 1, 
                     updates=updates, 
                     epochs=stage_epochs, 
                 )
+
+                if "depth" in updates:
+                    stage_record["depth_growth"] = self._add_depths(
+                        updates["depth"]
+                    )
+                    stage_record["post_network_depth"] = self.network.depth
+                    stage_record["post_classifier_depth"] = getattr(
+                        self.network, "clf_depth", None
+                    )
 
             if final_epochs > 0:
                 self.set_timestep_bounds()
@@ -647,6 +808,7 @@ class DiffusionModel(ArgumentSaverModel):
         history.timestep_boundaries = timestep_boundaries
         history.stage_tasks = stage_tasks
         history.resolutions = resolutions
+        history.depths = depths
         history.stages_num = stages_num
 
         return history
@@ -791,6 +953,11 @@ class DiffusionModel(ArgumentSaverModel):
         if not self.use_ema:
             return False
 
+
+        assert len(self.network.weights) == len(self.ema_network.weights), \
+            "Raw and EMA networks must have the same topology."
+
+
         for w, ew in zip(self.network.weights, self.ema_network.weights):
             ew.assign(self.ema_decay * ew + (1 - self.ema_decay) * w)
 
@@ -798,7 +965,7 @@ class DiffusionModel(ArgumentSaverModel):
 
     def apply_grads(self, tape: tf.GradientTape, 
                     loss: tf.Tensor, 
-                    variables: tf.Variable | None = None):
+                    variables: list[tf.Variable]| None = None):
         if variables is None:
             variables = self.network.trainable_variables
 
@@ -1066,7 +1233,8 @@ class DiffusionModel(ArgumentSaverModel):
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
         use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
-        use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss if use_total_loss is None else use_total_loss
+        use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss \
+                        if use_total_loss is None else use_total_loss
 
         results = {}
 
@@ -1112,10 +1280,8 @@ class DiffusionModel(ArgumentSaverModel):
             })
 
         if use_ctr_loss:
-            assert ctr_loss is not None and \
-                ctr_preds is not None and \
-                classes is not None, \
-                "When use_ctr_loss is True, "\
+            assert ctr_loss is not None and ctr_preds is not None and \
+                classes is not None, "When use_ctr_loss is True, "\
                 "ctr_loss, ctr_preds, and classes cannot be None."
 
 

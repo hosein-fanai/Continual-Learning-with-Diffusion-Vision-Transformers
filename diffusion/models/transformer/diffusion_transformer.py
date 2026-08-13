@@ -1,7 +1,9 @@
-from typing import Literal
-
 import tensorflow as tf
 from tensorflow.keras import layers, models
+
+from copy import deepcopy
+
+from typing import Literal
 
 from common.argument_saver import ArgumentSaverModel
 
@@ -1027,124 +1029,314 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return token_regularizer
 
+    def _create_layer_dict(self, i: int, layers_dicts: list[dict]):
+        layers_dict = {}
+        key = i+1
+
+        if key in self.connection_ids_dict:
+            layers_dict[self.FC] = self._create_feature_handler(
+                ids_set=self.connection_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.dim, 
+                dim_forced=self.dim_forced, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                kwargs=self.connection_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}"
+            )
+        
+        if key in self.cross_attention_ids_dict:
+            layers_dict[self.CAC] = self._create_feature_handler(
+                ids_set=self.cross_attention_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.dim, 
+                dim_forced=self.dim_forced, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                kwargs=self.cross_attention_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}"
+            )
+
+        if key in self.vit_block_ids:
+            mha_query_dim = layers_dict[self.CAC].output_dim if \
+                            key in self.cross_attention_ids_dict and \
+                            self.cross_attention_plug_type == "queries" \
+                            else None
+
+            layers_dict[self.VTB] = self._create_vit_block(
+                i=i, layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, base_dim=self.dim, 
+                mha_key_dim=self.mha_key_dim, 
+                mha_value_dim=self.mha_value_dim, 
+                mha_query_dim=mha_query_dim, 
+                mha_num_heads=self.mha_num_heads, 
+                mlp_ratio=self.vit_block_mlp_ratio, 
+                mlp_output_dim=self.vit_block_mlp_output_dims.get(key, None), 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                drop_prob=self.drop_prob, 
+                drop_per_sample=self.drop_per_sample, 
+                use_decoder=key in self.use_decoder_ids, 
+                name_prefix=f"{self.name_prefix}depth_{key}_"
+            )
+
+        if key in self.local_mixer_ids:
+            layers_dict[self.LM] = self._create_local_mixer(
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                circumvent_cls_token=self.cls_token_type is not None, 
+                kwargs=self.local_mixer_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
+            )
+
+        if key in self.downsample_ids:
+            layers_dict[self.DS] = self._create_scaler(
+                scaler_type="downsample", 
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                circumvent_cls_token=self.cls_token_type is not None, 
+                kwargs=self.downsample_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
+            )
+
+        if key in self.upsample_ids:
+            layers_dict[self.US] = self._create_scaler(
+                scaler_type="upsample", 
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                circumvent_cls_token=self.cls_token_type is not None, 
+                kwargs=self.upsample_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
+            )
+
+        if key in self.reshaper_ids_dict:
+            layers_dict[self.R] = self._create_reshaper(
+                reshape_type=self.reshaper_ids_dict[key], 
+                i=i, layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                grid_has_cls_token=self.cls_token_type is not None, 
+                kwargs=self.reshaper_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
+            )
+
+        if key in self.cls_token_regularizer_ids:
+            layers_dict[self.CTR] = self._create_token_regularizer(
+                name=f"{self.name_prefix}depth_{key}_{self.CTR[2:]}"
+            )
+
+        return layers_dict
+
     def _create_layers(self):
         self.layers_dicts = []
 
         for i in range(self.depth):
-            layers_dict = {}
-            key = i+1
+            self.layers_dicts.append(
+                self._create_layer_dict(i, self.layers_dicts)
+            )
 
-            if key in self.connection_ids_dict:
-                layers_dict[self.FC] = self._create_feature_handler(
-                    ids_set=self.connection_ids_dict[key], 
-                    layers_dicts=self.layers_dicts, 
-                    base_dim=self.dim, 
-                    dim_forced=self.dim_forced, 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    kwargs=self.connection_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}"
+    def _normalize_depth_layer_spec(self, layer_spec):
+        if isinstance(layer_spec, str):
+            layer_spec = {layer_spec: True}
+        elif isinstance(layer_spec, (tuple, list, set, frozenset)):
+            assert all(isinstance(name, str) for name in layer_spec), \
+                "A depth layer sequence can only contain layer names."
+
+            layer_spec = dict.fromkeys(layer_spec, True)
+        else:
+            assert isinstance(layer_spec, dict), \
+                "Each added depth must be a layer name, a collection of layer "\
+                "names, or a dictionary of layer options."
+
+            layer_spec = dict(layer_spec)
+
+        assert len(layer_spec) > 0, "An added depth must contain a layer."
+
+        return layer_spec
+
+    def _resolve_progressive_ids(self, ids, key: int):
+        ids = [key-1] if ids is None or ids is True else ids
+        ids = [ids] if isinstance(ids, int) else list(ids)
+        ids = list(range(key)) if None in ids else ids
+        ids = [key + id_ if id_ < 0 else id_ for id_ in ids]
+
+        assert all(0 <= id_ < key for id_ in ids), \
+            f"Feature ids for depth {key} must be in [0, {key})."
+
+        return ids
+
+    def _register_depth_layer_spec(self, layer_spec, key: int):
+        aliases = {
+            "connection": "feature_connector", 
+            "cross_attention": "cross_attention_connector", 
+            "vit_block": "vision_transformer_block", 
+            "encoder_block": "vision_transformer_block", 
+            "downsample": "downsampler", 
+            "upsample": "upsampler", 
+        }
+        allowed = {
+            "feature_connector", "cross_attention_connector", 
+            "vision_transformer_block", "decoder_block", 
+            "local_mixer", "downsampler", "upsampler", 
+            "reshaper", "cls_token_regularizer", 
+        }
+
+        for layer_name, options in self._normalize_depth_layer_spec(
+            layer_spec
+        ).items():
+            layer_name = aliases.get(layer_name, layer_name)
+            if layer_name not in allowed:
+                raise ValueError(f"Unknown progressive depth layer: {layer_name}.")
+            if options is False:
+                continue
+
+            if layer_name == "feature_connector":
+                options = options.get("ids") \
+                    if isinstance(options, dict) else options
+                self.connection_ids_dict[key] = self._resolve_progressive_ids(
+                    options, key
                 )
-            
-            if key in self.cross_attention_ids_dict:
-                layers_dict[self.CAC] = self._create_feature_handler(
-                    ids_set=self.cross_attention_ids_dict[key], 
-                    layers_dicts=self.layers_dicts, 
-                    base_dim=self.dim, 
-                    dim_forced=self.dim_forced, 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    kwargs=self.cross_attention_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}"
+            elif layer_name == "cross_attention_connector":
+                options = options.get("ids") \
+                    if isinstance(options, dict) else options
+                self.cross_attention_ids_dict[key] = self._resolve_progressive_ids(
+                    options, key
                 )
+            elif layer_name in ("vision_transformer_block", "decoder_block"):
+                self.vit_block_ids = [*self.vit_block_ids, key]
+                block_options = options if isinstance(options, dict) else {}
+                if layer_name == "decoder_block" or \
+                block_options.get("use_decoder", False):
+                    self.use_decoder_ids = [*self.use_decoder_ids, key]
+                if block_options.get("mlp_output_dim") is not None:
+                    self.vit_block_mlp_output_dims[key] = block_options[
+                        "mlp_output_dim"
+                    ]
+            elif layer_name == "local_mixer":
+                self.local_mixer_ids = [*self.local_mixer_ids, key]
+            elif layer_name == "downsampler":
+                self.downsample_ids = [*self.downsample_ids, key]
+            elif layer_name == "upsampler":
+                self.upsample_ids = [*self.upsample_ids, key]
+            elif layer_name == "reshaper":
+                reshape_type = options.get("reshape_type") \
+                               if isinstance(options, dict) else options
+                self.reshaper_ids_dict[key] = reshape_type
+            elif layer_name == "cls_token_regularizer":
+                self.cls_token_regularizer_ids = [
+                    *self.cls_token_regularizer_ids, key
+                ]
 
-            if key in self.vit_block_ids:
-                mha_query_dim = layers_dict[self.CAC].output_dim if \
-                                key in self.cross_attention_ids_dict and \
-                                self.cross_attention_plug_type == "queries" \
-                                else None
+    def _update_depth_config(self):
+        for name in self._depth_metadata_names():
+            self._init_config[name] = deepcopy(getattr(self, name))
 
-                layers_dict[self.VTB] = self._create_vit_block(
-                    i=i, layers_dicts=self.layers_dicts, 
-                    layers_dict=layers_dict, base_dim=self.dim, 
-                    mha_key_dim=self.mha_key_dim, 
-                    mha_value_dim=self.mha_value_dim, 
-                    mha_query_dim=mha_query_dim, 
-                    mha_num_heads=self.mha_num_heads, 
-                    mlp_ratio=self.vit_block_mlp_ratio, 
-                    mlp_output_dim=self.vit_block_mlp_output_dims.get(key, None), 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    drop_prob=self.drop_prob, 
-                    drop_per_sample=self.drop_per_sample, 
-                    use_decoder=key in self.use_decoder_ids, 
-                    name_prefix=f"{self.name_prefix}depth_{key}_"
+    def _depth_metadata_names(self):
+        return (
+            "depth", "connection_ids_dict", "cross_attention_ids_dict", 
+            "vit_block_ids", "use_decoder_ids", 
+            "vit_block_mlp_output_dims", "local_mixer_ids", 
+            "downsample_ids", "upsample_ids", "reshaper_ids_dict", 
+            "cls_token_regularizer_ids", 
+        )
+
+    def _append_network_depths(self, depth_specs):
+        depth_specs = depth_specs if isinstance(depth_specs, list) \
+                      else [depth_specs]
+        depth_specs = [spec for spec in depth_specs if spec is not None]
+        if len(depth_specs) == 0:
+            return 0
+
+        metadata_names = self._depth_metadata_names()[1:]
+        metadata = {
+            name: deepcopy(getattr(self, name)) for name in metadata_names
+        }
+        old_depth = self.depth
+        old_dim = self._get_last_output_dim(
+            old_depth-1, self.layers_dicts, self.dim
+        )
+        planned_layers = list(self.layers_dicts)
+        added_layers = []
+
+        try:
+            for layer_spec in depth_specs:
+                key = len(planned_layers) + 1
+                self._register_depth_layer_spec(layer_spec, key)
+                layers_dict = self._create_layer_dict(
+                    key-1, planned_layers
                 )
+                assert len(layers_dict) > 0, \
+                    f"No layer was enabled for added depth {key}."
+                planned_layers.append(layers_dict)
+                added_layers.append(layers_dict)
 
-            if key in self.local_mixer_ids:
-                layers_dict[self.LM] = self._create_local_mixer(
-                    i=i, 
-                    dim_forced=self.dim_forced, 
-                    layers_dicts=self.layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.dim, 
-                    base_grid_size=self.grid_size, 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    circumvent_cls_token=self.cls_token_type is not None, 
-                    kwargs=self.local_mixer_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
+            output_dim = self._get_last_output_dim(
+                len(planned_layers)-1, planned_layers, self.dim
+            )
+            if output_dim != old_dim:
+                raise ValueError(
+                    "Added network depths must preserve the final feature "
+                    "dimension used by the output head."
                 )
+        except Exception:
+            for name, value in metadata.items():
+                setattr(self, name, value)
+            raise
 
-            if key in self.downsample_ids:
-                layers_dict[self.DS] = self._create_scaler(
-                    scaler_type="downsample", 
-                    i=i, 
-                    dim_forced=self.dim_forced, 
-                    layers_dicts=self.layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.dim, 
-                    base_grid_size=self.grid_size, 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    circumvent_cls_token=self.cls_token_type is not None, 
-                    kwargs=self.downsample_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
-                )
+        self.layers_dicts.extend(added_layers)
+        self.depth = len(self.layers_dicts)
+        self._update_depth_config()
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
 
-            if key in self.upsample_ids:
-                layers_dict[self.US] = self._create_scaler(
-                    scaler_type="upsample", 
-                    i=i, 
-                    dim_forced=self.dim_forced, 
-                    layers_dicts=self.layers_dicts, 
-                    layers_dict=layers_dict, 
-                    base_dim=self.dim, 
-                    base_grid_size=self.grid_size, 
-                    ln_mlp_ratio=self.ln_mlp_ratio, 
-                    ln_no_adaptation=self.ln_no_adaptation, 
-                    circumvent_cls_token=self.cls_token_type is not None, 
-                    kwargs=self.upsample_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
-                )
+        return self.depth - old_depth
 
-            if key in self.reshaper_ids_dict:
-                layers_dict[self.R] = self._create_reshaper(
-                    reshape_type=self.reshaper_ids_dict[key], 
-                    i=i, layers_dicts=self.layers_dicts, 
-                    layers_dict=layers_dict, base_dim=self.dim, 
-                    base_grid_size=self.grid_size, 
-                    grid_has_cls_token=self.cls_token_type is not None, 
-                    kwargs=self.reshaper_kwargs, 
-                    name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
-                )
+    def _add_depths(self, depth_spec):
+        """Append supported layer dictionaries to the transformer branch.
 
-            if key in self.cls_token_regularizer_ids:
-                layers_dict[self.CTR] = self._create_token_regularizer(
-                    name=f"{self.name_prefix}depth_{key}_{self.CTR[2:]}"
-                )
+        A target dictionary may contain ``network`` and, in subclasses that
+        support it, ``classifier``. A list under a target adds one depth per
+        item. Within one depth, use a set or dictionary to add several layers.
+        """
 
-            self.layers_dicts.append(layers_dict)
+        if isinstance(depth_spec, dict) and any(
+        name in depth_spec for name in ("network", "classifier")):
+            unknown_targets = set(depth_spec) - {"network", "classifier"}
+            assert not unknown_targets, \
+                f"Unknown progressive depth targets: {unknown_targets}."
+            assert not depth_spec.get("classifier"), \
+                f"{self.__class__.__name__} has no classifier depth branch."
+            depth_spec = depth_spec.get("network", [])
+
+        old_depth = self.depth
+        added = self._append_network_depths(depth_spec)
+
+        return {
+            "network": {
+                "before": old_depth, 
+                "added": added, 
+                "after": self.depth, 
+            }
+        }
 
     def _create_unpatchifier(self):
         if self.use_unpatchify:
@@ -1251,10 +1443,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def build_model(self, call_model: bool = True):
         noisy_images = layers.Input(
             shape=(
-                self.image_size, 
-                self.image_size, 
+                self._current_resolution, 
+                self._current_resolution, 
                 self.channels
-            ),
+            ), 
             dtype=tf.float32, 
             name="noisy_images"
         )
@@ -1270,10 +1462,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         )
 
         self.inputs = (noisy_images, ts, labels)
-        self.outputs = self.call(self.inputs) if call_model else None
+        self.outputs = self.call(
+            self.inputs
+        ) if call_model else None
 
         input_shape = [
-            input_layer.shape for input_layer in self.inputs
+            input_layer.shape 
+            for input_layer in self.inputs
         ]
 
         return input_shape
