@@ -1,4 +1,4 @@
-from typing import Literal, get_args
+from typing import Literal, Sequence, get_args
 
 import tensorflow as tf
 from tensorflow.keras import metrics, losses, callbacks
@@ -108,7 +108,7 @@ class DiffusionModel(ArgumentSaverModel):
 
     def _get_progressive_timestep_boundaries(
         self, 
-        num_stages: int, 
+        stages_num: int, 
         clustering_type: ClusteringType = "log_snr", 
     ) -> list[int]:
         """Return N+1 monotonically increasing curriculum boundaries.
@@ -121,14 +121,14 @@ class DiffusionModel(ArgumentSaverModel):
         only the timesteps sampled for a curriculum stage are restricted.
         """
 
-        assert 1 <= num_stages <= self.timesteps, \
+        assert 1 <= stages_num <= self.timesteps, \
             f"num_stages must be in [1, {self.timesteps}] range, "\
-            f"but got {num_stages}."
+            f"but got {stages_num}."
 
 
         if clustering_type == "uniform":
             boundaries = np.rint(
-                np.linspace(0, self.timesteps, num_stages + 1)
+                np.linspace(0, self.timesteps, stages_num + 1)
             ).astype(np.int32)
         elif clustering_type == "log_snr": # This is just an estimation
             alpha_bar = np.asarray(
@@ -140,7 +140,7 @@ class DiffusionModel(ArgumentSaverModel):
             log_snr = np.log(alpha_bar) - np.log1p(-alpha_bar)
 
             targets = np.linspace(
-                log_snr[0], log_snr[-1], num_stages + 1
+                log_snr[0], log_snr[-1], stages_num + 1
             )
             boundaries = np.asarray([
                 int(np.argmin(np.abs(log_snr - target)))
@@ -200,23 +200,17 @@ class DiffusionModel(ArgumentSaverModel):
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
 
-        if self._active_min_timestep != self.train_noisified_min_timesteps or \
-        self._active_max_timestep != self.train_noisified_max_timesteps:
-            self.set_timestep_bounds(
-                self.train_noisified_min_timesteps, 
-                self.train_noisified_max_timesteps, 
-            )
-            self.train_function = None
+        self.set_timestep_bounds(
+            self.train_noisified_min_timesteps, 
+            self.train_noisified_max_timesteps, 
+        )
 
         fit_results = super().fit(x=x, y=y, **kwargs)
 
-        if self._active_min_timestep != prev_t_min or \
-        self._active_max_timestep != prev_t_max:
-            self.set_timestep_bounds(
-                prev_t_min, 
-                prev_t_max, 
-            )
-            self.train_function = None
+        self.set_timestep_bounds(
+            prev_t_min, 
+            prev_t_max, 
+        )
 
         return fit_results
 
@@ -226,30 +220,23 @@ class DiffusionModel(ArgumentSaverModel):
                 **kwargs) -> dict | list[float]:
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
-
-        if self._active_min_timestep != self.test_noisified_min_timesteps or \
-        self._active_max_timestep != self.test_noisified_max_timesteps:
-            self.set_timestep_bounds(
-                self.test_noisified_min_timesteps, 
-                self.test_noisified_max_timesteps, 
-            )
-            self.test_function = None
-
         prev_test_network_name = self.test_network_name
+
+        self.set_timestep_bounds(
+            self.test_noisified_min_timesteps, 
+            self.test_noisified_max_timesteps, 
+        )
 
         if network_name != self.test_network_name:
             self.test_network_name = network_name
-            self.test_function = None # to force tf recreate compute graph for test_step
+            self.test_function = None
 
         eval_results = super().evaluate(x=x, y=y, **kwargs)
 
-        if self._active_min_timestep != prev_t_min or \
-        self._active_max_timestep != prev_t_max:
-            self.set_timestep_bounds(
-                prev_t_min, 
-                prev_t_max, 
-            )
-            self.test_function = None
+        self.set_timestep_bounds(
+            prev_t_min, 
+            prev_t_max, 
+        )
 
         if prev_test_network_name != self.test_network_name:
             self.test_network = prev_test_network_name
@@ -328,80 +315,214 @@ class DiffusionModel(ArgumentSaverModel):
 
     def fit_progressively(
         self, 
-        num_stages: int = 20, 
+        stage_tasks: Sequence[str | tuple | set | dict] | 
+                    Literal["timesteps_only", "resolutions_only"], 
+        stages_num: int | None = None, 
+        stages_verbose: bool = True, 
         stage_epochs: int = 1, 
         final_epochs: int | None = None, 
-        clustering_type: ClusteringType = "log_snr", 
+        timestep_boundaries: Sequence[tuple[int, int] | None] | None = None, 
+        timestep_clustering_type: ClusteringType = "log_snr", 
+        resolutions: Sequence[int | None] | None = None, 
         pacing_type: Literal["fixed", "plateau"] = "fixed", 
-        timestep_boundaries: list[int] | tuple[int, ...] | None = None, 
         earlystopping_type: Literal["batch_wise", "epoch_wise"] = "epoch_wise", 
-        monitor: str = "noise_loss", 
+        monitor: str = "val_noise_loss", 
         patience: int = 10, 
-        min_delta: float = 0., 
+        min_delta: float = 1e-3, 
         stopper_mode: str = "min", 
-        verbose_stages: bool = True, 
         **fit_kwargs
     ):
-        """Train with an easy-to-hard diffusion-timestep curriculum.
+        """Train through a user-defined sequence of progressive stages.
 
-        Stage 1 samples only the highest-timestep (highest-noise) cluster.
-        Each following stage *accumulates* one harder, lower-timestep cluster:
+        Pass ``stage_tasks`` as a list for a mixed curriculum. Each element
+        describes only the values that change before that training stage. A
+        value not mentioned by the element keeps its value from the previous
+        stage. Timestep ranges and resolutions can therefore move in any
+        direction and can be changed separately or at the same stage.
 
-            [l_N, T) -> [l_{N-1}, T) -> ... -> [0, T).
+        ``stage_tasks="timesteps_only"`` creates one timestep task for every
+        entry in ``timestep_boundaries``. If those boundaries are omitted,
+        ``stage_num`` stages are generated with
+        ``_get_progressive_timestep_boundaries``. Likewise,
+        ``stage_tasks="resolutions_only"`` uses every entry in ``resolutions``
+        or generates ``stage_num`` low-to-high power-of-two resolution stages.
+        For example, three generated resolution stages are
+        ``[image_size // 4, image_size // 2, image_size]``.
 
-        The network, optimizer, EMA weights, timestep embedding table and noise
-        schedule are kept intact across stages. Only the random training
-        timestep support changes. After the curriculum, ``final_epochs`` can
-        continue ordinary full-range diffusion training, as done in the
-        task-difficulty curriculum literature.
+        Examples:
 
-        ``pacing='fixed'`` trains every curriculum stage for ``stage_epochs``.
-        ``pacing='plateau'`` treats ``stage_epochs`` as a maximum and advances
-        when the monitored batch log has not improved for ``patience_batches``.
+            fit_progressively("timesteps_only", stage_num=4, x=dataset)
+            fit_progressively("resolutions_only", stage_num=3, x=dataset)
+            fit_progressively(
+                "resolutions_only", resolutions=[16, 32, 64], x=dataset
+            )
 
-        Any normal Keras ``fit`` arguments (x, validation_data, callbacks, 
-        steps_per_epoch, verbose, ...) are passed through ``fit_kwargs``.
+        Supported stage elements are:
+
+            "timesteps"
+            ("timesteps", (lower_bound, upper_bound))
+            "resolution"
+            ("resolution", resolution_value)
+            {"timesteps", "resolution"}
+            {
+                "timesteps": (lower_bound, upper_bound), 
+                "resolution": resolution_value, 
+            }
+
+        A string or set names changes without providing their values. Their
+        values are read from ``timestep_boundaries[stage_index]`` and
+        ``resolutions[stage_index]`` respectively. A dictionary value of
+        ``None`` has the same meaning. Inline tuple or dictionary values take
+        precedence over the companion sequences. For example:
+
+            stage_tasks = [
+                {"timesteps": (700, 1000), "resolution": 16}, 
+                "timesteps", 
+                ("resolution", 32), 
+                {"timesteps", "resolution"}, 
+            ]
+            timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
+            resolutions = [None, None, None, 64]
+
+        This produces stages ``(700:1000, 16)``, ``(300:1000, 16)``,
+        ``(300:1000, 32)``, and ``(0:1000, 64)``. No direction, native-size
+        ceiling, or implicit priority between the two strategies is imposed.
+
+        Args:
+            stage_tasks: A list of ordered stage descriptions, or
+                ``"timesteps_only"`` / ``"resolutions_only"``. A list's length
+                is the number of training stages. Strings and two-item tuples
+                change one value; sets and dictionaries may change both.
+            stages_num: Optional number of generated stages. For an explicit
+                mixed task list, its length determines the stage count. In
+                either ``*_only`` mode, supplied values determine the count.
+                ``stage_num`` is therefore needed only when values must be
+                generated.
+            stages_verbose: Whether to print each stage's resolved state.
+            stage_epochs: Number of epochs allocated to every listed stage.
+                With plateau pacing, this is the maximum for each stage.
+            final_epochs: Epochs for a final full-timestep, native-resolution
+                stage. ``None`` uses ``stage_epochs`` and ``0`` disables it.
+            timestep_boundaries: Optional stage-indexed sequence of
+                ``(lower_bound, upper_bound)`` pairs. An entry is read only when
+                the corresponding task requests ``"timesteps"`` without an
+                inline pair, so unused positions may be ``None``. When omitted,
+                cumulative easy-to-hard ranges are generated from ``stage_num``.
+            timestep_clustering_type: It is only used when the method automatically 
+                generates timestep boundaries, and it can be one of ('uniform', 'log_snr').
+            resolutions: Optional stage-indexed resolution values. An entry is
+                read only when the corresponding task requests ``"resolution"``
+                without an inline value, so unused positions may be ``None``.
+                Values may increase, decrease, repeat, or exceed ``image_size``;
+                the network's normal resolution requirements still apply. When
+                omitted, ``stage_num`` low-to-high resolutions are generated by
+                repeatedly dividing ``image_size`` by powers of two.
+            pacing_type: ``"fixed"`` always runs ``stage_epochs``. ``"plateau"``
+                may advance sooner using the selected early-stopping callback.
+            earlystopping_type: Under plateau pacing, ``"epoch_wise"`` uses
+                Keras ``EarlyStopping`` and ``"batch_wise"`` uses
+                ``BatchLossPlateau``.
+            monitor: Metric name monitored by plateau pacing.
+            patience: Number of non-improving epochs or batches tolerated by
+                the selected early-stopping callback.
+            min_delta: Minimum monitored improvement.
+            stopper_mode: Keras early-stopping mode used by epoch-wise pacing.
+            **fit_kwargs: Normal Keras ``fit`` arguments such as ``x``,
+                ``validation_data``, ``callbacks``, ``steps_per_epoch`` and
+                ``verbose``. ``epochs`` and ``initial_epoch`` are managed here.
+
+        Returns:
+            A Keras ``History`` containing merged metrics and a
+            ``progressive_stages`` record of every resolved stage. The model's
+            timestep bounds and resolution are restored to their entry values
+            after completion or interruption. Input data must be reiterable
+            because each stage invokes a separate Keras ``fit`` call.
         """
 
         assert "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, \
             "Do not pass epochs/initial_epoch to fit_progressively(); "\
             "use stage_epochs and final_epochs instead."
+        assert timestep_clustering_type in ClusteringType, \
+                    "timestep_clustering_type must be one of "\
+                    f"{ClusteringType} but not {timestep_clustering_type}."
+        assert pacing_type in (vals:=("fixed", "plateau")), \
+            f"pacing_type must be one of {vals} but not {pacing_type}."
+        assert earlystopping_type in (vals:=("batch_wise", "epoch_wise")), \
+            f"earlystopping_type must be one of {vals} but not {earlystopping_type}."
+        assert monitor.removeprefix("val_") in (vals:=self.metrics_names), \
+            f"monitor must be one of {vals} (or with val_) but not {monitor}."
 
 
-        final_epochs = stage_epochs if final_epochs is None else int(final_epochs)
-        boundaries = self._get_progressive_timestep_boundaries(
-            num_stages=num_stages, 
-            clustering_type=clustering_type, 
-        ) if timestep_boundaries is None else timestep_boundaries
-        num_stages = len(boundaries) - 1
-
-        boundaries = [int(v) for v in boundaries]
-        if len(boundaries) < 2:
-            raise ValueError("timestep_boundaries needs at least two values.")
-        if boundaries[0] != 0 or boundaries[-1] != self.timesteps:
+        only_task = stage_tasks if stage_tasks in (
+            "timesteps_only", "resolutions_only"
+        ) else None
+        if only_task == "timesteps_only" and timestep_boundaries is not None:
+            stages_num = len(timestep_boundaries)
+        elif only_task == "resolutions_only" and resolutions is not None:
+            stages_num = len(resolutions)
+        elif only_task is None:
+            stages_num = len(stage_tasks)
+        elif stages_num is None:
             raise ValueError(
-                "timestep_boundaries must start at 0 and end at self.timesteps."
+                f"stage_num is required when {only_task!r} values are omitted."
             )
-        if any(b <= a for a, b in zip(boundaries[:-1], boundaries[1:])):
-            raise ValueError("timestep_boundaries must be strictly increasing.")
 
-        if verbose_stages:
-            print("Initiated boundaries:", boundaries)
+        stages_num = int(stages_num)
+        final_epochs = stage_epochs if final_epochs is None else int(final_epochs)
+
+        needs_timesteps = only_task == "timesteps_only" or any(
+            task == "timesteps" or
+            isinstance(task, (set, frozenset)) and "timesteps" in task or
+            isinstance(task, dict) and "timesteps" in task and
+            task["timesteps"] is None or
+            isinstance(task, (tuple, list)) and len(task) == 2 and
+            task[0] == "timesteps" and task[1] is None
+            for task in stage_tasks
+        )
+        needs_resolution = only_task == "resolutions_only" or any(
+            task == "resolution" or
+            isinstance(task, (set, frozenset)) and "resolution" in task or
+            isinstance(task, dict) and "resolution" in task and
+            task["resolution"] is None or
+            isinstance(task, (tuple, list)) and len(task) == 2 and
+            task[0] == "resolution" and task[1] is None
+            for task in stage_tasks
+        )
+
+        if needs_timesteps and timestep_boundaries is None:
+            boundaries = self._get_progressive_timestep_boundaries(
+                stages_num, 
+                timestep_clustering_type
+            )
+            timestep_boundaries = [
+                (lower_bound, boundaries[-1])
+                for lower_bound in reversed(boundaries[:-1])
+            ]
+
+        if needs_resolution and resolutions is None:
+            resolutions = [
+                self.image_size // 2**power
+                for power in range(stages_num - 1, -1, -1)
+            ]
+
+        if only_task is not None:
+            task_name = "timesteps" if only_task == "timesteps_only" \
+                        else "resolution"
+            stage_tasks = [task_name] * stages_num
 
         user_callbacks = list(fit_kwargs.pop("callbacks", []) or [])
         merged_history = {}
         stage_records = []
         all_epochs = []
         epoch_cursor = 0
+        previous_min_timestep = self._active_min_timestep
+        previous_max_timestep = self._active_max_timestep
+        previous_resolution = self._current_resolution
 
 
-        def run_stage(stage_id, min_t, max_t, epochs, final=False):
+        def run_stage(stage_id, updates, epochs, final=False):
             nonlocal epoch_cursor
 
-
-            self.set_timestep_bounds(min_t, max_t)
-            self.train_function = None
-            self.test_function = None
 
             stage_callbacks = list(user_callbacks)
             if pacing_type == "plateau" and not final:
@@ -411,27 +532,24 @@ class DiffusionModel(ArgumentSaverModel):
                         min_delta=min_delta, 
                         patience=patience, 
                         mode=stopper_mode, 
-                        verbose=verbose_stages
+                        verbose=stages_verbose
                     ))
-                elif earlystopping_type == "batch_size":
+                elif earlystopping_type == "batch_wise":
                     stage_callbacks.append(BatchLossPlateau(
                         monitor=monitor, 
                         patience=patience, 
                         min_delta=min_delta, 
                         # mode=stopper_mode
                     ))
-                else:
-                    raise ValueError(
-                        f"earlystopping_type must be one of (epoch_wise, batch_wise), but not {earlystopping_type}"
-                    )
-            elif pacing_type != "fixed":
-                raise ValueError("pacing_type must be one of ('plateau', 'fixed').")
 
-            if verbose_stages:
-                name = "final/full-range" if final else f"{stage_id}/{num_stages}"
+            if stages_verbose:
+                name = "final/full-task" if final \
+                    else f"{stage_id}/{len(stage_tasks)}"
                 print(
-                    f"Progressive stage {name}: sampling t in "
-                    f"[{min_t}, {max_t}) range."
+                    f"Progressive stage {name}: changes={updates}, "
+                    f"resolution={self._current_resolution}, sampling t in "
+                    f"[{self._active_min_timestep}, "
+                    f"{self._active_max_timestep}) range."
                 )
 
             history = super(DiffusionModel, self).fit(
@@ -448,55 +566,95 @@ class DiffusionModel(ArgumentSaverModel):
             for key, values in history.history.items():
                 merged_history.setdefault(key, []).extend(values)
 
-            stage_records.append({
+            stage_record = {
                 "stage": "final" if final else stage_id, 
-                "min_timestep": min_t, 
-                "max_timestep": max_t, 
+                "updates": updates, 
+                "min_timestep": self._active_min_timestep, 
+                "max_timestep": self._active_max_timestep, 
+                "resolution": self._current_resolution, 
                 "epochs_ran": len(actual_epochs), 
                 "history": history.history, 
-            })
+            }
+            stage_records.append(stage_record)
 
 
         try:
-            # C_N is easiest.  The paper's task-accumulation version then adds
-            # C_{N-1}, C_{N-2}, ... until the full support is present.
-            for stage_id in range(1, num_stages + 1):
-                boundary_id = num_stages - stage_id
+            for stage_index, task in enumerate(stage_tasks):
+                if isinstance(task, str):
+                    updates = {task: None}
+                elif isinstance(task, dict):
+                    updates = dict(task)
+                elif isinstance(task, (set, frozenset)):
+                    updates = dict.fromkeys(task)
+                elif (
+                    isinstance(task, (tuple, list)) and len(task) == 2
+                    and isinstance(task[0], str)
+                    and task[0] in ("timesteps", "resolution")
+                ):
+                    updates = {task[0]: task[1]}
+                else:
+                    raise ValueError(
+                        f"Invalid stage task at index {stage_index}: {task!r}."
+                    )
+
+                if "timesteps" in updates:
+                    bounds = updates["timesteps"]
+                    bounds = timestep_boundaries[stage_index] if bounds is None else bounds
+                    bounds = tuple(bounds)
+                    self.set_timestep_bounds(*bounds)
+                    updates["timesteps"] = bounds
+
+                if "resolution" in updates:
+                    resolution = updates["resolution"]
+                    resolution = resolutions[stage_index] \
+                                 if resolution is None else resolution
+                    self.set_current_resolution(resolution)
+                    updates["resolution"] = resolution
+
                 run_stage(
-                    stage_id=stage_id, 
-                    min_t=boundaries[boundary_id], 
-                    max_t=self.timesteps, 
+                    stage_id=stage_index + 1, 
+                    updates=updates, 
                     epochs=stage_epochs, 
                 )
 
             if final_epochs > 0:
+                self.set_timestep_bounds()
+                self.set_current_resolution()
+
                 run_stage(
-                    stage_id=num_stages + 1, 
-                    min_t=0, 
-                    max_t=self.timesteps, 
+                    stage_id=len(stage_tasks) + 1, 
+                    updates={
+                        "timesteps": (
+                            self._active_min_timestep, 
+                            self._active_max_timestep
+                        ), 
+                        "resolution": self._current_resolution, 
+                    }, 
                     epochs=final_epochs, 
                     final=True, 
                 )
         finally:
-            # Normal fit/evaluate/noisify behavior must remain unchanged after
-            # the progressive call, even if training was interrupted.
-            self.set_timestep_bounds()
-            self.train_function = None
-            self.test_function = None
+            self.set_timestep_bounds(
+                previous_min_timestep, previous_max_timestep
+            )
+            self.set_current_resolution(previous_resolution)
 
         history = callbacks.History()
         history.set_model(self)
         history.history = merged_history
         history.epoch = all_epochs
         history.progressive_stages = stage_records
-        history.timestep_boundaries = boundaries
+        history.timestep_boundaries = timestep_boundaries
+        history.stage_tasks = stage_tasks
+        history.resolutions = resolutions
+        history.stages_num = stages_num
 
         return history
 
     def set_timestep_bounds(
         self, 
         min_timesteps: int | None = None, 
-        max_timesteps: int | None = None
+        max_timesteps: int | None = None, 
     ):
         min_timesteps = 0 if min_timesteps is None else min_timesteps
         max_timesteps = self.timesteps if max_timesteps is None else max_timesteps
@@ -507,19 +665,17 @@ class DiffusionModel(ArgumentSaverModel):
             f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
 
 
-        self._active_min_timestep = min_timesteps
-        self._active_max_timestep = max_timesteps
+        if getattr(self, "_active_min_timestep", None) != min_timesteps or \
+        getattr(self, "_active_max_timestep", None) != max_timesteps:
+            self._active_min_timestep = min_timesteps
+            self._active_max_timestep = max_timesteps
+
+            self.train_function = None
+            self.test_function = None
+            self.predict_function = None
 
     def set_current_resolution(self, resolution: int | None = None):
         resolution = self.image_size if resolution is None else resolution
-
-        assert int(resolution) == resolution, \
-            "resolution must be an integer."
-        resolution = int(resolution)
-        assert resolution > 0, \
-            "resolution must be positive."
-        assert resolution % self.network.patch_size == 0, \
-            "resolution must be divisible by patch_size."
 
         self.network.set_current_resolution(
             resolution
@@ -528,10 +684,13 @@ class DiffusionModel(ArgumentSaverModel):
             resolution
         ) if self.ema_network is not None else None
 
-        self._current_resolution = resolution
-        self.train_function = None
-        self.test_function = None
-        self.predict_function = None
+        resolution = int(resolution)
+        if getattr(self, "_current_resolution", None) != resolution:
+            self._current_resolution = resolution
+
+            self.train_function = None
+            self.test_function = None
+            self.predict_function = None
 
     def load_schedules(
         self, 
@@ -632,8 +791,7 @@ class DiffusionModel(ArgumentSaverModel):
         if not self.use_ema:
             return False
 
-        for w, ew in zip(self.network.weights, 
-                        self.ema_network.weights):
+        for w, ew in zip(self.network.weights, self.ema_network.weights):
             ew.assign(self.ema_decay * ew + (1 - self.ema_decay) * w)
 
         return True

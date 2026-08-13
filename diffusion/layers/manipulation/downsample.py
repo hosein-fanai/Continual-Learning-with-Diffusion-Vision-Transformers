@@ -40,7 +40,7 @@ class Downsample(BaseEmbedding):
 
 
         self.output_grid_size = (
-            self.grid_size + self.self.strides - 1
+            self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
                         else self.grid_size // self.strides
 

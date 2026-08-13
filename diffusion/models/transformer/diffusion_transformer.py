@@ -735,7 +735,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return feature_handler
 
-    def _create_vit_block(self, i: int, layers_dicts: list[dict],
+    def _create_vit_block(self, i: int, layers_dicts: list[dict], 
                         layers_dict: dict, base_dim: int, 
                         mha_key_dim: int | None, mha_value_dim: int | None, 
                         mha_num_heads: int, mlp_ratio: float, 
@@ -1234,16 +1234,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         assert int(resolution) == resolution, \
             "resolution must be an integer."
-        resolution = int(resolution)
         assert resolution > 0, \
             "resolution must be positive."
         assert resolution % self.patch_size == 0, \
             "resolution must be divisible by patch_size."
 
-        self._current_resolution = resolution
-        self.train_function = None
-        self.test_function = None
-        self.predict_function = None
+
+        self._current_resolution = int(resolution)
 
     def get_variables_names(self, vars: list[tf.Variable] | None = None):
         vars = self.trainable_variables if vars is None else vars

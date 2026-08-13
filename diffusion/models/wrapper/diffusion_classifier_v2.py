@@ -221,8 +221,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         """Progressively train only the generative diffusion objective.
 
         This mirrors ``fit_generator`` but dispatches to DiffusionModel's
-        timestep-curriculum trainer. The classifier/discriminator phase can be
-        trained normally afterwards with ``fit_discriminator``.
+        progressive curriculum trainer. The classifier/discriminator phase can
+        be trained normally afterwards with ``fit_discriminator``.
         """
 
         active_part_name = "generator"
