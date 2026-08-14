@@ -1,9 +1,9 @@
-from typing import get_args
-
 import tensorflow as tf
 from tensorflow.keras import layers
 
 import numpy as np
+
+from typing import get_args
 
 from . import PosEmbedType
 
@@ -148,17 +148,16 @@ class BaseEmbedding(BaseLayer):
         ``new_weight``
             A learned table is created directly at the target resolution.
 
-        ``interpolate``
-            Creates a fixed 2D sine/cosine table at the input/source resolution
-            and spatially resizes it to the target resolution. It adds no trainable
-            parameters.
-
-        ``learned_interpolate``
-            Creates a learned table at the input/source resolution and spatially
+        ``1d_interpolate`` / ``2d_interpolate``
+            Creates a fixed sine/cosine table at the source resolution and
             resizes it to the target resolution.
 
-        ``sincos``
-            Uses a fixed, parameter-free 2D sine/cosine table at the target
+        ``1d_learned_interpolate`` / ``2d_learned_interpolate``
+            Creates a learned table at the source resolution and resizes it to
+            the target resolution.
+
+        ``1d_sincos`` / ``2d_sincos``
+            Uses a fixed, parameter-free sine/cosine table at the target
             resolution.
         """
 
@@ -187,13 +186,56 @@ class BaseEmbedding(BaseLayer):
                 name=name
             )
 
-        if pos_embed_type == "interpolate":
+        if pos_embed_type == "1d_sincos":
+            spatial_embedding = embed_steps is None
+            embedding = self._get_1d_sincos_embedding(
+                dim=embed_dim, 
+                positions=tf.range(
+                    0, 
+                    output_grid_size * output_grid_size 
+                    if spatial_embedding else embed_steps, 
+                    1, 
+                    dtype=tf.float32
+                ),
+                temperature=temperature
+            )
+
+            return embedding[None, ...] if spatial_embedding else embedding
+
+        if pos_embed_type == "1d_interpolate":
+            return self._get_1d_sincos_embedding(
+                dim=embed_dim,
+                positions=tf.range(
+                    0, grid_size * grid_size, 1, dtype=tf.float32
+                ),
+                temperature=temperature
+            )[None, ...]
+
+        if pos_embed_type == "1d_learned_interpolate":
+            return self.add_weight(
+                shape=(
+                    1,
+                    grid_size * grid_size,
+                    embed_dim
+                ),
+                initializer="zeros",
+                trainable=True,
+                name=name
+            )
+
+        if pos_embed_type == "2d_sincos":
+            return self._get_2d_sincos_embedding(
+                dim=embed_dim, grid_size=output_grid_size, 
+                temperature=temperature, name=name
+            )
+
+        if pos_embed_type == "2d_interpolate":
             return self._get_2d_sincos_embedding(
                 dim=embed_dim, grid_size=grid_size, 
                 temperature=temperature, name=name
             )
 
-        if pos_embed_type == "learned_interpolate":
+        if pos_embed_type == "2d_learned_interpolate":
             return self.add_weight(
                 shape=(
                     1, 
@@ -204,19 +246,6 @@ class BaseEmbedding(BaseLayer):
                 initializer="zeros", 
                 trainable=True, 
                 name=name
-            )
-
-        if pos_embed_type == "2d_sincos":
-            return self._get_2d_sincos_embedding(
-                dim=embed_dim, grid_size=output_grid_size, 
-                temperature=temperature, name=name
-            )
-
-        if pos_embed_type == "1d_sincos":
-            return self._get_1d_sincos_embedding(
-                dim=embed_dim, 
-                positions=tf.range(0, embed_steps, 1, dtype=tf.float32), 
-                temperature=temperature
             )
 
     def _create_embedding_layer(self, **kwargs):
@@ -249,27 +278,41 @@ class BaseEmbedding(BaseLayer):
             return x
 
         batch_size = tf.shape(x)[0] if batch_size is None else batch_size
-        interpolated_pos_embed = "interpolate" in self.pos_embed_type
         pos_embed = self.pos_embed
 
+        interpolated_pos_embed = "interpolate" in self.pos_embed_type
         if output_grid_size is not None or interpolated_pos_embed:
             output_grid_size = self.output_grid_size if output_grid_size is None \
                             else output_grid_size
-            source_grid_size = self.grid_size if interpolated_pos_embed\
+            source_grid_size = self.grid_size if interpolated_pos_embed \
                              else self.output_grid_size
-            pos_embed_dim = pos_embed.shape[-1]
 
-            pos_embed = tf.reshape(pos_embed, (
-                1, 
-                source_grid_size, 
-                source_grid_size, 
-                pos_embed_dim
-            ))
-            pos_embed = tf.image.resize(pos_embed, 
-                size=(
+            pos_embed_dim = pos_embed.shape[-1]
+            if self.pos_embed_type.startswith("1d_"):
+                pos_embed = tf.reshape(pos_embed, (
+                    1, 
+                    source_grid_size * source_grid_size, 
+                    1, 
+                    pos_embed_dim
+                ))
+                resize_shape = (
+                    output_grid_size * output_grid_size, 
+                    1
+                )
+            else:
+                pos_embed = tf.reshape(pos_embed, (
+                    1, 
+                    source_grid_size, 
+                    source_grid_size, 
+                    pos_embed_dim
+                ))
+                resize_shape = (
                     output_grid_size, 
                     output_grid_size
-                ), 
+                )
+
+            pos_embed = tf.image.resize(pos_embed, 
+                size=resize_shape, 
                 method=self.pos_interpolation_method
             )
             pos_embed = tf.reshape(pos_embed, (
