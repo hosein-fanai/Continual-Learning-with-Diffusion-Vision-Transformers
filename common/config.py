@@ -39,6 +39,7 @@ class DiffusionTransformerConfig(KwargsMixin):
 
 @dataclass
 class DiTClassifierConfig(DiffusionTransformerConfig):
+    aggregate_from_noises: bool = False
     prepend_cls_token: bool = True
     cls_token_pos_plug_method: str = "add"
     clf_dropout_rate: float = 0.0
@@ -49,9 +50,11 @@ class DiffusionModelConfig(KwargsMixin):
     test_network_name: str = "ema"
     ema_decay: float = 0.999
     scheduler_name: str = "clipped_cosine"
+    modify_first_t: bool = False
     p_uncond: float = 0.1
     test_steps: int = 50
     test_cfg_scale: float = 4.0
+    swap_noise_image: bool = False
 
 
 @dataclass

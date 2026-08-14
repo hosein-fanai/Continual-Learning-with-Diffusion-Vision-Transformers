@@ -21,7 +21,6 @@ class DiffusionClassifier(DiffusionModel):
         mask_by_nulls: bool = True, 
         mask_by_t_threshold: bool = False, 
         mask_t_percentage: int = 70, 
-        modify_first_t: bool = False, 
         use_ensemble_loss_instead: bool = False, 
         clf_train_type: TrainType = "cond", 
         clf_loss_coef: float = 8.6e-3, 
@@ -331,26 +330,6 @@ class DiffusionClassifier(DiffusionModel):
         ))
 
         return results
-
-    def load_schedules(self, **kwargs):
-        super().load_schedules(**kwargs)
-
-        if self.modify_first_t:
-            self.schedules["sqrt_alpha_bar"] = tf.tensor_scatter_nd_update(
-                self.schedules["sqrt_alpha_bar"], 
-                indices=[[0]], 
-                updates=[1.]
-            )
-            self.schedules["sqrt_one_minus_alpha_bar"] = tf.tensor_scatter_nd_update(
-                self.schedules["sqrt_one_minus_alpha_bar"], 
-                indices=[[0]], 
-                updates=[0.]
-            )
-            self.schedules["alpha_bar"] = tf.tensor_scatter_nd_update(
-                self.schedules["alpha_bar"], 
-                indices=[[0]], 
-                updates=[1.]
-            )
 
     def call_network(
         self, 

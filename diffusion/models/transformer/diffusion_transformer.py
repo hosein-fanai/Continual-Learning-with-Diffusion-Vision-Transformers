@@ -513,8 +513,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     skip_reshaper=skip_reshaper
                 ))
 
+        if len(dims) == 0:
+            return 0
+
         if kwargs is None or \
-            kwargs.get("connect_type", "concat") == "concat":
+        kwargs.get("connect_type", "concat") == "concat":
             return sum(dims)
 
         for dim_1 in dims:
@@ -1538,19 +1541,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         depth_spec: str | tuple | set | dict | list | None
     ) -> dict[str, dict[str, int]]:
-        """Append transformer depths with the existing layer factories.
+        f"""Append transformer depths with the existing layer factories.
 
         This method is the structural part of progressive-depth training. A
         string adds one depth containing that layer. A tuple or set combines
         several layer types in one depth, while an outer list adds one depth
         for each item. A dictionary also describes one depth and may provide
-        ``ids`` for ``connection`` or ``cross_attention``, ``use_decoder`` and
-        ``mlp_output_dim`` for ``vit_block``, or a ``reshape_type`` for
-        ``reshaper``. The other supported names are ``decoder_block``,
-        ``local_mixer``, ``downsample``, ``upsample`` and
-        ``cls_token_regularizer``. The longer legacy factory names such as
-        ``feature_connector``, ``vision_transformer_block``, ``downsampler``
-        and ``upsampler`` remain accepted aliases.
+        ``ids`` for ``{self.FC[2:]}`` or ``{self.CAC[2:]}``, ``use_decoder`` 
+        and ``mlp_output_dim`` for ``{self.VTB[2:]}``, or a ``reshape_type`` 
+        for ``{self.R[2:]}``. The other supported names are ``{self.LM[2:]}``
+        , ``{self.DS[2:]}``, ``{self.US[2:]}`` and ``{self.CTR[2:]}``.
 
         The method reuses the model-wide kwargs and the normal ID assertions
         and handlers used at construction. New depths are permanent and their

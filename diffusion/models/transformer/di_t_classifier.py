@@ -28,6 +28,7 @@ class DiTClassifier(DiffusionTransformer):
 
     def __init__(
         self, 
+        aggregate_from_noises: bool = False, 
         feature_aggregation_ids_dict: IdsDictType = {1: (-1,)}, 
         feature_aggregation_kwargs: dict = {}, 
         cross_attention_aggregation_ids_dict: IdsDictType = {}, 
@@ -71,10 +72,10 @@ class DiTClassifier(DiffusionTransformer):
         build: bool = True, 
         **kwargs
     ):
+        temp_val = kwargs.pop("cls_token_type", None)
         super().__init__(
             cls_token_type=None if classifier_only_cls_token and \
-                        (temp_val:=kwargs.pop("cls_token_type", None)) \
-                        is not None else temp_val, 
+                        temp_val is not None else temp_val, 
             build=False, 
             **kwargs
         )
@@ -90,18 +91,22 @@ class DiTClassifier(DiffusionTransformer):
             base_dim=self.dim, 
             kwargs=self.feature_aggregation_kwargs
         ) if not self.clf_dim_forced and 1 not in self.clf_connection_ids_dict else self.clf_dim
+        self.first_aggregated_dim = (
+            self.patches_dim if self.classifier_only_cls_token else self.dim
+        ) if self.aggregate_from_noises else self.first_aggregated_dim
         self.clf_dim = self.first_aggregated_dim if self.clf_dim is None else self.clf_dim
         self.clf_grid_size = self._get_ids_grid_size(
             ids_set=self.feature_aggregation_ids_dict[1], 
             layers_dicts=self.layers_dicts, 
             base_grid_size=self.grid_size, 
             must_be_same=True
-        )
+        ) if not self.aggregate_from_noises else self.grid_size
         self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, (-1,))
 
         self._create_clf_embedders()
         self.cls_token = self._create_cls_token(
-            self.clf_dim, 
+            self.first_aggregated_dim if self.aggregate_from_noises \
+                                      else self.clf_dim, 
             self.cls_token_pos_merger_type, 
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
@@ -156,6 +161,10 @@ class DiTClassifier(DiffusionTransformer):
 
         assert self.use_cfg, \
             "use_cfg must be True for classification to work."
+
+        if local_vars["aggregate_from_noises"]:
+            assert self.use_unpatchify, \
+                "aggregate_from_noises requires use_unpatchify to be True."
 
         assert 1 in local_vars["feature_aggregation_ids_dict"] and \
             "There must be at least one feature vector to connect to the classifier part."
@@ -462,11 +471,14 @@ class DiTClassifier(DiffusionTransformer):
         key = i+1
 
         if key in self.feature_aggregation_ids_dict:
+            bypass_aggregator = self.aggregate_from_noises and key == 1
             layers_dict[self.FA] = self._create_feature_handler(
-                ids_set=self.feature_aggregation_ids_dict[key], 
+                ids_set=self.feature_aggregation_ids_dict[key] 
+                        if not bypass_aggregator
+                        else [], 
                 layers_dicts=self.layers_dicts, 
                 base_dim=self.clf_dim, 
-                dim_forced=self.clf_dim_forced, 
+                dim_forced=False if bypass_aggregator else self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
                 zero_index_base_dim=self.dim, 
@@ -474,9 +486,10 @@ class DiTClassifier(DiffusionTransformer):
                     i=i-1, 
                     layers_dicts=layers_dicts, 
                     base_dim=self.clf_dim
-                ) if key not in self.clf_connection_ids_dict and i != 0 else 0, 
+                ) if key not in self.clf_connection_ids_dict and i != 0 \
+                  else self.first_aggregated_dim if bypass_aggregator else 0, 
                 output_dim_flag=key not in self.clf_connection_ids_dict, 
-                kwargs=self.feature_aggregation_kwargs, 
+                kwargs={} if bypass_aggregator else self.feature_aggregation_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.FA[2:]}"
             )
 
@@ -494,7 +507,8 @@ class DiTClassifier(DiffusionTransformer):
                     layers_dicts=self.layers_dicts, 
                     base_dim=self.dim, 
                     kwargs=self.feature_aggregation_kwargs
-                ), 
+                ) if not (self.aggregate_from_noises and key == 1) 
+                else self.first_aggregated_dim, 
                 kwargs=self.clf_connection_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.FC[2:]}"
             )
@@ -657,6 +671,7 @@ class DiTClassifier(DiffusionTransformer):
         )
         outputs = self.compute_class(
             features_list, 
+            noises, 
             times=inputs[1], 
             labels=inputs[2], 
             training=training
@@ -676,9 +691,9 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["clf_regs_list"] = outputs[3]
             output_dict["clf_z_vals"] = outputs[4]
         else:
-            output_dict["classes"] = outputs
+            output_dict["classes"] = outputs[0]
 
-            return output_dict
+        return output_dict
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None):
         aggregation_ids = []
@@ -686,6 +701,9 @@ class DiTClassifier(DiffusionTransformer):
             self.feature_aggregation_ids_dict.values()]
         [aggregation_ids.extend(value) for value in \
             self.cross_attention_aggregation_ids_dict.values()]
+
+        if self.aggregate_from_noises:
+            aggregation_ids.append(self.depth)
 
         self.max_encoder_num = max(
             aggregation_ids
@@ -708,6 +726,7 @@ class DiTClassifier(DiffusionTransformer):
     def compute_class(
         self, 
         features_list: list[tf.Tensor], 
+        noises: tf.Tensor | None, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
         training: bool | None = None
@@ -736,6 +755,30 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.FA in layers_dict else x
             if i == 0:
+                if self.aggregate_from_noises:
+                    if self.classifier_only_cls_token:
+                        x = self.patch_embedder(
+                            noises, 
+                            output_grid_size=self._current_resolution // self.patch_size if \
+                                            self.image_size != self._current_resolution \
+                                            else None, 
+                            training=training
+                        )
+                    else:
+                        x, (_, main_time_embeds, main_label_embeds) = self.embed_inputs(
+                            (noises, times, labels), 
+                            self.cond_type, 
+                            full_return=True, 
+                            training=training
+                        )
+                        x = self.prepend_cls_token(
+                            x, self.cls_token_type, 
+                            time_embeds=main_time_embeds, 
+                            label_embeds=main_label_embeds, 
+                            times=times, labels=labels, 
+                            training=training
+                        ) if self.cls_token_type is not None else x
+
                 x = self.prepend_cls_token(
                     x, self.clf_cls_token_type, 
                     time_embeds=time_embeds, 
@@ -743,6 +786,7 @@ class DiTClassifier(DiffusionTransformer):
                     times=times, labels=labels, 
                     training=training
                 ) if self.classifier_only_cls_token and self.clf_cls_token_type is not None else x
+
                 clf_features_list.append(x)
 
             x = layers_dict[self.FC](
@@ -829,13 +873,18 @@ class DiTClassifier(DiffusionTransformer):
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
 
-        *_, features_list, _, _ = self.encode(
+        x, cond, features_list, _, _ = self.encode(
             inputs, 
             max_depth=max_encoder_num, 
             training=training
         )
+        noises = self.unpatchifier(
+            (x, cond), 
+            training=training
+        ) if self.aggregate_from_noises else None
         x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals = self.compute_class(
             features_list, 
+            noises, 
             times=inputs[1], 
             labels=inputs[2], 
             training=training
@@ -849,20 +898,16 @@ class DiTClassifier(DiffusionTransformer):
         self, 
         depth_spec: str | tuple | set | dict | list | None
     ) -> dict[str, dict[str, int]]:
-        """Append transformer and classifier depths through their own APIs.
+        f"""Append transformer and classifier depths through their own APIs.
 
         An ordinary specification is delegated to ``DiffusionTransformer``
         and therefore grows only ``layers_dicts``. A targeted dictionary may
         contain ``network`` and ``classifier``. The network value uses the
         base transformer's syntax; the classifier value uses the same outer
-        list/string/set/dictionary rules and the classifier layer names
-        ``feature_aggregation``, ``connection``,
-        ``cross_attention_aggregation``, ``cross_attention``, ``vit_block``,
-        ``decoder_block``, ``local_mixer``, ``downsample``, ``upsample``,
-        ``reshaper`` and ``cls_token_regularizer``. Their legacy factory names,
-        including ``feature_aggregator``, ``feature_connector``,
-        ``cross_attention_aggregator``, ``vision_transformer_block``,
-        ``downsampler`` and ``upsampler``, remain accepted aliases.
+        list/string/set/dictionary rules and the classifier layer names 
+        ``{self.FA[2:]}``, ``{self.FC[2:]}``, ``{self.CAA[2:]}``, ``{self.CAC[2:]}``, 
+        ``{self.VTB[2:]}``, ``{self.R[2:]}``. The other supported names are 
+        ``{self.LM[2:]}``, ``{self.DS[2:]}``, ``{self.US[2:]}`` and ``{self.CTR[2:]}``.
 
         Classifier aggregators read features from the main transformer and
         classifier connectors read preceding classifier depths. The existing
@@ -906,6 +951,9 @@ class DiTClassifier(DiffusionTransformer):
         old_clf_depth = self.clf_depth
         if len(classifier_specs) == 0:
             growth = super().add_depths(network_spec)
+
+            if self.aggregate_from_noises:
+                self.set_max_encoder_num()
 
             self._init_config[
                 "feature_aggregation_ids_dict"
@@ -973,7 +1021,7 @@ class DiTClassifier(DiffusionTransformer):
                         continue
                     
                     if layer_name in (
-                        self.FA[2:], self.FC[2:],
+                        self.FA[2:], self.FC[2:], 
                         self.CAA[2:], self.CAC[2:]
                     ):
                         ids = options.get("ids") if isinstance(options, dict) else options

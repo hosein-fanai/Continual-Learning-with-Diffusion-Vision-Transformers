@@ -30,6 +30,7 @@ class DiffusionModel(ArgumentSaverModel):
         test_network_name: NetworkName = "ema", 
         ema_decay: float = 0.999, 
         scheduler_name: SchedulerName = "clipped_cosine", 
+        modify_first_t: bool = False, 
         p_uncond: float = 0.1, 
         train_cfg_scale: float | None = None, 
         test_cfg_scale: float = 4., 
@@ -47,6 +48,7 @@ class DiffusionModel(ArgumentSaverModel):
         test_noisified_max_timesteps: int | None = None, 
         resize_method: str = "area", 
         resize_antialias: bool = True, 
+        swap_noise_image: bool = False, 
         seed: int | None = None, 
         **kwargs
     ):
@@ -81,6 +83,7 @@ class DiffusionModel(ArgumentSaverModel):
                                             else self.test_noisified_max_timesteps
         self.use_image_loss = bool(self.image_loss_coef > 0.)
 
+        self.load_schedules()
         self.set_timestep_bounds()
         self.set_current_resolution()
         self.build(())
@@ -128,15 +131,16 @@ class DiffusionModel(ArgumentSaverModel):
             ).astype(np.int32)
         elif clustering_type == "log_snr": # This is just an estimation
             alpha_bar = np.asarray(
-                self.schedules["alpha_bar"].numpy(),
-                dtype=np.float64,
+                self.schedules["alpha_bar"].numpy(), 
+                dtype=np.float64
             )
             eps = np.finfo(np.float64).eps
             alpha_bar = np.clip(alpha_bar, eps, 1. - eps)
             log_snr = np.log(alpha_bar) - np.log1p(-alpha_bar)
 
             targets = np.linspace(
-                log_snr[0], log_snr[-1], stages_num + 1
+                log_snr[0], log_snr[-1], 
+                stages_num + 1
             )
             boundaries = np.asarray([
                 int(np.argmin(np.abs(log_snr - target)))
@@ -286,6 +290,10 @@ class DiffusionModel(ArgumentSaverModel):
         return growth
 
     @property
+    def current_timesteps_bounds(self) -> tuple[int, int]:
+        return self._active_min_timestep, self._active_max_timestep
+
+    @property
     def current_resolution(self) -> tuple[int, int]:
         """Return the square image resolution currently processed.
 
@@ -310,8 +318,6 @@ class DiffusionModel(ArgumentSaverModel):
     def compile(self, loss: losses.Loss | str = "mse", 
                 **kwargs):
         super().compile(loss=loss, **kwargs)
-
-        self.load_schedules()
 
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
 
@@ -924,6 +930,23 @@ class DiffusionModel(ArgumentSaverModel):
                 dtype=tf.float32
             )
 
+        if self.modify_first_t:
+            self.schedules["sqrt_alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["sqrt_alpha_bar"], 
+                indices=[[0]], 
+                updates=[1.]
+            )
+            self.schedules["sqrt_one_minus_alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["sqrt_one_minus_alpha_bar"], 
+                indices=[[0]], 
+                updates=[0.]
+            )
+            self.schedules["alpha_bar"] = tf.tensor_scatter_nd_update(
+                self.schedules["alpha_bar"], 
+                indices=[[0]], 
+                updates=[1.]
+            )
+
     def get_noise_and_signal_rates(self, t: int | tf.Tensor):
         a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
         b = tf.gather(self.schedules["sqrt_one_minus_alpha_bar"], t)
@@ -1059,6 +1082,8 @@ class DiffusionModel(ArgumentSaverModel):
             seed=seed
         ) if use_label_dropout else labels
         uncond_labels = tf.zeros_like(labels)
+
+        noises = x_t if self.swap_noise_image else noises
 
         return x0, noises, t, x_t, cfg_labels, uncond_labels, classes
 
