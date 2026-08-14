@@ -1,7 +1,7 @@
-from typing import Literal, TypeAlias
-
 import tensorflow as tf
 from tensorflow.keras import layers
+
+from typing import Literal, TypeAlias
 
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 

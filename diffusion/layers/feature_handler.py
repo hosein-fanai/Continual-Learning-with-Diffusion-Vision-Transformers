@@ -1,6 +1,6 @@
-from typing import get_args
-
 import tensorflow as tf
+
+from typing import get_args
 
 from diffusion.layers.embedding import MergeType
 from diffusion.layers.base_layer import BaseLayer

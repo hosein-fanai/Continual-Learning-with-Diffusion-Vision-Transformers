@@ -31,12 +31,15 @@ Notes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from math import pi
-from typing import Iterable, Literal, TypeAlias
-
 import numpy as np
+
+from dataclasses import dataclass
+
+from enum import Enum
+
+from math import pi
+
+from typing import Iterable, Literal, TypeAlias
 
 
 class ScheduleKind(str, Enum):
