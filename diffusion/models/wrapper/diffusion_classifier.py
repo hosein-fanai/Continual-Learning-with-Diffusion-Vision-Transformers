@@ -1,7 +1,7 @@
-from typing import get_args
-
 import tensorflow as tf
-from tensorflow.keras import metrics
+from tensorflow.keras import callbacks, metrics
+
+from typing import get_args
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -41,7 +41,21 @@ class DiffusionClassifier(DiffusionModel):
             dtype=tf.int32
         )
 
-    def _check_clf_assertions(self, local_vars: dict):
+    def _check_clf_assertions(self, local_vars: dict) -> None:
+        """Validate classifier training choices after base initialization.
+
+        Null-label masking requires classifier-free guidance dropout. Selecting
+        unconditional classifier training additionally requires a CFG scale,
+        while conditional training has no such scale requirement.
+
+        Args:
+            local_vars: The classifier constructor arguments to validate.
+
+        Returns:
+            ``None``. Invalid combinations raise an assertion with the relevant
+            configuration requirement.
+        """
+
         if local_vars["mask_by_nulls"]:
             assert self.p_uncond > 0., "mask_by_nulls is not campatible with p_uncond = 0."
 
@@ -49,10 +63,21 @@ class DiffusionClassifier(DiffusionModel):
             f"clf_train_type can only be one of {TrainType}."
 
         if local_vars["clf_train_type"] == "uncond":
-            assert local_vars["train_cfg_scale"] is not None, \
+            assert self.train_cfg_scale is not None, \
                 "clf_train_type can be uncond only when train_cfg_scale is not None."
 
-    def _refresh_loss_flags(self):
+    def _refresh_loss_flags(self) -> None:
+        """Refresh diffusion and classifier auxiliary-loss availability.
+
+        The base flags describe the diffusion branch. This override adds the
+        classifier KL and class-token regularizer flags from the classifier's
+        own reshaper and regularizer metadata. It is called at construction and
+        again after progressive depth growth.
+
+        Returns:
+            ``None``. The four loss flags are updated on this wrapper.
+        """
+
         super()._refresh_loss_flags()
 
         self.use_clf_kl_loss = bool(
@@ -63,6 +88,84 @@ class DiffusionClassifier(DiffusionModel):
             self.ctr_loss_coef > 0. and
             len(self.network.clf_cls_token_regularizer_ids) > 0
         ) if getattr(self.network, "clf_cls_token_regularizer_ids", None) is not None else None
+
+    def fit_progressively(self,**kwargs: object) -> callbacks.History:
+        """Train a classifier diffusion model with three progressive tasks.
+
+        This override delegates stage execution, timestep changes, resolution
+        changes, EMA growth and optimizer registration to
+        ``DiffusionModel.fit_progressively``. It only extends the depth syntax
+        and history for a ``DiTClassifier``. An unscoped depth specification
+        grows the diffusion transformer. To grow either or both branches, use
+        ``{"network": network_spec, "classifier": classifier_spec}``.
+
+        A classifier string adds one classifier depth containing that layer, a
+        list adds several depths, and a set or dictionary combines layers in
+        one depth. Classifier layer names are ``feature_aggregation``,
+        ``connection``, ``cross_attention_aggregation``, ``cross_attention``,
+        ``vit_block``, ``decoder_block``, ``local_mixer``, ``downsample``,
+        ``upsample``, ``reshaper`` and ``cls_token_regularizer``. For example::
+
+            depths = [{
+                "network": "vit_block",
+                "classifier": [
+                    {"connection": {"ids": [-1]}, "vit_block": True}
+                ],
+            }]
+
+        Timestep and resolution updates happen before a stage. Depth growth
+        happens after a successful stage and first trains in the next listed
+        stage, or in ``final_epochs`` when it follows the last listed stage.
+
+        Args:
+            stage_tasks: Ordered mixed-stage descriptions, or the shorthand
+                ``"timesteps_only"``, ``"resolutions_only"`` or
+                ``"depths_only"``. A stage may be a task string, a
+                ``(task, value)`` pair, a set of task names, or a dictionary
+                combining ``timesteps``, ``resolution`` and ``depth``.
+            stages_num: Number of stages used only when a shorthand schedule
+                must be generated because its companion values are omitted.
+            stages_verbose: Whether to print the resolved state of each stage.
+            stage_epochs: Maximum epochs allocated to every listed stage.
+            final_epochs: Epochs for final full-timestep, native-resolution
+                training. ``None`` uses ``stage_epochs``; ``0`` disables it.
+            timestep_boundaries: Stage-indexed ``(lower, upper)`` timestep
+                ranges used by timestep tasks without an inline range.
+            timestep_clustering_type: ``"uniform"`` or ``"log_snr"``; used
+                only to generate omitted timestep boundaries.
+            resolutions: Stage-indexed image sizes used by resolution tasks
+                without an inline value. The network performs its normal
+                resolution validation.
+            depths: Stage-indexed network or targeted classifier depth
+                specifications used by depth tasks without an inline value.
+            pacing_type: ``"fixed"`` runs all allocated epochs; ``"plateau"``
+                may advance a stage after the monitored value stops improving.
+            earlystopping_type: ``"epoch_wise"`` uses Keras early stopping;
+                ``"batch_wise"`` uses the project's batch plateau callback.
+            monitor: Training or validation metric watched in plateau mode.
+            patience: Non-improving epochs or batches tolerated in plateau mode.
+            min_delta: Minimum change considered an improvement.
+            stopper_mode: Direction used by epoch-wise early stopping.
+            **fit_kwargs: Standard Keras fit inputs, validation data, callbacks
+                and step options. Epoch indices are managed by this method.
+
+        Returns:
+            The merged Keras ``History`` from the base implementation. Every
+            ``progressive_stages`` item additionally records the classifier
+            depth before its stage and, when depth growth was requested, the
+            classifier depth after that growth.
+        """
+
+        classifier_depth = self.network.clf_depth
+        history = super().fit_progressively(**kwargs)
+
+        for stage in history.progressive_stages:
+            stage["classifier_depth"] = classifier_depth
+            growth = stage.get("depth_growth", {}).get("classifier")
+            if growth is not None:
+                stage["post_classifier_depth"] = growth["after"]
+
+        return history
 
     @property
     def metrics(self):

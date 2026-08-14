@@ -1,8 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-from copy import deepcopy
-
 from typing import Literal
 
 from common.argument_saver import ArgumentSaverModel
@@ -1153,191 +1151,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 self._create_layer_dict(i, self.layers_dicts)
             )
 
-    def _normalize_depth_layer_spec(self, layer_spec):
-        if isinstance(layer_spec, str):
-            layer_spec = {layer_spec: True}
-        elif isinstance(layer_spec, (tuple, list, set, frozenset)):
-            assert all(isinstance(name, str) for name in layer_spec), \
-                "A depth layer sequence can only contain layer names."
-
-            layer_spec = dict.fromkeys(layer_spec, True)
-        else:
-            assert isinstance(layer_spec, dict), \
-                "Each added depth must be a layer name, a collection of layer "\
-                "names, or a dictionary of layer options."
-
-            layer_spec = dict(layer_spec)
-
-        assert len(layer_spec) > 0, "An added depth must contain a layer."
-
-        return layer_spec
-
-    def _resolve_progressive_ids(self, ids, key: int):
-        ids = [key-1] if ids is None or ids is True else ids
-        ids = [ids] if isinstance(ids, int) else list(ids)
-        ids = list(range(key)) if None in ids else ids
-        ids = [key + id_ if id_ < 0 else id_ for id_ in ids]
-
-        assert all(0 <= id_ < key for id_ in ids), \
-            f"Feature ids for depth {key} must be in [0, {key})."
-
-        return ids
-
-    def _register_depth_layer_spec(self, layer_spec, key: int):
-        aliases = {
-            "connection": "feature_connector", 
-            "cross_attention": "cross_attention_connector", 
-            "vit_block": "vision_transformer_block", 
-            "encoder_block": "vision_transformer_block", 
-            "downsample": "downsampler", 
-            "upsample": "upsampler", 
-        }
-        allowed = {
-            "feature_connector", "cross_attention_connector", 
-            "vision_transformer_block", "decoder_block", 
-            "local_mixer", "downsampler", "upsampler", 
-            "reshaper", "cls_token_regularizer", 
-        }
-
-        for layer_name, options in self._normalize_depth_layer_spec(
-            layer_spec
-        ).items():
-            layer_name = aliases.get(layer_name, layer_name)
-            if layer_name not in allowed:
-                raise ValueError(f"Unknown progressive depth layer: {layer_name}.")
-            if options is False:
-                continue
-
-            if layer_name == "feature_connector":
-                options = options.get("ids") \
-                    if isinstance(options, dict) else options
-                self.connection_ids_dict[key] = self._resolve_progressive_ids(
-                    options, key
-                )
-            elif layer_name == "cross_attention_connector":
-                options = options.get("ids") \
-                    if isinstance(options, dict) else options
-                self.cross_attention_ids_dict[key] = self._resolve_progressive_ids(
-                    options, key
-                )
-            elif layer_name in ("vision_transformer_block", "decoder_block"):
-                self.vit_block_ids = [*self.vit_block_ids, key]
-                block_options = options if isinstance(options, dict) else {}
-                if layer_name == "decoder_block" or \
-                block_options.get("use_decoder", False):
-                    self.use_decoder_ids = [*self.use_decoder_ids, key]
-                if block_options.get("mlp_output_dim") is not None:
-                    self.vit_block_mlp_output_dims[key] = block_options[
-                        "mlp_output_dim"
-                    ]
-            elif layer_name == "local_mixer":
-                self.local_mixer_ids = [*self.local_mixer_ids, key]
-            elif layer_name == "downsampler":
-                self.downsample_ids = [*self.downsample_ids, key]
-            elif layer_name == "upsampler":
-                self.upsample_ids = [*self.upsample_ids, key]
-            elif layer_name == "reshaper":
-                reshape_type = options.get("reshape_type") \
-                               if isinstance(options, dict) else options
-                self.reshaper_ids_dict[key] = reshape_type
-            elif layer_name == "cls_token_regularizer":
-                self.cls_token_regularizer_ids = [
-                    *self.cls_token_regularizer_ids, key
-                ]
-
-    def _update_depth_config(self):
-        for name in self._depth_metadata_names():
-            self._init_config[name] = deepcopy(getattr(self, name))
-
-    def _depth_metadata_names(self):
-        return (
-            "depth", "connection_ids_dict", "cross_attention_ids_dict", 
-            "vit_block_ids", "use_decoder_ids", 
-            "vit_block_mlp_output_dims", "local_mixer_ids", 
-            "downsample_ids", "upsample_ids", "reshaper_ids_dict", 
-            "cls_token_regularizer_ids", 
-        )
-
-    def _append_network_depths(self, depth_specs):
-        depth_specs = depth_specs if isinstance(depth_specs, list) \
-                      else [depth_specs]
-        depth_specs = [spec for spec in depth_specs if spec is not None]
-        if len(depth_specs) == 0:
-            return 0
-
-        metadata_names = self._depth_metadata_names()[1:]
-        metadata = {
-            name: deepcopy(getattr(self, name)) for name in metadata_names
-        }
-        old_depth = self.depth
-        old_dim = self._get_last_output_dim(
-            old_depth-1, self.layers_dicts, self.dim
-        )
-        planned_layers = list(self.layers_dicts)
-        added_layers = []
-
-        try:
-            for layer_spec in depth_specs:
-                key = len(planned_layers) + 1
-                self._register_depth_layer_spec(layer_spec, key)
-                layers_dict = self._create_layer_dict(
-                    key-1, planned_layers
-                )
-                assert len(layers_dict) > 0, \
-                    f"No layer was enabled for added depth {key}."
-                planned_layers.append(layers_dict)
-                added_layers.append(layers_dict)
-
-            output_dim = self._get_last_output_dim(
-                len(planned_layers)-1, planned_layers, self.dim
-            )
-            if output_dim != old_dim:
-                raise ValueError(
-                    "Added network depths must preserve the final feature "
-                    "dimension used by the output head."
-                )
-        except Exception:
-            for name, value in metadata.items():
-                setattr(self, name, value)
-            raise
-
-        self.layers_dicts.extend(added_layers)
-        self.depth = len(self.layers_dicts)
-        self._update_depth_config()
-        self.train_function = None
-        self.test_function = None
-        self.predict_function = None
-
-        return self.depth - old_depth
-
-    def _add_depths(self, depth_spec):
-        """Append supported layer dictionaries to the transformer branch.
-
-        A target dictionary may contain ``network`` and, in subclasses that
-        support it, ``classifier``. A list under a target adds one depth per
-        item. Within one depth, use a set or dictionary to add several layers.
-        """
-
-        if isinstance(depth_spec, dict) and any(
-        name in depth_spec for name in ("network", "classifier")):
-            unknown_targets = set(depth_spec) - {"network", "classifier"}
-            assert not unknown_targets, \
-                f"Unknown progressive depth targets: {unknown_targets}."
-            assert not depth_spec.get("classifier"), \
-                f"{self.__class__.__name__} has no classifier depth branch."
-            depth_spec = depth_spec.get("network", [])
-
-        old_depth = self.depth
-        added = self._append_network_depths(depth_spec)
-
-        return {
-            "network": {
-                "before": old_depth, 
-                "added": added, 
-                "after": self.depth, 
-            }
-        }
-
     def _create_unpatchifier(self):
         if self.use_unpatchify:
             dim = self._get_unforced_total_dim(
@@ -1346,16 +1159,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 self.dim
             )
 
+            name = f"{self.name_prefix}unpatchifier"
+
             token_inputs = layers.Input(
                 shape=(None, dim), # (grid_size * grid_size, dim)
-                name="token_inputs"
+                name=name+"token_inputs"
             )
             cond_inputs = layers.Input(
                 shape=(self.cond_dim,), 
-                name="cond_inputs"
+                name=name+"cond_inputs"
             )
-
-            name = f"{self.name_prefix}unpatchifier"
 
             x = AdaLNZero(
                 dim=dim, 
@@ -1370,24 +1183,34 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 activation=self.final_ffn_activation_func, 
                 name=f"{name}/ffn"
             )(x)
-            x = layers.Lambda(lambda x: tf.reshape(x, (
-                tf.shape(x)[0], 
-                self._current_resolution // self.patch_size, # self.grid_size, 
-                self._current_resolution // self.patch_size, # self.grid_size, 
+
+            x_shape = tf.shape(x)
+            batch_size = x_shape[0]
+            grid_size = tf.cast(
+                tf.sqrt(
+                    tf.cast(x_shape[1], tf.float32)
+                ), 
+                tf.int32
+            )
+
+            x = tf.reshape(x, (
+                batch_size, 
+                grid_size, # self._current_resolution // self.patch_size, 
+                grid_size, # self._current_resolution // self.patch_size, 
                 self.patch_size, 
                 self.patch_size, 
                 self.channels
-            )), name=f"{name}/reshape_1")(x)
+            ), name=f"{name}/reshape_1")
             x = tf.transpose(x, 
                 perm=(0, 1, 3, 2, 4, 5), 
                 name=f"{name}/transpose"
             )
-            x = layers.Lambda(lambda x: tf.reshape(x, (
-                tf.shape(x)[0], 
-                self._current_resolution, # self.image_size, 
-                self._current_resolution, # self.image_size, 
+            x = tf.reshape(x, (
+                batch_size, 
+                grid_size * self.patch_size, # self._current_resolution, 
+                grid_size * self.patch_size, # self._current_resolution, 
                 self.channels
-            )), name=f"{name}/reshape_2")(x)
+            ), name=f"{name}/reshape_2")
 
             if self.use_refiner_cnn:
                 hidden_dim = dim if self.refiner_cnn_hidden_dim is None \
@@ -1410,16 +1233,53 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 )(h)
                 x = x + h if self.refiner_cnn_residual else h 
 
-            x = layers.Activation(
+            outputs = layers.Activation(
                 self.final_activation_func, 
                 name=f"{name}/noises"
             )(x)
 
             self.unpatchifier = models.Model(
                 inputs=[token_inputs, cond_inputs], 
-                outputs=x, 
+                outputs=outputs, 
                 name=name
             )
+
+    @property
+    def current_resolution(self) -> int:
+        """Return the square image resolution currently processed.
+
+        Returns:
+            The active positive integer resolution.
+        """
+
+        return self._current_resolution
+
+    def build(
+        self, 
+        input_shape: tuple[tuple, tuple, tuple] | None = None
+    ):
+        input_shape = self.build_model()
+        super().build(input_shape)
+
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        full_return: bool = False, 
+        training: bool | None = None
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
+        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        x, cond, features_list, regs_list, z_vals = self.encode(
+            inputs, 
+            training=training
+        )
+        noises = self.unpatchifier(
+            (x, cond), 
+            training=training
+        ) if self.use_unpatchify else x
+
+        if full_return:
+            return noises, cond, features_list, regs_list, z_vals 
+        return noises
 
     def set_current_resolution(self, resolution: int | None = None):
         resolution = self.image_size if resolution is None else resolution
@@ -1433,12 +1293,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
 
         self._current_resolution = int(resolution)
-
-    def get_variables_names(self, vars: list[tf.Variable] | None = None):
-        vars = self.trainable_variables if vars is None else vars
-        names = [var.name for var in vars]
-
-        return names
 
     def build_model(self, call_model: bool = True):
         noisy_images = layers.Input(
@@ -1472,13 +1326,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ]
 
         return input_shape
-
-    def build(
-        self, 
-        input_shape: tuple[tuple, tuple, tuple] | None = None
-    ):
-        input_shape = self.build_model()
-        super().build(input_shape)
 
     def embed_conditions(self, times: tf.Tensor, 
                         labels: tf.Tensor, 
@@ -1687,22 +1534,182 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x, cond, features_list, regs_list, z_vals
 
-    def call(
+    def add_depths(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
-        full_return: bool = False, 
-        training: bool | None = None
-    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
-        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
-        x, cond, features_list, regs_list, z_vals = self.encode(
-            inputs, 
-            training=training
-        )
-        noises = self.unpatchifier(
-            (x, cond), 
-            training=training
-        ) if self.use_unpatchify else x
+        depth_spec: str | tuple | set | dict | list | None
+    ) -> dict[str, dict[str, int]]:
+        """Append transformer depths with the existing layer factories.
 
-        if full_return:
-            return noises, cond, features_list, regs_list, z_vals 
-        return noises
+        This method is the structural part of progressive-depth training. A
+        string adds one depth containing that layer. A tuple or set combines
+        several layer types in one depth, while an outer list adds one depth
+        for each item. A dictionary also describes one depth and may provide
+        ``ids`` for ``connection`` or ``cross_attention``, ``use_decoder`` and
+        ``mlp_output_dim`` for ``vit_block``, or a ``reshape_type`` for
+        ``reshaper``. The other supported names are ``decoder_block``,
+        ``local_mixer``, ``downsample``, ``upsample`` and
+        ``cls_token_regularizer``. The longer legacy factory names such as
+        ``feature_connector``, ``vision_transformer_block``, ``downsampler``
+        and ``upsampler`` remain accepted aliases.
+
+        The method reuses the model-wide kwargs and the normal ID assertions
+        and handlers used at construction. New depths are permanent and their
+        constructor metadata is updated so cloning and saving reproduce the
+        expanded network. Because the output head already exists, the added
+        sequence must finish with the same feature dimension and grid size.
+
+        Args:
+            depth_spec: One depth specification, a list of specifications, or
+                ``None``. ``None`` and an empty list leave the network intact.
+
+        Returns:
+            A dictionary reporting the network depth before the change, the
+            number of depths added, and the resulting depth.
+        """
+
+        depth_specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
+        depth_specs = [spec for spec in depth_specs if spec is not None]
+        old_depth = self.depth
+        if len(depth_specs) == 0:
+            return {
+                "network": {
+                    "before": old_depth, 
+                    "added": 0, 
+                    "after": old_depth
+                }
+            }
+
+        metadata_names = (
+            "connection_ids_dict", "cross_attention_ids_dict", 
+            "vit_block_ids", "use_decoder_ids", 
+            "vit_block_mlp_output_dims", "local_mixer_ids", 
+            "downsample_ids", "upsample_ids", "reshaper_ids_dict", 
+            "cls_token_regularizer_ids", 
+        )
+        metadata = {name: getattr(self, name) for name in metadata_names}
+        old_dim = self._get_last_output_dim(
+            old_depth-1, self.layers_dicts, self.dim
+        )
+        planned_layers = list(self.layers_dicts)
+
+        try:
+            for layer_spec in depth_specs:
+                if isinstance(layer_spec, str):
+                    layer_spec = {layer_spec: True}
+                elif isinstance(layer_spec, (tuple, set, frozenset)):
+                    layer_spec = dict.fromkeys(layer_spec, True)
+
+                key = len(planned_layers) + 1
+                for layer_name, options in layer_spec.items():
+                    if options is False:
+                        continue
+
+                    if layer_name in (self.FC[2:], self.CAC[2:]):
+                        ids = options.get("ids") if isinstance(options, dict) else options
+                        ids = [-1] if ids is None or ids is True else ids
+                        ids = [ids] if isinstance(ids, int) else list(ids)
+                        dict_name = "connection_ids_dict" if layer_name == self.FC[2:] \
+                                    else "cross_attention_ids_dict"
+
+                        local_vars = {
+                            "depth": key-1, 
+                            dict_name: {key: ids}
+                        }
+                        self._check_dict_assertions(
+                            local_vars, 
+                            dict_name, 
+                            check_items_num=False, 
+                            check_keys=False
+                        )
+                        ids = self._handle_ids(
+                            ids, 
+                            depth=key-1, 
+                            max_id=key-1
+                        )
+
+                        setattr(self, dict_name, {
+                            **getattr(self, dict_name), 
+                            key: ids
+                        })
+                    elif layer_name == self.VTB[2:]:
+                        block_options = options if isinstance(options, dict) else {}
+
+                        self.vit_block_ids = [
+                            *self.vit_block_ids, key
+                        ]
+                        self.use_decoder_ids = [
+                            *self.use_decoder_ids, key
+                        ] if block_options.get("use_decoder", False) else self.use_decoder_ids
+                        self.vit_block_mlp_output_dims = {
+                            **self.vit_block_mlp_output_dims, 
+                            key: block_options["mlp_output_dim"], 
+                        } if block_options.get("mlp_output_dim") is not None else self.vit_block_mlp_output_dims
+                    elif layer_name == self.LM[2:]:
+                        self.local_mixer_ids = [
+                            *self.local_mixer_ids, key
+                        ]
+                    elif layer_name == self.DS[2:]:
+                        self.downsample_ids = [
+                            *self.downsample_ids, 
+                            key
+                        ]
+                    elif layer_name == self.US[2:]:
+                        self.upsample_ids = [
+                            *self.upsample_ids, 
+                            key
+                        ]
+                    elif layer_name == self.R[2:]:
+                        reshape_type = options.get("reshape_type") \
+                                    if isinstance(options, dict) else options
+
+                        self.reshaper_ids_dict = {
+                            **self.reshaper_ids_dict, key: reshape_type
+                        }
+                    elif layer_name == self.CTR[2:]:
+                        self.cls_token_regularizer_ids = [
+                            *self.cls_token_regularizer_ids, key
+                        ]
+                    else:
+                        raise ValueError(
+                            f"Unknown progressive classifier layer: {layer_name}."
+                        )
+
+                layers_dict = self._create_layer_dict(
+                    key-1, planned_layers
+                )
+                planned_layers.append(layers_dict)
+
+            if self._get_last_output_dim(
+                len(planned_layers)-1, 
+                planned_layers, self.dim
+            ) != old_dim:
+                raise ValueError(
+                    "Added depths must preserve the output-head feature dimension."
+                )
+        except Exception:
+            for name, value in metadata.items():
+                setattr(self, name, value)
+            raise
+
+        self.layers_dicts.extend(
+            planned_layers[old_depth:]
+        )
+        self.depth = len(self.layers_dicts)
+        self._save_init_args({
+            "depth": self.depth, 
+            **{name: getattr(self, name) for name in metadata_names}, 
+        })
+
+        return {
+            "network": {
+                "before": old_depth, 
+                "added": self.depth-old_depth, 
+                "after": self.depth, 
+            }
+        }
+
+    def get_variables_names(self, vars: list[tf.Variable] | None = None):
+        vars = self.trainable_variables if vars is None else vars
+        names = [var.name for var in vars]
+
+        return names

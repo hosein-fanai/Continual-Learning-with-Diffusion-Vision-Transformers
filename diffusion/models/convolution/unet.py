@@ -1,24 +1,14 @@
-from collections.abc import Sequence
-from typing import NoReturn, TypeAlias
-
 import tensorflow as tf
 from tensorflow.keras import layers
 
+from collections.abc import Sequence
+from typing import NoReturn
+
+from . import UNetInputs, DTypeLike, UNetFullOutput
+
 from common.argument_saver import ArgumentSaverModel
+
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
-
-
-UNetInputs = tuple[tf.Tensor, tf.Tensor, tf.Tensor]
-DTypeLike: TypeAlias = (
-    str | tf.dtypes.DType | tf.keras.mixed_precision.Policy
-)
-UNetFullOutput = tuple[
-    tf.Tensor,
-    tf.Tensor,
-    list[tf.Tensor | None],
-    list[tf.Tensor | None],
-    tuple[tf.Tensor | None, tf.Tensor | None],
-]
 
 
 class _ResidualBlock(layers.Layer):
@@ -558,6 +548,39 @@ class UNet(ArgumentSaverModel):
 
         return condition
 
+    @property
+    def current_resolution(self) -> int:
+        """Return the square image resolution currently processed.
+
+        Returns:
+            The active positive integer resolution.
+        """
+
+        return self._current_resolution
+
+    def build(
+        self,
+        input_shape: tuple[tf.TensorShape, tf.TensorShape, tf.TensorShape]
+        | None = None,
+    ) -> None:
+        """Build every U-Net variable using the active resolution.
+
+        ``input_shape`` is accepted for normal Keras compatibility. The model's
+        canonical three-input shapes are created by ``build_model`` so that an
+        EMA clone has exactly the same variables and weight ordering.
+
+        Args:
+            input_shape: Optional Keras-provided input shape. It does not alter
+                the configured image, timestep, or label contracts.
+
+        Returns:
+            ``None``. All nested layers are built as a side effect.
+        """
+
+        del input_shape
+        model_input_shapes = self.build_model()
+        super().build(model_input_shapes)
+
     def call(
         self,
         inputs: UNetInputs,
@@ -654,16 +677,6 @@ class UNet(ArgumentSaverModel):
             self.test_function = None
             self.predict_function = None
 
-    @property
-    def current_resolution(self) -> int:
-        """Return the square image resolution currently processed.
-
-        Returns:
-            The active positive integer resolution.
-        """
-
-        return self._current_resolution
-
     def build_model(
         self,
         call_model: bool = True,
@@ -708,30 +721,7 @@ class UNet(ArgumentSaverModel):
 
         return [input_tensor.shape for input_tensor in self.inputs]
 
-    def build(
-        self,
-        input_shape: tuple[tf.TensorShape, tf.TensorShape, tf.TensorShape]
-        | None = None,
-    ) -> None:
-        """Build every U-Net variable using the active resolution.
-
-        ``input_shape`` is accepted for normal Keras compatibility. The model's
-        canonical three-input shapes are created by ``build_model`` so that an
-        EMA clone has exactly the same variables and weight ordering.
-
-        Args:
-            input_shape: Optional Keras-provided input shape. It does not alter
-                the configured image, timestep, or label contracts.
-
-        Returns:
-            ``None``. All nested layers are built as a side effect.
-        """
-
-        del input_shape
-        model_input_shapes = self.build_model()
-        super().build(model_input_shapes)
-
-    def _add_depths(self, depth_spec: object) -> NoReturn:
+    def add_depths(self, depth_spec: object) -> NoReturn:
         """Reject transformer-style structural growth for this fixed U-Net.
 
         Timestep and resolution tasks in ``fit_progressively`` are fully

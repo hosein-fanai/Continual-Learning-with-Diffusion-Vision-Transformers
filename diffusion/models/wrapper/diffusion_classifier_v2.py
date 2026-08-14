@@ -16,8 +16,36 @@ class DiffusionClassifierV2(DiffusionClassifier):
         clf_vars_noise_part_ids: list[int] = [], 
         clf_train_noisified_max_timesteps: int | None = None, 
         clf_test_noisified_max_timesteps: int | None = None, 
-        **kwargs
-    ):
+        **kwargs: object
+    ) -> None:
+        """Configure separate generator and classifier optimization.
+
+        This classifier variant assigns selected embedding and transformer
+        depths to the classifier optimizer while the remaining variables use
+        the generator optimizer. After progressive network growth, the original
+        transformer ID specification is resolved again so negative IDs still
+        select depths relative to the expanded network.
+
+        Args:
+            clf_loss_coef: Multiplier applied to the classifier objective.
+            clf_vars_embedding_ids: Embedding groups trained by the classifier
+                optimizer. The legacy IDs select patch, time, label, label
+                regularizer, and optional classifier-token embeddings.
+            clf_vars_noise_part_ids: Transformer depth IDs assigned to the
+                classifier optimizer. Positive IDs are absolute and negative
+                IDs remain relative to the current network depth.
+            clf_train_noisified_max_timesteps: Optional exclusive timestep cap
+                used while fitting the classifier part.
+            clf_test_noisified_max_timesteps: Optional exclusive timestep cap
+                used while evaluating the classifier part.
+            **kwargs: Constructor arguments forwarded to
+                ``DiffusionClassifier`` and ``DiffusionModel``.
+
+        Returns:
+            ``None``. The wrapper, variable selectors, and split-training state
+            are initialized in place.
+        """
+
         super().__init__(
             clf_loss_coef=clf_loss_coef, 
             **kwargs
@@ -36,9 +64,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             depth=self.network.depth, 
             min_id=1, 
             max_id=self.network.depth, 
-        )
-        self._progressive_clf_vars_noise_part_ids = list(
-            self.clf_vars_noise_part_ids
         )
         self.network.set_max_encoder_num(max([
             self.network.max_encoder_num, 
@@ -183,9 +208,23 @@ class DiffusionClassifierV2(DiffusionClassifier):
             optimizers.serialize(self.optimizer)
         )
 
-    def _register_optimizer_variables(self):
+    def _register_optimizer_variables(self) -> None:
+        """Refresh split variable groups after progressive depth growth.
+
+        The original ``clf_vars_noise_part_ids`` constructor values are passed
+        through the network's legacy ID handler again at the new transformer
+        depth. Consequently negative IDs keep their relative meaning after
+        layers are appended. Generator variables are registered with the
+        generator optimizer and classifier variables with the classifier
+        optimizer without replacing either optimizer.
+
+        Returns:
+            ``None``. Variable groups and optimizer variable registries are
+            updated in place.
+        """
+
         self.clf_vars_noise_part_ids = self.network._handle_ids(
-            self._progressive_clf_vars_noise_part_ids, 
+            self._init_config["clf_vars_noise_part_ids"], 
             depth=self.network.depth, 
             min_id=1, 
             max_id=self.network.depth, 
@@ -261,7 +300,20 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self._switch_test_part(active_part_name)
 
         return super().fit(**kwargs)
-    
+
+    def fit_discriminator_progressively(self, **kwargs):
+        """Progressively train only the discriminator diffusion objective.
+
+        This mirrors ``fit_generator`` but dispatches to DiffusionModel's
+        progressive curriculum trainer. 
+        """
+
+        active_part_name = "discriminator"
+        self._switch_train_part(active_part_name)
+        self._switch_test_part(active_part_name)
+
+        return super().fit_progressively(**kwargs)
+
     def fit(self, gen_kwargs, clf_kwargs):
         gen_history = self.fit_generator(**gen_kwargs).history
         clf_history = self.fit_discriminator(**clf_kwargs).history

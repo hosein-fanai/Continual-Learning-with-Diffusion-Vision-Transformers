@@ -644,234 +644,41 @@ class DiTClassifier(DiffusionTransformer):
                 self._create_clf_layer_dict(i, self.clf_layers_dicts)
             )
 
-    def _register_clf_depth_layer_spec(self, layer_spec, key: int):
-        aliases = {
-            "feature_aggregation": "feature_aggregator", 
-            "aggregation": "feature_aggregator", 
-            "connection": "feature_connector", 
-            "cross_attention_aggregation": "cross_attention_aggregator", 
-            "cross_attention": "cross_attention_connector", 
-            "vit_block": "vision_transformer_block", 
-            "encoder_block": "vision_transformer_block", 
-            "downsample": "downsampler", 
-            "upsample": "upsampler", 
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        full_return: bool = False, 
+        training: bool | None = None
+    ) -> dict:
+        noises, cond, features_list, regs_list, z_vals = super().call(
+            inputs, 
+            full_return=True, 
+            training=training
+        )
+        outputs = self.compute_class(
+            features_list, 
+            times=inputs[1], 
+            labels=inputs[2], 
+            training=training
+        )
+        output_dict = {
+            "noises": noises, 
         }
-        allowed = {
-            "feature_aggregator", "feature_connector", 
-            "cross_attention_aggregator", 
-            "cross_attention_connector", 
-            "vision_transformer_block", "decoder_block", 
-            "local_mixer", "downsampler", "upsampler", 
-            "reshaper", "cls_token_regularizer", 
-        }
 
-        for layer_name, options in self._normalize_depth_layer_spec(
-            layer_spec
-        ).items():
-            layer_name = aliases.get(layer_name, layer_name)
-            assert layer_name in allowed, \
-                f"Unknown progressive classifier layer: {layer_name}."
-            if options is False:
-                continue
+        if full_return:
+            output_dict["cond"] = cond
+            output_dict["features_list"] = features_list
+            output_dict["regs_list"] = regs_list
+            output_dict["z_vals"] = z_vals
+            output_dict["classes"] = outputs[0]
+            output_dict["clf_cond"] = outputs[1]
+            output_dict["clf_features_list"] = outputs[2]
+            output_dict["clf_regs_list"] = outputs[3]
+            output_dict["clf_z_vals"] = outputs[4]
+        else:
+            output_dict["classes"] = outputs
 
-            ids = options.get("ids") \
-                  if isinstance(options, dict) else options
-            if layer_name == "feature_aggregator":
-                self.feature_aggregation_ids_dict[key] = \
-                    self._resolve_progressive_ids(ids, self.depth+1)
-            elif layer_name == "feature_connector":
-                self.clf_connection_ids_dict[key] = \
-                    self._resolve_progressive_ids(ids, key)
-            elif layer_name == "cross_attention_aggregator":
-                self.cross_attention_aggregation_ids_dict[key] = \
-                    self._resolve_progressive_ids(ids, self.depth+1)
-            elif layer_name == "cross_attention_connector":
-                self.clf_cross_attention_ids_dict[key] = \
-                    self._resolve_progressive_ids(ids, key)
-            elif layer_name in (
-                "vision_transformer_block", "decoder_block"
-            ):
-                self.clf_vit_block_ids = [*self.clf_vit_block_ids, key]
-                block_options = options if isinstance(options, dict) else {}
-                if layer_name == "decoder_block" or \
-                block_options.get("use_decoder", False):
-                    self.clf_use_decoder_ids = [
-                        *self.clf_use_decoder_ids, key
-                    ]
-                if block_options.get("mlp_output_dim") is not None:
-                    self.clf_vit_block_mlp_output_dims[key] = \
-                        block_options["mlp_output_dim"]
-            elif layer_name == "local_mixer":
-                self.clf_local_mixer_ids = [*self.clf_local_mixer_ids, key]
-            elif layer_name == "downsampler":
-                self.clf_downsample_ids = [*self.clf_downsample_ids, key]
-            elif layer_name == "upsampler":
-                self.clf_upsample_ids = [*self.clf_upsample_ids, key]
-            elif layer_name == "reshaper":
-                reshape_type = options.get("reshape_type") \
-                               if isinstance(options, dict) else options
-                assert reshape_type in ("flatten", "unflatten"), \
-                    "A progressive classifier reshaper must be flatten "\
-                    "or unflatten."
-                self.clf_reshaper_ids_dict[key] = reshape_type
-            elif layer_name == "cls_token_regularizer":
-                self.clf_cls_token_regularizer_ids = [
-                    *self.clf_cls_token_regularizer_ids, key
-                ]
-
-    def _update_clf_depth_config(self):
-        for name in self._clf_depth_metadata_names():
-            self._init_config[name] = deepcopy(getattr(self, name))
-
-        connection_ids = deepcopy(self.clf_connection_ids_dict)
-        connection_ids[-1] = connection_ids.pop(self.clf_depth+1)
-        self._init_config["clf_connection_ids_dict"] = connection_ids
-
-    def _clf_depth_metadata_names(self):
-        return (
-            "clf_depth", "feature_aggregation_ids_dict", 
-            "cross_attention_aggregation_ids_dict", 
-            "clf_connection_ids_dict", 
-            "clf_cross_attention_ids_dict", "clf_vit_block_ids", 
-            "clf_use_decoder_ids", "clf_vit_block_mlp_output_dims", 
-            "clf_local_mixer_ids", "clf_downsample_ids", 
-            "clf_upsample_ids", "clf_reshaper_ids_dict", 
-            "clf_cls_token_regularizer_ids", 
-        )
-
-    def _append_classifier_depths(self, depth_specs):
-        depth_specs = depth_specs if isinstance(depth_specs, list) \
-                      else [depth_specs]
-        depth_specs = [spec for spec in depth_specs if spec is not None]
-        if len(depth_specs) == 0:
-            return 0
-
-        metadata_names = self._clf_depth_metadata_names()[1:]
-        metadata = {
-            name: deepcopy(getattr(self, name)) for name in metadata_names
-        }
-        old_depth = self.clf_depth
-        old_terminal_key = old_depth+1
-        terminal_layers = dict(self.clf_layers_dicts[-1])
-        assert set(terminal_layers) == {self.FC}, \
-            "The terminal classifier depth must only contain its feature "\
-            "connector."
-        old_terminal_input_dim = self._get_last_output_dim(
-            old_depth-1, self.clf_layers_dicts, self.clf_dim
-        )
-        old_head_dim = self._get_last_output_dim(
-            old_depth, self.clf_layers_dicts, self.clf_dim
-        )
-        planned_layers = list(self.clf_layers_dicts[:-1])
-        added_layers = []
-
-        try:
-            terminal_ids = self.clf_connection_ids_dict.pop(
-                old_terminal_key
-            )
-            for layer_spec in depth_specs:
-                key = len(planned_layers) + 1
-                self._register_clf_depth_layer_spec(layer_spec, key)
-                layers_dict = self._create_clf_layer_dict(
-                    key-1, planned_layers
-                )
-                assert len(layers_dict) > 0, \
-                    f"No layer was enabled for added classifier depth {key}."
-                planned_layers.append(layers_dict)
-                added_layers.append(layers_dict)
-
-            new_depth = old_depth + len(added_layers)
-            if terminal_ids == [old_depth]:
-                terminal_ids = [new_depth]
-            self.clf_connection_ids_dict[new_depth+1] = terminal_ids
-
-            output_dim = self._get_last_output_dim(
-                len(planned_layers)-1, planned_layers, self.clf_dim
-            )
-            assert output_dim == old_terminal_input_dim, \
-                "Added classifier depths must preserve the feature "\
-                "dimension expected by the terminal connector."
-            final_layers = planned_layers + [terminal_layers]
-            assert self._get_last_output_dim(
-                len(final_layers)-1, final_layers, self.clf_dim
-            ) == old_head_dim, \
-                "Added classifier depths must preserve the feature "\
-                "dimension used by the classifier head."
-        except Exception:
-            for name, value in metadata.items():
-                setattr(self, name, value)
-            raise
-
-        terminal_connector = terminal_layers[self.FC]
-        terminal_connector.ids = terminal_ids
-        terminal_connector._init_config["ids"] = deepcopy(terminal_ids)
-
-        current_terminal = self.clf_layers_dicts[-1]
-        current_terminal.clear()
-        current_terminal.update(added_layers[0])
-        self.clf_layers_dicts.extend(added_layers[1:])
-        self.clf_layers_dicts.append(terminal_layers)
-        self.clf_depth = old_depth + len(added_layers)
-        self._update_clf_depth_config()
-        self.set_max_encoder_num()
-        self.train_function = None
-        self.test_function = None
-        self.predict_function = None
-
-        return self.clf_depth - old_depth
-
-    def add_depths(self, depth_spec):
-        """Append network and/or classifier layer dictionaries."""
-
-        targeted = isinstance(depth_spec, dict) and any(
-            name in depth_spec for name in ("network", "classifier")
-        )
-        if not targeted:
-            return super().add_depths(depth_spec)
-
-        unknown_targets = set(depth_spec) - {"network", "classifier"}
-        assert not unknown_targets, \
-            f"Unknown progressive depth targets: {unknown_targets}."
-
-        with tf.device("/CPU:0"):
-            probe = self.__class__.from_config(deepcopy(self.get_config()))
-            probe._add_depths(depth_spec)
-        del probe
-
-        return self._add_depths(depth_spec)
-
-    def _add_depths(self, depth_spec):
-        targeted = isinstance(depth_spec, dict) and any(
-            name in depth_spec for name in ("network", "classifier")
-        )
-        if not targeted:
-            return super()._add_depths(depth_spec)
-
-        unknown_targets = set(depth_spec) - {"network", "classifier"}
-        assert not unknown_targets, \
-            f"Unknown progressive depth targets: {unknown_targets}."
-
-        old_depth = self.depth
-        old_clf_depth = self.clf_depth
-        network_added = self._append_network_depths(
-            depth_spec.get("network", [])
-        )
-        classifier_added = self._append_classifier_depths(
-            depth_spec.get("classifier", [])
-        )
-
-        return {
-            "network": {
-                "before": old_depth, 
-                "added": network_added, 
-                "after": self.depth, 
-            }, 
-            "classifier": {
-                "before": old_clf_depth, 
-                "added": classifier_added, 
-                "after": self.clf_depth, 
-            }, 
-        }
+            return output_dict
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None):
         aggregation_ids = []
@@ -1038,38 +845,277 @@ class DiTClassifier(DiffusionTransformer):
             return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
         return x
 
-    def call(
+    def add_depths(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
-        full_return: bool = False, 
-        training: bool | None = None
-    ) -> dict:
-        noises, cond, features_list, regs_list, z_vals = super().call(
-            inputs, 
-            full_return=True, 
-            training=training
-        )
-        outputs = self.compute_class(
-            features_list, 
-            times=inputs[1], 
-            labels=inputs[2], 
-            training=training
-        )
-        output_dict = {
-            "noises": noises, 
-        }
+        depth_spec: str | tuple | set | dict | list | None
+    ) -> dict[str, dict[str, int]]:
+        """Append transformer and classifier depths through their own APIs.
 
-        if full_return:
-            output_dict["cond"] = cond
-            output_dict["features_list"] = features_list
-            output_dict["regs_list"] = regs_list
-            output_dict["z_vals"] = z_vals
-            output_dict["classes"] = outputs[0]
-            output_dict["clf_cond"] = outputs[1]
-            output_dict["clf_features_list"] = outputs[2]
-            output_dict["clf_regs_list"] = outputs[3]
-            output_dict["clf_z_vals"] = outputs[4]
+        An ordinary specification is delegated to ``DiffusionTransformer``
+        and therefore grows only ``layers_dicts``. A targeted dictionary may
+        contain ``network`` and ``classifier``. The network value uses the
+        base transformer's syntax; the classifier value uses the same outer
+        list/string/set/dictionary rules and the classifier layer names
+        ``feature_aggregation``, ``connection``,
+        ``cross_attention_aggregation``, ``cross_attention``, ``vit_block``,
+        ``decoder_block``, ``local_mixer``, ``downsample``, ``upsample``,
+        ``reshaper`` and ``cls_token_regularizer``. Their legacy factory names,
+        including ``feature_aggregator``, ``feature_connector``,
+        ``cross_attention_aggregator``, ``vision_transformer_block``,
+        ``downsampler`` and ``upsampler``, remain accepted aliases.
+
+        Classifier aggregators read features from the main transformer and
+        classifier connectors read preceding classifier depths. The existing
+        ID checks and negative/``None`` ID handling are used. The trained
+        terminal connector and classifier head are retained, so an appended
+        classifier sequence must preserve their feature dimension.
+
+        Args:
+            depth_spec: An unscoped network specification or a dictionary with
+                optional ``network`` and ``classifier`` specifications.
+
+        Returns:
+            Depth changes for both branches. A branch omitted from a targeted
+            dictionary reports zero added depths.
+        """
+
+        targeted = isinstance(depth_spec, dict) and any(
+            name in depth_spec 
+            for name in ("network", "classifier")
+        )
+        if targeted:
+            if not all(
+                name in ("network", "classifier") for name in depth_spec
+            ):
+                raise ValueError(
+                    "keys in depth_spec dictionary must be in ('network', 'classifier')."
+                )
+
+            network_spec = depth_spec.get("network", [])
+            classifier_specs = depth_spec.get("classifier", [])
         else:
-            output_dict["classes"] = outputs
+            network_spec = depth_spec
+            classifier_specs = []
 
-        return output_dict
+        classifier_specs = classifier_specs if isinstance(classifier_specs, list) \
+                        else [classifier_specs]
+        classifier_specs = [
+            spec for spec in classifier_specs if spec is not None
+        ]
+
+        old_clf_depth = self.clf_depth
+        if len(classifier_specs) == 0:
+            growth = super().add_depths(network_spec)
+
+            self._init_config[
+                "feature_aggregation_ids_dict"
+            ] = deepcopy(self.feature_aggregation_ids_dict)
+            self._init_config[
+                "cross_attention_aggregation_ids_dict"
+            ] = deepcopy(self.cross_attention_aggregation_ids_dict)
+
+            if not targeted:
+                return growth
+
+            return {
+                "network": growth["network"], 
+                "classifier": {
+                    "before": old_clf_depth, 
+                    "added": 0, 
+                    "after": old_clf_depth, 
+                }
+            }
+
+        metadata_names = (
+            "feature_aggregation_ids_dict", 
+            "cross_attention_aggregation_ids_dict", 
+            "clf_connection_ids_dict", 
+            "clf_cross_attention_ids_dict", "clf_vit_block_ids", 
+            "clf_use_decoder_ids", "clf_vit_block_mlp_output_dims", 
+            "clf_local_mixer_ids", "clf_downsample_ids", 
+            "clf_upsample_ids", "clf_reshaper_ids_dict", 
+            "clf_cls_token_regularizer_ids", 
+        )
+        metadata = {
+            name: deepcopy(getattr(self, name)) for name in metadata_names
+        }
+        old_terminal_key = old_clf_depth + 1
+        terminal_layers = dict(self.clf_layers_dicts[-1])
+
+        if set(terminal_layers) != {self.FC}:
+            raise ValueError(
+                "The terminal classifier depth must contain only its connector."
+            )
+
+        terminal_ids = deepcopy(
+            self.clf_connection_ids_dict[old_terminal_key]
+        )
+        old_head_dim = self._get_last_output_dim(
+            old_clf_depth, self.clf_layers_dicts, self.clf_dim
+        )
+        planned_layers = list(self.clf_layers_dicts[:-1])
+
+        try:
+            self.clf_connection_ids_dict = {
+                key: value for key, value 
+                in self.clf_connection_ids_dict.items()
+                if key != old_terminal_key
+            }
+            for layer_spec in classifier_specs:
+                if isinstance(layer_spec, str):
+                    layer_spec = {layer_spec: True}
+                elif isinstance(layer_spec, (tuple, set, frozenset)):
+                    layer_spec = dict.fromkeys(layer_spec, True)
+
+                key = len(planned_layers) + 1
+                for layer_name, options in layer_spec.items():
+                    if options is False:
+                        continue
+                    
+                    if layer_name in (
+                        self.FA[2:], self.FC[2:],
+                        self.CAA[2:], self.CAC[2:]
+                    ):
+                        ids = options.get("ids") if isinstance(options, dict) else options
+                        ids = [-1] if ids is None or ids is True else ids
+                        ids = [ids] if isinstance(ids, int) else list(ids)
+
+                        if layer_name == self.FA[2:]:
+                            dict_name = "feature_aggregation_ids_dict"
+                            source_depth = self.depth
+                        elif layer_name == self.CAA[2:]:
+                            dict_name = "cross_attention_aggregation_ids_dict"
+                            source_depth = self.depth
+                        elif layer_name == self.FC[2:]:
+                            dict_name = "clf_connection_ids_dict"
+                            source_depth = key-1
+                        else:
+                            dict_name = "clf_cross_attention_ids_dict"
+                            source_depth = key-1
+
+                        local_vars = {
+                            "depth": source_depth, 
+                            dict_name: {key: ids}
+                        }
+                        self._check_dict_assertions(
+                            local_vars, 
+                            dict_name, 
+                            check_items_num=False, 
+                            check_keys=False, 
+                            id_less_than_key=False
+                        )
+                        ids = self._handle_ids(
+                            ids, 
+                            depth=source_depth, 
+                            max_id=source_depth
+                        )
+
+                        setattr(self, dict_name, {
+                            **getattr(self, dict_name), 
+                            key: ids
+                        })
+                    elif layer_name == self.VTB[2:]:
+                        block_options = options if isinstance(options, dict) else {}
+
+                        self.clf_vit_block_ids = [
+                            *self.clf_vit_block_ids, key
+                        ]
+                        self.clf_use_decoder_ids = [
+                            *self.clf_use_decoder_ids, key
+                        ] if block_options.get("use_decoder", False) else self.clf_use_decoder_ids
+                        self.clf_vit_block_mlp_output_dims = {
+                            **self.clf_vit_block_mlp_output_dims, 
+                            key: block_options["mlp_output_dim"]
+                        } if block_options.get("mlp_output_dim") is not None else self.clf_vit_block_mlp_output_dims
+                    elif layer_name == self.LM[2:]:
+                        self.clf_local_mixer_ids = [
+                            *self.clf_local_mixer_ids, key
+                        ]
+                    elif layer_name == self.DS[2:]:
+                        self.clf_downsample_ids = [
+                            *self.clf_downsample_ids, key
+                        ]
+                    elif layer_name == self.US[2:]:
+                        self.clf_upsample_ids = [
+                            *self.clf_upsample_ids, key
+                        ]
+                    elif layer_name == self.R[2:]:
+                        reshape_type = options.get("reshape_type")
+                        self.clf_reshaper_ids_dict = {
+                            **self.clf_reshaper_ids_dict, key: reshape_type
+                        }
+                    elif layer_name == self.CTR[2:]:
+                        self.clf_cls_token_regularizer_ids = [
+                            *self.clf_cls_token_regularizer_ids, key
+                        ]
+                    else:
+                        raise ValueError(
+                            f"Unknown progressive classifier layer: {layer_name}."
+                        )
+
+                layers_dict = self._create_clf_layer_dict(
+                    key-1, planned_layers
+                )
+                planned_layers.append(layers_dict)
+
+            new_clf_depth = old_clf_depth + len(classifier_specs)
+            if terminal_ids == [old_clf_depth]:
+                terminal_ids = [new_clf_depth]
+
+            self.clf_connection_ids_dict = {
+                **self.clf_connection_ids_dict, 
+                new_clf_depth+1: terminal_ids, 
+            }
+
+            if self._get_last_output_dim(
+                len(planned_layers), 
+                planned_layers + [terminal_layers], 
+                self.clf_dim
+            ) != old_head_dim:
+                raise ValueError(
+                    "Added classifier depths must preserve the classifier-head dimension."
+                )
+
+            network_growth = super().add_depths(network_spec)["network"]
+        except Exception:
+            for name, value in metadata.items():
+                setattr(self, name, value)
+            raise
+
+        terminal_connector = terminal_layers[self.FC]
+        terminal_connector.ids = terminal_ids
+        terminal_connector._init_config["ids"] = deepcopy(terminal_ids)
+
+        added_layers = planned_layers[old_clf_depth:]
+        current_terminal = self.clf_layers_dicts[-1]
+        current_terminal.clear()
+        current_terminal.update(added_layers[0])
+
+        self.clf_layers_dicts.extend(added_layers[1:])
+        self.clf_layers_dicts.append(terminal_layers)
+        self.clf_depth = old_clf_depth + len(added_layers)
+
+        self._save_init_args({
+            "clf_depth": self.clf_depth, 
+            **{name: getattr(self, name) 
+                for name in metadata_names}, 
+        })
+        connection_ids = {
+            key: value for key, value 
+            in self.clf_connection_ids_dict.items()
+            if key != self.clf_depth + 1
+        }
+        connection_ids[-1] = terminal_ids
+        self._init_config[
+            "clf_connection_ids_dict"
+        ] = deepcopy(connection_ids)
+        self.set_max_encoder_num()
+
+        return {
+            "network": network_growth, 
+            "classifier": {
+                "before": old_clf_depth, 
+                "added": self.clf_depth-old_clf_depth, 
+                "after": self.clf_depth, 
+            }, 
+        }

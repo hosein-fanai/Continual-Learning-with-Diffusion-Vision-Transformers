@@ -49,6 +49,35 @@ class DiTDecoder(DiffusionTransformer):
         if self.build_:
             self.build()
 
+    def call(
+        self, 
+        inputs, 
+        encoder_cond, 
+        encoder_features_list, 
+        full_return=False, 
+        training=None
+    ):
+        x, decoder_cond, decoder_features_list = self.decode(
+            inputs, encoder_cond, 
+            encoder_features_list, 
+            training=training
+        )
+        noises = self.unpatchify(
+            x, decoder_cond, 
+            training=training
+        ) if self.use_unpatchify else x
+
+        output_dict = {
+            "noises": noises, 
+        }
+        if full_return:
+            output_dict["decoder_cond"] = decoder_cond
+            output_dict["decoder_features_list"] = decoder_features_list
+            output_dict["encoder_cond"] = encoder_cond
+            output_dict["encoder_features_list"] = encoder_features_list
+
+        return output_dict
+
     def build_model(self, call_model=True):
         super().build_model(
             call_model=False
@@ -172,32 +201,3 @@ class DiTDecoder(DiffusionTransformer):
         x = x[:, 1:] if self.cls_token_type is not None else x
 
         return x, decoder_cond, decoder_features_list
-
-    def call(
-        self, 
-        inputs, 
-        encoder_cond, 
-        encoder_features_list, 
-        full_return=False, 
-        training=None
-    ):
-        x, decoder_cond, decoder_features_list = self.decode(
-            inputs, encoder_cond, 
-            encoder_features_list, 
-            training=training
-        )
-        noises = self.unpatchify(
-            x, decoder_cond, 
-            training=training
-        ) if self.use_unpatchify else x
-
-        output_dict = {
-            "noises": noises, 
-        }
-        if full_return:
-            output_dict["decoder_cond"] = decoder_cond
-            output_dict["decoder_features_list"] = decoder_features_list
-            output_dict["encoder_cond"] = encoder_cond
-            output_dict["encoder_features_list"] = encoder_features_list
-
-        return output_dict

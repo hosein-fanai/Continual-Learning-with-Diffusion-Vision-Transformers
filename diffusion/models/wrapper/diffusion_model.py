@@ -170,6 +170,23 @@ class DiffusionModel(ArgumentSaverModel):
         optimizer: optimizers.Optimizer | None = None, 
         variables: list[tf.Variable] | None = None
     ) -> None:
+        """Register current network variables with an existing optimizer.
+
+        Progressive depth growth creates trainable variables after compilation.
+        This method adds them to the supplied optimizer without replacing the
+        optimizer or losing its iterations and accumulated state. Omitting the
+        arguments uses this wrapper's optimizer and all raw-network variables.
+
+        Args:
+            optimizer: Optimizer that should know the current variable set, or
+                ``None`` to use ``self.optimizer`` when it exists.
+            variables: Variables to register, or ``None`` for every trainable
+                variable in the raw diffusion network.
+
+        Returns:
+            ``None``. If no optimizer exists yet, the method has no effect.
+        """
+
         optimizer = getattr(self, "optimizer", None) if optimizer is None else optimizer
         variables = self.network.trainable_variables if variables is None else variables
 
@@ -180,8 +197,23 @@ class DiffusionModel(ArgumentSaverModel):
             optimizer._create_all_weights(variables)
         elif hasattr(optimizer, "build"):
             optimizer.build(variables)
+        else:
+            raise ValueError(
+                "Failed to register new variables to the optimizer."
+            )
 
-    def _refresh_loss_flags(self):
+    def _refresh_loss_flags(self) -> None:
+        """Refresh auxiliary-loss flags from the current network topology.
+
+        KL loss is available when a KL reshaper is configured, and class-token
+        regularization is available when at least one regularizer depth exists.
+        The flags are recomputed after progressive depth additions because a
+        newly appended layer may enable either loss.
+
+        Returns:
+            ``None``. ``use_kl_loss`` and ``use_ctr_loss`` are updated in place.
+        """
+
         self.use_kl_loss = bool(
             self.kl_loss_coef > 0. and
             self.network.reshaper_kwargs.get("add_kl", False)
@@ -191,16 +223,39 @@ class DiffusionModel(ArgumentSaverModel):
             len(self.network.cls_token_regularizer_ids) > 0
         )
 
-    def _add_depths(self, depth_spec):
+    def _add_depths(
+        self, 
+        depth_spec: object
+    ) -> dict[str, dict[str, int]]:
+        """Grow raw and EMA networks after a completed progressive stage.
+
+        The network owns interpretation of ``depth_spec``. This wrapper applies
+        that same specification to raw and EMA copies, builds newly created
+        variables, initializes the new EMA weights from their raw counterparts,
+        refreshes loss flags, registers optimizer variables and invalidates
+        compiled execution functions. Existing weights and optimizer state are
+        retained.
+
+        Args:
+            depth_spec: A depth specification accepted by the wrapped network.
+
+        Returns:
+            The wrapped network's branch-wise before/added/after depth report.
+
+        Raises:
+            ValueError: If raw and EMA growth creates different numbers or
+                shapes of weights.
+        """
+
         raw_weight_ids = {id(weight) for weight in self.network.weights}
         ema_weight_ids = {id(weight) for weight in self.ema_network.weights} \
                         if self.ema_network is not None else set()
 
-        growth = self.network._add_depths(depth_spec)
+        growth = self.network.add_depths(depth_spec)
         self.network.build_model()
 
         if self.ema_network is not None:
-            self.ema_network._add_depths(
+            self.ema_network.add_depths(
                 depth_spec
             )
             self.ema_network.build_model()
@@ -220,11 +275,6 @@ class DiffusionModel(ArgumentSaverModel):
                 )
 
             for raw_weight, ema_weight in zip(raw_weights, ema_weights):
-                if raw_weight.shape != ema_weight.shape:
-                    raise ValueError(
-                        "Raw and EMA progressive depth weight shapes differ."
-                    )
-
                 ema_weight.assign(raw_weight)
 
         self._refresh_loss_flags()
@@ -234,6 +284,17 @@ class DiffusionModel(ArgumentSaverModel):
         self.predict_function = None
 
         return growth
+
+    @property
+    def current_resolution(self) -> tuple[int, int]:
+        """Return the square image resolution currently processed.
+
+        Returns:
+            The active positive integer resolution of both the 
+            Wrapper and the Network.
+        """
+
+        return self._current_resolution, self.network.current_resolution
 
     @property
     def metrics(self):
@@ -401,7 +462,7 @@ class DiffusionModel(ArgumentSaverModel):
         patience: int = 10, 
         min_delta: float = 1e-3, 
         stopper_mode: str = "min", 
-        **fit_kwargs
+        **fit_kwargs: object
     ) -> callbacks.History:
         """Train through a user-defined sequence of progressive stages.
 
@@ -463,28 +524,21 @@ class DiffusionModel(ArgumentSaverModel):
         A depth specification names layers supported by the transformer's
         normal layer factories. A string adds one depth containing that layer;
         a list adds several depths; and a set or dictionary puts several layer
-        types in one depth. A specification without a target applies to the
-        main network branch. Use a target dictionary to choose the main branch,
-        classifier branch, or both::
+        types in one depth. For example::
 
-            depth_specification = {
-                "network": [
-                    "vit_block", 
-                    {"connection": {"ids": [-1]}, "local_mixer": True}, 
-                ], 
-                "classifier": ["vit_block"],
-            }
+            depth_specification = [
+                "vit_block",
+                {"connection": {"ids": [-1]}, "local_mixer": True},
+            ]
 
-        Supported main-branch names are ``connection``, ``cross_attention``,
+        Supported names are ``connection``, ``cross_attention``,
         ``vit_block``/``decoder_block``, ``local_mixer``, ``downsample``,
-        ``upsample``, ``reshaper``, and ``cls_token_regularizer``. Classifier
-        transformers additionally support ``feature_aggregator`` and
-        ``cross_attention_aggregator``. The existing model-wide layer kwargs
-        are reused. Connector dictionaries may provide ``ids``; transformer
-        block dictionaries may provide ``use_decoder`` and
-        ``mlp_output_dim``; a reshaper value is ``"flatten"`` or
+        ``upsample``, ``reshaper``, and ``cls_token_regularizer``. The existing
+        model-wide layer kwargs are reused. Connector dictionaries may provide
+        ``ids``; transformer block dictionaries may provide ``use_decoder``
+        and ``mlp_output_dim``; a reshaper value is ``"flatten"`` or
         ``"unflatten"``. Added sequences must leave the final feature shape
-        compatible with the already-trained output or classifier head. This
+        compatible with the already-trained output head. This
         API deliberately accepts the project's supported layer types rather
         than arbitrary Keras layers, because each supported type has a defined
         call signature and location in the transformer depth. New layers are
@@ -544,8 +598,7 @@ class DiffusionModel(ArgumentSaverModel):
             depths: Optional stage-indexed depth specifications. An entry is
                 read only when the corresponding task requests ``"depth"``
                 without an inline value. A specification may add any number of
-                supported layer dictionaries to ``network.layers_dicts`` and,
-                for classifier transformers, ``network.clf_layers_dicts``.
+                supported layer dictionaries to ``network.layers_dicts``.
                 Appended depths persist after this method returns.
             pacing_type: ``"fixed"`` always runs ``stage_epochs``. ``"plateau"``
                 may advance sooner using the selected early-stopping callback.
@@ -564,9 +617,9 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             A Keras ``History`` containing merged metrics and a
             ``progressive_stages`` record of every resolved stage, including
-            its pre-addition depths and any ``depth_growth`` result. The model's
-            timestep bounds and resolution are restored to their entry values
-            after completion or interruption; completed structural depth
+            its pre-addition network depth and any ``depth_growth`` result. The
+            model's timestep bounds and resolution are restored to their entry 
+            values after completion or interruption; completed structural depth
             additions are intentionally retained. Input data must be reiterable
             because each stage invokes a separate Keras ``fit`` call.
         """
@@ -716,7 +769,6 @@ class DiffusionModel(ArgumentSaverModel):
                 "max_timestep": self._active_max_timestep, 
                 "resolution": self._current_resolution, 
                 "network_depth": self.network.depth, 
-                "classifier_depth": getattr(self.network, "clf_depth", None), 
                 "epochs_ran": len(actual_epochs), 
                 "history": history.history, 
             }
@@ -774,9 +826,6 @@ class DiffusionModel(ArgumentSaverModel):
                         updates["depth"]
                     )
                     stage_record["post_network_depth"] = self.network.depth
-                    stage_record["post_classifier_depth"] = getattr(
-                        self.network, "clf_depth", None
-                    )
 
             if final_epochs > 0:
                 self.set_timestep_bounds()
