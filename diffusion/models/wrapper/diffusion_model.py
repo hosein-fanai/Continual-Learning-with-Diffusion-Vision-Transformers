@@ -1373,6 +1373,80 @@ class DiffusionModel(ArgumentSaverModel):
 
         return results
 
+    def sample_vae(
+        self, 
+        network_name: NetworkName = "ema", 
+        labels: tf.Tensor| list | None = None, 
+        z: tf.Tensor | None = None, 
+        seed: int | None = None
+    ):
+        """Generate images by sampling the configured variational bottleneck."""
+
+        network = self.get_network(network_name)
+        z_id = None
+        for id_, type_ in network.reshaper_ids_dict.items():
+            if type_ == "flatten":
+                z_id = int(id_)
+                break
+
+        if z_id is None:
+            raise ValueError(
+                "sample_vae requires a flatten reshaper."
+            )
+
+        if not network.reshaper_kwargs.get("add_kl", False):
+            raise ValueError(
+                "sample_vae requires add_kl=True in reshaper_kwargs."
+            )
+
+        for ids_dict in (
+            network.connection_ids_dict, 
+            network.cross_attention_ids_dict
+        ):
+            for depth, ids in ids_dict.items():
+                if depth > z_id and any(id_ < z_id for id_ in ids):
+                    raise ValueError(
+                        "VAE decoder connections cannot use "
+                        "features before the flatten reshaper."
+                    )
+
+        reshaper = network.layers_dicts[z_id-1][network.R]
+        z_projector = reshaper.get_layer(
+            f"{network.name_prefix}depth_{z_id}_{network.R[2:]}/z"
+        ) if network.reshaper_kwargs.get("latent_dim_ratio", 1) != 1 else None
+
+        labels = list(
+            range(network.num_labels)
+        ) if labels is None else labels
+        n = len(labels)
+        seed = self.seed if seed is None else seed
+        ts = tf.zeros(
+            shape=(n,), 
+            dtype=tf.int32
+        )
+        z = tf.random.normal(
+            shape=(
+                n, 
+                reshaper.output_shape[1][-1]
+            ), 
+            mean=0., 
+            stddev=1., 
+            seed=seed
+        ) if z is None else z
+        z = z_projector(
+            z, 
+            training=False
+        ) if z_projector is not None else z
+
+        images = network(
+            (z, ts, labels), 
+            min_depth=z_id, 
+            training=False
+        )
+        images = self.postprocess(images)
+
+        return images
+
     def sample(
         self, 
         network_name: NetworkName = "ema", 
@@ -1393,6 +1467,14 @@ class DiffusionModel(ArgumentSaverModel):
         eta = 1.0 -> DDPM-equivalent for full consecutive timesteps
         0 < eta < 1 -> stochastic DDIM
         """
+
+        if self.swap_noise_image:
+            return self.sample_vae(
+                network_name=network_name, 
+                labels=labels, 
+                z=x_t, 
+                seed=seed
+            )
 
         labels = list(
             range(self.network.num_labels)

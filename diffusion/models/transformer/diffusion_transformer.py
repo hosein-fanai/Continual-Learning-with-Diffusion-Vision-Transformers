@@ -1268,11 +1268,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
-        training: bool | None = None
+        training: bool | None = None,
+        min_depth: int = 0
     ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         x, cond, features_list, regs_list, z_vals = self.encode(
             inputs, 
+            min_depth=min_depth,
             training=training
         )
         noises = self.unpatchifier(
@@ -1448,35 +1450,51 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         max_depth: int = -1, 
-        training: bool | None = None
+        training: bool | None = None,
+        min_depth: int = 0
     ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
-        x, (cond, time_embeds, label_embeds) = self.embed_inputs(
-            inputs, 
-            self.cond_type, 
-            full_return=True, 
-            training=training
-        )
-        x = self.prepend_cls_token(
-            x, self.cls_token_type, 
-            time_embeds=time_embeds, 
-            label_embeds=label_embeds, 
-            times=inputs[1], 
-            labels=inputs[2], 
-            training=training
-        ) if self.cls_token_type is not None else x
+        assert 0 <= min_depth <= self.depth, \
+            "min_depth must be in the range of [0, depth]."
+
+
+        if min_depth == 0:
+            x, (cond, time_embeds, label_embeds) = self.embed_inputs(
+                inputs,
+                self.cond_type,
+                full_return=True,
+                training=training
+            )
+            x = self.prepend_cls_token(
+                x, self.cls_token_type,
+                time_embeds=time_embeds,
+                label_embeds=label_embeds,
+                times=inputs[1],
+                labels=inputs[2],
+                training=training
+            ) if self.cls_token_type is not None else x
+        else:
+            x = inputs[0]
+            cond, time_embeds, label_embeds = self.embed_conditions(
+                inputs[1], inputs[2], 
+                self.cond_type, 
+                full_return=True, 
+                training=training
+            )
 
         z = self.labels_embed_reg(
             label_embeds, 
             training=training
         ) if self.labels_embed_reg is not None else None
 
-        features_list = [x]
-        regs_list = [z]
+        features_list = [None] * min_depth + [x]
+        regs_list = [z] + [None] * min_depth
         z_vals = (None, None)
         for i, layers_dict in enumerate(self.layers_dicts):
             if i == max_depth:
                 break
+            if i < min_depth:
+                continue
 
             x = layers_dict[self.FC](
                 features_list, 
