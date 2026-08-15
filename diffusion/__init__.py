@@ -31,4 +31,4 @@ from .callbacks.batch_loss_plateau import BatchLossPlateau
 
 from .schedulers import make_schedule, SchedulerName
 
-# from .models.convolution.unet import UNet
+from .models.convolution.unet import UNet
