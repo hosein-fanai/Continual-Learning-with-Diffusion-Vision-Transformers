@@ -1,3 +1,5 @@
+"""Spatial downsampling for flattened square token grids."""
+
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -11,10 +13,58 @@ ScalingMethod: TypeAlias = Literal[
     "max_pooling", 
     "cnn_stride"
 ]
+"""Available pooling and strided-convolution downsampling strategies."""
 
 
 class Downsample(BaseEmbedding):
-    """
+    """Reduce a square patch-token grid and optionally preserve a class token.
+
+    The layer optionally normalizes tokens, removes a leading class token,
+    reshapes spatial tokens to ``[batch, grid, grid, channels]``, applies the
+    selected spatial reduction, restores a sequence, merges a positional table,
+    restores/project the class token, and optionally applies an MLP.
+
+    Args:
+        use_layer_norm: Whether to create condition-adaptive normalization
+            before spatial scaling. If enabled with normal adaptation,
+            :meth:`call` requires ``cond``.
+        scaling_method: ``"avg_pooling"`` or ``"max_pooling"`` preserves
+            ``dim`` channels; ``"cnn_stride"`` learns a convolution and emits
+            ``dim * cnn_dim_ratio`` channels.
+        strides: Positive integer spatial stride. Pooling uses Keras's default
+            2x2 window. Convolution uses ``cnn_kernel_size``.
+        padding: Keras 2-D padding mode, normally ``"same"`` or ``"valid"``.
+        cnn_dim_ratio: Positive integer channel multiplier used only by
+            ``"cnn_stride"``.
+        cnn_kernel_size: Positive convolution kernel side used only by
+            ``"cnn_stride"``.
+        cnn_activation_func: Keras activation for the strided convolution;
+            ``"linear"`` leaves it unbounded.
+        circumvent_cls_token: Treat token 0 as a non-spatial class token,
+            exclude it from downsampling, project it when widths change, and
+            prepend it again.
+        **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
+            ``grid_size`` (at least 2). Positional keys include
+            ``pos_embed_type``, ``pos_merger_type``, and
+            ``pos_interpolation_method``; MLP keys include ``mlp_ratio`` and
+            ``mlp_output_dim``. ``use_layer_norm`` and ``ln_dim`` are supplied
+            here and must not be repeated.
+
+    Inputs:
+        Pair ``(x, cond)``. ``x`` is floating ``[batch, tokens, dim]``. The
+        spatial token count must be a perfect square; with
+        ``circumvent_cls_token=True``, ``tokens - 1`` must be square. ``cond``
+        is ``[batch, condition_dim]`` when adaptive normalization is active.
+
+    Outputs:
+        Floating tensor ``[batch, reduced_tokens, output_dim]``. A leading
+        class token adds one to ``reduced_tokens``. Positional concatenation
+        doubles the pre-MLP width; ``mlp_output_dim`` can replace it.
+
+    Serialization:
+        ``get_config()`` includes inherited ``ln_dim`` even though
+        :class:`BaseEmbedding` supplies it from ``dim``. Remove ``ln_dim`` from
+        a copied config before calling ``Downsample.from_config``.
     """
 
     def __init__(
@@ -29,6 +79,14 @@ class Downsample(BaseEmbedding):
         circumvent_cls_token: bool = False, 
         **kwargs
     ):
+        """Create the selected scaler, positional table, and projections.
+
+        Arguments and accepted types are documented on the class.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(
             use_layer_norm=use_layer_norm, 
             **kwargs
@@ -93,6 +151,22 @@ class Downsample(BaseEmbedding):
         )
 
     def call(self, inputs, training=None):
+        """Downsample a token grid.
+
+        Args:
+            inputs: Pair ``(x, cond)`` following the class input contract.
+            training: Optional Keras training flag forwarded to normalization,
+                convolution, positional projection, and MLP layers.
+
+        Returns:
+            ``tf.Tensor`` with floating compute dtype. For an actual input grid
+            ``g``, ``same`` padding yields side ``ceil(g / strides)``. With
+            ``valid`` padding, pooling yields
+            ``floor((g - 2) / strides) + 1`` and convolution yields
+            ``floor((g - cnn_kernel_size) / strides) + 1``. The configured
+            positional size assumes the common matching stride/window setup.
+        """
+
         x, cond = inputs
 
         x = self.layer_norm(

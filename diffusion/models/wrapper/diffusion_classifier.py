@@ -1,3 +1,10 @@
+"""Joint diffusion-and-classification training wrapper.
+
+This wrapper expects the raw feature-routing and classifier head implemented by
+``diffusion.models.transformer.di_t_classifier.DiTClassifier`` and adds losses,
+metrics, EMA use, timestep masking, and Keras train/test steps.
+"""
+
 import tensorflow as tf
 from tensorflow.keras import callbacks, metrics
 
@@ -12,8 +19,24 @@ from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 
 class DiffusionClassifier(DiffusionModel):
-    """
-    
+    """Train a ``DiTClassifier`` as a denoiser and image classifier jointly.
+
+    The inherited diffusion objective updates the raw noise branch.  A second
+    sparse-categorical objective trains the classifier probabilities, with
+    optional example masking and optional classifier-side KL/class-token
+    regularization.  ``DiTClassifier`` owns the architecture and all ``clf_*``
+    layer attributes; this wrapper owns ``clf_*`` losses and metrics.
+
+    Attributes:
+        clf_loss_coef (tf.Tensor): Float32 scalar initialized from the
+            constructor coefficient.
+        filter_t_threshold (tf.Tensor): Int32 scalar
+            ``int(mask_t_percentage / 100 * timesteps)``.
+        use_clf_kl_loss (bool | None): True only when a classifier reshaper is
+            present, KL-enabled, and ``kl_loss_coef > 0``; None when the network
+            exposes no classifier reshaper metadata.
+        use_clf_ctr_loss (bool | None): True only when classifier regularizer
+            depths exist and ``ctr_loss_coef > 0``; None when unsupported.
     """
 
     def __init__(
@@ -26,6 +49,40 @@ class DiffusionClassifier(DiffusionModel):
         clf_loss_coef: float = 8.6e-3, 
         **kwargs
     ):
+        """Initialize classifier-loss behavior around a raw classifier network.
+
+        Args:
+            mask_by_nulls (bool): Restrict classifier loss and accuracy to
+                examples whose post-dropout CFG label is null ID 0.  This is a
+                selection mask, not merely removal of null examples, and
+                requires ``p_uncond > 0``.
+            mask_by_t_threshold (bool): Additionally select only examples with
+                sampled ``t <= filter_t_threshold``.
+            mask_t_percentage (int): Percentage used to construct the inclusive
+                threshold ``int(percentage / 100 * timesteps)``.  For T=1000 and
+                70, examples through timestep 700 are selected.  Values are not
+                clamped by this class.
+            use_ensemble_loss_instead (bool): Ignore the current forward pass's
+                class probabilities for classifier loss and use
+                ``EnsembleAccuracy(self, max_t=4).ensemble_predict_batched`` on
+                clean images instead.  The resulting ensemble probabilities are
+                also returned for accuracy.
+            clf_train_type (TrainType): ``"cond"`` uses predictions from the
+                conditional/possibly dropped-label pass; ``"uncond"`` uses the
+                explicit null-label pass and requires ``train_cfg_scale``.
+            clf_loss_coef (float): Scalar multiplier for classifier
+                cross-entropy, default ``8.6e-3``.
+            **kwargs: Arguments forwarded to ``DiffusionModel``.  Required in
+                normal use is ``network=DiTClassifier(...)``; supported wrapper
+                keys include EMA/scheduler/CFG settings, all four diffusion loss
+                coefficients and train types, timestep bounds, resize options,
+                ``swap_noise_image``, ``seed``, and standard Keras ``Model`` keys
+                ``name``, ``trainable``, ``dtype``, and ``dynamic``.
+
+        Returns:
+            None.  Classifier coefficients, threshold, and loss flags are
+            initialized; trackers are created by :meth:`compile`.
+        """
         super().__init__(**kwargs)
         self._check_clf_assertions(locals())
         self._save_init_args(locals())
@@ -100,15 +157,19 @@ class DiffusionClassifier(DiffusionModel):
 
         A classifier string adds one classifier depth containing that layer, a
         list adds several depths, and a set or dictionary combines layers in
-        one depth. Classifier layer names are ``feature_aggregation``,
-        ``connection``, ``cross_attention_aggregation``, ``cross_attention``,
-        ``vit_block``, ``decoder_block``, ``local_mixer``, ``downsample``,
-        ``upsample``, ``reshaper`` and ``cls_token_regularizer``. For example::
+        one depth. Exact classifier layer names are ``feature_aggregator``,
+        ``feature_connector``, ``cross_attention_aggregator``,
+        ``cross_attention_connector``, ``vision_transformer_block``,
+        ``local_mixer``, ``downsampler``, ``upsampler``, ``reshaper`` and
+        ``cls_token_regularizer``. For example::
 
             depths = [{
-                "network": "vit_block",
+                "network": "vision_transformer_block",
                 "classifier": [
-                    {"connection": {"ids": [-1]}, "vit_block": True}
+                    {
+                        "feature_connector": {"ids": [-1]},
+                        "vision_transformer_block": True,
+                    }
                 ],
             }]
 
@@ -145,8 +206,10 @@ class DiffusionClassifier(DiffusionModel):
             patience: Non-improving epochs or batches tolerated in plateau mode.
             min_delta: Minimum change considered an improvement.
             stopper_mode: Direction used by epoch-wise early stopping.
-            **fit_kwargs: Standard Keras fit inputs, validation data, callbacks
-                and step options. Epoch indices are managed by this method.
+            **kwargs: Arguments forwarded to ``DiffusionModel.fit_progressively``:
+                all stage/timestep/resolution/depth/pacing options documented
+                above plus standard Keras fit inputs, validation data, callbacks,
+                and step options. Epoch indices are managed by that method.
 
         Returns:
             The merged Keras ``History`` from the base implementation. Every
@@ -168,6 +231,13 @@ class DiffusionClassifier(DiffusionModel):
 
     @property
     def metrics(self):
+        """Return diffusion and classifier metric trackers.
+
+        Returns:
+            list[tf.keras.metrics.Metric]: Base diffusion trackers followed by
+            classifier loss/accuracy, classifier KL loss, classifier token loss,
+            and classifier token accuracy.  Available after :meth:`compile`.
+        """
         return [
             *super().metrics, 
             self.clf_loss_tracker, 
@@ -178,6 +248,19 @@ class DiffusionClassifier(DiffusionModel):
         ]
 
     def compile(self, **kwargs):
+        """Compile the wrapper and create classifier metrics/loss helper.
+
+        Args:
+            **kwargs: Forwarded to ``DiffusionModel.compile``.  Accepted keys
+                include ``loss`` (loss object/name; default MSE), ``optimizer``
+                (required for training), ``run_eagerly``,
+                ``steps_per_execution``, ``jit_compile`` where supported,
+                ``metrics``, ``weighted_metrics``, and ``loss_weights``.
+
+        Returns:
+            None.  Creates ``EnsembleAccuracy`` when enabled plus five
+            classifier metric trackers.
+        """
         super().compile(**kwargs)
 
         self.ensemble_loss_fn = EnsembleAccuracy(
@@ -192,6 +275,17 @@ class DiffusionClassifier(DiffusionModel):
 
     def train_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
+        """Perform one joint raw-network diffusion/classifier update.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean float images
+                ``[B,H,W,C]`` and zero-based integer classes ``[B]``.
+
+        Returns:
+            dict[str, tf.Tensor]: Running diffusion and classifier metrics.  The
+            classifier mask selects CFG-null and/or low-timestep examples when
+            configured; divide-no-nan makes an empty selection contribute zero.
+        """
         (x0, noises, 
         t, x_t, 
         cfg_labels, 
@@ -266,6 +360,21 @@ class DiffusionClassifier(DiffusionModel):
 
     def test_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
+        """Evaluate diffusion plus unconditional clean-image classification.
+
+        Diffusion metrics use noisified inputs and the configured test CFG scale.
+        Classifier metrics instead call ``predict_class`` on clean ``x0`` with
+        timestep 0 and null labels, so test classifier loss intentionally differs
+        from masked/noisy training classifier loss.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean images ``[B,H,W,C]`` and
+                zero-based classes ``[B]``.
+
+        Returns:
+            dict[str, tf.Tensor]: Running enabled diffusion and classifier
+            losses/accuracies.
+        """
         (x0, noises, 
         t, x_t, 
         cond_labels, 
@@ -341,6 +450,25 @@ class DiffusionClassifier(DiffusionModel):
         network_name: NetworkName = "raw", 
         training: bool = False
     ):
+        """Run conditional and optional unconditional ``DiTClassifier`` passes.
+
+        Args:
+            x_t (tf.Tensor): Noisy images ``[B,H,W,C]``.
+            t_batch (tf.Tensor): Integer timesteps ``[B]``.
+            cond_labels (tf.Tensor): Conditional/possibly dropped labels ``[B]``.
+            uncond_labels (tf.Tensor | None): Null labels ``[B]``.
+            scale (float | None): Non-None requests an unconditional pass when
+                CFG is enabled; combination is performed by ``compute_eps``.
+            network_name (NetworkName): ``"raw"`` or ``"ema"``.
+            training (bool): Keras training mode.
+
+        Returns:
+            tuple: Six conditional/unconditional pairs in order: noise tensors,
+            main regularizer lists, main latent-statistic pairs, classifier
+            probabilities ``[B,num_classes]``, classifier regularizer lists, and
+            classifier latent-statistic pairs.  Unconditional members are None
+            when no second pass is requested.
+        """
         network = self.get_network(network_name)
 
         output_dict_c = network(
@@ -384,6 +512,36 @@ class DiffusionClassifier(DiffusionModel):
         x0: tf.Tensor = None, 
         training: bool | None = None
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Compute weighted classifier, classifier-KL, and token objectives.
+
+        Args:
+            classes (tf.Tensor): Zero-based targets ``[B]``.
+            classes_pred_c (tf.Tensor | None): Conditional class probabilities
+                ``[B,num_classes]``.
+            clf_z_vals_c (tuple[tf.Tensor, tf.Tensor] | None): Conditional
+                classifier latent mean/log variance.
+            clf_regs_list_c (list[tf.Tensor | None] | None): Conditional
+                classifier token predictions.
+            classes_pred_u (tf.Tensor | None): Unconditional probabilities.
+            clf_z_vals_u (tuple[tf.Tensor, tf.Tensor] | None): Unconditional
+                classifier latent statistics.
+            clf_regs_list_u (list[tf.Tensor | None] | None): Unconditional token
+                predictions.
+            clf_loss_mask (tf.Tensor | None): Float per-example mask ``[B]``;
+                None averages all cross-entropies.
+            clf_train_type (TrainType | None): Probability source; None uses the
+                configured ``clf_train_type``.
+            kl_train_type (TrainType | None): Classifier KL source; None uses the
+                base setting.
+            ctr_train_type (TrainType | None): Classifier token-loss source.
+            x0 (tf.Tensor | None): Clean images required by ensemble loss.
+            training (bool | None): Mode passed to the ensemble predictor.
+
+        Returns:
+            tuple: Weighted classifier total, raw classifier loss, classifier KL
+            loss, classifier token loss, selected/ensemble class probabilities,
+            and averaged classifier token probabilities.
+        """
         clf_train_type = self.clf_train_type if clf_train_type is None else clf_train_type
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
@@ -441,6 +599,29 @@ class DiffusionClassifier(DiffusionModel):
         use_kl_loss: tf.Tensor | None = None, 
         use_ctr_loss: tf.Tensor | None = None
     ) -> dict:
+        """Update classifier metric trackers and return current values.
+
+        Args:
+            clf_loss (tf.Tensor): Required scalar classifier loss.
+            classes (tf.Tensor): Zero-based targets ``[B]``.
+            classes_pred (tf.Tensor): Class probabilities ``[B,num_classes]``.
+            clf_acc_mask (tf.Tensor | None): Boolean selector ``[B]`` for
+                accuracy only; None selects all samples.
+            total_loss (tf.Tensor | None): Required when total tracking is on.
+            clf_kl_loss (tf.Tensor | None): Required when classifier KL is on.
+            clf_ctr_loss (tf.Tensor | None): Required when token loss is on.
+            clf_ctr_preds (tf.Tensor | None): Token probabilities for accuracy.
+            use_total_loss (bool | None): Explicit total tracker switch; None
+                enables it for classifier KL/token auxiliaries.
+            use_kl_loss (bool | None): Classifier KL tracker override.
+            use_ctr_loss (bool | None): Classifier token tracker override.
+
+        Returns:
+            dict[str, tf.Tensor]: Current classifier metrics keyed by name.
+
+        Raises:
+            AssertionError: If a requested optional metric lacks its input.
+        """
         clf_acc_mask = slice(
             None
         ) if clf_acc_mask is None else clf_acc_mask

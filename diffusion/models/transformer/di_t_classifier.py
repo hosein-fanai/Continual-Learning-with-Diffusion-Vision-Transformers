@@ -1,3 +1,10 @@
+"""Diffusion transformer with an attached feature-based classifier branch.
+
+The class in this module remains a raw network: it predicts diffusion noise and
+class probabilities.  Training objectives, schedules, EMA, and sampling live in
+``diffusion.models.wrapper.diffusion_classifier``.
+"""
+
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
@@ -11,8 +18,43 @@ from diffusion.models.transformer.diffusion_transformer import DiffusionTransfor
 
 
 class DiTClassifier(DiffusionTransformer):
-    """
-    
+    """Attach a configurable classifier pipeline to a diffusion transformer.
+
+    The inherited ``layers_dicts`` form the noise-prediction branch.  The
+    classifier obtains selected main-branch features through feature
+    aggregators, processes them through ``clf_depth`` stages, passes the final
+    selected classifier feature through a terminal connector at classifier
+    depth ``clf_depth + 1``, pools a token/vector, and emits a softmax.
+
+    Main-transformer depth 0 is the embedded input and 1..N are main stage
+    outputs.  Classifier depth 0 is the first aggregated/main-derived input;
+    classifier depths 1..``clf_depth`` are processing stages.  Consequently
+    ``clf_layers_dicts`` has ``clf_depth + 1`` entries: the last entry is the
+    terminal extraction connector, not another value counted by ``clf_depth``.
+    ``feature_aggregation_ids_dict`` reads main depths, whereas
+    ``clf_connection_ids_dict`` reads classifier depths.
+
+    Every ``clf_`` option configures the classifier branch.  Values of ``None``
+    inherit the corresponding noise-branch setting only for options handled by
+    :meth:`_set_defaults`; branch-defining IDs, ``clf_dim``, condition/token
+    modes, key/value widths, normalization MLP ratio, reshaper IDs, and
+    regularizer IDs retain their explicit defaults.  See ``__init__`` for the
+    exact initial state.
+
+    Use :class:`diffusion.models.wrapper.diffusion_classifier.DiffusionClassifier`
+    to optimize the noise and classifier losses jointly, or its V2 subclass to
+    split variables between generator and discriminator optimizers.
+
+    Attributes:
+        clf_layers_dicts (list[dict[str, tf.keras.layers.Layer]]): Classifier
+            processing dictionaries plus the terminal connector dictionary.
+        classifier_feature_extractor (tf.keras.layers.Layer): First-token
+            selector or global average pool.
+        classifier (tf.keras.Sequential): Optional hidden layer/dropout and a
+            final ``num_classes`` softmax.
+        first_aggregated_dim (int): Width entering classifier depth 0.
+        clf_grid_size (int): Spatial side inferred for classifier token layers.
+        max_encoder_num (int): Greatest main feature depth needed to classify.
     """
 
     FA  = "0_feature_aggregator"
@@ -50,7 +92,7 @@ class DiTClassifier(DiffusionTransformer):
         clf_mha_value_dim: int | None = None, 
         clf_mha_num_heads: int | None = None, 
         clf_vit_block_mlp_ratio: float | None = None, 
-        clf_vit_block_mlp_output_dims: dict[int] | None = None, 
+        clf_vit_block_mlp_output_dims: dict[int, int] | None = None,
         clf_ln_mlp_ratio: float | None = None, 
         clf_ln_no_adaptation: bool | None = None, 
         clf_drop_prob: float | None = None, 
@@ -61,7 +103,7 @@ class DiTClassifier(DiffusionTransformer):
         clf_downsample_kwargs: dict | None = None, 
         clf_upsample_ids: IdsType = [], 
         clf_upsample_kwargs: dict | None = None, 
-        clf_reshaper_ids_dict: dict[int] = {}, 
+        clf_reshaper_ids_dict: dict[int, str] = {},
         clf_reshaper_kwargs: dict = {}, 
         clf_cls_token_regularizer_ids: IdsType = [], 
         clf_cls_token_regularizer_kwargs: dict | None = None, 
@@ -72,6 +114,125 @@ class DiTClassifier(DiffusionTransformer):
         build: bool = True, 
         **kwargs
     ):
+        """Initialize the joint noise-prediction and classifier network.
+
+        Args:
+            aggregate_from_noises (bool): Classify the network's predicted noise
+                image rather than selected internal main-branch features.  This
+                requires ``use_unpatchify=True``.
+            feature_aggregation_ids_dict (dict[int, list[int | None]]): Maps a
+                classifier target depth to main-transformer feature depths.
+                Main depth 0 is embedded input; 1..N are stage outputs.  The
+                default ``{1: (-1,)}`` resolves ``-1`` to the final main depth.
+                Key 1 is mandatory.  ``None`` expands all main depths.
+            feature_aggregation_kwargs (dict[str, object]): Shared aggregation
+                options.  Accepted keys are ``connect_axis``, ``connect_type``,
+                ``use_layer_norm``, ``ln_dim``, ``ln_mlp_ratio``,
+                ``ln_no_adaptation``, ``mlp_output_dim``, ``mlp_ratio``, and
+                ``mlp_activation_func``, with the same values and behavior as
+                ``DiffusionTransformer.connection_kwargs``.
+            cross_attention_aggregation_ids_dict (dict[int, list[int | None]]):
+                Maps classifier target depths to main features used as external
+                attention queries/values rather than the primary feature path.
+            cross_attention_aggregation_kwargs (dict[str, object]): Same exact
+                allowed keys as ``feature_aggregation_kwargs``.
+            classifier_only_cls_token (bool): Give the classifier its own prefix
+                token and suppress the main branch's token.  False lets both
+                branches share the inherited main token behavior.
+            clf_dim (int | None): Nominal classifier width.  ``None`` is replaced
+                after aggregation by ``first_aggregated_dim``.
+            clf_dim_forced (bool): Project feature merges/spatial width changes
+                back to ``clf_dim``.  If true, ``clf_dim`` must be supplied.
+            clf_cond_type (CondType | None): Classifier adaptive condition:
+                ``"time_label"`` (default), ``"time"``, ``"label"``, or None.
+                This value does not inherit ``cond_type``.
+            clf_cls_token_type (TokenType | None): Classifier token source:
+                ``"new_weight"`` (default), ``"time_label"``, ``"time"``,
+                ``"label"``, or None.  It does not inherit ``cls_token_type``.
+            clf_depth (int): Number of classifier processing depths; default 1.
+                A terminal connector is created separately at depth
+                ``clf_depth + 1``.
+            clf_connection_ids_dict (dict[int, list[int | None]]): Classifier
+                self-connections keyed by classifier target depth.  The special
+                key ``-1`` is mandatory at construction and is moved to
+                ``clf_depth + 1`` for the terminal connector.  Its default
+                source ``(-1,)`` resolves to the last classifier processing
+                depth.  Example ``{2: [0, 1], -1: [-1]}`` also merges depth 0
+                and 1 before classifier stage 2.
+            clf_connection_kwargs (dict[str, object] | None): Connector keys
+                listed for ``feature_aggregation_kwargs``.  ``None`` inherits
+                the main branch's ``connection_kwargs``; ``{}`` requests layer
+                defaults/inferred dimensions.
+            clf_cross_attention_ids_dict (dict[int, list[int | None]]): Maps a
+                classifier stage to earlier classifier features used for cross
+                attention.  Empty by default.
+            clf_cross_attention_kwargs (dict[str, object] | None): Cross-
+                attention connector options; ``None`` inherits the main branch.
+            clf_cross_attention_plug_type (Literal["values", "queries"] | None):
+                External-attention plug side.  ``None`` inherits the main
+                ``cross_attention_plug_type`` (default ``"values"``).
+            clf_vit_block_ids (list[int | None]): Classifier attention-block
+                depths.  ``[None]`` means all 1..``clf_depth``; ``[]`` means no
+                blocks.  This list does not inherit from the main branch.
+            clf_use_decoder_ids (list[int | None]): Classifier block depths that
+                use ``DiTDecoderBlock``.  Empty by default.
+            clf_mha_key_dim (int | None): Classifier per-head key width.  It
+                remains ``None`` by default and is inferred by the block.
+            clf_mha_value_dim (int | None): Classifier per-head value width;
+                remains ``None`` by default.
+            clf_mha_num_heads (int | None): Head count; ``None`` inherits
+                ``mha_num_heads`` (4 by default).
+            clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion;
+                ``None`` inherits ``vit_block_mlp_ratio`` (4 by default).
+            clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional
+                classifier per-depth output widths; ``None`` copies the main
+                mapping, while ``{}`` explicitly requests none.
+            clf_ln_mlp_ratio (float | None): Classifier adaptive-normalization
+                MLP ratio.  This explicit default remains None; it does not
+                inherit ``ln_mlp_ratio``.
+            clf_ln_no_adaptation (bool | None): Disable condition adaptation;
+                ``None`` inherits the main setting (false by default).
+            clf_drop_prob (float | None): Residual-drop probability; ``None``
+                inherits the main value (0 by default).
+            clf_drop_per_sample (bool | None): Drop residuals per sample;
+                ``None`` inherits the main value (true by default).
+            clf_local_mixer_ids (list[int | None]): Classifier local-mixer
+                depths; empty by default and independent of main IDs.
+            clf_local_mixer_kwargs (dict[str, object] | None): Exact keys from
+                ``local_mixer_kwargs``; ``None`` inherits the main mapping.
+            clf_downsample_ids (list[int | None]): Classifier downsample depths.
+            clf_downsample_kwargs (dict[str, object] | None): Exact keys from
+                ``downsample_kwargs``; ``None`` inherits the main mapping.
+            clf_upsample_ids (list[int | None]): Classifier upsample depths.
+            clf_upsample_kwargs (dict[str, object] | None): Exact keys from
+                ``upsample_kwargs``; ``None`` inherits the main mapping.
+            clf_reshaper_ids_dict (dict[int, str]): Classifier depth to
+                ``"flatten"``/``"unflatten"`` mapping; empty by default.
+            clf_reshaper_kwargs (dict[str, object]): ``add_kl`` (bool) and
+                ``latent_dim_ratio`` (positive float).  The default empty
+                mapping is classifier-specific and does not inherit main values.
+            clf_cls_token_regularizer_ids (list[int | None]): Classifier depths
+                0..``clf_depth`` with auxiliary class softmax heads.  Empty by
+                default; ``[None]`` selects the full range.
+            clf_cls_token_regularizer_kwargs (dict[str, int] | None): ``start``
+                and ``end`` token-slice bounds.  ``None`` inherits the main
+                mapping, normally ``{"start": 0, "end": 1}``.
+            force_global_avg_pooling (bool): Average all final tokens even when
+                a class token is available.  Without a usable class token,
+                global average pooling is selected automatically.
+            classifier_mlp_ratio (int | None): Add a hidden classifier Dense
+                layer of ``final_width * ratio`` units when non-None.
+            classifier_mlp_activation_func (str | callable): Hidden classifier
+                activation, default ``"tanh"``.
+            dropout_rate (float): Classifier dropout rate; 0 omits dropout.
+            build (bool): Build symbolic inputs and variables immediately.
+            **kwargs: All ``DiffusionTransformer`` constructor options plus
+                standard Keras model options.  Main-branch ``cls_token_type``
+                is intercepted according to ``classifier_only_cls_token``.
+
+        Returns:
+            None.  Both branches and the classifier head are initialized.
+        """
         temp_val = kwargs.pop("cls_token_type", None)
         super().__init__(
             cls_token_type=None if classifier_only_cls_token and \
@@ -157,6 +318,17 @@ class DiTClassifier(DiffusionTransformer):
             self.build()
 
     def _check_clf_assertions(self, local_vars: dict):
+        """Validate classifier-specific branch configuration.
+
+        Args:
+            local_vars (dict[str, object]): ``__init__`` locals after the main
+                transformer has been initialized.
+
+        Returns:
+            None.  Invalid CFG requirements, missing mandatory aggregator or
+            terminal IDs, out-of-range depths, unsupported kwargs keys, and
+            invalid attention plug types raise ``AssertionError``.
+        """
         local_vars["depth"] = self.depth
 
         assert self.use_cfg, \
@@ -343,6 +515,22 @@ class DiTClassifier(DiffusionTransformer):
                         "clf_mha_key_dim", "clf_mha_value_dim", 
                         "clf_ln_mlp_ratio", "clf_reshaper_ids_dict", 
                         "clf_cls_token_regularizer_ids"]):
+        """Resolve inheritable ``clf_*`` values from main-branch attributes.
+
+        Args:
+            local_vars (dict[str, object]): Constructor namespace containing
+                classifier values before resolution.
+            exclude (list[str]): Classifier option names that must retain their
+                explicit values, including branch-defining IDs, widths, token
+                modes, key/value dimensions, and reshaper/regularizer IDs.
+
+        Returns:
+            None.  For each non-excluded ``clf_name``, a None value becomes the
+            current ``self.name`` value; non-None values are retained.
+
+        Raises:
+            AssertionError: If ``clf_dim_forced=True`` but ``clf_dim`` is None.
+        """
         for name, clf_part_value in local_vars.items():
             if not name.startswith("clf_") or name in exclude:
                 continue
@@ -358,6 +546,16 @@ class DiTClassifier(DiffusionTransformer):
                 "When clf_dim_forced is true, clf_dim cannot be None."
 
     def _handle_all_clf_ids(self):
+        """Normalize every classifier and main-feature aggregation ID set.
+
+        Classifier component selections expand over depths 1..``clf_depth``;
+        classifier regularizer ``None`` expands over 0..``clf_depth``.  Main
+        aggregators resolve negative IDs against main ``depth`` and classifier
+        connectors resolve them against ``clf_depth``.
+
+        Returns:
+            None.  ID attributes are normalized in place.
+        """
         self.clf_vit_block_ids = self._handle_ids(
             self.clf_vit_block_ids, 
             depth=self.clf_depth, 
@@ -417,6 +615,16 @@ class DiTClassifier(DiffusionTransformer):
 
     def _get_layers_dict_last_output_dim(self, layers_dict: dict, 
                                         skip_reshaper: bool):
+        """Return the final feature width from a classifier/main stage mapping.
+
+        Args:
+            layers_dict (dict[str, tf.keras.layers.Layer]): Stage components.
+            skip_reshaper (bool): Ignore reshaper output widths.
+
+        Returns:
+            int | None: Feature-aggregator width when it is the latest relevant
+            component, otherwise the width resolved by the base implementation.
+        """
         last_output_dim = None
 
         if (key:=self.FA) in layers_dict:
@@ -431,6 +639,18 @@ class DiTClassifier(DiffusionTransformer):
         return last_output_dim
 
     def _create_clf_embedders(self):
+        """Create or reuse condition layers needed by the classifier branch.
+
+        With ``classifier_only_cls_token=True``, unused main token-conditioning
+        embedders may be removed and ``cls_token_type`` is cleared.  Existing
+        time/label embedders are shared when compatible; otherwise classifier-
+        named embedders are created.  A classifier depth-0 regularizer is also
+        created when requested.
+
+        Returns:
+            None.  Embedder, merger, and ``clf_labels_embed_reg`` attributes are
+            assigned in place.
+        """
         self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None and not self.clf_ln_no_adaptation else []
         self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None else []
 
@@ -467,6 +687,20 @@ class DiTClassifier(DiffusionTransformer):
         ) if 0 in self.clf_cls_token_regularizer_ids else None
 
     def _create_clf_layer_dict(self, i: int, layers_dicts: list[dict]):
+        """Construct one classifier stage or its terminal connector.
+
+        Args:
+            i (int): Zero-based classifier stage index.  Public key ``i+1`` may
+                be 1..``clf_depth`` or terminal key ``clf_depth+1``.
+            layers_dicts (list[dict]): Previously built classifier stages.
+
+        Returns:
+            dict[str, tf.keras.layers.Layer | tf.keras.Model]: Components in
+            aggregator, classifier connector, cross-attention aggregation,
+            cross-attention connector, transformer, mixer, scaler, reshaper,
+            regularizer order.  Aggregators read ``self.layers_dicts`` (main
+            features); ``clf_`` connectors read classifier features.
+        """
         layers_dict = {}
         key = i+1
 
@@ -651,6 +885,13 @@ class DiTClassifier(DiffusionTransformer):
         return layers_dict
 
     def _create_clf_layers(self):
+        """Create classifier processing stages and the terminal extraction stage.
+
+        Returns:
+            None.  ``clf_layers_dicts`` receives ``clf_depth + 1`` dictionaries;
+            the final dictionary normally contains the mandatory connector
+            moved from constructor key ``-1``.
+        """
         self.clf_layers_dicts = []
 
         for i in range(self.clf_depth+1):
@@ -664,6 +905,21 @@ class DiTClassifier(DiffusionTransformer):
         full_return: bool = False, 
         training: bool | None = None
     ) -> dict:
+        """Predict diffusion noise and class probabilities in one pass.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Noisy images
+                ``[B,H,W,C]``, timestep IDs ``[B]``, and CFG label IDs ``[B]``.
+            full_return (bool): Include both branches' intermediate tensors.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            dict[str, object]: Always ``{"noises": [B,H,W,C], "classes":
+            [B,num_classes]}``.  With ``full_return=True``, also contains
+            ``cond``, ``features_list``, ``regs_list``, ``z_vals`` for the main
+            branch and ``clf_cond``, ``clf_features_list``, ``clf_regs_list``,
+            ``clf_z_vals`` for the classifier branch.
+        """
         noises, cond, features_list, regs_list, z_vals = super().call(
             inputs, 
             full_return=True, 
@@ -696,6 +952,17 @@ class DiTClassifier(DiffusionTransformer):
         return output_dict
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None):
+        """Set how many main transformer stages classification must execute.
+
+        Args:
+            max_encoder_num (int | None): Explicit exclusive loop stop passed to
+                :meth:`encode`.  ``None`` computes the greatest main depth used
+                by either aggregation mapping, also considering the final depth
+                when ``aggregate_from_noises=True``.
+
+        Returns:
+            None.  ``self.max_encoder_num`` is assigned.
+        """
         aggregation_ids = []
         [aggregation_ids.extend(value) for value in \
             self.feature_aggregation_ids_dict.values()]
@@ -715,6 +982,18 @@ class DiTClassifier(DiffusionTransformer):
         full_return: bool = False, 
         training: bool | None = None
     ):
+        """Run only the inherited diffusion noise-prediction branch.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images/noisy images
+                ``[B,H,W,C]``, integer timesteps ``[B]``, labels ``[B]``.
+            full_return (bool): Return base-branch intermediates when true.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | tuple: Same output contract as
+            ``DiffusionTransformer.call``; no classifier output is computed.
+        """
         outputs = super().call(
             inputs, 
             full_return=full_return, 
@@ -732,6 +1011,24 @@ class DiTClassifier(DiffusionTransformer):
         training: bool | None = None
     ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        """Compute class probabilities from main features or predicted noises.
+
+        Args:
+            features_list (list[tf.Tensor]): Main features indexed by absolute
+                depth, with rank-3 token tensors at routed depths.
+            noises (tf.Tensor | None): Predicted image/noise ``[B,H,W,C]``.
+                Required when ``aggregate_from_noises=True``; otherwise ignored.
+            times (tf.Tensor): Integer timestep IDs ``[B]``.
+            labels (tf.Tensor): Integer condition label IDs ``[B]``.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tuple: ``(classes, clf_cond, clf_features_list, clf_regs_list,
+            clf_z_vals)``.  ``classes`` is float ``[B,num_classes]`` softmax;
+            features index 0 is classifier depth 0, regularizer entries may be
+            None, and latent statistics are ``(mean, log_variance)`` or
+            ``(None, None)``.
+        """
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
             times, labels, 
             self.clf_cond_type, 
@@ -871,6 +1168,22 @@ class DiTClassifier(DiffusionTransformer):
         training: bool | None = None
     ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        """Classify inputs while executing only the required main depths.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/noisy image
+                ``[B,H,W,C]``, integer time IDs ``[B]``, and condition labels
+                ``[B]``.
+            max_encoder_num (int | None): Main encoder loop stop.  ``None`` uses
+                ``self.max_encoder_num``; the default ``-1`` executes all stages.
+            full_return (bool): Return classifier intermediates and latent stats.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | tuple: Class probabilities ``[B,num_classes]`` or, with
+            ``full_return=True``, ``(classes, clf_cond, clf_features_list,
+            clf_regs_list, clf_z_vals)``.
+        """
         max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
 
         x, cond, features_list, _, _ = self.encode(
@@ -898,16 +1211,17 @@ class DiTClassifier(DiffusionTransformer):
         self, 
         depth_spec: str | tuple | set | dict | list | None
     ) -> dict[str, dict[str, int]]:
-        f"""Append transformer and classifier depths through their own APIs.
+        """Append transformer and classifier depths through their own APIs.
 
         An ordinary specification is delegated to ``DiffusionTransformer``
         and therefore grows only ``layers_dicts``. A targeted dictionary may
         contain ``network`` and ``classifier``. The network value uses the
         base transformer's syntax; the classifier value uses the same outer
         list/string/set/dictionary rules and the classifier layer names 
-        ``{self.FA[2:]}``, ``{self.FC[2:]}``, ``{self.CAA[2:]}``, ``{self.CAC[2:]}``, 
-        ``{self.VTB[2:]}``, ``{self.R[2:]}``. The other supported names are 
-        ``{self.LM[2:]}``, ``{self.DS[2:]}``, ``{self.US[2:]}`` and ``{self.CTR[2:]}``.
+        ``feature_aggregator``, ``feature_connector``,
+        ``cross_attention_aggregator``, ``cross_attention_connector``,
+        ``vision_transformer_block``, ``reshaper``, ``local_mixer``,
+        ``downsampler``, ``upsampler``, and ``cls_token_regularizer``.
 
         Classifier aggregators read features from the main transformer and
         classifier connectors read preceding classifier depths. The existing
@@ -916,12 +1230,24 @@ class DiTClassifier(DiffusionTransformer):
         classifier sequence must preserve their feature dimension.
 
         Args:
-            depth_spec: An unscoped network specification or a dictionary with
-                optional ``network`` and ``classifier`` specifications.
+            depth_spec (str | tuple | set | dict | list | None): An unscoped
+                network specification or a dictionary with optional ``network``
+                and ``classifier`` specifications.  For an aggregator/connector,
+                a value may be an ID, ID iterable, true/default, or
+                ``{"ids": [...]}``.  A transformer block accepts
+                ``{"use_decoder": bool, "mlp_output_dim": int | None}`` and a
+                reshaper accepts ``{"reshape_type": "flatten" | "unflatten"}``.
+                Example: ``{"classifier": [{"feature_connector": {"ids":
+                [-1]}}, "vision_transformer_block"]}``.
 
         Returns:
-            Depth changes for both branches. A branch omitted from a targeted
-            dictionary reports zero added depths.
+            dict[str, dict[str, int]]: ``before``, ``added``, and ``after`` depth
+            counts for both branches.  An omitted targeted branch reports zero.
+
+        Raises:
+            ValueError: If targeted keys/layer names are unknown, the classifier
+                terminal stage is not connector-only, or appended layers change
+                the feature width expected by an existing head.
         """
 
         targeted = isinstance(depth_spec, dict) and any(

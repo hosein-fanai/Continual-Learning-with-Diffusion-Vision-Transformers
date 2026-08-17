@@ -1,3 +1,10 @@
+"""Training, evaluation, EMA, noising, and sampling for raw diffusion networks.
+
+Networks in ``diffusion.models.transformer`` implement tensor transformations.
+This module wraps one such network in the stateful Keras training protocol and
+owns the diffusion process around it.
+"""
+
 import tensorflow as tf
 from tensorflow.keras import metrics, losses, callbacks, optimizers
 
@@ -19,8 +26,31 @@ from diffusion.schedulers import make_schedule, SchedulerName
 
 # @tf.keras.saving.register_keras_serializable()
 class DiffusionModel(ArgumentSaverModel):
-    """
-    
+    """Orchestrate diffusion training and sampling around a raw transformer.
+
+    The wrapped ``network`` predicts noise from ``(x_t, timestep, label)``.  This
+    model constructs the schedule, samples forward-process noise, applies
+    classifier-free guidance, computes configured losses, updates raw and EMA
+    weights, manages progressive timestep/resolution/depth curricula, and runs
+    generalized DDIM/DDPM sampling.
+
+    This wrapper is deliberately separate from
+    ``diffusion.models.transformer``: transformer classes own architecture and
+    intermediate features; wrapper classes own optimization and diffusion
+    state.  Call ``compile`` on the wrapper, not only on the raw network.
+
+    Attributes:
+        network (DiffusionTransformer): Trainable/raw prediction network.
+        ema_network (DiffusionTransformer | None): Config-cloned exponential
+            moving-average network, initialized with exactly the raw weights.
+        schedules (dict[str, tf.Tensor]): One-dimensional schedule tensors,
+            including ``alpha_bar``, ``sqrt_alpha_bar``, and
+            ``sqrt_one_minus_alpha_bar``.
+        use_image_loss (bool): Initially ``image_loss_coef > 0``.
+        use_kl_loss (bool): Initially true only when ``kl_loss_coef > 0`` and
+            the raw network has a KL-enabled reshaper.
+        use_ctr_loss (bool): Initially true only when ``ctr_loss_coef > 0`` and
+            class-token regularizer depths exist.
     """
 
     def __init__(
@@ -52,6 +82,74 @@ class DiffusionModel(ArgumentSaverModel):
         seed: int | None = None, 
         **kwargs
     ):
+        """Initialize diffusion state and an optional EMA network.
+
+        Args:
+            network (DiffusionTransformer): Built/configurable raw network.  A
+                ``DiTClassifier`` subclass is accepted by classifier wrappers.
+            use_ema (bool): Clone ``network`` from its Keras config and maintain
+                exponential moving-average weights after each train step.
+            test_network_name (NetworkName): ``"ema"`` or ``"raw"`` network
+                selected by the default test step.  Use ``"raw"`` when
+                ``use_ema=False``.
+            ema_decay (float): EMA retention in ``[0,1)``.  New EMA weight is
+                ``decay * old_ema + (1-decay) * raw``.
+            scheduler_name (SchedulerName): One of ``"linear"``,
+                ``"scaled_linear"``, ``"squaredcos_cap_v2"``,
+                ``"clipped_cosine"``, ``"sigmoid"``, ``"quadratic"``,
+                ``"ve"``, ``"karras"``, ``"sub_vp"``, or ``"logistic"``.
+            modify_first_t (bool): Force timestep 0 to have signal rate 1,
+                noise rate 0, and cumulative alpha 1 after schedule creation.
+            p_uncond (float): Per-example probability of replacing a shifted
+                class label with null ID 0 during training.  It is forced to 0
+                when ``network.use_cfg=False``.
+            train_cfg_scale (float | None): CFG scale during training.  ``None``
+                runs only the conditional network pass; a number additionally
+                runs the null-label pass and combines predictions.
+            test_cfg_scale (float): CFG scale for evaluation/sampling, forced to
+                1 when CFG is disabled.
+            test_steps (int): Default reverse-sampling evaluations in
+                ``[2, network.timesteps]``.
+            test_eta (float): Default stochasticity in ``[0,1]``: 0 is
+                deterministic DDIM and 1 is DDPM-equivalent only for consecutive
+                full-schedule steps.
+            noise_loss_coef (float): Multiplier for prediction-vs-noise loss.
+            image_loss_coef (float): Multiplier for reconstructed-image loss; 0
+                disables it during normal training.
+            kl_loss_coef (float): Multiplier for variational reshaper KL loss; 0
+                disables it.
+            ctr_loss_coef (float): Multiplier for auxiliary class-token
+                regularizer loss; 0 disables it.
+            kl_train_type (TrainType): ``"cond"`` uses conditional latent
+                statistics; ``"uncond"`` uses the null-label forward pass.
+            ctr_train_type (TrainType): ``"cond"`` or ``"uncond"`` source for
+                auxiliary regularizer predictions.  ``"uncond"`` requires a
+                non-None ``train_cfg_scale``.
+            train_noisified_min_timesteps (int): Inclusive lower bound used by
+                :meth:`fit`; default 0.
+            train_noisified_max_timesteps (int | None): Exclusive training upper
+                bound; ``None`` becomes ``network.timesteps``.
+            test_noisified_min_timesteps (int): Inclusive evaluation lower bound.
+            test_noisified_max_timesteps (int | None): Exclusive evaluation
+                upper bound; ``None`` becomes the full schedule length.
+            resize_method (str): ``tf.image.resize`` method used during
+                progressive-resolution input preparation, for example ``"area"``
+                or ``"bilinear"``.
+            resize_antialias (bool): Antialias flag passed to ``tf.image.resize``.
+            swap_noise_image (bool): Train the output against ``x_t`` instead of
+                sampled Gaussian noise and route :meth:`sample` to
+                :meth:`sample_vae`; this mode requires a compatible KL bottleneck.
+            seed (int | None): Default TensorFlow random seed for noising,
+                label dropout, latent draws, and sampling; per-call seeds override.
+            **kwargs: Standard ``tf.keras.Model`` keys: ``name`` (str),
+                ``trainable`` (bool), ``dtype`` (dtype name/policy), and
+                ``dynamic`` (bool).
+
+        Returns:
+            None.  Schedule tensors, active bounds/resolution, loss flags, and
+            raw/EMA networks are initialized; metric trackers are created later
+            by :meth:`compile`.
+        """
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
@@ -89,6 +187,16 @@ class DiffusionModel(ArgumentSaverModel):
         self.build(())
 
     def _check_assertions(self, local_vars: dict):
+        """Validate schedule, EMA, sampler, and auxiliary-loss choices.
+
+        Args:
+            local_vars (dict[str, object]): Wrapper constructor namespace.
+
+        Returns:
+            None.  Invalid EMA decay, sampling-step/eta ranges, train-type
+            values, or unconditional regularizer configuration raise
+            ``AssertionError``.
+        """
         assert 0. <= local_vars["ema_decay"] < 1., \
             "ema_decay must be in the range of [0., 1.)."
 
@@ -118,6 +226,21 @@ class DiffusionModel(ArgumentSaverModel):
         at approximately equal intervals of log-SNR under the *existing full*
         diffusion schedule.  It keeps the original T and schedule unchanged;
         only the timesteps sampled for a curriculum stage are restricted.
+
+        Args:
+            stages_num (int): Number of intervals, in ``1..timesteps``.
+            clustering_type (ClusteringType): ``"uniform"`` spaces integer
+                timesteps approximately evenly; ``"log_snr"`` projects evenly
+                spaced log-SNR targets to the closest schedule indices.
+
+        Returns:
+            list[int]: ``stages_num + 1`` strictly increasing boundaries with
+            endpoints 0 and ``timesteps``.
+
+        Raises:
+            AssertionError: If ``stages_num`` is outside the valid range.
+            ValueError: If the clustering name is unsupported or a strict
+                partition cannot be constructed.
         """
 
         assert 1 <= stages_num <= self.timesteps, \
@@ -182,9 +305,11 @@ class DiffusionModel(ArgumentSaverModel):
         arguments uses this wrapper's optimizer and all raw-network variables.
 
         Args:
-            optimizer: Optimizer that should know the current variable set, or
+            optimizer (tf.keras.optimizers.Optimizer | None): Optimizer that
+                should know the current variable set, or
                 ``None`` to use ``self.optimizer`` when it exists.
-            variables: Variables to register, or ``None`` for every trainable
+            variables (list[tf.Variable] | None): Variables to register, or
+                ``None`` for every trainable
                 variable in the raw diffusion network.
 
         Returns:
@@ -291,6 +416,11 @@ class DiffusionModel(ArgumentSaverModel):
 
     @property
     def current_timesteps_bounds(self) -> tuple[int, int]:
+        """Return active forward-noising bounds as ``[minimum, maximum)``.
+
+        Returns:
+            tuple[int, int]: Inclusive minimum and exclusive maximum timestep.
+        """
         return self._active_min_timestep, self._active_max_timestep
 
     @property
@@ -306,6 +436,13 @@ class DiffusionModel(ArgumentSaverModel):
 
     @property
     def metrics(self):
+        """Return Keras metric trackers reset between fit/evaluate epochs.
+
+        Returns:
+            list[tf.keras.metrics.Metric]: Total, noise, image, KL, class-token
+            regularizer loss trackers and regularizer accuracy tracker.  They
+            exist after :meth:`compile`.
+        """
         return [
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
@@ -317,6 +454,21 @@ class DiffusionModel(ArgumentSaverModel):
 
     def compile(self, loss: losses.Loss | str = "mse", 
                 **kwargs):
+        """Configure the compiled prediction loss, optimizer, and trackers.
+
+        Args:
+            loss (tf.keras.losses.Loss | str): Per-example/base loss used for
+                both noise and image reconstruction, default ``"mse"``.
+            **kwargs: Arguments forwarded to ``tf.keras.Model.compile``.  Useful
+                keys include ``optimizer`` (optimizer instance/name),
+                ``run_eagerly`` (bool), ``steps_per_execution`` (int),
+                ``jit_compile`` (bool where supported), ``metrics``,
+                ``weighted_metrics``, and ``loss_weights``.  Custom train/test
+                steps report the trackers defined here.
+
+        Returns:
+            None.  ``scce_loss_fn`` and six metric trackers are initialized.
+        """
         super().compile(loss=loss, **kwargs)
 
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
@@ -330,6 +482,26 @@ class DiffusionModel(ArgumentSaverModel):
 
     def fit(self, x: tf.data.Dataset | None = None, 
             y: tf.data.Dataset | None = None, **kwargs) -> dict | list[float]:
+        """Fit under configured training timestep bounds, then restore bounds.
+
+        Args:
+            x (tf.data.Dataset | object | None): Keras input yielding
+                ``(images, labels)``; images are float ``[B,H,W,C]`` (normally
+                scaled to ``[-1,1]``) and labels are integer ``[B]``.
+            y (tf.data.Dataset | object | None): Optional separate Keras targets;
+                custom steps normally consume labels from ``x`` instead.
+            **kwargs: Forwarded to ``tf.keras.Model.fit``.  Accepted standard
+                keys include ``batch_size``, ``epochs``, ``verbose``,
+                ``callbacks``, ``validation_data``, ``shuffle``,
+                ``steps_per_epoch``, ``validation_steps``, and
+                ``initial_epoch``.
+
+        Returns:
+            tf.keras.callbacks.History: Keras training history (despite the
+            legacy return annotation).  After a successful fit, entry timestep
+            bounds are restored; an exception raised by Keras bypasses that
+            restoration in this direct method.
+        """
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
 
@@ -351,6 +523,26 @@ class DiffusionModel(ArgumentSaverModel):
                 y: tf.data.Dataset | None = None, 
                 network_name: NetworkName = "ema", 
                 **kwargs) -> dict | list[float]:
+        """Evaluate the raw or EMA network under test timestep bounds.
+
+        Args:
+            x (tf.data.Dataset | object | None): Keras input yielding image and
+                label tensors.
+            y (tf.data.Dataset | object | None): Optional separate targets.
+            network_name (NetworkName): ``"ema"`` or ``"raw"`` for this call.
+                ``"ema"`` is invalid when ``use_ema=False``.
+            **kwargs: Forwarded to ``tf.keras.Model.evaluate``.  Standard keys
+                include ``batch_size``, ``verbose``, ``sample_weight``, ``steps``,
+                ``callbacks``, and ``return_dict``.
+
+        Returns:
+            float | list[float] | dict[str, float]: Standard Keras evaluation
+            result.  After successful evaluation, active timestep bounds are
+            restored.  When a different network is requested, this implementation
+            leaves ``test_network_name`` at that requested value and records the
+            previous name in the legacy ``test_network`` attribute while
+            invalidating the cached test function.
+        """
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
         prev_test_network_name = self.test_network_name
@@ -378,10 +570,31 @@ class DiffusionModel(ArgumentSaverModel):
         return eval_results
 
     def summary(self, **kwargs):
+        """Print/return the raw network's Keras model summary.
+
+        Args:
+            **kwargs: Forwarded to ``network.summary``; supported keys include
+                ``line_length``, ``positions``, ``print_fn``, ``expand_nested``,
+                and ``show_trainable`` (TensorFlow-version dependent).
+
+        Returns:
+            None: Keras summary output is written through ``print_fn``.
+        """
         return self.network.summary(**kwargs)
 
     def train_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
+        """Perform one joint diffusion optimization step on the raw network.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean float images
+                ``[B,H,W,C]`` and integer zero-based classes ``[B]``.
+
+        Returns:
+            dict[str, tf.Tensor]: Running enabled loss/accuracy metrics.  Noise
+            loss is always present; total/image/KL/regularizer values appear
+            according to active loss flags.
+        """
         (x0, noises, 
         t, x_t, 
         cfg_labels, 
@@ -415,6 +628,16 @@ class DiffusionModel(ArgumentSaverModel):
 
     def test_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
+        """Evaluate one batch using the configured raw/EMA test network.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean images ``[B,H,W,C]`` and
+                integer classes ``[B]``.
+
+        Returns:
+            dict[str, tf.Tensor]: Running evaluation metrics.  Image loss is
+            explicitly evaluated even when its training coefficient is zero.
+        """
         (x0, noises, 
         t, x_t, 
         cond_labels, 
@@ -502,7 +725,10 @@ class DiffusionModel(ArgumentSaverModel):
             )
             fit_progressively(
                 "depths_only", 
-                depths=["vit_block", {"local_mixer", "vit_block"}], 
+                depths=[
+                    "vision_transformer_block",
+                    {"local_mixer", "vision_transformer_block"}
+                ],
                 final_epochs=1, x=dataset
             )
 
@@ -533,17 +759,21 @@ class DiffusionModel(ArgumentSaverModel):
         types in one depth. For example::
 
             depth_specification = [
-                "vit_block",
-                {"connection": {"ids": [-1]}, "local_mixer": True},
+                "vision_transformer_block",
+                {
+                    "feature_connector": {"ids": [-1]},
+                    "local_mixer": True,
+                },
             ]
 
-        Supported names are ``connection``, ``cross_attention``,
-        ``vit_block``/``decoder_block``, ``local_mixer``, ``downsample``,
-        ``upsample``, ``reshaper``, and ``cls_token_regularizer``. The existing
-        model-wide layer kwargs are reused. Connector dictionaries may provide
-        ``ids``; transformer block dictionaries may provide ``use_decoder``
-        and ``mlp_output_dim``; a reshaper value is ``"flatten"`` or
-        ``"unflatten"``. Added sequences must leave the final feature shape
+        Exact supported names are ``feature_connector``,
+        ``cross_attention_connector``, ``vision_transformer_block``,
+        ``local_mixer``, ``downsampler``, ``upsampler``, ``reshaper``, and
+        ``cls_token_regularizer``. The existing model-wide layer kwargs are
+        reused. Connector dictionaries may provide ``ids`` (an integer or ID
+        iterable); transformer block dictionaries may provide ``use_decoder``
+        (bool) and ``mlp_output_dim`` (int or None); a reshaper value is
+        ``"flatten"`` or ``"unflatten"``. Added sequences must leave the final feature shape
         compatible with the already-trained output head. This
         API deliberately accepts the project's supported layer types rather
         than arbitrary Keras layers, because each supported type has a defined
@@ -564,7 +794,7 @@ class DiffusionModel(ArgumentSaverModel):
             ]
             timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
             resolutions = [None, None, None, 64]
-            depths = [None, None, None, "vit_block"]
+            depths = [None, None, None, "vision_transformer_block"]
 
         This produces stages ``(700: 1000, 16)``, ``(300: 1000, 16)``,
         ``(300: 1000, 32)``, and ``(0: 1000, 64)``, then appends a transformer
@@ -722,7 +952,27 @@ class DiffusionModel(ArgumentSaverModel):
         previous_resolution = self._current_resolution
 
 
-        def run_stage(stage_id, updates, epochs, final=False):
+        def run_stage(
+            stage_id: int,
+            updates: dict[str, object],
+            epochs: int,
+            final: bool = False
+        ) -> dict[str, object]:
+            """Fit one resolved curriculum stage and merge its history.
+
+            Args:
+                stage_id (int): One-based stage identifier.
+                updates (dict[str, object]): Resolved ``timesteps``,
+                    ``resolution``, and/or ``depth`` descriptions for recording.
+                epochs (int): Maximum epochs allocated to this invocation.
+                final (bool): Label the stage ``"final"`` and skip plateau
+                    early stopping when true.
+
+            Returns:
+                dict[str, object]: Stage record containing active bounds,
+                resolution, pre-growth network depth, epoch count, and its raw
+                Keras history dictionary.
+            """
             nonlocal epoch_cursor
 
 
@@ -873,6 +1123,20 @@ class DiffusionModel(ArgumentSaverModel):
         min_timesteps: int | None = None, 
         max_timesteps: int | None = None, 
     ):
+        """Set the active half-open timestep interval for forward noising.
+
+        Args:
+            min_timesteps (int | None): Inclusive lower bound; ``None`` means 0.
+            max_timesteps (int | None): Exclusive upper bound; ``None`` means
+                the current full schedule length.
+
+        Returns:
+            None.  Changed bounds invalidate cached Keras train/test/predict
+            functions so traced random ranges are rebuilt.
+
+        Raises:
+            AssertionError: Unless ``0 <= min < max <= timesteps``.
+        """
         min_timesteps = 0 if min_timesteps is None else min_timesteps
         max_timesteps = self.timesteps if max_timesteps is None else max_timesteps
 
@@ -892,6 +1156,19 @@ class DiffusionModel(ArgumentSaverModel):
             self.predict_function = None
 
     def set_current_resolution(self, resolution: int | None = None):
+        """Synchronize active resolution across wrapper, raw, and EMA networks.
+
+        Args:
+            resolution (int | None): Square size accepted by the raw network;
+                ``None`` restores constructor ``image_size``.
+
+        Returns:
+            None.  Changed values invalidate cached Keras execution functions.
+
+        Raises:
+            AssertionError: Propagated when the network rejects a nonpositive,
+                nonintegral, or patch-incompatible resolution.
+        """
         resolution = self.image_size if resolution is None else resolution
 
         self.network.set_current_resolution(
@@ -914,6 +1191,18 @@ class DiffusionModel(ArgumentSaverModel):
         scheduler_name: SchedulerName | None = None, 
         timesteps: int | None = None
     ):
+        """Generate and store TensorFlow tensors for a noise schedule.
+
+        Args:
+            scheduler_name (SchedulerName | None): Supported name listed in the
+                constructor docs; ``None`` reuses ``self.scheduler_name``.
+            timesteps (int | None): New schedule length; ``None`` reuses the
+                current length.  Network embedding capacity is not rebuilt.
+
+        Returns:
+            None.  ``self.schedules`` maps schedule-statistic names to float32
+            rank-1 tensors and schedule metadata attributes are updated.
+        """
         scheduler_name = self.scheduler_name if scheduler_name is None else scheduler_name
         timesteps = self.timesteps if timesteps is None else timesteps
 
@@ -948,6 +1237,16 @@ class DiffusionModel(ArgumentSaverModel):
             )
 
     def get_noise_and_signal_rates(self, t: int | tf.Tensor):
+        """Gather signal and noise amplitudes at one or more timesteps.
+
+        Args:
+            t (int | tf.Tensor): Scalar or integer tensor of schedule indices.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: ``(sqrt_alpha_bar,
+            sqrt_one_minus_alpha_bar)`` with the same index shape as ``t`` and
+            dtype ``tf.float32``.
+        """
         a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
         b = tf.gather(self.schedules["sqrt_one_minus_alpha_bar"], t)
 
@@ -959,6 +1258,17 @@ class DiffusionModel(ArgumentSaverModel):
         t: tf.Tensor, 
         noises: tf.Tensor
     ):
+        """Sample the variance-preserving forward process at supplied times.
+
+        Args:
+            x0 (tf.Tensor): Clean float images ``[B,H,W,C]``.
+            t (tf.Tensor): Integer timestep IDs ``[B]``.
+            noises (tf.Tensor): Standard-normal samples matching ``x0``.
+
+        Returns:
+            tf.Tensor: Noisy images ``x_t = sqrt(alpha_bar_t)*x0 +
+            sqrt(1-alpha_bar_t)*noise`` with the same shape/dtype as ``x0``.
+        """
         a, b = self.get_noise_and_signal_rates(t)
         a = tf.reshape(a, (-1, 1, 1, 1))
         b = tf.reshape(b, (-1, 1, 1, 1))
@@ -973,6 +1283,23 @@ class DiffusionModel(ArgumentSaverModel):
         max_timesteps: int | None = None, 
         seed: int | None = None
     ):
+        """Draw timesteps/noise and create a noisy image batch.
+
+        Args:
+            x0 (tf.Tensor): Clean float images ``[B,H,W,C]``.
+            t (tf.Tensor | None): Explicit integer IDs ``[B]``.  ``None`` draws
+                uniformly from ``[min_timesteps, max_timesteps)``.
+            min_timesteps (int | None): Draw lower bound; ``None`` uses the
+                active wrapper bound.
+            max_timesteps (int | None): Exclusive draw upper bound; ``None``
+                uses the active wrapper bound.
+            seed (int | None): Random seed; ``None`` uses ``self.seed``.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor, tf.Tensor]: Noisy images ``x_t``, sampled
+            standard-normal noise, and int32 timesteps, with image tensors
+            matching ``x0`` shape.
+        """
         min_timesteps = self._active_min_timestep if min_timesteps is None else min_timesteps
         max_timesteps = self._active_max_timestep if max_timesteps is None else max_timesteps
         seed = self.seed if seed is None else seed
@@ -999,12 +1326,32 @@ class DiffusionModel(ArgumentSaverModel):
         return x_t, noises, t
 
     def postprocess(self, x: tf.Tensor) -> tf.Tensor:
+        """Convert model-space images from nominal ``[-1,1]`` to ``[0,1]``.
+
+        Args:
+            x (tf.Tensor): Numeric tensor of any shape.
+
+        Returns:
+            tf.Tensor: ``(x + 1) / 2`` clipped elementwise to ``[0,1]``.
+        """
         x = (x + 1) / 2
         x = tf.clip_by_value(x, 0., 1.)
 
         return x
 
     def get_network(self, network_name: NetworkName):
+        """Resolve the raw or EMA prediction network by name.
+
+        Args:
+            network_name (NetworkName): Exactly ``"raw"`` or ``"ema"``.
+
+        Returns:
+            DiffusionTransformer: Selected network instance.
+
+        Raises:
+            AssertionError: If EMA is requested while ``use_ema=False``.
+            ValueError: If the name is unsupported.
+        """
         if not self.use_ema:
             assert network_name != "ema", \
                 "network_name cannot be ema when use_ema is False."
@@ -1022,6 +1369,15 @@ class DiffusionModel(ArgumentSaverModel):
         return network
 
     def update_ema(self):
+        """Update every EMA weight from its aligned raw-network weight.
+
+        Returns:
+            bool: False when EMA is disabled; true after a successful update.
+
+        Raises:
+            AssertionError: If raw and EMA topologies have different weight
+                counts.
+        """
         if not self.use_ema:
             return False
 
@@ -1038,6 +1394,17 @@ class DiffusionModel(ArgumentSaverModel):
     def apply_grads(self, tape: tf.GradientTape, 
                     loss: tf.Tensor, 
                     variables: list[tf.Variable]| None = None):
+        """Differentiate a scalar loss and apply gradients with the optimizer.
+
+        Args:
+            tape (tf.GradientTape): Tape that recorded ``loss`` computation.
+            loss (tf.Tensor): Scalar differentiable objective.
+            variables (list[tf.Variable] | None): Variables to update; ``None``
+                selects all raw-network trainable variables.
+
+        Returns:
+            None.  Optimizer slots, iterations, and variables are updated.
+        """
         if variables is None:
             variables = self.network.trainable_variables
 
@@ -1046,6 +1413,17 @@ class DiffusionModel(ArgumentSaverModel):
 
     def get_cfg_labels(self, labels: tf.Tensor, 
                        seed: int | None = None):
+        """Apply classifier-free label dropout.
+
+        Args:
+            labels (tf.Tensor): Shifted integer labels ``[B]`` where ID 0 is
+                reserved for the null condition.
+            seed (int | None): Random seed; ``None`` uses ``self.seed``.
+
+        Returns:
+            tf.Tensor: Same shape/dtype as ``labels``; each element becomes 0
+            independently with probability ``p_uncond``.
+        """
         seed = self.seed if seed is None else seed
 
         mask = tf.random.uniform(
@@ -1063,6 +1441,21 @@ class DiffusionModel(ArgumentSaverModel):
     def prep_inputs(self, inputs: tuple[tf.Tensor, tf.Tensor], 
                     use_label_dropout: bool = True, 
                     seed: int | None = None):
+        """Prepare one dataset batch for diffusion loss computation.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean images ``[B,H,W,C]`` in
+                model space and zero-based integer classes ``[B]``.
+            use_label_dropout (bool): Apply CFG dropout to shifted labels.
+            seed (int | None): Seed forwarded to noising and label dropout.
+
+        Returns:
+            tuple: ``(x0, noises, t, x_t, cfg_labels, uncond_labels, classes)``.
+            Images are resized to the active resolution when necessary;
+            ``cfg_labels`` are real labels shifted by one under CFG and possibly
+            replaced by 0; ``uncond_labels`` are all 0.  With
+            ``swap_noise_image=True``, the returned ``noises`` target is ``x_t``.
+        """
         x0, labels = inputs
 
         x0 = tf.image.resize(x0, 
@@ -1090,6 +1483,18 @@ class DiffusionModel(ArgumentSaverModel):
     def compute_ctr_loss(self, classes: tf.Tensor, 
                         classes_pred_list: list[tf.Tensor]
                         ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Average auxiliary class predictions and compute cross-entropy.
+
+        Args:
+            classes (tf.Tensor): Zero-based ground-truth classes ``[B]``.
+            classes_pred_list (list[tf.Tensor | None]): Optional softmax tensors
+                ``[B,num_classes]`` from regularizer depths.
+
+        Returns:
+            tuple[tf.Tensor | float, tf.Tensor]: Mean sparse categorical loss
+            (0.0 when no predictions exist) and averaged class probabilities.
+            The latter is zeros ``[B,num_classes]`` when the list has no tensor.
+        """
         ctr_num = 0
         ctr_loss = 0.
         ctr_preds = tf.zeros((
@@ -1126,6 +1531,34 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Compute and weight diffusion, reconstruction, KL, and token losses.
+
+        Args:
+            x0 (tf.Tensor): Clean images ``[B,H,W,C]``.
+            noises (tf.Tensor): Noise target matching ``x0``.
+            classes (tf.Tensor): Zero-based classes ``[B]``.
+            x0_pred (tf.Tensor): Reconstructed clean images matching ``x0``.
+            noises_pred (tf.Tensor): Guided noise prediction matching ``noises``.
+            z_vals_c (tuple[tf.Tensor | None, tf.Tensor | None]): Conditional
+                latent mean/log variance.
+            regs_list_c (list[tf.Tensor | None]): Conditional auxiliary class
+                probabilities by depth.
+            z_vals_u (tuple[tf.Tensor | None, tf.Tensor | None] | None):
+                Unconditional latent statistics, required when KL trains uncond.
+            regs_list_u (list[tf.Tensor | None] | None): Unconditional
+                regularizers, required when token loss trains unconditionally.
+            kl_train_type (TrainType | None): ``"cond"``/``"uncond"`` source;
+                None uses the configured value.
+            ctr_train_type (TrainType | None): Regularizer source; None uses the
+                configured value.
+            use_image_loss (bool | None): Compute reconstruction loss; None uses
+                ``self.use_image_loss``.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
+            tf.Tensor | float, tf.Tensor]: Weighted total, raw noise loss, raw
+            image loss, KL loss, class-token loss, and averaged token predictions.
+        """
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
@@ -1165,8 +1598,29 @@ class DiffusionModel(ArgumentSaverModel):
         scale: float | None = None, 
         network_name: NetworkName = "raw", 
         training: bool = False
-    ) -> tuple[tuple[tf.Tensor, tf.Tensor], 
-        tuple[list[tf.Tensor], list[tf.Tensor]]]:
+    ) -> tuple[
+        tuple[tf.Tensor, tf.Tensor | None],
+        tuple[list[tf.Tensor], list[tf.Tensor] | None],
+        tuple[tuple[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor] | None]
+    ]:
+        """Run conditional and, when requested, unconditional network passes.
+
+        Args:
+            x_t (tf.Tensor): Noisy image batch ``[B,H,W,C]``.
+            t_batch (tf.Tensor): Integer timesteps ``[B]``.
+            cond_labels (tf.Tensor): Shifted/conditional label IDs ``[B]``.
+            uncond_labels (tf.Tensor | None): Null IDs ``[B]``; required for a
+                guided pass.
+            scale (float | None): Non-None requests the unconditional pass when
+                CFG is enabled.  Combination happens later in ``compute_eps``.
+            network_name (NetworkName): ``"raw"`` or ``"ema"``.
+            training (bool): Keras training mode.
+
+        Returns:
+            tuple: ``((eps_c, eps_u), (regs_c, regs_u), (z_c, z_u))``.  Noise
+            predictions are ``[B,H,W,C]``; unconditional members are None when
+            no second pass runs.
+        """
         network = self.get_network(network_name)
 
         eps_c, *_, regs_list_c, z_vals_c = network(
@@ -1190,6 +1644,17 @@ class DiffusionModel(ArgumentSaverModel):
         eps_u: tf.Tensor | None = None, 
         scale: float | None = None, 
     ) -> tf.Tensor:
+        """Combine conditional/unconditional noise with CFG.
+
+        Args:
+            eps_c (tf.Tensor): Conditional prediction of any image-like shape.
+            eps_u (tf.Tensor | None): Unconditional prediction of the same shape.
+            scale (float | None): Guidance scale.  With CFG and a non-None value,
+                returns ``eps_u + scale*(eps_c-eps_u)``; otherwise ``eps_c``.
+
+        Returns:
+            tf.Tensor: Selected or guided noise prediction.
+        """
         if self.use_cfg and scale is not None:
             eps = eps_u + scale * (eps_c - eps_u)
         else:
@@ -1206,6 +1671,22 @@ class DiffusionModel(ArgumentSaverModel):
         scale: float | None = None, 
         reshape_coefs: bool = False
     ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Recover an ``x0`` estimate from ``x_t`` and predicted noise.
+
+        Args:
+            x_t (tf.Tensor): Noisy images ``[B,H,W,C]``.
+            t (tf.Tensor): Scalar timestep or per-example IDs ``[B]``.
+            eps_c (tf.Tensor): Conditional noise prediction matching ``x_t``.
+            eps_u (tf.Tensor | None): Optional unconditional prediction.
+            scale (float | None): CFG scale; None disables combination.
+            reshape_coefs (bool): Reshape vector schedule rates to
+                ``[B,1,1,1]`` for image broadcasting.  Scalar rates do not need
+                this.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: Reconstructed ``x0`` and the selected/
+            guided noise, both matching ``x_t`` shape.
+        """
         eps = self.compute_eps(
             eps_c, 
             eps_u, 
@@ -1231,7 +1712,28 @@ class DiffusionModel(ArgumentSaverModel):
         uncond_labels: tf.Tensor | None = None, 
         scale: float | None = None, 
         training: bool | None = None
-    ):
+    ) -> tuple[
+        tf.Tensor, tf.Tensor,
+        tuple[list[tf.Tensor], list[tf.Tensor] | None],
+        tuple[tuple[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor] | None]
+    ]:
+        """Run network pass(es), guidance, and algebraic x0 reconstruction.
+
+        Args:
+            network_name (NetworkName): ``"raw"`` or ``"ema"``.
+            x_t (tf.Tensor): Noisy images ``[B,H,W,C]``.
+            t (tf.Tensor): Scalar or batch timestep used to gather schedule rates.
+            t_batch (tf.Tensor): Batch-shaped integer timesteps ``[B]`` supplied
+                to the network's embedding.
+            cond_labels (tf.Tensor): Conditional label IDs ``[B]``.
+            uncond_labels (tf.Tensor | None): Null labels for CFG.
+            scale (float | None): Guidance scale; None skips unconditional pass.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tuple: ``(x0, eps, (regs_c, regs_u), (z_c, z_u))``.  Image tensors
+            match ``x_t``; regularizers and latent pairs preserve branch outputs.
+        """
         (eps_c, eps_u), *others = self.call_network(
             x_t, 
             t_batch, 
@@ -1267,7 +1769,31 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         training: bool | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[
+        tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
+        tf.Tensor | float, tf.Tensor
+    ]:
+        """Run the diffusion forward prediction and compute all enabled losses.
+
+        Args:
+            network_name (NetworkName): Network used for prediction.
+            x0 (tf.Tensor): Clean images ``[B,H,W,C]``.
+            noises (tf.Tensor): Noise targets matching ``x0``.
+            t (tf.Tensor): Per-example schedule IDs ``[B]``.
+            x_t (tf.Tensor): Noisy images matching ``x0``.
+            cond_labels (tf.Tensor): Conditional/possibly dropped labels ``[B]``.
+            uncond_labels (tf.Tensor): Null labels ``[B]``.
+            classes (tf.Tensor): Zero-based ground-truth classes ``[B]``.
+            cfg_scale (float | None): Guidance scale; None avoids a second pass.
+            kl_train_type (TrainType | None): Conditional/unconditional KL source.
+            ctr_train_type (TrainType | None): Token-regularizer source.
+            use_image_loss (bool | None): Reconstruction-loss override.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tuple: Weighted total, noise, image, KL, and class-token losses plus
+            averaged token class probabilities, in that order.
+        """
         x0_pred, noises_pred, *others = self.forward(
             network_name, 
             x_t, t, t, 
@@ -1304,6 +1830,29 @@ class DiffusionModel(ArgumentSaverModel):
         use_kl_loss: bool | None = None, 
         use_ctr_loss: bool | None = None, 
     ) -> dict:
+        """Update enabled diffusion metric trackers and return their results.
+
+        Args:
+            noise_loss (tf.Tensor): Required scalar noise loss.
+            total_loss (tf.Tensor | None): Required when total tracking is on.
+            image_loss (tf.Tensor | None): Required when image tracking is on.
+            kl_loss (tf.Tensor | None): Required when KL tracking is on.
+            ctr_loss (tf.Tensor | None): Required when token tracking is on.
+            ctr_preds (tf.Tensor | None): ``[B,num_classes]`` token predictions.
+            classes (tf.Tensor | None): Ground-truth classes ``[B]``.
+            use_total_loss (bool | None): Explicit total tracker switch; None
+                enables it when any auxiliary loss is enabled.
+            use_image_loss (bool | None): Explicit image tracker switch.
+            use_kl_loss (bool | None): Explicit KL tracker switch.
+            use_ctr_loss (bool | None): Explicit token loss/accuracy switch.
+
+        Returns:
+            dict[str, tf.Tensor]: Current running metric values keyed by tracker
+            names.
+
+        Raises:
+            AssertionError: If an enabled metric's required value is missing.
+        """
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
         use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
@@ -1380,7 +1929,29 @@ class DiffusionModel(ArgumentSaverModel):
         z: tf.Tensor | None = None, 
         seed: int | None = None
     ):
-        """Generate images by sampling the configured variational bottleneck."""
+        """Generate images by decoding the configured variational bottleneck.
+
+        The first ``"flatten"`` reshaper is treated as the encoder/decoder
+        boundary.  Sampling resumes the raw network at that depth, so later
+        connections may not route around the boundary to earlier features.
+
+        Args:
+            network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
+            labels (tf.Tensor | list[int] | None): Condition IDs, one per sample.
+                ``None`` uses ``range(network.num_labels)`` and therefore
+                includes null label 0 when CFG is enabled.  These are already
+                network label IDs, not unshifted dataset classes.
+            z (tf.Tensor | None): Latent batch ``[B, latent_width]``.  ``None``
+                draws standard normal values; its batch size must match labels.
+            seed (int | None): Latent random seed; None uses ``self.seed``.
+
+        Returns:
+            tf.Tensor: Decoded, postprocessed images ``[B,H,W,C]`` in ``[0,1]``.
+
+        Raises:
+            ValueError: If no flatten reshaper exists, it is not KL-enabled, or
+                a later connection bypasses the bottleneck.
+        """
 
         network = self.get_network(network_name)
         z_id = None
@@ -1460,12 +2031,36 @@ class DiffusionModel(ArgumentSaverModel):
         seed: int | None = None, 
         verbose: bool = False
     ):
-        """
-        Generalized DDIM/DDPM sampler.
+        """Generate images with generalized DDIM/DDPM reverse diffusion.
 
-        eta = 0.0 -> deterministic DDIM
-        eta = 1.0 -> DDPM-equivalent for full consecutive timesteps
-        0 < eta < 1 -> stochastic DDIM
+        Args:
+            network_name (NetworkName): ``"ema"`` or ``"raw"`` predictor.
+            labels (tf.Tensor | list[int] | None): Network condition IDs.  None
+                samples every ``range(network.num_labels)`` ID, including CFG
+                null ID 0 when present.  The number of labels is the batch size.
+            x_t (tf.Tensor | None): Initial Gaussian state ``[B,H,W,C]``.  None
+                draws it at the active resolution.  In ``swap_noise_image`` VAE
+                mode this argument is instead passed to ``sample_vae`` as ``z``.
+            steps (int | None): Number of evenly spaced reverse evaluations;
+                None uses ``test_steps``.  Values between 2 and ``timesteps``
+                are intended.
+            scale (float | None): CFG scale; None uses ``test_cfg_scale``.  0
+                follows the unconditional prediction, 1 the conditional one,
+                and values above 1 extrapolate toward the condition.
+            eta (float | None): Stochasticity; None uses ``test_eta``.  0 gives
+                deterministic DDIM, 1 is DDPM-equivalent for full consecutive
+                timesteps, and values strictly between give stochastic DDIM.
+            return_x_ts (bool): Include postprocessed state snapshots before
+                each reverse update.
+            return_x0s (bool): Include postprocessed x0 estimates at each step.
+            seed (int | None): Random seed for initial/step noise.
+            verbose (bool): Print reverse-step progress.
+
+        Returns:
+            tf.Tensor | list[object]: Final postprocessed images ``[B,H,W,C]``
+            in ``[0,1]`` when no trajectories are requested.  Otherwise returns
+            ``[images, x_ts?, x0s?]`` in requested order; trajectory entries are
+            lists of NumPy arrays, one per reverse step.
         """
 
         if self.swap_noise_image:

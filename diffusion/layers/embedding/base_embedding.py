@@ -1,3 +1,5 @@
+"""Base utilities for learned and sinusoidal token embeddings."""
+
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -12,8 +14,66 @@ from diffusion.layers.base_layer import BaseLayer
 
 
 class BaseEmbedding(BaseLayer):
-    """
-    
+    """Provide positional-table construction and merge utilities.
+
+    This class supplies common machinery rather than a public ``call`` method.
+    Subclasses create ``self.pos_embed`` with :meth:`_create_embeddings` and
+    merge it into token features with :meth:`_pos_merger`.
+
+    Positional modes have the following meanings:
+
+    * ``"new_weight"`` creates a zero-initialized learned table directly at
+      the requested output size.
+    * ``"1d_sincos"`` encodes flattened positions; with ``embed_steps`` it
+      instead creates a rank-two lookup table for discrete conditions.
+    * ``"2d_sincos"`` encodes row and column coordinates separately.
+    * ``"1d_interpolate"`` and ``"2d_interpolate"`` build fixed source-grid
+      tables and resize them at call time.
+    * ``"1d_learned_interpolate"`` and ``"2d_learned_interpolate"`` resize
+      learned source-grid tables.
+    * ``None`` disables positional embeddings.
+
+    Args:
+        dim: Intended output feature width and default normalization width.
+        grid_size: Positive source grid side length. It is required by spatial
+            interpolation modes and normally describes the construction-time
+            patch grid.
+        pos_embed_type: One of :data:`PosEmbedType`, or ``None``. See the mode
+            descriptions above.
+        pos_interpolation_method: Method accepted by ``tf.image.resize``, such
+            as ``"nearest"``, ``"bilinear"``, ``"bicubic"``, or ``"area"``.
+        pos_merger_type: ``"add"`` requires equal content/position widths;
+            ``"concat"`` appends position channels on the last axis.
+        embed_freq_dim: Optional raw embedding width. ``None`` uses ``dim``;
+            subclasses commonly project this frequency width to ``dim``.
+        embed_steps: Number of discrete embedding rows, for example diffusion
+            timesteps or label categories. It is required by lookup embeddings.
+        embed_temperature: Positive sinusoidal wavelength temperature.
+        embed_trainable: Whether a non-``"new_weight"`` lookup layer may update
+            its initialized table. ``"new_weight"`` is always learned.
+        **kwargs: :class:`BaseLayer` arguments such as ``use_layer_norm``,
+            ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_ratio``,
+            ``mlp_activation_func``, and ``mlp_output_dim``, plus Keras options
+            including ``name``, ``dtype``, and ``trainable``. ``ln_dim`` is
+            supplied internally from ``dim`` and must not be repeated.
+
+    Inputs:
+        No direct tensor input because this base class does not implement
+        ``call``. Subclasses pass token tensors to :meth:`_pos_merger`.
+
+    Outputs:
+        Subclass-dependent floating tensors whose final width is controlled by
+        ``dim``, the optional projection MLP, and ``pos_merger_type``.
+
+    Serialization:
+        ``get_config()`` currently includes the inherited ``ln_dim`` key, while
+        this constructor always supplies ``ln_dim=dim`` to :class:`BaseLayer`.
+        Direct ``from_config(get_config())`` therefore raises a duplicate
+        ``ln_dim`` ``TypeError`` for ``BaseEmbedding`` and its subclasses
+        ``ConditionEmbedding``, ``PatchEmbedding``, ``SingleTokenLayer``,
+        ``Downsample``, ``Upsample``, and ``LocalMixer``. Removing ``ln_dim``
+        from a copied config before reconstruction preserves the constructor's
+        intended value.
     """
 
     def __init__(
@@ -29,6 +89,14 @@ class BaseEmbedding(BaseLayer):
         embed_trainable: bool = False, 
         **kwargs
     ):
+        """Store embedding configuration and validate enumerated modes.
+
+        Arguments and accepted types are documented on the class.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(
             ln_dim=dim, 
             **kwargs
@@ -48,7 +116,18 @@ class BaseEmbedding(BaseLayer):
                                 positions: np.ndarray, 
                                 temperature: float = 10_000.
                                 ) -> np.ndarray:
-        """Return a sinusoidal embedding with exactly ``dim`` channels.
+        """Return a one-dimensional sinusoidal table.
+
+        Args:
+            dim: Positive output width. Odd values are supported by truncating
+                the final cosine channel.
+            positions: Rank-one NumPy array or eagerly convertible tensor of
+                numeric positions, shaped ``[count]``.
+            temperature: Positive wavelength temperature.
+
+        Returns:
+            ``np.ndarray`` shaped ``[count, dim]``. Values are sine/cosine
+            features and are normally ``float32``.
         """
 
         frequency_count = max((dim + 1) // 2, 1)
@@ -77,6 +156,16 @@ class BaseEmbedding(BaseLayer):
         function supports every positive channel dimension by splitting the
         channels between the horizontal and vertical coordinates and truncating
         the final sine/cosine pair when necessary.
+
+        Args:
+            dim: Positive output channel count.
+            grid_size: Positive square-grid side length.
+            temperature: Positive wavelength temperature shared by both axes.
+            name: Optional TensorFlow operation name.
+
+        Returns:
+            ``tf.Tensor`` of dtype ``tf.float32`` and shape
+            ``[1, grid_size * grid_size, dim]`` in row-major order.
         """
 
         grid_y, grid_x = np.meshgrid(
@@ -107,6 +196,19 @@ class BaseEmbedding(BaseLayer):
         return embedding
 
     def _get_t_embedding(self, t, dim): # old
+        """Build the legacy one-dimensional timestep encoding.
+
+        Args:
+            t: Rank-one numeric tensor or array shaped ``[batch]``.
+            dim: Requested integer width. The legacy algorithm returns
+                ``2 * (dim // 2)`` channels, so odd values lose one channel.
+
+        Returns:
+            ``tf.Tensor`` shaped ``[batch, 2 * (dim // 2)]``. This helper is
+            retained for compatibility; new code uses
+            :meth:`_get_1d_sincos_embedding`.
+        """
+
         half = dim // 2
         freqs = np.exp(-np.log(10_000) * np.arange(half) / half)
         args = t[:, None] * freqs[None]
@@ -119,6 +221,21 @@ class BaseEmbedding(BaseLayer):
         return emb
 
     def _get_2d_pos_embed(self, h, w, dim): # old
+        """Build the legacy flattened two-dimensional sinusoidal table.
+
+        Args:
+            h: Positive integer grid height.
+            w: Positive integer grid width.
+            dim: Requested channel width. For exact width it must be a positive
+                multiple of four; otherwise the result is truncated to
+                ``4 * (dim // 4)`` channels.
+
+        Returns:
+            ``tf.Tensor`` of dtype ``tf.float32`` shaped
+            ``[1, h * w, 4 * (dim // 4)]``. This compatibility helper is not
+            used by the current positional modes.
+        """
+
         grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w))
         grid = np.stack([grid_x, grid_y], axis=-1).reshape(-1, 2)
 
@@ -159,6 +276,28 @@ class BaseEmbedding(BaseLayer):
         ``1d_sincos`` / ``2d_sincos``
             Uses a fixed, parameter-free sine/cosine table at the target
             resolution.
+
+        Args:
+            embed_dim: Table width; ``None`` uses ``self.embed_dim``.
+            grid_size: Source square-grid size; ``None`` uses
+                ``self.grid_size``. Required by interpolation modes.
+            output_grid_size: Target square-grid size. Required by spatial
+                ``new_weight`` and sine/cosine modes.
+            pos_embed_type: Positional mode override. ``None`` inherits the
+                instance mode; when the instance mode is also ``None``, this
+                method returns ``None``.
+            embed_steps: Number of rows for a non-spatial ``"1d_sincos"``
+                condition table. ``None`` makes that mode spatial with
+                ``output_grid_size ** 2`` rows.
+            temperature: Positive sinusoidal temperature; ``None`` uses the
+                configured value.
+            name: Optional weight or tensor name.
+
+        Returns:
+            ``tf.Variable | tf.Tensor | np.ndarray | None``. Spatial results
+            have shape ``[1, positions, embed_dim]`` except the internal 2-D
+            learned source table ``[1, grid, grid, embed_dim]``. A condition
+            ``1d_sincos`` table has shape ``[embed_steps, embed_dim]``.
         """
 
         embed_dim = self.embed_dim if embed_dim is None else embed_dim
@@ -249,6 +388,38 @@ class BaseEmbedding(BaseLayer):
             )
 
     def _create_embedding_layer(self, **kwargs):
+        """Create a discrete Keras embedding initialized by this base class.
+
+        This factory is intended for :class:`ConditionEmbedding`. Effective
+        keyword keys are ``pos_embed_type``, ``embed_steps``, ``embed_dim``,
+        ``grid_size``, ``output_grid_size``, ``temperature``, and ``name``;
+        omitted values inherit instance attributes. For a valid rank-two lookup
+        table, use ``pos_embed_type="new_weight"`` or
+        ``pos_embed_type="1d_sincos"`` with ``embed_steps`` set. Configure
+        ``embed_trainable`` on the constructor rather than passing it here:
+        non-new modes forward keyword arguments to
+        :meth:`_create_embeddings`, which does not accept that key.
+
+        Example::
+
+            layer._create_embedding_layer(
+                pos_embed_type="1d_sincos",
+                embed_steps=1000,
+                embed_dim=64,
+                temperature=10_000.0,
+            )
+
+        Args:
+            **kwargs: Overrides listed above. Unknown keys are invalid for
+                initialized non-new tables and may raise ``TypeError``.
+
+        Returns:
+            ``tf.keras.layers.Embedding`` mapping integer tensors of arbitrary
+            shape to that shape plus a final ``embed_dim`` axis. A
+            ``"new_weight"`` layer is always trainable; other modes honor the
+            instance's ``embed_trainable`` flag.
+        """
+
         kwargs["pos_embed_type"] = None if kwargs.get("pos_embed_type", None) is None \
                                 and self.pos_embed_type is None \
                                 else kwargs.get("pos_embed_type", None) or self.pos_embed_type
@@ -272,6 +443,22 @@ class BaseEmbedding(BaseLayer):
                     output_grid_size: int | None = None, 
                     training: bool | None = None) -> tf.Tensor:
         """Resolve, batch-broadcast, and merge a spatial positional embedding.
+
+        Args:
+            x: Floating content tensor shaped ``[batch, tokens, channels]``.
+            batch_size: Scalar integer tensor or Python integer used to repeat
+                the positional table. ``None`` reads it from ``x``.
+            output_grid_size: Optional target grid side. Supplying it resizes
+                even a non-interpolation table; interpolation modes use it or
+                the subclass's ``self.output_grid_size``.
+            training: Optional Keras training flag forwarded to the positional
+                projection MLP.
+
+        Returns:
+            ``tf.Tensor``. With no positional mode, this is ``x`` unchanged.
+            ``"add"`` preserves shape and requires equal last dimensions;
+            ``"concat"`` returns ``[batch, tokens, channels + pos_channels]``.
+            Spatial token count must equal ``output_grid_size ** 2``.
         """
 
         if self.pos_embed_type is None:

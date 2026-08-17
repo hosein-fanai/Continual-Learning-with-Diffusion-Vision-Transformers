@@ -1,32 +1,16 @@
-"""Diffusion noise schedules.
+"""Create NumPy diffusion-noise schedules.
 
-This module implements a practical set of diffusion *noise schedules* used in
-image generation and editing papers / libraries.
+The public workflow is to construct :class:`ScheduleConfig`, pass it to
+:func:`generate_betas` or :func:`generate_sigmas`, and use the conversion
+helpers when another parameterization is required.  :func:`make_schedule` is
+the compact string-based interface used by callers that want every common
+array at once.
 
-Covered schedules:
-- linear (DDPM)
-- scaled_linear (Diffusers variant)
-- squaredcos_cap_v2 (cosine schedule, Nichol & Dhariwal style)
-- clipped_cosine
-- sigmoid
-- quadratic
-- ve (variance-exploding / sigma-space schedule)
-- karras (Karras rho schedule in sigma-space)
-- sub_vp (flow-matching / rectified-flow style)
-- logistic
-- shifted variants via log-SNR shifting
-
-The module exposes a common API:
-- betas = generate_betas(...)
-- sigmas = generate_sigmas(...)
-- alpha_bar = betas_to_alpha_bar(betas)
-- timesteps = schedule_timesteps(...)
-
-Notes:
-- For discrete DDPM-style schedules, betas are typically used for training.
-- For sigma-space samplers, sigmas are typically used for inference.
-- Some schedules are naturally defined in continuous time; here we provide a
-  numerically useful discretization for a chosen number of steps.
+All returned arrays are one-dimensional ``numpy.ndarray`` objects with dtype
+``float64`` and length ``num_steps``.  Discrete variance-preserving (VP)
+schedules are naturally represented by beta values.  ``ve`` and ``karras``
+are naturally represented in sigma space; their beta results are a clipped VP
+equivalent for code paths that require betas.
 """
 
 from __future__ import annotations
@@ -43,6 +27,36 @@ from typing import Iterable, Literal, TypeAlias
 
 
 class ScheduleKind(str, Enum):
+    """Names of the supported schedule families.
+
+    Values
+    ------
+    LINEAR
+        Linearly interpolate beta from ``beta_start`` to ``beta_end``.
+    SCALED_LINEAR
+        Linearly interpolate ``sqrt(beta)`` and square the result.
+    COSINE
+        Follow the ``squaredcos_cap_v2`` cumulative-alpha curve.
+    CLIPPED_COSINE
+        Interpolate cosine angles between configured signal bounds.
+    SIGMOID, LOGISTIC
+        Use smooth S-shaped cumulative-alpha decay curves.
+    QUADRATIC
+        Increase beta quadratically over normalized time.
+    VE
+        Increase sigma geometrically from ``sigma_min`` to ``sigma_max``.
+    KARRAS
+        Use a rho-shaped interpolation in sigma space.
+    SUB_VP
+        Use the module's cosine-derived sub-VP corruption path.
+
+    Notes
+    -----
+    Members inherit from ``str``.  Consequently either
+    ``ScheduleKind.LINEAR`` or its value ``"linear"`` can be passed through
+    string-oriented APIs such as :func:`make_schedule`.
+    """
+
     LINEAR = "linear"
     SCALED_LINEAR = "scaled_linear"
     COSINE = "squaredcos_cap_v2"
@@ -57,6 +71,50 @@ class ScheduleKind(str, Enum):
 
 @dataclass(frozen=True)
 class ScheduleConfig:
+    """Immutable parameters for one discretized noise schedule.
+
+    Parameters
+    ----------
+    kind : ScheduleKind, default=ScheduleKind.LINEAR
+        Schedule family.  Pass an enum member when constructing this class;
+        :func:`make_schedule` accepts the corresponding string instead.
+    num_steps : int, default=1000
+        Number of discrete points.  Generation functions require at least 2.
+    beta_start, beta_end : float, default=1e-4 and 2e-2
+        Endpoints used by ``linear``, ``scaled_linear``, and ``quadratic``.
+        Values are expected to describe valid variances; final values are
+        clipped to ``[clip_min, clip_max]``.
+    cosine_s : float, default=0.008
+        Offset in the cosine cumulative-alpha curve.  Larger values change
+        the amount of early-time noise.
+    min_sqrt_alpha_bar, max_sqrt_alpha_bar : float, default=0.02 and 0.95
+        Signal-amplitude bounds used only by ``clipped_cosine``.  They must
+        satisfy ``0 < min < max < 1``.
+    sigma_min, sigma_max : float, default=0.002 and 80.0
+        Sigma endpoints used by ``ve`` and ``karras``.  Both should be
+        positive; ``sigma_max`` normally exceeds ``sigma_min``.
+    rho : float, default=7.0
+        Curvature for ``karras``.  It must be nonzero because its reciprocal
+        is evaluated; positive values are the intended input.
+    snr_shift : float, default=0.0
+        Additive log-SNR shift applied by compatible schedules.  ``0`` leaves
+        the curve unchanged, a positive value preserves more signal at a
+        given step, and a negative value introduces more noise.
+    logistic_k : float, default=10.0
+        Steepness of ``sigmoid`` and ``logistic`` transitions.  Larger
+        positive values concentrate their change near the midpoint.
+    clip_min, clip_max : float, default=1e-8 and 0.999
+        Inclusive numerical bounds for beta-like results.  Use values inside
+        ``(0, 1)`` to keep conversion helpers valid.
+
+    Notes
+    -----
+    Fields irrelevant to the selected ``kind`` are retained but ignored.  For
+    example, changing ``rho`` has no effect on a ``linear`` schedule.
+    Instances are frozen, so create a new config rather than assigning a
+    field after construction.
+    """
+
     kind: ScheduleKind = ScheduleKind.LINEAR
     num_steps: int = 1000
 
@@ -76,7 +134,7 @@ class ScheduleConfig:
     sigma_max: float = 80.0
     rho: float = 7.0
 
-    # Optional SNR shift. Positive values make the schedule noisier earlier.
+    # Optional SNR shift. Positive values preserve more signal at each step.
     snr_shift: float = 0.0
 
     # Logistic schedule sharpness (larger -> steeper transition).
@@ -88,11 +146,44 @@ class ScheduleConfig:
 
 
 def _as_float64(x: np.ndarray | Iterable[float]) -> np.ndarray:
+    """Convert an array or finite iterable to a ``float64`` NumPy array.
+
+    Parameters
+    ----------
+    x : numpy.ndarray or iterable of float
+        Numeric values of any NumPy-compatible shape.  Integer values are
+        converted rather than rounded or normalized.
+
+    Returns
+    -------
+    numpy.ndarray
+        An array with the same shape as ``x`` and dtype ``float64``.
+    """
+
     return np.asarray(x, dtype=np.float64)
 
 
 def betas_to_alpha_bar(betas: np.ndarray) -> np.ndarray:
-    """Convert per-step betas to cumulative alpha products."""
+    """Convert per-step variances to cumulative retained-signal power.
+
+    Parameters
+    ----------
+    betas : numpy.ndarray
+        One-dimensional beta values, each strictly inside ``(0, 1)``.  For
+        example, ``[0.1, 0.2]`` represents per-step alpha values ``[0.9,
+        0.8]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``float64`` cumulative products of ``1 - betas`` with the same shape;
+        the example input returns ``[0.9, 0.72]``.
+
+    Raises
+    ------
+    ValueError
+        If any beta is zero, negative, or at least one.
+    """
     betas = _as_float64(betas)
     if np.any(betas <= 0) or np.any(betas >= 1):
         raise ValueError("betas must lie strictly in (0, 1).")
@@ -105,11 +196,33 @@ def alpha_bar_to_betas(
     clip_min: float = 1e-8,
     clip_max: float = 0.999,
 ) -> np.ndarray:
-    """Convert a desired alpha_bar trajectory to per-step betas.
+    """Convert a cumulative signal trajectory to per-step beta values.
 
-    beta[0] is chosen so that cumprod(1 - beta)[0] == alpha_bar[0].
-    For later steps:
-        beta[t] = 1 - alpha_bar[t] / alpha_bar[t - 1]
+    Parameters
+    ----------
+    alpha_bar : numpy.ndarray
+        One-dimensional, monotonically non-increasing retained-signal values.
+        Inputs are clipped to ``[1e-12, 1]`` before validation.  The first
+        beta is ``1 - alpha_bar[0]``; later betas are
+        ``1 - alpha_bar[t] / alpha_bar[t - 1]``.
+    clip_min, clip_max : float, default=1e-8 and 0.999
+        Bounds applied to every returned beta.  They prevent exact zero and
+        one values by default.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``float64`` beta schedule with the same shape as ``alpha_bar``.
+
+    Raises
+    ------
+    ValueError
+        If the clipped trajectory increases between adjacent steps.
+
+    Examples
+    --------
+    ``alpha_bar_to_betas(np.array([0.9, 0.72]))`` returns approximately
+    ``array([0.1, 0.2])``.
     """
     alpha_bar = np.clip(_as_float64(alpha_bar), 1e-12, 1.0)
 
@@ -124,16 +237,46 @@ def alpha_bar_to_betas(
 
 
 def alpha_bar_to_sigmas(alpha_bar: np.ndarray) -> np.ndarray:
-    """Convert alpha_bar to sigma values: sigma = sqrt(1 - alpha_bar)."""
+    """Convert retained-signal power to VP corruption amplitudes.
+
+    Parameters
+    ----------
+    alpha_bar : numpy.ndarray
+        Numeric cumulative-alpha values.  Values outside ``[0, 1]`` are
+        clipped, so negative entries become sigma ``1`` and entries above one
+        become sigma ``0``.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``float64`` values computed as ``sqrt(1 - alpha_bar)`` with the same
+        shape as the input.
+    """
     alpha_bar = np.clip(_as_float64(alpha_bar), 0.0, 1.0)
     return np.sqrt(np.maximum(1.0 - alpha_bar, 0.0))
 
 
 def sigmas_to_betas(sigmas: np.ndarray) -> np.ndarray:
-    """Convert a sigma schedule to betas via alpha_bar = 1 - sigma^2.
+    """Convert VP corruption amplitudes to an equivalent beta schedule.
 
-    This is a convenience mapping for schedules where sigma is interpreted as
-    the corruption standard deviation under the VP parameterization.
+    Parameters
+    ----------
+    sigmas : numpy.ndarray
+        One-dimensional sigma values interpreted through
+        ``alpha_bar = 1 - sigma**2``.  Inputs are clipped to ``[0, 1)``;
+        therefore natural VE/Karras sigmas above one lose their original
+        magnitude in this beta-equivalent representation.
+
+    Returns
+    -------
+    numpy.ndarray
+        Beta values in ``[1e-8, 0.999]`` with the same shape as ``sigmas``.
+
+    Raises
+    ------
+    ValueError
+        If the implied cumulative-alpha curve increases, which can happen
+        when ``sigmas`` decreases.
     """
     sigmas = np.clip(_as_float64(sigmas), 0.0, 1.0 - 1e-12)
     alpha_bar = 1.0 - sigmas**2
@@ -143,10 +286,22 @@ def sigmas_to_betas(sigmas: np.ndarray) -> np.ndarray:
 
 
 def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
-    """Shift a schedule in log-SNR space.
+    """Add a scalar offset to a curve in log signal-to-noise space.
 
-    If SNR = alpha^2 / sigma^2 = alpha_bar / (1 - alpha_bar), then
-    logSNR' = logSNR + snr_shift.
+    Parameters
+    ----------
+    alpha_bar : numpy.ndarray
+        Retained-signal powers.  With a nonzero shift, values are clipped away
+        from exactly zero and one before conversion.
+    snr_shift : float
+        Offset applied as ``SNR' = SNR * exp(snr_shift)``.  Zero returns the
+        original object unchanged; positive values increase ``alpha_bar`` and
+        negative values decrease it.
+
+    Returns
+    -------
+    numpy.ndarray
+        Shifted retained-signal powers with the input shape.
     """
     if snr_shift == 0.0:
         return alpha_bar
@@ -158,22 +313,80 @@ def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
 
 
 def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
+    """Evaluate the normalized squared-cosine signal curve.
+
+    Parameters
+    ----------
+    t : numpy.ndarray
+        Typically normalized times in ``[0, 1]``.  Values are not clipped.
+    s : float, default=0.008
+        Time offset that softens the curve near zero.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``cos(((t + s) / (1 + s)) * pi / 2) ** 2``, normalized by its first
+        entry.  The output has the same shape as ``t``.
+    """
+
     f = np.cos(((t + s) / (1.0 + s)) * (pi / 2.0)) ** 2
     return f / f[0]
 
 
 def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
-    """Smooth map from [0,1] -> [0,1]."""
+    """Evaluate a centered logistic map after clipping time to ``[0, 1]``.
+
+    Parameters
+    ----------
+    t : numpy.ndarray
+        Times of any shape.  Values below zero behave as zero and values above
+        one behave as one.
+    k : float, default=10.0
+        Transition steepness.  ``k=0`` returns ``0.5`` everywhere; positive
+        values rise with time and negative values fall.
+
+    Returns
+    -------
+    numpy.ndarray
+        Logistic values with the same shape as ``t``.
+    """
     x = np.clip(t, 0.0, 1.0)
     z = k * (x - 0.5)
     return 1.0 / (1.0 + np.exp(-z))
 
 
 def generate_betas(config: ScheduleConfig) -> np.ndarray:
-    """Generate a discrete beta schedule.
+    """Generate per-step beta values for a configured schedule.
 
-    For sigma-space schedules (VE/Karras/Sub-VP/Logistic), the result is a
-    beta-equivalent discretization suitable for VP-style code paths.
+    Parameters
+    ----------
+    config : ScheduleConfig
+        Complete schedule configuration.  ``kind`` selects the algorithm:
+        beta endpoints affect ``linear``, ``scaled_linear``, and ``quadratic``;
+        cosine fields affect cosine-based schedules; ``logistic_k`` affects
+        S-shaped schedules; and sigma/rho fields affect ``ve`` and ``karras``.
+
+    Returns
+    -------
+    numpy.ndarray
+        One-dimensional ``float64`` array of length ``config.num_steps``.
+        Values are clipped to the configured beta bounds.  For ``ve``,
+        ``karras``, and ``sub_vp``, the result is a VP beta-equivalent of the
+        sigma curve rather than the natural sigma-space schedule.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two steps are requested, ``clipped_cosine`` signal
+        bounds are unordered/outside ``(0, 1)``, the selected kind is not
+        supported, or a derived cumulative-alpha trajectory is increasing.
+
+    Examples
+    --------
+    A two-endpoint linear ramp can be created with
+    ``generate_betas(ScheduleConfig(num_steps=4, beta_start=1e-4,
+    beta_end=2e-2))``.  Selecting ``ScheduleKind.KARRAS`` instead makes
+    ``sigma_min``, ``sigma_max``, and ``rho`` the meaningful controls.
     """
     n = int(config.num_steps)
     if n < 2:
@@ -274,10 +487,36 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
 
 def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
-    """Generate a sigma schedule.
+    """Generate corruption amplitudes for a configured schedule.
 
-    For VE/Karras schedules, sigmas are the natural representation.
-    For VP-style schedules, sigmas are derived from alpha_bar.
+    Parameters
+    ----------
+    config : ScheduleConfig
+        Complete schedule configuration.  ``ve`` geometrically interpolates
+        ``sigma_min`` to ``sigma_max``; ``karras`` additionally uses ``rho``;
+        and ``sub_vp`` creates a bounded cosine-derived path.  Other kinds are
+        generated as betas and converted through cumulative alpha.
+
+    Returns
+    -------
+    numpy.ndarray
+        One-dimensional ``float64`` array of length ``config.num_steps``.
+        VE and Karras values may exceed one and are lower-bounded by
+        ``clip_min``.  Sub-VP and beta-derived values stay in approximately
+        ``[0, 1)``.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two steps are requested or delegated beta generation
+        rejects the configuration.
+
+    Notes
+    -----
+    ``generate_sigmas`` preserves natural VE/Karras magnitudes.  By contrast,
+    ``make_schedule`` reports sigmas reconstructed from its beta-equivalent
+    curve, so call this function directly when a sigma-space sampler needs
+    values such as ``sigma_max=80``.
     """
     n = int(config.num_steps)
     if n < 2:
@@ -333,7 +572,21 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
 
 
 def schedule_timesteps(config: ScheduleConfig) -> np.ndarray:
-    """Return normalized timesteps in [0,1]."""
+    """Return evenly spaced normalized times, including both endpoints.
+
+    Parameters
+    ----------
+    config : ScheduleConfig
+        Only ``num_steps`` is read.  Unlike the generation functions, this
+        helper does not explicitly reject values below two; NumPy determines
+        the resulting empty, singleton, or multi-point array.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``float64`` array equivalent to
+        ``numpy.linspace(0, 1, config.num_steps)``.
+    """
     return np.linspace(0.0, 1.0, int(config.num_steps), dtype=np.float64)
 
 
@@ -342,19 +595,51 @@ def make_schedule(
     num_steps: int = 1000,
     **kwargs,
 ) -> dict[str, np.ndarray]:
-    """Convenience wrapper that returns betas, alpha_bar, and sigmas.
+    """Build all common VP arrays from a schedule name.
 
     Parameters
     ----------
-    kind:
-        One of: linear, scaled_linear, squaredcos_cap_v2, clipped_cosine,
-        sigmoid, quadratic, ve, karras, sub_vp, logistic.
-    num_steps:
-        Number of discrete steps.
-    kwargs:
-        Optional parameters such as beta_start, beta_end, sigma_min, sigma_max,
-        rho, snr_shift, cosine_s, logistic_k,
-        min_sqrt_alpha_bar, max_sqrt_alpha_bar.
+    kind : str
+        One of ``"linear"``, ``"scaled_linear"``,
+        ``"squaredcos_cap_v2"``, ``"clipped_cosine"``, ``"sigmoid"``,
+        ``"quadratic"``, ``"ve"``, ``"karras"``, ``"sub_vp"``, or
+        ``"logistic"``.  Enum members also work because
+        :class:`ScheduleKind` inherits from ``str``.
+    num_steps : int, default=1000
+        Number of entries in every returned array; it must be at least two.
+    **kwargs : float
+        Optional :class:`ScheduleConfig` fields.  Allowed keys are
+        ``beta_start``, ``beta_end``, ``cosine_s``,
+        ``min_sqrt_alpha_bar``, ``max_sqrt_alpha_bar``, ``sigma_min``,
+        ``sigma_max``, ``rho``, ``snr_shift``, ``logistic_k``, ``clip_min``,
+        and ``clip_max``.  Values are numeric and have the meanings documented
+        on :class:`ScheduleConfig`.  ``kind`` and ``num_steps`` must be passed
+        as the named parameters, not repeated in ``kwargs``.  Unknown keys
+        cause the dataclass constructor to raise ``TypeError``.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        A dictionary with exactly six ``float64`` arrays of shape
+        ``(num_steps,)``: ``"betas"``, ``"alpha_bar"`` (cumulative
+        ``1-beta``), ``"sqrt_alpha_bar"``,
+        ``"sqrt_one_minus_alpha_bar"``, ``"sigmas"`` (identical to the
+        preceding noise-amplitude array), and normalized ``"timesteps"``.
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is unknown or schedule parameters fail validation.
+    TypeError
+        If ``kwargs`` contains a key not declared by :class:`ScheduleConfig`.
+
+    Examples
+    --------
+    ``make_schedule("linear", 100, beta_end=0.01)`` customizes a beta-space
+    ramp.  ``make_schedule("karras", 20, sigma_min=0.01, sigma_max=10,
+    rho=5)`` accepts sigma-space controls, but its returned ``"sigmas"`` are
+    reconstructed from clipped beta-equivalent values; use
+    :func:`generate_sigmas` to retain the natural maximum of ``10``.
     """
     cfg = ScheduleConfig(kind=ScheduleKind(kind), num_steps=num_steps, **kwargs)
     betas = generate_betas(cfg)
@@ -374,6 +659,7 @@ def make_schedule(
 SCHEDULE_REGISTRY = {
     kind.value: kind for kind in ScheduleKind
 }
+"""Mapping from each accepted schedule string to its enum member."""
 
 
 SchedulerName: TypeAlias = Literal[
@@ -388,6 +674,7 @@ SchedulerName: TypeAlias = Literal[
     "sub_vp",
     "logistic",
 ]
+"""Static string type accepted by wrapper ``scheduler_name`` arguments."""
 
 
 if __name__ == "__main__":

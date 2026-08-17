@@ -1,3 +1,6 @@
+"""Legacy class-incremental learning experiment with replay alternatives."""
+
+
 def continually_learn(class_num: int, load_dataset_fn: callable, 
                     load_dataset_fn_kwargs: dict = {},
                     remove_prev_classes: bool = True, keep_same_model: bool = True, 
@@ -7,85 +10,98 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
                     buffer_kwargs: dict = {}, use_vae: bool = False, 
                     vae_init_kwargs: dict = {}, vae_kwargs: dict[str, int] = {}, 
                     plot_results: bool = True, verbose: bool = True) -> list[float]:
-    """
-    Runs a continual learning scenario with an optional solution.
+    """Run class-incremental classifier training from two through N classes.
+
+    A new output head is created at each task.  Optional replay comes either
+    from a fixed-size sample buffer or a conditional dense VAE; the two modes
+    are mutually exclusive.
 
     Args:
-        class_num: 
-            The number of total classes in the given dataset.
-
-        load_dataset_fn:
-            A function to load the designated dataset.
-
-        load_dataset_fn_kwargs:
-            A dictionary with the following keys to pass to the load_dataset_fn:
-                preprocess:
-                    What type of preprocessing to apply on the dataset (image dataset or features dataset). It can be one of the following: "", "normalize", or "min-max".
-                onehot_labels:
-                    Whether or not to onehot the labels in the dataset.
-
-        remove_prev_classes:
-            Whether to keep the previous tasks' classes or remove them for the current task.
-
-        keep_same_model:
-            Whether to use the same model for each continual task or reinstantiate it for each task.
-
-        tuned_model_path: 
-            Path to the hyperparameter-optimized model to run the learning process on. If the path contains "dnn", return_feature argument of load_dataset_fn will be True.
-
-        compile_args:
-            Complie arguments for the model being continually learned.
-
-        use_loaded_opt:
-            Whether to use the loaded optimizer or to use the optimizer from comple_args.
-
-        batch_size:
-            The batch size for the CL process.
-
-        epochs:
-            The number of epochs for the CL process.
-
-        use_buffer:
-            Whether or not to use a replay buffer to mitigate catastrophic forgetting. It cannot be used with the VAE.
-
-        buffer_kwargs:
-            A dictionary to be used for replay-buffer-related actions. Its keys are as follows:
-                maxlen:
-                    The maximum capacity for the buffer.
-
-                sample_num:
-                    The number of samples to be drawn from the buffer.
-
-                insert_num:
-                    The number of new samples to be inserted to the buffer after each task.
-
-                seed: 
-                    The random seed for the buffer to draw the samples for the CL process.
-
-        use_vae:
-            Whether or not to use VAE to mitigate catastrophic forgetting. It cannot be used with the replay buffer.
-
-        vae_init_kwargs:
-            Keyword arguments passed to the VAE's initializer.
-
-        vae_kwargs:
-            A dictionary to be used for VAE-related actions. Its keys are as follows:
-                train_num:
-                    The number of instances to train the VAE from the given input. 
-
-                    If -1 is provided, all of the data is used and any other number makes the function to sample only that number of instances, then, train the VAE.
-
-                samples_per_class:
-                    The number of samples to be drawn from each class that VAE has seen before.
-
-        plot_results:
-            Whether to plot the accuracies list.
-
-        verbose:
-            Whether to print anything about the learning process.
+        class_num (int): Total class count ``N``.  The loop produces tasks for
+            classes ``[0, 1]``, ``[0, 1, 2]``, ..., ``range(N)`` and therefore
+            returns ``max(N - 1, 0)`` scores.
+        load_dataset_fn (Callable[..., tuple[numpy.ndarray, ...]]): Loader called
+            with ``indices``, ``return_features``, ``preprocess``,
+            ``onehot_labels``, and ``verbose``.  It must return exactly
+            ``(x_train, y_train, x_val, y_val, x_test, y_test)``.  The built-in
+            :func:`common.dataloader.load_cifar10` and ``load_cifar100`` satisfy
+            this interface.
+        load_dataset_fn_kwargs (Mapping[str, object]): Loader options merged
+            over ``{"preprocess": "", "onehot_labels": False}``.  For built-in
+            loaders the optional additional key is ``features_path``.  Valid
+            ``preprocess`` values are ``"normalize"``, ``"min-max"``, or
+            ``""``/``None`` for no scaling; ``onehot_labels`` is bool.
+            Do not include ``indices``, ``return_features``, or ``verbose``
+            because this function passes them explicitly.  A custom loader may
+            accept other keys.  Example: ``{"preprocess": "normalize",
+            "onehot_labels": True}`` is required by VAE replay.
+        remove_prev_classes (bool): If true, training receives classes 0 and 1
+            at the first task and only the newly introduced class thereafter;
+            validation/test still contain all seen classes.  If false, every
+            split contains all classes seen so far.
+        keep_same_model (bool): Copy learned non-head weights and old class-head
+            columns into the next, one-class-wider model when true.  False uses
+            a freshly cloned tuned architecture at each task.
+        tuned_model_path (str | os.PathLike): Nonempty saved Keras model path.
+            If its case-sensitive text contains ``"dnn"``, the loader is asked
+            for saved 2,048-wide features; otherwise it is asked for images.
+        compile_args (Mapping[str, object]): Overrides the classifier defaults
+            accepted by ``tf.keras.Model.compile``, such as ``optimizer``,
+            ``loss``, ``metrics``, ``loss_weights``, or ``run_eagerly``.
+            Example: ``{"optimizer": "adam", "metrics": ["accuracy"]}``.
+        use_loaded_opt (bool): Inherit the optimizer deserialized from the tuned
+            model instead of ``compile_args["optimizer"]``.
+        batch_size (int): Positive NumPy-input batch size for each classifier
+            fit; defaults to 128.
+        epochs (int): Positive maximum epochs per task; defaults to 100.
+        use_buffer (bool): Enable fixed-capacity replay.  It must not be true
+            together with ``use_vae``.
+        buffer_kwargs (Mapping[str, object]): Replay controls merged over
+            ``{"maxlen": 10000, "sample_num": 1000, "insert_num": 1000,
+            "seed": None}``.  ``maxlen`` is deque capacity; ``sample_num`` is
+            the maximum prior pairs concatenated before a task; ``insert_num``
+            is the number sampled from that task's augmented training arrays
+            after fitting; and ``seed`` is accepted by ``random.seed``.  Extra
+            keys are retained but unused.  Example: ``{"maxlen": 5000,
+            "sample_num": 500, "insert_num": 500, "seed": 42}``.
+        use_vae (bool): Enable conditional-VAE replay.  This requires
+            ``load_dataset_fn_kwargs["onehot_labels"]`` to be true and cannot
+            be combined with ``use_buffer``.
+        vae_init_kwargs (Mapping[str, object]): Options forwarded to
+            :class:`autoencoder.variational_autoencoder.VariationalAutoencoder`
+            after this function fixes ``conditioned=True`` and ``class_num``.
+            Allowed project keys are ``data_dim``, ``latent_dim``,
+            ``hiddens_dims``, ``hiddens_kwargs``, ``last_activation``, ``beta``,
+            ``compile``, and ``compile_args``; Keras keys such as ``name``,
+            ``dtype``, and ``trainable`` are also accepted.  Do not repeat
+            ``conditioned`` or ``class_num``.  Within ``hiddens_kwargs``, only
+            ``actv``, ``use_batch_norm``, and ``kernel_init`` are valid.  For
+            example: ``{"data_dim": 2048, "latent_dim": 16,
+            "hiddens_dims": (256, 64), "hiddens_kwargs":
+            {"actv": "relu", "use_batch_norm": False}}``.
+        vae_kwargs (Mapping[str, int]): VAE action controls merged over
+            ``{"train_num": 1000, "samples_per_class": 1000}``.
+            ``samples_per_class`` sets prior generations per seen class.
+            ``train_num=-1`` fits current data without resampling; any other
+            value triggers with-replacement resampling of
+            ``max(train_num, len(x_train))`` rows, so a smaller positive value
+            does not downsample.  Extra keys are retained but unused.
+        plot_results (bool): Plot accuracy against the number of seen classes
+            after all tasks.
+        verbose (bool): Print task summaries, Keras progress, history figures,
+            classification reports, and confusion matrices when true.
 
     Returns:
-        A list of accuracy scores corresponding to each continual-learning task.
+        list[float]: Test accuracy for each two-through-``class_num`` task, in
+        order.  Each value is in ``[0.0, 1.0]``.
+
+    Raises:
+        AssertionError: If ``tuned_model_path`` is empty or both replay modes
+            are enabled.
+        TypeError: If a forwarded dictionary contains a conflicting or
+            unsupported keyword.
+        ValueError: If dataset shapes/labels cannot support the requested
+            task, replay, or classifier loss.
     """
 
 

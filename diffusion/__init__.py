@@ -1,3 +1,19 @@
+"""Public API for diffusion networks, wrappers, layers, schedules, and tools.
+
+Classes from :mod:`diffusion.models.transformer` are raw Keras network
+architectures: they map noisy images, diffusion times, and optional conditions
+to predictions.  Classes from :mod:`diffusion.models.wrapper` own those raw
+networks and add noise generation, optimization, EMA weights, classifier-free
+guidance, reverse diffusion, evaluation, and Keras ``fit``/``predict`` hooks.
+The wrapper is therefore normally the object compiled and trained, while its
+``network``/``ema_network`` attributes are transformer instances.
+
+This package re-exports the supported high-level models plus reusable blocks,
+embeddings, manipulation layers, callbacks, metrics, and the NumPy scheduling
+interface.  Their constructors and tensor contracts are documented in their
+defining modules and the package README files.
+"""
+
 from .models.transformer.diffusion_transformer import DiffusionTransformer
 from .models.transformer.di_t_classifier import DiTClassifier
 from .models.transformer.di_t_decoder import DiTDecoder

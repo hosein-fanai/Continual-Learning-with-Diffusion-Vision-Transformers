@@ -1,32 +1,33 @@
+"""Stochastic-depth regularization for complete residual paths."""
+
 import tensorflow as tf
 
 from common.argument_saver import ArgumentSaverLayer
 
 
 class DropPath(ArgumentSaverLayer):
-    """
-    DropPath / Stochastic Depth.
+    """Drop complete residual paths during training.
 
-    During training, randomly drops an entire residual branch.
-
-    Modes:
-        per_sample=True:
-            Modern DropPath behavior used in many ViT implementations.
-            Each sample in the batch independently keeps/drops the path.
-
-        per_sample=False:
-            Batchwise stochastic depth, closer to the original paper's
-            "drop this residual layer for the current mini-batch" behavior.
+    Unlike elementwise dropout, every non-batch axis shares the same mask. A
+    kept path can be divided by its keep probability so its expected magnitude
+    matches inference.
 
     Args:
-        drop_prob:
-            Probability of dropping the residual path.
-        scale_by_keep:
-            If True, divide kept paths by keep_prob so the expected
-            residual magnitude is unchanged.
-        per_sample:
-            If True, use independent masks per sample. If False, use one
-            mask for the whole batch.
+        drop_prob: Float in ``[0, 1)`` giving the drop probability.
+        scale_by_keep: Divide kept paths by ``1 - drop_prob`` when true.
+        per_sample: If true, use a ``[batch, 1, ..., 1]`` mask so each example
+            is independent. If false, one scalar-like mask is shared by the
+            entire batch.
+        **kwargs: Standard ``tf.keras.layers.Layer`` options such as ``name``,
+            ``dtype``, and ``trainable``.
+
+    Inputs:
+        A floating ``tf.Tensor`` of any rank at least one. Common shapes are
+        ``[batch, tokens, channels]`` and ``[batch, height, width, channels]``.
+
+    Outputs:
+        A tensor with exactly the input shape and dtype. Evaluation is an
+        identity operation; training returns either zero or a retained path.
     """
 
     def __init__(
@@ -36,6 +37,14 @@ class DropPath(ArgumentSaverLayer):
         per_sample: bool = True, 
         **kwargs
     ):
+        """Initialize stochastic-depth probability and mask semantics.
+
+        Arguments and accepted types are documented on the class.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
@@ -43,6 +52,20 @@ class DropPath(ArgumentSaverLayer):
             "drop_prob must satisfy 0.0 <= drop_prob < 1.0 ."
 
     def call(self, x, training=None):
+        """Apply a training-only path mask.
+
+        Args:
+            x: Floating ``tf.Tensor`` of shape ``[batch, ...]``. Its dtype is
+                also used to generate the random mask.
+            training: Optional boolean training flag. ``None`` is treated as
+                false; false returns ``x`` unchanged.
+
+        Returns:
+            ``tf.Tensor`` with the same shape and dtype as ``x``. With
+            ``scale_by_keep=True``, retained values are divided by the keep
+            probability.
+        """
+
         training = False if training is None else training
 
         if not training or self.drop_prob == 0.:

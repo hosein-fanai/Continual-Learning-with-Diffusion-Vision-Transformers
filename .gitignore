@@ -15,3 +15,25 @@ results
 
 test.ipynb
 schedulers.png
+
+# Keep directory-level documentation visible while ignoring generated/data
+# contents in the directories above.
+!data/
+data/*
+!data/README.md
+
+!configs/
+configs/*
+!configs/README.md
+
+!gifs/
+gifs/*
+!gifs/README.md
+
+!others/
+others/*
+!others/README.md
+
+!results/
+results/*
+!results/README.md

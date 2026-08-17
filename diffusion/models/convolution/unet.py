@@ -1,3 +1,5 @@
+"""Conditional convolutional U-Net compatible with diffusion wrappers."""
+
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -27,6 +29,13 @@ class _ResidualBlock(layers.Layer):
             convolutions.
         name: Optional Keras layer name.
         dtype: Optional Keras computation and variable dtype policy.
+
+    Inputs:
+        Floating channels-last feature tensor
+        ``[batch, height, width, channels]``.
+
+    Outputs:
+        Floating tensor ``[batch, height, width, width]``.
     """
 
     def __init__(
@@ -37,6 +46,15 @@ class _ResidualBlock(layers.Layer):
         name: str | None = None,
         dtype: DTypeLike | None = None,
     ) -> None:
+        """Initialize residual projections and two spatial convolutions.
+
+        Args and accepted data types are defined in the class documentation.
+
+        Returns:
+            ``None``. Variables whose shape depends on input channels are
+            completed by :meth:`build`.
+        """
+
         super().__init__(name=name, dtype=dtype)
         self.width = width
         self.activation_func = activation_func
@@ -132,6 +150,14 @@ class _DownBlock(layers.Layer):
         use_batch_norm: Whether residual blocks use batch normalization.
         name: Optional Keras layer name.
         dtype: Optional Keras computation and variable dtype policy.
+
+    Inputs:
+        Floating channels-last feature tensor
+        ``[batch, height, width, channels]``.
+
+    Outputs:
+        Pair of a downsampled floating feature tensor and an ordered
+        ``list[tf.Tensor]`` of full-resolution skips.
     """
 
     def __init__(
@@ -143,6 +169,14 @@ class _DownBlock(layers.Layer):
         name: str | None = None,
         dtype: DTypeLike | None = None,
     ) -> None:
+        """Create one encoder level and its fixed 2x average pool.
+
+        Args and accepted data types are defined in the class documentation.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(name=name, dtype=dtype)
         self.residual_blocks = [
             _ResidualBlock(
@@ -197,6 +231,13 @@ class _UpBlock(layers.Layer):
         interpolation: Image-resize interpolation used by the decoder.
         name: Optional Keras layer name.
         dtype: Optional Keras computation and variable dtype policy.
+
+    Inputs:
+        Pair ``(decoder, skips)`` where ``decoder`` is a floating channels-last
+        tensor and ``skips`` is ``list[tf.Tensor]`` at the target spatial size.
+
+    Outputs:
+        Floating decoded tensor at the skip height/width and configured width.
     """
 
     def __init__(
@@ -209,6 +250,14 @@ class _UpBlock(layers.Layer):
         name: str | None = None,
         dtype: DTypeLike | None = None,
     ) -> None:
+        """Create one decoder level and its residual blocks.
+
+        Args and accepted data types are defined in the class documentation.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(name=name, dtype=dtype)
         self.block_depth = block_depth
         self.interpolation = interpolation
@@ -360,6 +409,17 @@ class UNet(ArgumentSaverModel):
         build: bool = True,
         **kwargs,
     ) -> None:
+        """Construct, validate, and optionally build the conditional U-Net.
+
+        The full argument contract—including allowed values, Keras ``**kwargs``,
+        input tensor dtypes/shapes, and output structure—is documented on
+        :class:`UNet`.
+
+        Returns:
+            ``None``. When ``build=True``, all nested variables and symbolic
+            input/output tensors are created before construction returns.
+        """
+
         widths = tuple(widths)
         super().__init__(**kwargs)
         self._check_arguments(

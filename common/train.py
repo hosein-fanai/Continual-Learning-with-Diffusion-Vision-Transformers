@@ -1,3 +1,11 @@
+"""End-to-end MNIST construction, training, and reporting orchestration.
+
+Raw networks from ``diffusion.models.transformer`` implement one neural
+forward pass.  Wrappers from ``diffusion.models.wrapper`` own the diffusion
+schedule, EMA copy, noising, custom optimization steps, evaluation, and
+iterative sampling around the selected network.
+"""
+
 import tensorflow as tf
 from tensorflow.keras import optimizers, datasets, callbacks
 
@@ -17,10 +25,43 @@ from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
 
 
 def get_datasets(config: Config):
+    """Load MNIST and construct normalized training/validation pipelines.
+
+    Args:
+        config (Config): Uses ``dataset.batch_size``,
+            ``dataset.shuffle_buffer``, and ``training.use_valset``.  The
+            function adds ``config.dataset.trainset_len`` equal to the number
+            of full training batches.
+
+    Returns:
+        list[tf.data.Dataset | None]: ``[trainset, valset]``.  Training batches
+        drop the final remainder and are shuffled when the buffer is positive.
+        The validation set is the MNIST test split with its last partial batch
+        retained, or ``None`` when validation is disabled.  Images are
+        ``float32`` tensors shaped ``[batch, 28, 28, 1]`` in ``[-1, 1]``;
+        labels are integer tensors shaped ``[batch]``.
+    """
+
     def get_dataset(x, y, 
                     shuffle_buffer=10_000, 
                     batch_size=128, 
                     drop_remainder=True):
+        """Normalize arrays and create one batched ``tf.data`` pipeline.
+
+        Args:
+            x (numpy.ndarray): Grayscale images shaped ``[samples, height,
+                width]`` with values in ``[0, 255]``.
+            y (numpy.ndarray): Aligned integer labels shaped ``[samples]``.
+            shuffle_buffer (int): Positive shuffle capacity; ``0`` or a
+                negative value preserves input order.
+            batch_size (int): Positive examples per batch.
+            drop_remainder (bool): Whether to omit a final undersized batch.
+
+        Returns:
+            tf.data.Dataset: Batched ``(images, labels)`` pairs.  Images have a
+            newly appended channel axis and values linearly scaled to
+            ``[-1, 1]``.
+        """
         x = x.astype("float32") / 255.
         x = (x * 2.) - 1.
         x = x[..., None]
@@ -63,6 +104,34 @@ def get_datasets(config: Config):
 
 
 def get_model(config: Config):
+    """Build and compile the configured raw network and diffusion wrapper.
+
+    With classification enabled, ``DiTClassifier`` is wrapped by
+    ``DiffusionClassifier``.  Otherwise ``DiffusionTransformer`` is wrapped by
+    ``DiffusionModel``.  Leaf config dictionaries are expanded directly into
+    their constructors; no legacy-key translation is performed.
+
+    Args:
+        config (Config): Model, optimizer, epoch, and computed trainset-length
+            settings.  Call :func:`get_datasets` first when
+            ``optimizer.decay_steps`` is ``None`` so ``trainset_len`` exists.
+
+    Returns:
+        diffusion.models.wrapper.diffusion_model.DiffusionModel: A compiled
+        wrapper (possibly the ``DiffusionClassifier`` subclass) using Adam,
+        cosine learning-rate decay, and mean-squared-error compiled loss.
+
+    Raises:
+        AttributeError: If automatic decay is requested before
+            ``config.dataset.trainset_len`` is set.
+        TypeError: If a config leaf emits a keyword unsupported by the current
+            transformer/wrapper API.  See :mod:`common.config` for legacy fields.
+        OSError: If ``weights_path`` is set but cannot be loaded.
+
+    Note:
+        When ``decay_steps`` is ``None``, this function mutates it to
+        ``training.epochs * dataset.trainset_len``.
+    """
     if config.model.with_classifier:
         model = DiffusionClassifier(
             network=DiTClassifier(
@@ -107,6 +176,30 @@ def train_model(
     valset=None, 
     save_config_=True, 
 ):
+    """Fit a diffusion wrapper, manage callbacks, and persist run state.
+
+    Args:
+        config (Config): Supplies epoch count, image/GIF callback settings,
+            result paths, and weight/config persistence switches.  It is
+            mutated with the callback's resolved result directory and optional
+            saved-weights path.
+        model (tf.keras.Model): Compiled diffusion wrapper implementing Keras
+            ``fit`` and ``save_weights``.
+        trainset (tf.data.Dataset): Batched training ``(images, labels)`` pairs.
+        valset (tf.data.Dataset | None): Optional validation pairs.
+        save_config_ (bool): Save ``config.yaml`` before training and again
+            after paths are updated.  It does not disable callback artifacts or
+            weight saving.
+
+    Returns:
+        dict[str, list[float]]: The Keras ``History.history`` mapping with one
+        value per completed epoch for each reported metric.
+
+    Side Effects:
+        Sets ``config.reporting.results_path`` from
+        ``ImageGeneratorCallback.results_path``.  If weight saving is enabled,
+        sets ``config.model.weights_path`` and writes ``model.weights.h5``.
+    """
     callbacks_list = [
         LrLoggerCallback(), 
         callbacks.ProgbarLogger(count_mode="steps"), 
@@ -154,6 +247,32 @@ def report(
     trainset, 
     valset=None
 ):
+    """Create configured history, evaluation, sample-image, and GIF reports.
+
+    Args:
+        config (Config): Reporting switches and the dynamic
+            ``reporting.results_path`` populated by :func:`train_model`.
+        history (Mapping[str, Sequence[float]]): Epoch metric series, normally
+            the return value of :func:`train_model`.
+        model (DiffusionModel): Wrapper implementing ``evaluate`` with optional
+            ``network_name`` and ``sample`` with CFG/trajectory controls.
+        trainset (tf.data.Dataset): Batched training data used for optional raw
+            and EMA evaluation.
+        valset (tf.data.Dataset | None): Validation data.  It must be non-``None``
+            when ``run_valset_eval=True``.
+
+    Returns:
+        None: Requested artifacts are displayed and/or written beneath the
+        result path.
+
+    Raises:
+        AttributeError: If called before a result path is assigned.  Also, the
+            non-GIF generation branch currently reads undefined
+            ``config.num_classes``; leave ``save_final_gifs=True`` or provide a
+            compatible dynamic attribute.
+        ValueError: If requested sampling steps/scales or datasets violate the
+            wrapper's constraints.
+    """
     results_path = config.reporting.results_path
 
     plot_save_path = None
@@ -259,6 +378,16 @@ def report(
 
 
 def main(config: Config):
+    """Run dataset setup, model construction, fitting, and final reporting.
+
+    Args:
+        config (Config): Complete training configuration.  When
+            ``training.use_valset=False``, also set
+            ``reporting.run_valset_eval=False`` to avoid evaluating ``None``.
+
+    Returns:
+        None: Progress is printed and configured artifacts are produced.
+    """
     print("Initiating training process with the following settings:")
     print(config)
 

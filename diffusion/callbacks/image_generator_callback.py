@@ -1,3 +1,5 @@
+"""Epoch-end diffusion sampling, image plotting, and denoising GIF output."""
+
 from tensorflow.keras import callbacks
 
 import os
@@ -8,6 +10,39 @@ from common.utils import plot_images, create_gif
 
 
 class ImageGeneratorCallback(callbacks.Callback):
+    """Generate qualitative diffusion samples after every training epoch.
+
+    The callback expects a ``DiffusionModel``-compatible bound model exposing
+    ``test_steps``, ``test_cfg_scale``, ``test_eta``, and ``sample``. Valid
+    constructor combinations in the current implementation are:
+
+    * display only: ``show_images=True``, ``save_gifs=False``, and
+      ``results_path=None``;
+    * save PNGs and GIFs: ``save_gifs=True`` and a non-``None``
+      ``results_path``; ``show_images`` then controls simultaneous display.
+
+    Supplying ``results_path`` while ``save_gifs=False`` is rejected. A dated
+    run directory is created immediately during construction when saving.
+
+    Args:
+        show_images: Whether ``plot_images`` displays the generated image grid.
+        save_gifs: Whether to request intermediate ``x_t`` and ``x_0`` frames
+            and write a denoising GIF per epoch.
+        results_path: Optional string or path-like base directory. A timestamped
+            child containing ``images`` and ``gifs`` is created when GIF saving
+            is enabled.
+        project_tag: Optional text appended to the timestamped directory name.
+        **kwargs: Arguments forwarded to ``tf.keras.callbacks.Callback``. The
+            TensorFlow 2.10 base callback normally requires no extra options.
+
+    Inputs:
+        Keras supplies a zero-based integer epoch and optional metric mapping;
+        the bound diffusion wrapper supplies sampling configuration and images.
+
+    Outputs:
+        Callback hooks return ``None``. Observable outputs are displayed image
+        grids and, when configured, PNG and GIF files.
+    """
 
     def __init__(
         self, 
@@ -17,6 +52,14 @@ class ImageGeneratorCallback(callbacks.Callback):
         project_tag: str | None = None, 
         **kwargs
     ):
+        """Validate output mode and create the timestamped result directories.
+
+        Arguments and accepted types are documented on the class.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(**kwargs)
 
         assert show_images or results_path is not None, \
@@ -50,6 +93,21 @@ class ImageGeneratorCallback(callbacks.Callback):
                 )
 
     def on_epoch_end(self, epoch, logs=None):
+        """Sample the bound diffusion model and render epoch artifacts.
+
+        Args:
+            epoch: Zero-based integer epoch index. Output filenames use
+                ``epoch + 1``.
+            logs: Optional Keras epoch-log mapping. It is accepted for callback
+                compatibility and is not read or modified.
+
+        Returns:
+            ``None``. ``model.sample`` returns images shaped
+            ``[batch, height, width, channels]``. In GIF mode it must return
+            ``(images, x_t_frames, x0_frames)``; the frame sequences are passed
+            to ``create_gif``.
+        """
+
         steps = self.model.test_steps
         cfg_scale = self.model.test_cfg_scale
         eta = self.model.test_eta

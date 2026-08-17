@@ -1,3 +1,5 @@
+"""Depthwise-convolutional local mixing for transformer token sequences."""
+
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -5,17 +7,56 @@ from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
 class LocalMixer(BaseEmbedding):
-    """
-    Lightweight residual local token mixer.
+    """Inject convolutional locality into a flattened patch-token sequence.
 
-    Input:
-        x: patch tokens with shape (B, H*W, dim)
+    The layer reshapes square spatial tokens to an image, applies a depthwise
+    convolution and optional 1x1 pointwise projection, then flattens the result.
+    With ``strides == 1`` it adds the local correction to a residual path; with
+    larger strides it returns only the reduced local features. Position and MLP
+    processing occur after this mixing.
 
-    Output:
-        x + local spatial correction, same shape as input.
+    Args:
+        use_layer_norm: Whether to apply condition-adaptive normalization before
+            convolution. Disabled normalization uses ``x`` and a scalar-one
+            gate directly.
+        kernel_size: Positive depthwise kernel side length.
+        strides: Positive depthwise stride. ``1`` enables a residual; larger
+            values spatially reduce the sequence.
+        padding: Keras padding mode, normally ``"same"`` or ``"valid"``. A
+            stride-one residual requires output and input token counts to match,
+            so use ``"same"`` (or an effectively size-preserving kernel).
+        depth_multiplier: Positive number of depthwise filters per input channel.
+        pointwise_dim_ratio: Positive output multiplier for the optional 1x1
+            convolution.
+        use_pointwise: If true, project depthwise channels to
+            ``dim * pointwise_dim_ratio``; otherwise retain
+            ``dim * depth_multiplier`` channels.
+        zero_init: Zero-initialize the depthwise kernel so the initial local
+            correction is zero. This covers the convolutional path, while an
+            adaptive normalization gate also starts at zero by default.
+        circumvent_cls_token: Exclude token 0 from spatial convolution and
+            combine it with its normalized/projected counterpart afterward.
+        **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
+            ``grid_size``. Positional/MLP options can change the final channel
+            width. ``use_layer_norm`` and ``ln_dim`` are supplied internally
+            and must not be repeated.
 
-    It reshapes tokens to (B, H, W, dim), applies depthwise spatial conv,
-    optional pointwise conv, then reshapes back to tokens.
+    Inputs:
+        Pair ``(x, cond)`` with floating tokens ``[batch, tokens, dim]``. The
+        spatial token count must be a perfect square after removing an optional
+        leading class token. ``cond`` has shape ``[batch, condition_dim]`` when
+        adaptive normalization is enabled.
+
+    Outputs:
+        Floating token tensor at the inferred convolutional grid size. A
+        stride-one, same-padded, additive-position configuration preserves the
+        input shape; strides, positional concatenation, pointwise ratios, and
+        MLP projection can change it.
+
+    Serialization:
+        ``get_config()`` includes inherited ``ln_dim`` even though
+        :class:`BaseEmbedding` supplies it from ``dim``. Remove ``ln_dim`` from
+        a copied config before calling ``LocalMixer.from_config``.
     """
 
     def __init__(
@@ -31,6 +72,14 @@ class LocalMixer(BaseEmbedding):
         circumvent_cls_token: bool = False, 
         **kwargs
     ):
+        """Create local convolutions, residual projections, and position data.
+
+        Arguments and accepted types are documented on the class.
+
+        Returns:
+            ``None``.
+        """
+
         super().__init__(
             use_layer_norm=use_layer_norm, 
             **kwargs
@@ -91,6 +140,20 @@ class LocalMixer(BaseEmbedding):
         )
 
     def call(self, inputs, training=None):
+        """Mix neighboring spatial tokens and apply the configured residual.
+
+        Args:
+            inputs: Pair ``(x, cond)`` following the class input contract.
+            training: Optional Keras training flag forwarded to normalization,
+                convolutions, positional projection, and MLP layers.
+
+        Returns:
+            ``tf.Tensor`` with floating compute dtype. For input grid side
+            ``g``, ``same`` padding produces ``ceil(g / strides)``; ``valid``
+            produces ``floor((g - kernel_size) / strides) + 1``. A leading
+            class token is added back when configured.
+        """
+
         x, cond = inputs
 
         h, gate = self.layer_norm(
