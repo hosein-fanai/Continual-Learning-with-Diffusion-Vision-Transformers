@@ -13,9 +13,10 @@ sampling. Those responsibilities belong to the sibling
 - `DiTClassifier`: `DiffusionTransformer` plus a feature-routing classifier
   branch and softmax head.
 - `DiTDecoder`: experimental shifted/causal decoder specialization.
-- `DiTEncoderDecoder`: experimental encoder/decoder composition.
-- `DiTEncoderDecoderClassifier`: compatibility multiple-inheritance marker; it
-  does not currently initialize a classifier branch itself.
+- `DiTEncoderDecoder`: wrapper-compatible transformer encoder with an adapted
+  decoder and optional teacher forcing.
+- `DiTEncoderDecoderClassifier`: classifier encoder plus an adapted
+  context-aware decoder, with optional teacher forcing.
 
 The package also defines `CondType`, `TokenType`, `IdsType`, and `IdsDictType`
 type aliases.
@@ -40,6 +41,34 @@ outputs = network((noisy_images, timesteps, labels), training=False)
 `(output, cond, features_list, regs_list, (z_mean, z_log_var))`.
 `DiTClassifier` instead returns `{"noises": ..., "classes": ...}` and adds both
 branches' intermediate values when `full_return=True`.
+
+`DiTEncoderDecoder` accepts the standard three tensors and reuses
+`noisy_images` as the decoder image. A fourth float image tensor supplies an
+explicit teacher-forcing input. Its ordinary result is the decoder tensor. Its
+`full_return=True` result preserves the standard five-item transformer contract:
+`(noises, encoder_cond, encoder_features, encoder_regs, encoder_z_vals)`.
+
+`DiTEncoderDecoderClassifier` accepts the same three tensors for wrapper
+compatibility. It uses `noisy_images` as both the encoder and decoder image in
+that form. A fourth float tensor `[B, decoder_height, decoder_width,
+decoder_channels]` selects explicit teacher forcing and must use the same batch
+size as the other inputs:
+
+```python
+outputs = network(
+    (encoder_images, timesteps, labels, decoder_images), 
+    training=False, 
+)
+```
+
+Its ordinary result has the same two keys as `DiTClassifier`, but `"noises"`
+is the decoder prediction and `"classes"` is computed from encoder features
+(or from the decoder prediction when `aggregate_from_noises=True`). With
+`full_return=True`, the result also contains `cond`, `features_list`,
+`regs_list`, `z_vals`, `clf_cond`, `clf_features_list`, `clf_regs_list`,
+`clf_z_vals`, `decoder_cond`, `decoder_features_list`, `encoder_cond`, and
+`encoder_features_list`. The last two are explicit aliases of `cond` and
+`features_list` for decoder-oriented code.
 
 ## Depth and ID conventions
 
@@ -133,21 +162,21 @@ import tensorflow as tf
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
 network = DiffusionTransformer(
-    image_size=32,
-    channels=3,
-    patch_size=4,
-    dim=128,
-    cond_dim=128,
-    depth=4,
-    vit_block_ids=[None],
-    connection_ids_dict={2: [0, 1]},
+    image_size=32, 
+    channels=3, 
+    patch_size=4, 
+    dim=128, 
+    cond_dim=128, 
+    depth=4, 
+    vit_block_ids=[None], 
+    connection_ids_dict={2: [0, 1]}, 
     connection_kwargs={
-        "connect_type": "concat",
-        "use_layer_norm": True,
-        "mlp_output_dim": 128,
-    },
-    local_mixer_ids=[3],
-    local_mixer_kwargs={"kernel_size": 3, "zero_init": True},
+        "connect_type": "concat", 
+        "use_layer_norm": True, 
+        "mlp_output_dim": 128, 
+    }, 
+    local_mixer_ids=[3], 
+    local_mixer_kwargs={"kernel_size": 3, "zero_init": True}, 
 )
 
 images = tf.zeros([8, 32, 32, 3], tf.float32)
@@ -162,16 +191,16 @@ predicted_noise = network((images, times, labels), training=False)
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 
 network = DiTClassifier(
-    depth=4,
-    clf_depth=2,
-    feature_aggregation_ids_dict={1: [2, 4]},
+    depth=4, 
+    clf_depth=2, 
+    feature_aggregation_ids_dict={1: [2, 4]}, 
     feature_aggregation_kwargs={
-        "connect_type": "concat",
-        "mlp_output_dim": 64,
-    },
-    clf_dim=64,
-    clf_dim_forced=True,
-    clf_connection_ids_dict={2: [0, 1], -1: [-1]},
+        "connect_type": "concat", 
+        "mlp_output_dim": 64, 
+    }, 
+    clf_dim=64, 
+    clf_dim_forced=True, 
+    clf_connection_ids_dict={2: [0, 1], -1: [-1]}, 
 )
 ```
 
@@ -184,6 +213,144 @@ ID collections empty. The terminal connection defaults to `{-1: (-1,)}`.
 component kwargs inherit the main branch when passed as `None`; key/value widths
 and `clf_ln_mlp_ratio` remain `None` unless explicitly set.
 
+## Encoder-decoder denoiser API
+
+`DiTEncoderDecoder` is a complete `DiffusionTransformer` encoder with an
+attached `DiTDecoder`. Put inherited transformer settings in `encoder_kwargs`
+and decoder settings in `decoder_kwargs`; flat constructor arguments override
+equal values in `encoder_kwargs`. When omitted, the decoder receives the
+encoder's class count, CFG mode, timestep count, image/channel/patch settings,
+`dim`, and `cond_dim`. Its `encoder_output_grid_size` and
+`encoder_output_dim` are inferred from the encoder's final feature. The
+composite owns symbolic construction, so a decoder `build` value is ignored.
+
+```python
+from diffusion import DiTEncoderDecoder
+
+network = DiTEncoderDecoder(
+    encoder_kwargs={
+        "image_size": 32, 
+        "channels": 3, 
+        "patch_size": 4, 
+        "dim": 128, 
+        "depth": 4, 
+    }, 
+    decoder_kwargs={
+        "depth": 2, 
+        "use_decoder_ids": [None], 
+        "shift_inputs": False, 
+        "use_unpatchify": True, 
+    },
+)
+
+# Standard denoising: the encoder image also feeds the decoder.
+predicted_noise = network((noisy_images, timesteps, labels), training=False)
+
+# Explicit teacher forcing.
+predicted_noise = network(
+    (noisy_images, timesteps, labels, target_images), 
+    training=True, 
+)
+```
+
+`network.encoder` is a read-only alias for `network`. Consequently
+`embed_conditions`, `embed_inputs`, `prepend_cls_token`,
+`slice_and_flatten_tokens`, `encode`, `add_depths`, and variable inspection all
+belong to the encoder. The composite forces the encoder's `use_unpatchify`
+setting to `False` because only the decoder owns the final noise/image head.
+`network.depth` and progressive `add_depths` refer only to encoder depth;
+`network.decoder.depth` remains fixed after construction.
+At decoder depths 1..N, each decoder block cross-attends to the encoder's final
+feature by default, so the encoder image supplies actual context. Decoder depth
+0 has no attention block and therefore uses only the selected condition and
+decoder image.
+`set_current_resolution` synchronizes both branches. A non-None size must be
+positive and divisible by both branch patch sizes; `None` restores each
+branch's configured image size. `build_model` always exposes four symbolic
+inputs even though eager three-input calls are valid. Configuration round trips
+preserve both nested dictionaries and standard Keras model state.
+
+The raw model may return decoder tokens when `use_unpatchify=False`. The
+`DiffusionEncoderDecoderModel` wrapper instead requires an unpatchified decoder
+image with the same shape as its sampled noise target. Encoder resume calls
+with `min_depth>0` also require an explicit fourth decoder image. Therefore the
+base wrapper's three-input `sample_vae` path cannot resume this composite;
+leave `swap_noise_image=False` and use ordinary diffusion sampling unless a
+custom VAE decoder call supplies that fourth tensor.
+
+## Encoder-decoder classifier API
+
+`DiTEncoderDecoderClassifier` initializes itself as the complete
+`DiTClassifier` encoder and attaches a separately configured `DiTDecoder`.
+Place all inherited transformer and classifier options in `encoder_kwargs` and
+all decoder-specific options in `decoder_kwargs`. Flat constructor arguments
+override equal values in `encoder_kwargs`. The decoder inherits shared class,
+timestep, image, channel, patch, token-width, and condition-width settings from
+the encoder when they are omitted. `encoder_output_grid_size` and
+`encoder_output_dim` are inferred from the encoder's final feature. The
+composite manages decoder building, so a `build` entry in `decoder_kwargs` is
+ignored. Noise-based classification
+(`aggregate_from_noises=True`) requires decoder unpatchification and matching
+encoder/decoder image sizes and channel counts; decoder scaling stages must
+also restore the encoder's configured input image grid.
+
+The composite defaults decoder `shift_inputs` to `False`, which makes the
+three-input wrapper path a direct denoising call. Set it to `True` for
+right-shifted teacher forcing; the learned BOS token is shared across the batch.
+
+```python
+from diffusion import DiTEncoderDecoderClassifier
+
+network = DiTEncoderDecoderClassifier(
+    encoder_kwargs={
+        "image_size": 32, 
+        "channels": 3, 
+        "patch_size": 4, 
+        "dim": 128, 
+        "depth": 4, 
+        "clf_depth": 2, 
+        "feature_aggregation_ids_dict": {1: [-1]}, 
+    }, 
+    decoder_kwargs={
+        "depth": 2, 
+        "use_decoder_ids": [None], 
+        "shift_inputs": False, 
+        "use_unpatchify": True, 
+    }, 
+)
+
+# Wrapper-compatible fallback: encoder images also feed the decoder.
+joint = network((noisy_images, timesteps, labels), training=False)
+
+# Explicit teacher forcing.
+teacher_forced = network(
+    (noisy_images, timesteps, labels, target_images), 
+    training=True, 
+)
+```
+
+`network.encoder` is a read-only alias for `network`; it is not a second model.
+The inherited `encode`, embedding/token helpers, `compute_class`,
+`set_max_encoder_num`, `get_variables_names`, and classifier routing state all
+belong to this encoder/classifier side. The unused encoder `use_unpatchify`
+head is disabled, including for noise-based classification, because decoder
+noise is the classifier input. `predict_noise` is decoder-aware and
+accepts either input form. `predict_class` also accepts either form; the fourth
+image is used only for noise-based classification. When
+`decoder_separate_cond=True`, the attached decoder embeds its own timestep and
+label condition; otherwise it receives the encoder condition. A conditionless
+encoder is represented by a zero decoder-context tensor.
+
+`set_current_resolution` updates both encoder and decoder resolutions. A
+non-None value must be positive and divisible by both patch sizes; `None`
+restores each branch's configured image size. `add_depths` retains the
+`DiTClassifier` syntax and grows only the `"network"` and `"classifier"`
+branches. Decoder depth and routing are fixed after construction; access
+`network.decoder` for decoder-specific inspection. `build_model` exposes four
+symbolic inputs even though eager three-input calls remain supported.
+`get_config`/`from_config` preserve the nested dictionaries plus Keras `name`,
+`trainable`, `dtype`, and `dynamic` state.
+
 ## Progressive depth API
 
 `add_depths` appends supported components without replacing existing weights.
@@ -193,11 +360,11 @@ Exact main-network names are `feature_connector`,
 
 ```python
 growth = network.add_depths([
-    "vision_transformer_block",
+    "vision_transformer_block", 
     {
-        "feature_connector": {"ids": [-1]},
-        "local_mixer": True,
-    },
+        "feature_connector": {"ids": [-1]}, 
+        "local_mixer": True, 
+    }, 
 ])
 ```
 
@@ -205,11 +372,11 @@ For `DiTClassifier`, pass a targeted mapping to grow either branch:
 
 ```python
 growth = classifier_network.add_depths({
-    "network": "vision_transformer_block",
+    "network": "vision_transformer_block", 
     "classifier": {
-        "feature_connector": {"ids": [-1]},
-        "vision_transformer_block": {"use_decoder": False},
-    },
+        "feature_connector": {"ids": [-1]}, 
+        "vision_transformer_block": {"use_decoder": False}, 
+    }, 
 })
 ```
 
@@ -217,10 +384,36 @@ Classifier-only additional names are `feature_aggregator` and
 `cross_attention_aggregator`. Added sequences must preserve the feature width
 expected by the already-created output/classifier head.
 
-## Experimental encoder/decoder path
+## Encoder/decoder status
 
-`DiTDecoder`, `DiTEncoderDecoder`, and `DiTEncoderDecoderClassifier` preserve an
-older structured decoder API. Their module docstrings identify current
-integration limitations, including saved-but-unmaterialized aggregation options
-and mismatched structured call outputs. Treat them as extension points and test
-a configuration end to end before using the wrapper.
+`DiTEncoderDecoder` adapts the decoder's separate condition and feature inputs
+to the standard denoiser return contract. Use `DiffusionEncoderDecoderModel`
+for aligned denoising training, evaluation, and sampling, subject to the
+image-output and VAE limits above. Direct four-input calls remain available for
+custom teacher-forcing workflows.
+
+`DiTEncoderDecoderClassifier` adapts the decoder's separate condition and
+feature-list inputs and is the supported choice when classification and the
+standard three-input wrapper contract are required. Use
+`DiffusionClassifier` for ordinary training and sampling; use a direct
+four-input call or a custom training step for teacher forcing.
+
+The standalone `DiTDecoder` uses
+`decoder((images, times, labels), encoder_cond, encoder_features_list)` and its
+symbolic builder exposes those values as five inputs. Eager calls accept the
+complete depth-indexed encoder feature list; the symbolic fifth input is one
+final feature tensor, wrapped internally as a one-item list. Separate
+conditions, class tokens, shifted batches, and the image output head are
+supported. A changed active resolution must be positive and divisible by the
+decoder patch size, and `None` restores its configured image size. Its
+encoder-feature and cross-attention aggregation mappings remain reserved rather
+than materialized; each decoder block still cross-attends to the final encoder
+feature as its default values tensor. Depth 0 has no block and is
+condition/decoder-image only. Encoder-style blocks selected with
+`use_decoder_ids=[]` receive the same context without a causal mask.
+`get_config`/`from_config` preserve standard Keras `name`, `trainable`, `dtype`,
+and `dynamic` state in addition to decoder options.
+
+The compositions above isolate callers from the decoder's structured context
+arguments; the remaining standalone decoder limitations still apply to their
+selected decoder configurations.

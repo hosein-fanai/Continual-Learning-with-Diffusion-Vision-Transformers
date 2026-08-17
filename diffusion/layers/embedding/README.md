@@ -38,12 +38,12 @@ Use a learned table for class IDs:
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
 
 labels = ConditionEmbedding(
-    dim=64,
-    embed_steps=11,             # e.g. null label + 10 real classes
-    pos_embed_type="new_weight",
-    embed_trainable=True,
-    name="label_embedding",
-    dtype="float32",
+    dim=64, 
+    embed_steps=11,              # e.g. null label + 10 real classes
+    pos_embed_type="new_weight", 
+    embed_trainable=True, 
+    name="label_embedding", 
+    dtype="float32", 
 )
 y = labels(label_ids)           # label_ids [B] -> y [B,64]
 ```
@@ -52,11 +52,11 @@ Use sinusoidal initialization for timesteps:
 
 ```python
 times = ConditionEmbedding(
-    dim=128,
-    embed_steps=1000,
-    pos_embed_type="1d_sincos",
-    embed_trainable=False,
-    embed_temperature=10_000.0,
+    dim=128, 
+    embed_steps=1000, 
+    pos_embed_type="1d_sincos", 
+    embed_trainable=False, 
+    embed_temperature=10_000.0, 
 )
 y = times(t)                    # t int tensor [B], values 0..999
 ```
@@ -76,13 +76,13 @@ Set `embed_freq_dim` to build a raw table at a different width. For example,
 from diffusion.layers.embedding.patch_embedding import PatchEmbedding
 
 patches = PatchEmbedding(
-    dim=128,
-    grid_size=8,
-    patch_size=4,
-    patchify_with_cnn=False,
-    pos_embed_type="2d_sincos",
-    pos_merger_type="add",
-    name="patch_embedding",
+    dim=128, 
+    grid_size=8, 
+    patch_size=4, 
+    patchify_with_cnn=False, 
+    pos_embed_type="2d_sincos", 
+    pos_merger_type="add", 
+    name="patch_embedding", 
 )
 tokens = patches(images)        # images [B,32,32,C] -> [B,64,128]
 ```
@@ -102,9 +102,8 @@ tokens = patches(images_48, output_grid_size=12)  # patch_size=4
 `output_grid_size` affects only positional embeddings; it does not resize the
 image or convolution result. It must match that result's side. With
 `shift_right_token=True`, the layer prepends a learned BOS token and removes the
-last patch. The present BOS implementation has singleton batch shape when its
-position embedding is disabled, so this option is directly compatible with
-batch size one only.
+last patch. The same trainable BOS value is repeated across the runtime batch,
+so shifted token sequences preserve both the input batch size and token count.
 
 ## BaseEmbedding factory keyword contract
 
@@ -125,10 +124,10 @@ For example, the effective private factory call for a fixed timestep table is:
 
 ```python
 layer._create_embedding_layer(
-    pos_embed_type="1d_sincos",
-    embed_steps=1000,
-    embed_dim=64,
-    temperature=10_000.0,
+    pos_embed_type="1d_sincos", 
+    embed_steps=1000, 
+    embed_dim=64, 
+    temperature=10_000.0, 
 )
 ```
 

@@ -1,12 +1,12 @@
 # Diffusion layers
 
-This directory contains the reusable Keras layers from which the diffusion
-transformers are assembled. The classes under `diffusion.models.transformer`
-choose, order, and configure these layers to form a raw prediction network. The
-classes under `diffusion.models.wrapper` do not replace those layers: they own a
-raw network (and usually an EMA clone) and add noising, optimization,
-classifier-free guidance, evaluation, and sampling. In normal use, construct a
-transformer or `UNet`, pass it to a wrapper, and compile/train the wrapper.
+This directory contains the reusable Keras layers from which the transformer
+and convolutional diffusion networks are assembled. The classes under
+`diffusion.models` choose, order, and configure these layers to form raw
+prediction networks. The wrapper models own a raw network (and usually an EMA
+clone) and add noising, optimization, classifier-free guidance, evaluation,
+and sampling. In normal use, construct a raw model, pass it to a wrapper, and
+compile/train the wrapper.
 
 All tensors are channels-last. The notation used below is:
 
@@ -15,6 +15,7 @@ All tensors are channels-last. The notation used below is:
 - `D`: feature width
 - `C`: condition width
 - `G`: square spatial-grid side, so `T = G * G`
+- `H`, `W`: image-feature height and width
 
 ## Layer catalog
 
@@ -25,10 +26,32 @@ All tensors are channels-last. The notation used below is:
 | `FeatureHandler` | Select saved features by ID, concatenate/add them, then optionally normalize/project | lists of compatible tensors | merged tensor or `None` |
 | `SingleTokenLayer` | Create a learned single token or wrap a supplied vector as one token | `(reference, token)` | normally `[B,1,D]` |
 | `BaseLayer` | Internal factory for adaptive normalization and dense MLPs | construction utility | `AdaLNZero`, `Sequential`, or `None` |
+| `ResidualConvBlock` | Two condition-aware convolutions with a residual projection | `x [B,H,W,D]` or `(x, cond [B,C])` | `[B,H,W,filters]` |
+| `ResidualConvStack` | Fixed stack of residual convolution blocks | same as `ResidualConvBlock` | `[B,H,W,filters]` |
+| `ImageDownsample` | Pool or stride-convolve a feature map | `x` or `(x, cond)` | spatially downsampled map |
+| `ImageUpsample` | Interpolate, convolve after interpolation, or transpose-convolve | `x` or `(x, cond)` | spatially upsampled map |
+| `VariationalReshaper` | Flatten/unflatten a static feature shape, optionally sampling a KL latent | image feature or latent vector | `(x, mean, log_var)` |
+| `LayerDict` | Track a named stage's child layers in stable mapping order | construction container | mapping access; owning model executes it |
 
 Subdirectories provide [attention blocks](block/README.md),
 [embeddings](embedding/README.md), and
-[spatial token manipulation](manipulation/README.md).
+[spatial token manipulation](manipulation/README.md). The
+[convolution layer guide](convolution/README.md) documents all channels-last
+convolution components, modes, condition handling, and serialization.
+
+The convolution layers are public from both import paths:
+
+```python
+from diffusion import (
+    ImageDownsample,
+    ImageUpsample,
+    LayerDict,
+    ResidualConvBlock,
+    ResidualConvStack,
+    VariationalReshaper,
+)
+from diffusion.layers.convolution import ResidualConvStack
+```
 
 ## Common Keras options
 
@@ -37,10 +60,10 @@ Every concrete layer ultimately derives from `tf.keras.layers.Layer`. Its
 
 ```python
 layer = DropPath(
-    drop_prob=0.1,
-    name="encoder_2/drop_path",
-    dtype="float32",
-    trainable=True,
+    drop_prob=0.1, 
+    name="encoder_2/drop_path", 
+    dtype="float32", 
+    trainable=True, 
 )
 ```
 
@@ -83,8 +106,8 @@ normalization and, if requested, scalar gate `1.0`.
 
 ```python
 handler = FeatureHandler(
-    ids=[0, -1, -1],
-    connect_type="concat",
+    ids=[0, -1, -1], 
+    connect_type="concat", 
     ln_dim=192,  # three selected 64-channel features
 )
 merged = handler([early, middle, latest])

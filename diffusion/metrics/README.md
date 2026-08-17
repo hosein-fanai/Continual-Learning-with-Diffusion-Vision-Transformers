@@ -25,15 +25,15 @@ runtime API above is authoritative.
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 metric = EnsembleAccuracy(
-    diffusion_clf=model,
+    diffusion_clf=model, 
     netwrok_name="ema",       # spelling is part of the current public API
-    compute_type="chunked",
-    weighted=True,
-    max_t=128,
-    t_chunk_size=16,
-    random_seed=42,
-    name="ensemble_accuracy",
-    dtype="float32",
+    compute_type="chunked", 
+    weighted=True, 
+    max_t=128, 
+    t_chunk_size=16, 
+    random_seed=42, 
+    name="ensemble_accuracy", 
+    dtype="float32", 
 )
 
 metric.test_step(labels, images)
@@ -72,4 +72,3 @@ The custom `update_state(y_true, y_pred)` does not accept `sample_weight`.
 `netwrok_name` is intentionally documented with its existing misspelling.
 Use exactly `"ema"` or `"raw"`; the implementation selects EMA only for the
 former and otherwise falls back to the raw network.
-

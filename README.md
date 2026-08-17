@@ -14,11 +14,9 @@ such as `from diffusion import DiffusionModel` resolve consistently.
 
 ## Environment
 
-The pinned runtime dependency is TensorFlow 2.10. The supplied `tf_env` Conda
-environment is the intended environment for verification:
+The pinned runtime dependency is TensorFlow 2.10:
 
 ```powershell
-conda activate tf_env
 python -m pip install -r requirements.txt
 ```
 
@@ -36,11 +34,11 @@ DiffusionModel / DiffusionClassifier wrapper
   schedule + noising + losses + optimizer + EMA + sampler
           |
           v
-DiffusionTransformer / DiTClassifier / UNet raw network
+DiffusionTransformer / DiTClassifier / UNet / UNetClassifier raw network
   embeddings -> depth 1..N blocks -> prediction heads
           |
           v
-reusable layers (attention, AdaLN-Zero, routing, scaling, embeddings)
+reusable layers (attention, residual convolution, routing, scaling, embeddings)
 ```
 
 The raw architectures in `diffusion/models/transformer/` and
@@ -57,24 +55,24 @@ import tensorflow as tf
 from diffusion import DiffusionModel, DiffusionTransformer
 
 network = DiffusionTransformer(
-    num_classes=10,
-    use_cfg=True,
-    timesteps=1_000,
-    image_size=28,
-    channels=1,
-    patch_size=2,
-    dim=64,
-    depth=4,
+    num_classes=10, 
+    use_cfg=True, 
+    timesteps=1_000, 
+    image_size=28, 
+    channels=1, 
+    patch_size=2, 
+    dim=64, 
+    depth=4, 
 )
 model = DiffusionModel(
-    network=network,
-    scheduler_name="clipped_cosine",
-    test_steps=50,
-    test_cfg_scale=4.0,
+    network=network, 
+    scheduler_name="clipped_cosine", 
+    test_steps=50, 
+    test_cfg_scale=4.0, 
 )
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(1e-4),
-    loss=tf.keras.losses.MeanSquaredError(),
+    optimizer=tf.keras.optimizers.Adam(1e-3), 
+    loss="mse"
 )
 
 # Dataset elements: float images [B, 28, 28, 1] scaled to [-1, 1],
@@ -85,21 +83,45 @@ model.compile(
 samples = model.sample(labels=[1, 2, 3], steps=50, scale=4.0)
 ```
 
-`DiTClassifier` plus `DiffusionClassifier` adds a classifier branch and joint
-classification loss. `DiffusionClassifierV2` separates generator and
-classifier variable groups/optimizers. Their READMEs define every `clf_`
-attribute, its initial or inherited value, and the allowed variable-selection
+`DiTClassifier` or `UNetClassifier` plus `DiffusionClassifier` adds a
+classifier branch and joint classification loss. `DiffusionClassifierV2`
+separates generator and classifier variable groups/optimizers. Their READMEs
+define the branch state, progressive-depth behavior, and variable-selection
 IDs.
 
 ### Architectural depth and routed IDs
 
 For transformer models, depth `0` is the patch-embedded input before any stage.
-Depths `1..N` are outputs of the `N` configured layer dictionaries. An
-`*_ids_dict` maps a target depth to source depths, while an `*_ids` sequence
-selects depths where a component is enabled. `None` commonly expands to every
-eligible depth; negative IDs are normalized relative to the final depth. Exact
-rules, ordering constraints, allowed dictionary keys, and examples are in the
-transformer README and constructor docstrings.
+For `UNet`, depth `0` is the projected image concatenated with broadcast time
+and label embeddings. In both families, depths `1..N` are outputs of the
+tracked `layers_dicts`, and `full_return=True` exposes the aligned feature and
+regularizer lists. An `*_ids_dict` maps a target depth to source depths, while
+an `*_ids` sequence selects depths where a component is enabled. `None`
+commonly expands to every eligible depth; negative IDs are normalized relative
+to the final depth.
+
+The standard convolutional hierarchy uses encoder residual stacks and
+downsampling, a bottleneck, then upsampling with encoder skips. A variational
+bottleneck is enabled without manually calculating depth IDs:
+
+```python
+from diffusion import UNet
+
+vae_network = UNet(
+    image_size=32, 
+    channels=3, 
+    widths=(32, 64, 96), 
+    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+)
+```
+
+This configuration disables skips automatically so decoding cannot bypass the
+latent. Train it through `DiffusionModel` with a nonzero `kl_loss_coef`, then
+use `sample_vae(...)` to decode latent samples. `UNet.add_depths(...)` and the
+targeted `UNetClassifier.add_depths(...)` append shape-preserving residual
+stages for progressive-depth training. See the
+[convolution model guide](diffusion/models/convolution/README.md) for exact
+calls and supported specifications.
 
 ### Schedules
 
@@ -109,11 +131,11 @@ from diffusion import make_schedule
 
 vp = make_schedule("linear", 1_000, beta_start=1e-4, beta_end=2e-2)
 karras = generate_sigmas(ScheduleConfig(
-    kind=ScheduleKind.KARRAS,
-    num_steps=50,
-    sigma_min=0.002,
-    sigma_max=80.0,
-    rho=7.0,
+    kind=ScheduleKind.KARRAS, 
+    num_steps=50, 
+    sigma_min=0.002, 
+    sigma_max=80.0, 
+    rho=7.0, 
 ))
 ```
 
@@ -157,16 +179,16 @@ from common.dataloader import load_cifar10
 from common.learner import continually_learn
 
 accuracies = continually_learn(
-    class_num=10,
-    load_dataset_fn=load_cifar10,
-    tuned_model_path="models/hyperas/cifar10_cnn_model_00.h5",
-    use_buffer=True,
+    class_num=10, 
+    load_dataset_fn=load_cifar10, 
+    tuned_model_path="models/hyperas/cifar10_cnn_model_00.h5", 
+    use_buffer=True, 
     buffer_kwargs={
         "maxlen": 10_000,
         "sample_num": 1_000,
         "insert_num": 1_000,
         "seed": 42,
-    },
+    }, 
 )
 ```
 

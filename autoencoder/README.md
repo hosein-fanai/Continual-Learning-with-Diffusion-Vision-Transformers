@@ -24,34 +24,34 @@ Conditioning is optional:
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 vae = VariationalAutoencoder(
-    data_dim=2048,
-    latent_dim=16,
-    hiddens_dims=(256, 64),
+    data_dim=2048, 
+    latent_dim=16, 
+    hiddens_dims=(256, 64), 
     hiddens_kwargs={
-        "actv": "relu",
-        "use_batch_norm": False,
-        "kernel_init": "glorot_uniform",
+        "actv": "relu", 
+        "use_batch_norm": False, 
+        "kernel_init": "glorot_uniform", 
     },
-    last_activation="linear",
-    beta=0.25,
-    conditioned=True,
-    class_num=10,
-    compile_args={"optimizer": "adam", "loss": "mean_squared_error"},
-    name="feature_vae",
+    last_activation="linear", 
+    beta=0.25, 
+    conditioned=True, 
+    class_num=10, 
+    compile_args={"optimizer": "adam", "loss": "mean_squared_error"}, 
+    name="feature_vae", 
 )
 
 history = vae.train(
-    x_train, one_hot_y_train,
-    train_num=-1,
-    epochs=20,
-    batch_size=256,
-    validation_data=(x_val, one_hot_y_val),
+    x_train, one_hot_y_train, 
+    train_num=-1, 
+    epochs=20, 
+    batch_size=256, 
+    validation_data=(x_val, one_hot_y_val), 
 )
 
 x_replay, y_replay = vae.generate(
-    classes=[0, 3],
-    samples_per_class=500,
-    onehot_y_output=True,
+    classes=[0, 3], 
+    samples_per_class=500, 
+    onehot_y_output=True, 
 )
 # x_replay: [1000, 2048]; y_replay: [1000, 10]
 ```
@@ -98,12 +98,12 @@ uses a batch **sum** for categorical cross-entropy.
 from autoencoder.classifier_variational_autoencoder import ClassifierVAE
 
 model = ClassifierVAE(
-    class_num=10,
-    classifier=classifier,
-    alpha=0.01,
-    data_dim=2048,
-    latent_dim=8,
-    compile_args={"optimizer": "adam"},
+    class_num=10, 
+    classifier=classifier, 
+    alpha=0.01, 
+    data_dim=2048, 
+    latent_dim=8, 
+    compile_args={"optimizer": "adam"}, 
 )
 history = model.train(x_train, one_hot_y_train, epochs=10, train_num=-1)
 ```

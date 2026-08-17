@@ -24,8 +24,8 @@ directly when you specifically need its tensor/intermediate-feature API.
   `DiTClassifier`.
 - `DiffusionClassifierV2`: alternating generator/discriminator variant with two
   optimizer states and explicit variable ownership.
-- `DiffusionEncoderDecoderModel`: experimental teacher-forced training override
-  for `DiTEncoderDecoder`.
+- `DiffusionEncoderDecoderModel`: aligned denoising specialization for
+  `DiTEncoderDecoder`.
 
 The package aliases `NetworkName` (`"raw" | "ema"`), `TrainType`
 (`"cond" | "uncond"`), and `ClusteringType` (`"uniform" | "log_snr"`).
@@ -52,25 +52,25 @@ from diffusion.models.transformer.diffusion_transformer import DiffusionTransfor
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 network = DiffusionTransformer(
-    num_classes=10,
-    image_size=28,
-    channels=1,
-    patch_size=2,
-    dim=64,
-    cond_dim=64,
-    depth=4,
+    num_classes=10, 
+    image_size=28, 
+    channels=1, 
+    patch_size=2, 
+    dim=64, 
+    cond_dim=64, 
+    depth=4, 
 )
 
 model = DiffusionModel(
-    network=network,
-    use_ema=True,
-    scheduler_name="clipped_cosine",
-    p_uncond=0.1,
-    test_cfg_scale=4.0,
+    network=network, 
+    use_ema=True, 
+    scheduler_name="clipped_cosine", 
+    p_uncond=0.1, 
+    test_cfg_scale=4.0, 
 )
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(1e-4),
-    loss="mse",
+    optimizer=tf.keras.optimizers.Adam(1e-4), 
+    loss="mse", 
 )
 
 # dataset yields (images [B,28,28,1], classes [B])
@@ -87,7 +87,9 @@ images plus step-wise NumPy trajectories. `eta=0` is deterministic DDIM;
 the full consecutive schedule.
 
 `network_name="ema"` is the default for sampling. Use `"raw"` whenever
-`use_ema=False`.
+`use_ema=False`. With EMA enabled, a deferred raw network and its clone are
+built before their initial weight copy, so `build=False` raw configurations are
+supported.
 
 ## `DiffusionModel` configuration
 
@@ -127,21 +129,22 @@ x_t, noise, t = model.noisify(x0)
 x_t_at_10 = model.q_sample(x0, tf.fill([batch_size], 10), noise)
 
 x0_pred, eps, regularizers, latent_stats = model.forward(
-    "ema",
-    x_t,
-    t,
-    t,
-    cond_labels,
-    uncond_labels,
-    scale=4.0,
-    training=False,
+    "ema", 
+    x_t, 
+    t, 
+    t, 
+    cond_labels, 
+    uncond_labels, 
+    scale=4.0, 
+    training=False, 
 )
 ```
 
 `set_timestep_bounds(minimum, maximum)` changes the active half-open draw range.
 `set_current_resolution(size)` synchronizes the wrapper, raw network, and EMA
 network. The resolution must be positive and divisible by the raw network's
-patch size; `None` restores the base image size.
+patch size; encoder-decoder networks additionally validate the attached
+decoder patch size. `None` restores the configured branch size or sizes.
 
 ## Progressive training
 
@@ -153,18 +156,18 @@ and a dictionary combines names with inline or `None` values.
 ```python
 history = model.fit_progressively(
     stage_tasks=[
-        {"timesteps": (700, 1000), "resolution": 14},
-        ("timesteps", (300, 1000)),
+        {"timesteps": (700, 1000), "resolution": 14}, 
+        ("timesteps", (300, 1000)), 
         {
-            "resolution": 28,
-            "depth": "vision_transformer_block",
-        },
-    ],
-    stage_epochs=2,
-    final_epochs=1,
-    pacing_type="fixed",
-    x=dataset,
-    validation_data=validation_dataset,
+            "resolution": 28, 
+            "depth": "vision_transformer_block", 
+        }, 
+    ], 
+    stage_epochs=2, 
+    final_epochs=1, 
+    pacing_type="fixed", 
+    x=dataset, 
+    validation_data=validation_dataset, 
 )
 ```
 
@@ -184,10 +187,10 @@ model.fit_progressively(
     "resolutions_only", resolutions=[7, 14, 28], x=dataset
 )
 model.fit_progressively(
-    "depths_only",
-    depths=["vision_transformer_block", "local_mixer"],
-    final_epochs=1,
-    x=dataset,
+    "depths_only", 
+    depths=["vision_transformer_block", "local_mixer"], 
+    final_epochs=1, 
+    x=dataset, 
 )
 ```
 
@@ -206,16 +209,16 @@ from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
 network = DiTClassifier(
-    depth=4,
-    clf_depth=2,
-    feature_aggregation_ids_dict={1: [-1]},
+    depth=4, 
+    clf_depth=2, 
+    feature_aggregation_ids_dict={1: [-1]}, 
 )
 model = DiffusionClassifier(
-    network=network,
-    clf_train_type="cond",
-    clf_loss_coef=8.6e-3,
-    mask_by_nulls=True,
-    p_uncond=0.1,
+    network=network, 
+    clf_train_type="cond", 
+    clf_loss_coef=8.6e-3, 
+    mask_by_nulls=True, 
+    p_uncond=0.1, 
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 ```
@@ -230,11 +233,11 @@ Classifier progressive depth can target both branches:
 
 ```python
 depths = [{
-    "network": "vision_transformer_block",
+    "network": "vision_transformer_block", 
     "classifier": {
-        "feature_connector": {"ids": [-1]},
-        "vision_transformer_block": True,
-    },
+        "feature_connector": {"ids": [-1]}, 
+        "vision_transformer_block": True, 
+    }, 
 }]
 history = model.fit_progressively(
     "depths_only", depths=depths, final_epochs=1, x=dataset
@@ -266,10 +269,10 @@ the classifier group. Remaining variables form the generator group.
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 
 model = DiffusionClassifierV2(
-    network=network,
-    clf_vars_embedding_ids=[1, 2],
-    clf_vars_noise_part_ids=[-1],
-    clf_train_noisified_max_timesteps=250,
+    network=network, 
+    clf_vars_embedding_ids=[1, 2], 
+    clf_vars_noise_part_ids=[-1], 
+    clf_train_noisified_max_timesteps=250, 
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 
@@ -278,8 +281,8 @@ clf_history = model.fit_discriminator(x=dataset, epochs=5)
 
 # Convenience API: runs both and returns a merged history dictionary.
 merged = model.fit(
-    gen_kwargs={"x": dataset, "epochs": 5},
-    clf_kwargs={"x": dataset, "epochs": 5},
+    gen_kwargs={"x": dataset, "epochs": 5}, 
+    clf_kwargs={"x": dataset, "epochs": 5}, 
 )
 ```
 
@@ -291,10 +294,57 @@ same progressive arguments as `fit_progressively`. Use `evaluate_generator`,
 metrics. `clf_vars_names` and `gen_vars_names` expose the resolved variable split
 after compilation.
 
-## Experimental encoder/decoder wrapper
+## Encoder-decoder training
 
-`DiffusionEncoderDecoderModel.train_step` forwards `(x_t, t, labels, noise)` to
-its raw network for teacher forcing. The underlying encoder/decoder classes
-retain documented legacy mismatches between structured returns and call
-signatures, so this path should be treated as an extension point until tested
-and integrated for the desired configuration.
+`DiffusionEncoderDecoderModel` inherits the complete `DiffusionModel` training
+pipeline. Its raw-network call is `(x_t, t, labels)`; the
+`DiTEncoderDecoder` three-input adapter reuses `x_t` as the decoder image. The
+same convention is therefore used by training, evaluation, classifier-free
+guidance, and reverse sampling, while sampled `noise` remains only the loss
+target. Active-resolution resizing and the configured noise, image, KL, and
+regularizer loss coefficients work exactly as in the base wrapper. Decoder
+blocks at depths 1..N cross-attend to the final encoder feature. Decoder depth
+0 has no context-attention block and uses the condition plus decoder image. The
+raw model's `full_return=True` output is the usual five-item
+`DiffusionTransformer` tuple, so auxiliary encoder regularizers and latent
+statistics remain available to inherited wrapper logic.
+
+```python
+from diffusion import DiTEncoderDecoder, DiffusionEncoderDecoderModel
+
+network = DiTEncoderDecoder(
+    encoder_kwargs={"image_size": 32, "channels": 3, "depth": 4}, 
+    decoder_kwargs={"depth": 2, "use_unpatchify": True}, 
+)
+model = DiffusionEncoderDecoderModel(network=network, use_ema=True)
+model.compile(optimizer="adam", loss="mse")
+model.fit(dataset, epochs=10)
+images = model.sample(labels=[1, 2], steps=50)
+```
+
+Configure the attached decoder with `use_unpatchify=True` and an output image
+shape matching the sampled noise target. Token-only decoder output is valid for
+direct raw-network calls but not for this wrapper's image-shaped diffusion
+target pipeline, even when `image_loss_coef=0`. Progressive
+depth changes grow the encoder only; decoder depth is fixed at raw-network
+construction. Resolution changes are synchronized across both branches and a
+non-None value must be divisible by both patch sizes.
+`get_config`/`from_config` reconstruct a separate raw network, restore its
+weights, preserve wrapper `name`/`trainable`/`dtype`/`dynamic` state, and
+initialize a new EMA copy when enabled. Use a training checkpoint when the
+historical moving-average weights and optimizer state must also be resumed.
+
+Do not combine this wrapper with `swap_noise_image=True`. The inherited
+`sample_vae` resumes a network with three inputs and `min_depth>0`, while
+`DiTEncoderDecoder` requires an explicit fourth decoder image for resumed
+encoding. Ordinary diffusion sampling remains supported.
+
+For `DiTEncoderDecoderClassifier`, prefer `DiffusionClassifier` for ordinary
+training, evaluation, and sampling. Its three-input wrapper calls automatically
+reuse the noisy encoder image as the decoder input and receive the standard
+`{"noises": ..., "classes": ...}` result. The raw network also accepts
+`(encoder_images, timesteps, labels, decoder_images)` for explicit teacher
+forcing, but no stock wrapper supplies that fourth tensor; use a direct call or
+a custom `train_step` for that workflow. The classifier's inherited depth API
+grows its encoder and classifier branches, while the attached decoder remains
+at its constructor depth.

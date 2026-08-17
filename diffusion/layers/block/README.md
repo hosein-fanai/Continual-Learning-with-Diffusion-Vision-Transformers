@@ -16,15 +16,15 @@ The block applies two residual branches:
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 
 block = VisionTransformerBlock(
-    dim=128,
-    num_heads=4,
-    key_dim=32,
-    mlp_ratio=4,
-    mlp_output_dim=128,
-    drop_prob=0.1,
-    ln_mlp_ratio=2,
-    name="encoder/block_1",
-    dtype="float32",
+    dim=128, 
+    num_heads=4, 
+    key_dim=32, 
+    mlp_ratio=4, 
+    mlp_output_dim=128, 
+    drop_prob=0.1, 
+    ln_mlp_ratio=2, 
+    name="encoder/block_1", 
+    dtype="float32", 
 )
 
 y = block((x, condition), training=True)
@@ -40,11 +40,11 @@ The public call can also replace attention inputs:
 
 ```python
 y = block(
-    (x, condition),
-    queries=query_tokens,
-    values=context_tokens,
-    mask=attention_mask,
-    training=False,
+    (x, condition), 
+    queries=query_tokens, 
+    values=context_tokens, 
+    mask=attention_mask, 
+    training=False, 
 )
 ```
 
@@ -74,10 +74,10 @@ from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
 
 decoder = DiTDecoderBlock(dim=128, num_heads=4, mlp_ratio=4)
 y = decoder(
-    (decoder_tokens, condition),
-    values=encoder_tokens,
-    causal_mask=lower_triangular_mask,
-    training=True,
+    (decoder_tokens, condition), 
+    values=encoder_tokens, 
+    causal_mask=lower_triangular_mask, 
+    training=True, 
 )
 ```
 
