@@ -1,4 +1,4 @@
-"""Public tensor and dtype contracts for convolutional diffusion models."""
+"""Public models and tensor contracts for convolutional diffusion networks."""
 
 import tensorflow as tf
 
@@ -21,3 +21,28 @@ UNetFullOutput = tuple[
     tuple[tf.Tensor | None, tf.Tensor | None], 
 ]
 """Five-item full return contract shared with the diffusion wrapper."""
+
+
+__all__ = (
+    "UNet", 
+    "UNetClassifier", 
+    "UNetInputs", 
+    "UNetFullOutput", 
+    "DTypeLike", 
+)
+
+
+def __getattr__(name: str):
+    """Load concrete convolutional models without creating import cycles."""
+
+    if name == "UNet":
+        from .unet import UNet
+
+        return UNet
+
+    if name == "UNetClassifier":
+        from .unet_classifier import UNetClassifier
+
+        return UNetClassifier
+
+    raise AttributeError(name)
