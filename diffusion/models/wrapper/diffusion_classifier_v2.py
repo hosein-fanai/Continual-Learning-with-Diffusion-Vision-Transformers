@@ -109,6 +109,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             None.  Invalid embedding IDs or zero/out-of-range main depth IDs
             raise ``AssertionError`` (or ``TypeError`` for nonnumeric depth IDs).
         """
+
         for id_ in local_vars["clf_vars_embedding_ids"]:
             assert id_ is None or 0 <= id_ <= 4 , \
                 "clf_vars_embedding_ids can only include (None, 0, 1, 2, 3, 4)."
@@ -132,6 +133,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             AttributeError: If an explicitly selected optional embedder or
                 regularizer does not exist for the network configuration.
         """
+
         self.clf_trainable_variables = []
 
         for id in self.clf_vars_embedding_ids:
@@ -190,7 +192,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Raises:
             AssertionError: If classifier variables have not been initialized.
         """
+
         assert self.clf_trainable_variables is not None
+
 
         clf_variable_ids = {id(v) for v in self.clf_trainable_variables}
 
@@ -209,6 +213,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             None.  Re-selecting the active name leaves the cache intact.
         """
+
         if self._train_part != part_name:
             self._train_part = part_name
             self.train_function = None
@@ -223,6 +228,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             None.
         """
+
         if self._test_part != part_name:
             self._test_part = part_name
             self.test_function = None
@@ -246,6 +252,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             mapping becomes ``"<phase>_<key>"`` for each phase; unique keys are
             unchanged.  All-None input returns an empty dictionary.
         """
+
         if None in dicts:
             dicts = list(dicts)
             names = list(names)
@@ -283,6 +290,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             list[str]: Empty before variable groups are built; otherwise names
             in ``clf_trainable_variables`` order.
         """
+
         if self.clf_trainable_variables is None:
             return []
 
@@ -296,6 +304,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             list[str]: Empty before variable groups are built; otherwise names
             in ``gen_trainable_variables`` order.
         """
+
         if self.gen_trainable_variables is None:
             return []
 
@@ -319,6 +328,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             ``clf_optimizer`` is a newly deserialized optimizer of the same
             configuration with independent iterations/slots.
         """
+
         self._set_clf_variables()
         self._set_gen_variables()
 
@@ -382,6 +392,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             ``[B]``, clean/noisy images at active resolution, uint8 null labels
             ``[B]``, and original zero-based classes ``[B]``.
         """
+
         x0, labels = inputs
 
         x0 = tf.image.resize(x0,
@@ -420,6 +431,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             tf.keras.callbacks.History: Generator-phase Keras history.
         """
+
         active_part_name = "generator"
         self._switch_train_part(active_part_name)
         self._switch_test_part(active_part_name)
@@ -463,6 +475,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             tf.keras.callbacks.History: Discriminator-phase Keras history.
         """
+
         active_part_name = "discriminator"
         self._switch_train_part(active_part_name)
         self._switch_test_part(active_part_name)
@@ -490,8 +503,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         return super().fit_progressively(**kwargs)
 
     def fit(
-        self,
-        gen_kwargs: dict[str, object],
+        self, 
+        gen_kwargs: dict[str, object], 
         clf_kwargs: dict[str, object]
     ) -> dict[str, list]:
         """Fit generator then discriminator and merge their history mappings.
@@ -508,6 +521,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             receive ``generator_`` and ``discriminator_`` prefixes; unlike
             standard Keras ``fit``, this method returns the mapping, not History.
         """
+
         gen_history = self.fit_generator(**gen_kwargs).history
         clf_history = self.fit_discriminator(**clf_kwargs).history
         merged_history = self._merge_result_dicts(
@@ -529,6 +543,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             float | list[float] | dict[str, float]: Standard Keras result.
         """
+
         active_part_name = "generator"
         self._switch_test_part(active_part_name)
 
@@ -544,6 +559,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             float | list[float] | dict[str, float]: Standard Keras result.
         """
+
         active_part_name = "discriminator"
         self._switch_test_part(active_part_name)
 
@@ -567,6 +583,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             dict[str, float]: Merged metrics; collisions are phase-prefixed.
         """
+
         test_part = self._test_part if test_part is None else test_part
         kwargs["return_dict"] = True
 
@@ -594,6 +611,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             dict[str, tf.Tensor]: Running enabled diffusion metrics.  EMA is
             updated after the generator gradient step.
         """
+
         (x0, noises, 
         t, x_t, 
         cfg_labels, 
@@ -637,6 +655,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             dict[str, tf.Tensor]: Running diffusion evaluation metrics, including
             image loss for this test path.
         """
+
         (x0, noises, 
         t, x_t, 
         cond_labels, 
@@ -680,6 +699,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             classifier auxiliary metrics.  Prediction uses null labels and
             clean or bounded-noise input from ``prep_clfv2_inputs``.
         """
+
         t, x_t, uncond_labels, classes = self.prep_clfv2_inputs(
             inputs, 
             self.clf_train_noisified_max_timesteps
@@ -727,6 +747,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             dict[str, tf.Tensor]: Running classifier evaluation metrics.
         """
+
         t, x_t, uncond_labels, classes = self.prep_clfv2_inputs(
             inputs, 
             self.clf_test_noisified_max_timesteps
@@ -776,6 +797,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             ValueError: If neither phase was selected by a phase-specific fit
                 method.  The active phase also selects its own optimizer.
         """
+
         if self._train_part == "generator":
             self.optimizer = self.gen_optimizer
             return self.generator_train_step(inputs)
@@ -798,6 +820,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Raises:
             ValueError: If no known test phase is active.
         """
+
         if self._test_part == "generator":
             return self.generator_test_step(inputs)
 
@@ -805,3 +828,379 @@ class DiffusionClassifierV2(DiffusionClassifier):
             return self.discriminator_test_step(inputs)
 
         raise ValueError(f"Unknown training part: {self._test_part}")
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic tests for split classifier/generator optimization.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"DiffusionClassifierV2": "passed"}`` after variable
+        selection, optimizer separation, dispatch, fit/evaluate, progressive,
+        merge, clean/noisy preparation, and invalid-input checks pass.
+    """
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(107)
+
+
+    from diffusion.models.transformer.di_t_classifier import DiTClassifier
+
+
+    def make_network(**overrides: object) -> DiTClassifier:
+        """Build a fresh tiny DiTClassifier for V2 tests.
+
+        Args:
+            **overrides (object): Classifier-network option overrides.
+
+        Returns:
+            DiTClassifier: A built test network.
+        """
+
+        config = {
+            "num_classes": 2, 
+            "use_cfg": True, 
+            "timesteps": 4, 
+            "image_size": 4, 
+            "channels": 1, 
+            "patch_size": 2, 
+            "dim": 4, 
+            "depth": 1, 
+            "mha_num_heads": 1, 
+            "vit_block_mlp_ratio": 1.0, 
+            "clf_mha_num_heads": 1, 
+            "clf_vit_block_mlp_ratio": 1.0, 
+            "feature_aggregation_ids_dict": {1: (-1,)}, 
+            "clf_connection_ids_dict": {-1: (-1,)}, 
+            **overrides
+        }
+
+        return DiTClassifier(**config)
+
+
+    def make_wrapper(**overrides: object) -> DiffusionClassifierV2:
+        """Build and compile a fresh two-optimizer wrapper.
+
+        Args:
+            **overrides (object): V2/base-wrapper option overrides.
+
+        Returns:
+            DiffusionClassifierV2: An eagerly compiled test wrapper.
+        """
+
+        network = overrides.pop("network", make_network())
+        config = {
+            "network": network, 
+            "use_ema": True, 
+            "test_network_name": "ema", 
+            "scheduler_name": "linear", 
+            "test_steps": 2, 
+            "mask_by_nulls": False, 
+            "p_uncond": 0.0, 
+            "seed": 43, 
+            **overrides
+        }
+        wrapper = DiffusionClassifierV2(**config)
+        assert wrapper.clf_trainable_variables is None
+        assert wrapper.gen_trainable_variables is None
+        assert wrapper._train_part is None and wrapper._test_part is None
+        assert wrapper.clf_vars_names == wrapper.gen_vars_names == []
+        wrapper.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3), 
+            loss="mse", 
+            run_eagerly=True, 
+        )
+
+        return wrapper
+
+    wrapper = make_wrapper(clf_vars_noise_part_ids=[-1])
+    assert abs(float(wrapper.clf_loss_coef) - 1.0) < 1e-7
+    assert wrapper.clf_vars_noise_part_ids == [1]
+    assert wrapper.clf_trainable_variables
+    assert wrapper.gen_trainable_variables
+    assert wrapper.gen_optimizer is wrapper.optimizer
+    assert wrapper.clf_optimizer is not wrapper.gen_optimizer
+    assert type(wrapper.clf_optimizer) is type(wrapper.gen_optimizer)
+    assert wrapper.clf_vars_names and wrapper.gen_vars_names
+    clf_ids = {id(value) for value in wrapper.clf_trainable_variables}
+    gen_ids = {id(value) for value in wrapper.gen_trainable_variables}
+    assert clf_ids.isdisjoint(gen_ids)
+    assert clf_ids | gen_ids == {id(value) for value in wrapper.network.trainable_variables}
+
+    positive_depth = make_wrapper(
+        network=make_network(depth=2), 
+        clf_vars_noise_part_ids=[1], 
+        clf_loss_coef=0.25, 
+    )
+    assert positive_depth.clf_vars_noise_part_ids == [1]
+    assert abs(float(positive_depth.clf_loss_coef) - 0.25) < 1e-7
+    first_depth_ids = {
+        id(value)
+        for value in positive_depth.network.layers_dicts[0].trainable_variables
+    }
+    assert first_depth_ids <= {
+        id(value) for value in positive_depth.clf_trainable_variables
+    }
+
+    shared_network = make_network(
+        classifier_only_cls_token=False, 
+        cls_token_type="new_weight", 
+        clf_cls_token_type=None, 
+        cls_token_regularizer_ids=[0], 
+    )
+    shared = make_wrapper(
+        network=shared_network, 
+        clf_vars_embedding_ids=[0, 1, 2, 3, 4], 
+    )
+    assert shared.clf_vars_embedding_ids == [0, 1, 2, 3, 4]
+    assert shared.clf_trainable_variables
+    expanded = DiffusionClassifierV2(
+        network=make_network(), 
+        clf_vars_embedding_ids=[None], 
+        mask_by_nulls=False, 
+        use_ema=False, 
+        test_network_name="raw", 
+        test_steps=2, 
+    )
+    assert expanded.clf_vars_embedding_ids == [1, 2, 3, 4, 5]
+    try:
+        expanded._set_gen_variables()
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Generator variables require classifier variables first")
+    try:
+        expanded.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3), 
+            loss="mse", 
+            run_eagerly=True, 
+        )
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("Expanded optional embedding IDs must expose missing layers")
+
+    regularized_network = make_network(clf_cls_token_regularizer_ids=[0])
+    regularized_split = make_wrapper(network=regularized_network)
+    regularizer_ids = {
+        id(value) for value in 
+        regularized_network.clf_labels_embed_reg.trainable_variables
+    }
+    assert regularizer_ids <= {
+        id(value) for value in 
+        regularized_split.clf_trainable_variables
+    }
+
+    unique = wrapper._merge_result_dicts(
+        ({"a": 1}, {"b": 2}), 
+        ("generator", "discriminator")
+    )
+    assert unique == {"a": 1, "b": 2}
+    collided = wrapper._merge_result_dicts(
+        ({"loss": 1, "a": 2}, {"loss": 3, "b": 4}),
+        ("generator", "discriminator"),
+    )
+    assert collided == {
+        "generator_loss": 1, "a": 2,
+        "discriminator_loss": 3, "b": 4,
+    }
+    assert wrapper._merge_result_dicts((None, {"x": 1}), ("a", "b")) == {"x": 1}
+    assert wrapper._merge_result_dicts((None, None), ("a", "b")) == {}
+
+    wrapper.train_function = object()
+    wrapper._switch_train_part("generator")
+    assert wrapper._train_part == "generator" and wrapper.train_function is None
+    retained_train_function = object()
+    wrapper.train_function = retained_train_function
+    wrapper._switch_train_part("generator")
+    assert wrapper.train_function is retained_train_function
+    wrapper.test_function = object()
+    wrapper._switch_test_part("discriminator")
+    assert wrapper._test_part == "discriminator" and wrapper.test_function is None
+    retained_test_function = object()
+    wrapper.test_function = retained_test_function
+    wrapper._switch_test_part("discriminator")
+    assert wrapper.test_function is retained_test_function
+
+    images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
+    classes = tf.constant([0, 1], dtype=tf.uint8)
+    clean_t, clean_x, clean_nulls, clean_classes = wrapper.prep_clfv2_inputs(
+        (images, classes), None
+    )
+    tf.debugging.assert_equal(clean_t, tf.zeros((2,), dtype=tf.int32))
+    tf.debugging.assert_near(clean_x, images)
+    tf.debugging.assert_equal(clean_nulls, tf.zeros((2,), dtype=tf.uint8))
+    tf.debugging.assert_equal(clean_classes, classes)
+    noisy_t, noisy_x, _, _ = wrapper.prep_clfv2_inputs((images, classes), 2)
+    assert noisy_x.shape == images.shape
+    assert bool(tf.reduce_all((0 <= noisy_t) & (noisy_t < 2)))
+
+    capped = make_wrapper(
+        clf_train_noisified_max_timesteps=2, 
+        clf_test_noisified_max_timesteps=3, 
+    )
+    assert capped.clf_train_noisified_max_timesteps == 2
+    assert capped.clf_test_noisified_max_timesteps == 3
+    capped._switch_train_part("discriminator")
+    capped._switch_test_part("discriminator")
+    assert "classifier_loss" in capped.train_step((images, classes))
+    assert "classifier_accuracy" in capped.test_step((images, classes))
+
+    wrapper._switch_train_part("generator")
+    wrapper._switch_test_part("generator")
+    generator_train = wrapper.train_step((images, classes))
+    generator_test = wrapper.test_step((images, classes))
+    assert "noise_loss" in generator_train
+    assert {"noise_loss", "image_loss"} <= set(generator_test)
+    wrapper._switch_train_part("discriminator")
+    wrapper._switch_test_part("discriminator")
+    discriminator_train = wrapper.train_step((images, classes))
+    discriminator_test = wrapper.test_step((images, classes))
+    assert "classifier_loss" in discriminator_train
+    assert "classifier_accuracy" in discriminator_test
+    wrapper._train_part = None
+    try:
+        wrapper.train_step((images, classes))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An unset training phase must fail")
+    wrapper._test_part = None
+    try:
+        wrapper.test_step((images, classes))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An unset test phase must fail")
+
+    dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
+    gen_history = wrapper.fit_generator(x=dataset, epochs=1, verbose=0)
+    clf_history = wrapper.fit_discriminator(x=dataset, epochs=1, verbose=0)
+    assert "noise_loss" in gen_history.history
+    assert "classifier_loss" in clf_history.history
+    gen_eval = wrapper.evaluate_generator(
+        x=dataset, network_name="raw", verbose=0, return_dict=True
+    )
+    clf_eval = wrapper.evaluate_discriminator(
+        x=dataset, network_name="raw", verbose=0, return_dict=True
+    )
+    assert "noise_loss" in gen_eval and "classifier_loss" in clf_eval
+    both_eval = wrapper.evaluate(
+        eval_both=True, x=dataset, network_name="raw", verbose=0
+    )
+    assert "noise_loss" in both_eval and "classifier_loss" in both_eval
+    selected_eval = wrapper.evaluate(
+        test_part="generator", x=dataset, network_name="raw", verbose=0
+    )
+    assert "noise_loss" in selected_eval
+    assert wrapper.evaluate(
+        test_part="unknown", x=dataset, network_name="raw", verbose=0
+    ) == {}
+
+    combined = wrapper.fit(
+        {"x": dataset, "epochs": 1, "verbose": 0}, 
+        {"x": dataset, "epochs": 1, "verbose": 0}, 
+    )
+    assert "noise_loss" in combined and "classifier_loss" in combined
+    progressive_gen = wrapper.fit_generator_progressively(
+        stage_tasks=[{"timesteps": (1, 4)}], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=1, 
+        final_epochs=0, 
+        verbose=0, 
+    )
+    assert len(progressive_gen.progressive_stages) == 1
+    progressive_clf = wrapper.fit_discriminator_progressively(
+        stage_tasks=[{"resolution": 4}], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=1, 
+        final_epochs=0, 
+        verbose=0, 
+    )
+    assert len(progressive_clf.progressive_stages) == 1
+
+    growing = make_wrapper(clf_vars_noise_part_ids=[-1])
+    growth = growing._add_depths("vision_transformer_block")
+    assert growth["network"] == {"before": 1, "added": 1, "after": 2}
+    assert growing.clf_vars_noise_part_ids == [2]
+    assert growing.clf_trainable_variables and growing.gen_trainable_variables
+    growing._register_optimizer_variables()
+
+    policy = DiffusionClassifierV2(
+        network=make_network(), 
+        mask_by_nulls=False, 
+        p_uncond=0.0, 
+        use_ema=False, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+        name="policy_classifier_v2", 
+        trainable=False, 
+        dtype="float64", 
+    )
+    assert policy.name == "policy_classifier_v2"
+    assert policy.trainable is False
+    assert policy.dtype_policy.name == "float64"
+    policy_config = policy.get_config()
+    assert policy_config["clf_loss_coef"] == 1.0
+    assert policy_config["clf_train_noisified_max_timesteps"] is None
+    assert policy_config["clf_test_noisified_max_timesteps"] is None
+    assert "name" not in policy_config and "dtype" not in policy_config
+    try:
+        DiffusionClassifierV2.from_config(policy_config)
+    except (TypeError, ValueError):
+        pass
+    else:
+        raise AssertionError(
+            "V2 config cloning must expose nested-model serialization limits."
+        )
+
+    for invalid_embeddings in ([-1], [5]):
+        try:
+            DiffusionClassifierV2(
+                network=make_network(), 
+                clf_vars_embedding_ids=invalid_embeddings, 
+                mask_by_nulls=False, 
+                test_steps=2, 
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid embedding variable IDs must fail")
+    for invalid_depth_ids in ([0], [1], [-2]):
+        try:
+            DiffusionClassifierV2(
+                network=make_network(), 
+                clf_vars_noise_part_ids=invalid_depth_ids, 
+                mask_by_nulls=False, 
+                test_steps=2, 
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid main-depth variable IDs must fail")
+    wrapper._train_part = "unknown"
+    try:
+        wrapper.train_step((images, classes))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An unknown training phase must fail")
+    wrapper._test_part = "unknown"
+    try:
+        wrapper.test_step((images, classes))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An unknown test phase must fail")
+
+    tf.keras.backend.clear_session()
+    return {"DiffusionClassifierV2": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

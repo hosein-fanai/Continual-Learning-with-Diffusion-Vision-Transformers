@@ -1,16 +1,32 @@
-"""Create NumPy diffusion-noise schedules.
+"""Diffusion noise schedules.
 
-The public workflow is to construct :class:`ScheduleConfig`, pass it to
-:func:`generate_betas` or :func:`generate_sigmas`, and use the conversion
-helpers when another parameterization is required.  :func:`make_schedule` is
-the compact string-based interface used by callers that want every common
-array at once.
+This module implements a practical set of diffusion *noise schedules* used in
+image generation and editing papers / libraries.
 
-All returned arrays are one-dimensional ``numpy.ndarray`` objects with dtype
-``float64`` and length ``num_steps``.  Discrete variance-preserving (VP)
-schedules are naturally represented by beta values.  ``ve`` and ``karras``
-are naturally represented in sigma space; their beta results are a clipped VP
-equivalent for code paths that require betas.
+Covered schedules:
+- linear (DDPM)
+- scaled_linear (Diffusers variant)
+- squaredcos_cap_v2 (cosine schedule, Nichol & Dhariwal style)
+- clipped_cosine
+- sigmoid
+- quadratic
+- ve (variance-exploding / sigma-space schedule)
+- karras (Karras rho schedule in sigma-space)
+- sub_vp (flow-matching / rectified-flow style)
+- logistic
+- shifted variants via log-SNR shifting
+
+The module exposes a common API:
+- betas = generate_betas(...)
+- sigmas = generate_sigmas(...)
+- alpha_bar = betas_to_alpha_bar(betas)
+- timesteps = schedule_timesteps(...)
+
+Notes:
+- For discrete DDPM-style schedules, betas are typically used for training.
+- For sigma-space samplers, sigmas are typically used for inference.
+- Some schedules are naturally defined in continuous time; here we provide a
+  numerically useful discretization for a chosen number of steps.
 """
 
 from __future__ import annotations
@@ -184,17 +200,19 @@ def betas_to_alpha_bar(betas: np.ndarray) -> np.ndarray:
     ValueError
         If any beta is zero, negative, or at least one.
     """
+
     betas = _as_float64(betas)
     if np.any(betas <= 0) or np.any(betas >= 1):
         raise ValueError("betas must lie strictly in (0, 1).")
     alphas = 1.0 - betas
+
     return np.cumprod(alphas)
 
 
 def alpha_bar_to_betas(
-    alpha_bar: np.ndarray,
-    clip_min: float = 1e-8,
-    clip_max: float = 0.999,
+    alpha_bar: np.ndarray, 
+    clip_min: float = 1e-8, 
+    clip_max: float = 0.999, 
 ) -> np.ndarray:
     """Convert a cumulative signal trajectory to per-step beta values.
 
@@ -224,6 +242,7 @@ def alpha_bar_to_betas(
     ``alpha_bar_to_betas(np.array([0.9, 0.72]))`` returns approximately
     ``array([0.1, 0.2])``.
     """
+
     alpha_bar = np.clip(_as_float64(alpha_bar), 1e-12, 1.0)
 
     if np.any(np.diff(alpha_bar) > 1e-12):
@@ -252,7 +271,9 @@ def alpha_bar_to_sigmas(alpha_bar: np.ndarray) -> np.ndarray:
         ``float64`` values computed as ``sqrt(1 - alpha_bar)`` with the same
         shape as the input.
     """
+
     alpha_bar = np.clip(_as_float64(alpha_bar), 0.0, 1.0)
+
     return np.sqrt(np.maximum(1.0 - alpha_bar, 0.0))
 
 
@@ -278,10 +299,12 @@ def sigmas_to_betas(sigmas: np.ndarray) -> np.ndarray:
         If the implied cumulative-alpha curve increases, which can happen
         when ``sigmas`` decreases.
     """
+
     sigmas = np.clip(_as_float64(sigmas), 0.0, 1.0 - 1e-12)
     alpha_bar = 1.0 - sigmas**2
     alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
     betas = alpha_bar_to_betas(alpha_bar)
+
     return np.clip(betas, 1e-8, 0.999)
 
 
@@ -303,12 +326,14 @@ def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
     numpy.ndarray
         Shifted retained-signal powers with the input shape.
     """
+
     if snr_shift == 0.0:
         return alpha_bar
 
     alpha_bar = np.clip(_as_float64(alpha_bar), 1e-12, 1.0 - 1e-12)
     snr = alpha_bar / np.maximum(1.0 - alpha_bar, 1e-12)
     shifted = snr * np.exp(snr_shift)
+
     return shifted / (1.0 + shifted)
 
 
@@ -330,6 +355,7 @@ def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
     """
 
     f = np.cos(((t + s) / (1.0 + s)) * (pi / 2.0)) ** 2
+
     return f / f[0]
 
 
@@ -350,8 +376,10 @@ def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
     numpy.ndarray
         Logistic values with the same shape as ``t``.
     """
+
     x = np.clip(t, 0.0, 1.0)
     z = k * (x - 0.5)
+
     return 1.0 / (1.0 + np.exp(-z))
 
 
@@ -388,6 +416,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
     beta_end=2e-2))``.  Selecting ``ScheduleKind.KARRAS`` instead makes
     ``sigma_min``, ``sigma_max``, and ``rho`` the meaningful controls.
     """
+
     n = int(config.num_steps)
     if n < 2:
         raise ValueError("num_steps must be >= 2")
@@ -395,27 +424,40 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
     t = np.linspace(0.0, 1.0, n, dtype=np.float64)
 
     if config.kind == ScheduleKind.LINEAR:
-        betas = np.linspace(config.beta_start, config.beta_end, n, dtype=np.float64)
+        betas = np.linspace(
+            config.beta_start, 
+            config.beta_end, 
+            n, 
+            dtype=np.float64
+        )
+
         return np.clip(betas, config.clip_min, config.clip_max)
 
     if config.kind == ScheduleKind.SCALED_LINEAR:
         # Common Diffusers-style schedule: linearly interpolate sqrt(beta),
         # then square to get a gentler early ramp.
-        betas = np.linspace(np.sqrt(config.beta_start), np.sqrt(config.beta_end), n) ** 2
+        betas = np.linspace(
+            np.sqrt(config.beta_start), 
+            np.sqrt(config.beta_end), 
+            n
+        ) ** 2
+
         return np.clip(betas, config.clip_min, config.clip_max)
 
     if config.kind == ScheduleKind.QUADRATIC:
         betas = config.beta_start + (config.beta_end - config.beta_start) * (t**2)
+
         return np.clip(betas, config.clip_min, config.clip_max)
 
     if config.kind == ScheduleKind.COSINE:
         alpha_bar = _cosine_alpha_bar(t, s=config.cosine_s)
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
+
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max, 
         )
 
     if config.kind == ScheduleKind.CLIPPED_COSINE:
@@ -450,10 +492,11 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = sqrt_alpha_bar**2
 
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
+
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max, 
         )
 
     if config.kind == ScheduleKind.SIGMOID:
@@ -461,10 +504,11 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = 1.0 - _sigmoid01(t, k=config.logistic_k)
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
+
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max, 
         )
 
     if config.kind == ScheduleKind.LOGISTIC:
@@ -472,15 +516,17 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = 1.0 / (1.0 + np.exp(config.logistic_k * (t - 0.5)))
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
+
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max, 
         )
 
     if config.kind in {ScheduleKind.VE, ScheduleKind.KARRAS, ScheduleKind.SUB_VP}:
         sigmas = generate_sigmas(config)
         betas = sigmas_to_betas(sigmas)
+
         return np.clip(betas, config.clip_min, config.clip_max)
 
     raise ValueError(f"Unsupported schedule kind: {config.kind}")
@@ -518,6 +564,7 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
     curve, so call this function directly when a sigma-space sampler needs
     values such as ``sigma_max=80``.
     """
+
     n = int(config.num_steps)
     if n < 2:
         raise ValueError("num_steps must be >= 2")
@@ -527,6 +574,7 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
     if config.kind == ScheduleKind.VE:
         # Variance exploding: sigma grows from sigma_min to sigma_max.
         sigmas = config.sigma_min * (config.sigma_max / config.sigma_min) ** t
+
         return np.clip(sigmas, config.clip_min, None)
 
     if config.kind == ScheduleKind.KARRAS:
@@ -536,6 +584,7 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
             config.sigma_min**inv_rho
             + t * (config.sigma_max**inv_rho - config.sigma_min**inv_rho)
         ) ** config.rho
+
         return np.clip(sigmas, config.clip_min, None)
 
     if config.kind == ScheduleKind.SUB_VP:
@@ -546,28 +595,30 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
         sigma = 1.0 - np.sqrt(np.clip(alpha_bar, 0.0, 1.0))
         sigma = _apply_snr_shift(1.0 - sigma**2, config.snr_shift)
         sigma = np.sqrt(np.clip(1.0 - sigma, 0.0, 1.0))
+
         return np.clip(sigma, config.clip_min, 1.0 - config.clip_min)
 
     # For VP-style schedules, derive sigmas from alpha_bar.
     betas = generate_betas(
         ScheduleConfig(
-            kind=config.kind,
-            num_steps=config.num_steps,
-            beta_start=config.beta_start,
-            beta_end=config.beta_end,
-            cosine_s=config.cosine_s,
-            min_sqrt_alpha_bar=config.min_sqrt_alpha_bar,
-            max_sqrt_alpha_bar=config.max_sqrt_alpha_bar,
-            sigma_min=config.sigma_min,
-            sigma_max=config.sigma_max,
-            rho=config.rho,
-            snr_shift=config.snr_shift,
-            logistic_k=config.logistic_k,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            kind=config.kind, 
+            num_steps=config.num_steps, 
+            beta_start=config.beta_start, 
+            beta_end=config.beta_end, 
+            cosine_s=config.cosine_s, 
+            min_sqrt_alpha_bar=config.min_sqrt_alpha_bar, 
+            max_sqrt_alpha_bar=config.max_sqrt_alpha_bar, 
+            sigma_min=config.sigma_min, 
+            sigma_max=config.sigma_max, 
+            rho=config.rho, 
+            snr_shift=config.snr_shift, 
+            logistic_k=config.logistic_k, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max, 
         )
     )
     alpha_bar = betas_to_alpha_bar(betas)
+
     return alpha_bar_to_sigmas(alpha_bar)
 
 
@@ -587,13 +638,14 @@ def schedule_timesteps(config: ScheduleConfig) -> np.ndarray:
         ``float64`` array equivalent to
         ``numpy.linspace(0, 1, config.num_steps)``.
     """
+
     return np.linspace(0.0, 1.0, int(config.num_steps), dtype=np.float64)
 
 
 def make_schedule(
-    kind: str,
-    num_steps: int = 1000,
-    **kwargs,
+    kind: str, 
+    num_steps: int = 1000, 
+    **kwargs, 
 ) -> dict[str, np.ndarray]:
     """Build all common VP arrays from a schedule name.
 
@@ -641,17 +693,19 @@ def make_schedule(
     reconstructed from clipped beta-equivalent values; use
     :func:`generate_sigmas` to retain the natural maximum of ``10``.
     """
+
     cfg = ScheduleConfig(kind=ScheduleKind(kind), num_steps=num_steps, **kwargs)
     betas = generate_betas(cfg)
     alpha_bar = betas_to_alpha_bar(betas)
     sigmas = alpha_bar_to_sigmas(alpha_bar)
+
     return {
-        "betas": betas,
-        "alpha_bar": alpha_bar,
-        "sqrt_alpha_bar": np.sqrt(alpha_bar),
-        "sqrt_one_minus_alpha_bar": np.sqrt(1.0 - alpha_bar),
-        "sigmas": sigmas,
-        "timesteps": schedule_timesteps(cfg),
+        "betas": betas, 
+        "alpha_bar": alpha_bar, 
+        "sqrt_alpha_bar": np.sqrt(alpha_bar), 
+        "sqrt_one_minus_alpha_bar": np.sqrt(1.0 - alpha_bar), 
+        "sigmas": sigmas, 
+        "timesteps": schedule_timesteps(cfg), 
     }
 
 
@@ -663,26 +717,233 @@ SCHEDULE_REGISTRY = {
 
 
 SchedulerName: TypeAlias = Literal[
-    "linear",
-    "scaled_linear",
-    "squaredcos_cap_v2",
-    "clipped_cosine",
-    "sigmoid",
-    "quadratic",
-    "ve",
-    "karras",
-    "sub_vp",
-    "logistic",
+    "linear", 
+    "scaled_linear", 
+    "squaredcos_cap_v2", 
+    "clipped_cosine", 
+    "sigmoid", 
+    "quadratic", 
+    "ve", 
+    "karras", 
+    "sub_vp", 
+    "logistic", 
 ]
 """Static string type accepted by wrapper ``scheduler_name`` arguments."""
 
 
+def run_self_tests() -> dict[str, str]:
+    """Exercise every schedule enum member and configuration behavior.
+
+    The checks cover enum/string round trips, registry completeness, frozen
+    dataclass defaults and overrides, every schedule family at its minimum and
+    a representative multi-step size, native sigma endpoints, conversion
+    identities, clipping, log-SNR shifts, invalid bounds, and public helper
+    error contracts.  Small NumPy arrays keep this suitable for the aggregate
+    project self-test runner.
+
+    Returns:
+        dict[str, str]: Exactly one ``"passed"`` result for each class defined
+        by this module: :class:`ScheduleKind` and :class:`ScheduleConfig`.
+
+    Raises:
+        AssertionError: If any class invariant, numerical contract, or expected
+            exception differs from the implementation.
+    """
+
+    from dataclasses import FrozenInstanceError, asdict, replace
+
+
+    expected_names = {
+        "linear", 
+        "scaled_linear", 
+        "squaredcos_cap_v2", 
+        "clipped_cosine", 
+        "sigmoid", 
+        "quadratic", 
+        "ve", 
+        "karras", 
+        "sub_vp", 
+        "logistic", 
+    }
+    assert {kind.value for kind in ScheduleKind} == expected_names
+    assert set(SCHEDULE_REGISTRY) == expected_names
+    for kind in ScheduleKind:
+        assert isinstance(kind, str)
+        assert kind == kind.value
+        assert ScheduleKind(kind.value) is kind
+        assert SCHEDULE_REGISTRY[kind.value] is kind
+    with np.testing.assert_raises(ValueError):
+        ScheduleKind("unknown")
+
+    default = ScheduleConfig()
+    assert default == ScheduleConfig(kind=ScheduleKind.LINEAR)
+    assert hash(default) == hash(ScheduleConfig())
+    assert asdict(default) == {
+        "kind": ScheduleKind.LINEAR, 
+        "num_steps": 1000, 
+        "beta_start": 1e-4, 
+        "beta_end": 2e-2, 
+        "cosine_s": 0.008, 
+        "min_sqrt_alpha_bar": 0.02, 
+        "max_sqrt_alpha_bar": 0.95, 
+        "sigma_min": 0.002, 
+        "sigma_max": 80.0, 
+        "rho": 7.0, 
+        "snr_shift": 0.0, 
+        "logistic_k": 10.0, 
+        "clip_min": 1e-8, 
+        "clip_max": 0.999, 
+    }
+    custom = ScheduleConfig(
+        kind=ScheduleKind.KARRAS,
+        num_steps=5, 
+        beta_start=0.001, 
+        beta_end=0.01, 
+        cosine_s=0.01, 
+        min_sqrt_alpha_bar=0.1, 
+        max_sqrt_alpha_bar=0.9, 
+        sigma_min=0.01, 
+        sigma_max=10.0, 
+        rho=3.0, 
+        snr_shift=0.5, 
+        logistic_k=4.0, 
+        clip_min=1e-6, 
+        clip_max=0.95, 
+    )
+    assert replace(custom, num_steps=6).num_steps == 6
+    assert custom.kind is ScheduleKind.KARRAS
+    assert custom.sigma_max == 10.0
+    with np.testing.assert_raises(FrozenInstanceError):
+        custom.num_steps = 7
+    with np.testing.assert_raises(TypeError):
+        ScheduleConfig(unknown_field=True)
+
+    output_keys = {
+        "betas", 
+        "alpha_bar", 
+        "sqrt_alpha_bar", 
+        "sqrt_one_minus_alpha_bar", 
+        "sigmas", 
+        "timesteps", 
+    }
+    for kind in ScheduleKind:
+        for num_steps in (2, 7):
+            config = ScheduleConfig(kind=kind, num_steps=num_steps)
+            betas = generate_betas(config)
+            sigmas = generate_sigmas(config)
+            times = schedule_timesteps(config)
+            assert betas.shape == sigmas.shape == times.shape == (num_steps,)
+            assert betas.dtype == sigmas.dtype == times.dtype == np.float64
+            assert np.all(np.isfinite(betas)) and np.all(np.isfinite(sigmas))
+            assert np.all((betas >= config.clip_min) & (betas <= config.clip_max))
+            assert np.all(sigmas >= 0.0)
+            np.testing.assert_allclose(times[[0, -1]], [0.0, 1.0])
+
+            schedule = make_schedule(kind, num_steps=num_steps)
+            assert set(schedule) == output_keys
+            for value in schedule.values():
+                assert value.shape == (num_steps,)
+                assert value.dtype == np.float64
+                assert np.all(np.isfinite(value))
+            np.testing.assert_allclose(schedule["betas"], betas)
+            np.testing.assert_allclose(
+                schedule["sqrt_alpha_bar"] ** 2, 
+                schedule["alpha_bar"], 
+                atol=1e-12, 
+            )
+            np.testing.assert_allclose(
+                schedule["sqrt_one_minus_alpha_bar"] ** 2, 
+                1.0 - schedule["alpha_bar"], 
+                atol=1e-12, 
+            )
+            np.testing.assert_allclose(
+                schedule["sigmas"], 
+                schedule["sqrt_one_minus_alpha_bar"], 
+            )
+
+    linear = ScheduleConfig(
+        num_steps=5, 
+        beta_start=0.001, 
+        beta_end=0.02, 
+        clip_min=1e-9, 
+        clip_max=0.9, 
+    )
+    np.testing.assert_allclose(generate_betas(linear)[[0, -1]], [0.001, 0.02])
+    scaled = replace(linear, kind=ScheduleKind.SCALED_LINEAR)
+    np.testing.assert_allclose(generate_betas(scaled)[[0, -1]], [0.001, 0.02])
+    quadratic = replace(linear, kind=ScheduleKind.QUADRATIC)
+    quadratic_betas = generate_betas(quadratic)
+    assert quadratic_betas[1] < generate_betas(linear)[1]
+
+    clipped = ScheduleConfig(
+        kind=ScheduleKind.CLIPPED_COSINE, 
+        num_steps=9, 
+        min_sqrt_alpha_bar=0.1, 
+        max_sqrt_alpha_bar=0.9, 
+    )
+    clipped_alpha = betas_to_alpha_bar(generate_betas(clipped))
+    assert np.all(np.diff(clipped_alpha) <= 0.0)
+    for invalid_bounds in ((0.0, 0.9), (0.5, 0.5), (0.8, 0.2), (0.1, 1.0)):
+        with np.testing.assert_raises(ValueError):
+            generate_betas(replace(
+                clipped, 
+                min_sqrt_alpha_bar=invalid_bounds[0], 
+                max_sqrt_alpha_bar=invalid_bounds[1], 
+            ))
+
+    ve = ScheduleConfig(
+        kind=ScheduleKind.VE, 
+        num_steps=6, 
+        sigma_min=0.01, 
+        sigma_max=12.0, 
+    )
+    np.testing.assert_allclose(generate_sigmas(ve)[[0, -1]], [0.01, 12.0])
+    karras = replace(ve, kind=ScheduleKind.KARRAS, rho=3.0)
+    np.testing.assert_allclose(generate_sigmas(karras)[[0, -1]], [0.01, 12.0])
+    assert np.all(np.diff(generate_sigmas(ve)) > 0.0)
+    assert np.all(np.diff(generate_sigmas(karras)) > 0.0)
+
+    alpha_bar = np.array([0.9, 0.72, 0.504], dtype=np.float64)
+    betas = alpha_bar_to_betas(alpha_bar)
+    np.testing.assert_allclose(betas, [0.1, 0.2, 0.3])
+    np.testing.assert_allclose(betas_to_alpha_bar(betas), alpha_bar)
+    sigmas = alpha_bar_to_sigmas(alpha_bar)
+    np.testing.assert_allclose(sigmas_to_betas(sigmas), betas)
+    assert alpha_bar_to_sigmas(np.array([-1.0, 2.0])).tolist() == [1.0, 0.0]
+    with np.testing.assert_raises(ValueError):
+        betas_to_alpha_bar(np.array([0.0, 0.1]))
+    with np.testing.assert_raises(ValueError):
+        betas_to_alpha_bar(np.array([0.1, 1.0]))
+    with np.testing.assert_raises(ValueError):
+        alpha_bar_to_betas(np.array([0.5, 0.6]))
+    with np.testing.assert_raises(ValueError):
+        sigmas_to_betas(np.array([0.8, 0.2]))
+
+    base_alpha = np.array([0.2, 0.5, 0.8], dtype=np.float64)
+    assert _apply_snr_shift(base_alpha, 0.0) is base_alpha
+    assert np.all(_apply_snr_shift(base_alpha, 1.0) > base_alpha)
+    assert np.all(_apply_snr_shift(base_alpha, -1.0) < base_alpha)
+    np.testing.assert_allclose(_sigmoid01(np.array([-1.0, 0.5, 2.0]), 0.0), 0.5)
+    cosine = _cosine_alpha_bar(np.linspace(0.0, 1.0, 5))
+    assert cosine[0] == 1.0 and cosine[-1] < 1e-20
+
+    for generator in (generate_betas, generate_sigmas):
+        with np.testing.assert_raises(ValueError):
+            generator(ScheduleConfig(num_steps=1))
+        with np.testing.assert_raises(ValueError):
+            generator(ScheduleConfig(kind="unsupported", num_steps=3))
+    with np.testing.assert_raises(ValueError):
+        make_schedule("unsupported", num_steps=3)
+    with np.testing.assert_raises(TypeError):
+        make_schedule("linear", num_steps=3, unsupported=True)
+    assert schedule_timesteps(ScheduleConfig(num_steps=0)).shape == (0,)
+    np.testing.assert_allclose(
+        schedule_timesteps(ScheduleConfig(num_steps=1)),
+        [0.0],
+    )
+
+    return {"ScheduleKind": "passed", "ScheduleConfig": "passed"}
+
+
 if __name__ == "__main__":
-    # Example usage.
-    for name in SCHEDULE_REGISTRY.values():
-        out = make_schedule(name, num_steps=8)
-        print(f"\n{name}")
-        print("betas      :", np.round(out["betas"], 6))
-        print("sigmas     :", np.round(out["sigmas"], 6))
-        print("alpha_bar  :", np.round(out["alpha_bar"], 6))
-        print("sqrt_alpha :", np.round(out["sqrt_alpha_bar"], 6))
+    print(run_self_tests())

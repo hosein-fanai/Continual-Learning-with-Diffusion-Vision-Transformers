@@ -76,3 +76,62 @@ class RawNetworkValidationCallback(callbacks.Callback):
 
         for name, value in raw_results.items():
             logs[f"val_raw_{name}"] = value
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test raw-network evaluation and log mutation semantics.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after tensor/dataset-style target storage,
+        evaluation arguments, metric prefixing, and empty-log behavior checks.
+    """
+
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    validation_x = [1, 2]
+    validation_y = [0, 1]
+    evaluate = Mock(return_value={"loss": 0.25, "accuracy": 0.75})
+    callback = RawNetworkValidationCallback(validation_x, validation_y)
+    callback.set_model(SimpleNamespace(evaluate=evaluate))
+    logs = {"loss": 1.0}
+    result = callback.on_epoch_end(3, logs)
+    assert result is None
+    assert logs == {
+        "loss": 1.0, 
+        "val_raw_loss": 0.25, 
+        "val_raw_accuracy": 0.75, 
+    }
+    evaluate.assert_called_once_with(
+        validation_x, 
+        validation_y, 
+        network_name="raw", 
+        verbose=0, 
+        return_dict=True, 
+    )
+
+    dataset_like = [("x", "y")]
+    dataset_evaluate = Mock(return_value={"noise_loss": 0.5})
+    dataset_callback = RawNetworkValidationCallback(dataset_like)
+    dataset_callback.set_model(SimpleNamespace(evaluate=dataset_evaluate))
+    assert dataset_callback.on_epoch_end(0, None) is None
+    dataset_evaluate.assert_called_once_with(
+        dataset_like, 
+        None, 
+        network_name="raw", 
+        verbose=0, 
+        return_dict=True, 
+    )
+
+    empty_logs = {}
+    dataset_callback.on_epoch_end(1, empty_logs)
+    assert empty_logs == {}
+
+    return {"RawNetworkValidationCallback": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

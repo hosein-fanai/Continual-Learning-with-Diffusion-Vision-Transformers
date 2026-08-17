@@ -102,3 +102,88 @@ class DropPath(ArgumentSaverLayer):
             binary_mask = binary_mask / keep_prob
 
         return x * binary_mask
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic tests for every :class:`DropPath` mode.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry success mapping after probability boundaries, rank/dtype,
+        train/evaluation, scaling, mask-sharing, and config checks pass.
+    """
+
+    import numpy as np
+
+
+    for invalid_probability in (-0.01, 1.0, 2.0):
+        try:
+            DropPath(drop_prob=invalid_probability)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid drop probabilities must be rejected.")
+
+    x = tf.ones((64, 3, 2), dtype=tf.float32)
+    identity = DropPath(drop_prob=0.0)
+    for training in (None, False, True):
+        assert identity(x, training=training) is x
+
+    tf.random.set_seed(31415)
+    per_sample = DropPath(
+        drop_prob=0.5, 
+        scale_by_keep=True, 
+        per_sample=True, 
+    )(x, training=True)
+    assert per_sample.shape == x.shape and per_sample.dtype == x.dtype
+    unique_values = set(np.unique(per_sample.numpy()).tolist())
+    assert unique_values.issubset({0.0, 2.0})
+    assert np.all(per_sample.numpy() == per_sample.numpy()[:, :1, :1])
+
+    tf.random.set_seed(2718)
+    unscaled = DropPath(
+        drop_prob=0.5, 
+        scale_by_keep=False, 
+        per_sample=True, 
+    )(x, training=tf.constant(True))
+    assert set(np.unique(unscaled.numpy()).tolist()).issubset({0.0, 1.0})
+
+    tf.random.set_seed(9)
+    shared = DropPath(
+        drop_prob=0.5, 
+        scale_by_keep=False, 
+        per_sample=False, 
+        dtype="float64", 
+    )(tf.ones((4, 2, 2, 3), dtype=tf.float64), training=True)
+    assert shared.dtype == tf.float64 and shared.shape == (4, 2, 2, 3)
+    assert np.all(shared.numpy() == shared.numpy().reshape(-1)[0])
+
+    tf.random.set_seed(10)
+    shared_scaled = DropPath(
+        drop_prob=0.5, 
+        scale_by_keep=True, 
+        per_sample=False, 
+    )(tf.ones((4, 2, 3), dtype=tf.float32), training=True)
+    assert shared_scaled.shape == (4, 2, 3)
+    assert set(np.unique(shared_scaled.numpy()).tolist()).issubset({0.0, 2.0})
+    assert np.all(shared_scaled.numpy() == shared_scaled.numpy().reshape(-1)[0])
+
+    rank_one = DropPath(drop_prob=0.25, per_sample=True)(
+        tf.ones((8,), dtype=tf.float32), 
+        training=True
+    )
+    assert rank_one.shape == (8,)
+
+    layer = DropPath(drop_prob=0.25, scale_by_keep=False, per_sample=False)
+    restored = DropPath.from_config(layer.get_config())
+    assert restored.drop_prob == 0.25
+    assert not restored.scale_by_keep and not restored.per_sample
+    assert restored(tf.ones((1, 1)), training=False).shape == (1, 1)
+
+    return {"DropPath": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

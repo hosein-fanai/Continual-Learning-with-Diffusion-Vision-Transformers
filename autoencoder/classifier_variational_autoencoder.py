@@ -98,6 +98,7 @@ class ClassifierVAE(VariationalAutoencoder):
         Returns:
             tf.Tensor: Scalar ``float32`` fraction whose argmax class IDs match.
         """
+
         y_true = tf.argmax(y_true, axis=1)
         y_pred = tf.argmax(y_pred, axis=1)
         
@@ -115,6 +116,7 @@ class ClassifierVAE(VariationalAutoencoder):
             classification-loss, and classification-accuracy trackers in that
             order.  Keras resets them between epochs/evaluations.
         """
+
         return [
             self.total_loss_tracker, 
             self.kl_loss_tracker, 
@@ -138,6 +140,7 @@ class ClassifierVAE(VariationalAutoencoder):
             reconstruction shaped ``[batch, data_dim]``, and classifier output
             shaped ``[batch, class_num]``.
         """
+
         (z_mean, z_log_var, z), reconstructed = super().call(inputs, training)
         prediction = self.classifier(reconstructed)
 
@@ -159,6 +162,7 @@ class ClassifierVAE(VariationalAutoencoder):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
         """
+
         x, y = inputs
 
         with tf.GradientTape() as tape:
@@ -210,6 +214,7 @@ class ClassifierVAE(VariationalAutoencoder):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
         """
+
         x, y = inputs
 
         (z_mean, z_log_var, _), x_recon, _ = self(inputs, training=False)
@@ -269,6 +274,7 @@ class ClassifierVAE(VariationalAutoencoder):
             AssertionError: If a reserved key is supplied in ``kwargs``.
             TypeError: If an unsupported training keyword is supplied.
         """
+
         assert "x" not in kwargs
         assert "y" not in kwargs
         assert "clf" not in kwargs
@@ -278,3 +284,388 @@ class ClassifierVAE(VariationalAutoencoder):
         return super().train(x, y, clf=self.classifier, 
                             callbacks_monitor="val_clf_accuracy", 
                             **kwargs)
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run joint VAE/classifier construction, step, and API tests.
+
+    The tests cover constructor guards, classifier registration, nonzero and
+    zero classification coefficients, trainable and frozen classifiers,
+    forward shapes, exact/partial accuracy, real eager train/test steps,
+    metric reset, inherited conditional generation, weight persistence,
+    invalid label/output shapes, callable classifiers, and every reserved or
+    forwarded :meth:`train` keyword.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"ClassifierVAE": "passed"}`` after every assertion
+        succeeds.
+    """
+
+    import numpy as np
+
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from unittest import mock
+
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(303)
+
+    classifier = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(4,)), 
+        tf.keras.layers.Dense(
+            3, 
+            activation="softmax", 
+            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=1), 
+        ), 
+    ], name="self_test_classifier")
+
+    try:
+        ClassifierVAE(
+            3, 
+            classifier, 
+            conditioned=True, 
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(), 
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("ClassifierVAE must reject a conditioned override.")
+
+    try:
+        ClassifierVAE(
+            3, 
+            classifier, 
+            compile=False, 
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(), 
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError(
+            "The current base call already supplies compile=False, so an "
+            "external compile keyword must expose the duplicate-key limitation."
+        )
+
+    try:
+        ClassifierVAE(
+            3,
+            classifier,
+            data_dim=4,
+            latent_dim=2,
+            hiddens_dims=(),
+            unsupported_option=True,
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("Unknown Keras model options must be rejected.")
+
+    model = ClassifierVAE(
+        class_num=3, 
+        classifier=classifier, 
+        alpha=0.5, 
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=(4,), 
+        hiddens_kwargs={"actv": "relu", "use_batch_norm": False}, 
+        last_activation=None, 
+        beta=0.25, 
+        compile_args={
+            "optimizer": tf.keras.optimizers.SGD(learning_rate=0.01), 
+            "loss": "mean_squared_error", 
+            "run_eagerly": True, 
+        }, 
+        name="classifier_vae", 
+    )
+    assert model.conditioned is True and model.class_num == 3
+    assert model.classifier is classifier and model.alpha == 0.5
+    assert model.name == "classifier_vae" and model._is_compiled is True
+    assert isinstance(model.optimizer, tf.keras.optimizers.SGD)
+    assert model.run_eagerly is True
+    assert "alpha" not in model.get_config(), (
+        "The current subclassed-model config does not persist custom "
+        "ClassifierVAE constructor values."
+    )
+
+    x = tf.constant([
+        [0.0, 0.25, 0.5, 0.75], [1.0, 0.75, 0.5, 0.25]
+    ], dtype=tf.float32)
+    y = tf.one_hot([0, 2], depth=3)
+    (z_mean, z_log_var, z), reconstruction, prediction = model(
+        (x, y), training=False
+    )
+    assert z_mean.shape == z_log_var.shape == z.shape == (2, 2)
+    assert reconstruction.shape == (2, 4)
+    assert prediction.shape == (2, 3)
+    tf.debugging.assert_near(
+        tf.reduce_sum(prediction, axis=1), 
+        tf.ones((2,), tf.float32)
+    )
+    assert all(
+        bool(tf.reduce_all(tf.math.is_finite(value)))
+        for value in (z_mean, z_log_var, z, reconstruction, prediction)
+    )
+
+    tf.debugging.assert_near(
+        model._compute_accuracy(
+            tf.one_hot([0, 1], 3), 
+            tf.one_hot([0, 1], 3)
+        ), 
+        tf.constant(1.0), 
+    )
+    tf.debugging.assert_near(
+        model._compute_accuracy(
+            tf.one_hot([0, 1], 3), 
+            tf.one_hot([0, 2], 3)
+        ), 
+        tf.constant(0.5), 
+    )
+    tf.debugging.assert_near(
+        model._compute_accuracy(
+            tf.one_hot([0, 1], 3), 
+            tf.one_hot([2, 2], 3)
+        ),
+        tf.constant(0.0), 
+    )
+
+    metric_names = [metric.name for metric in model.metrics]
+    assert metric_names == [
+        "total_loss", 
+        "kl_loss", 
+        "recon_loss", 
+        "clf_loss", 
+        "clf_accuracy", 
+    ]
+    model.reset_metrics()
+    assert all(float(metric.result()) == 0.0 for metric in model.metrics)
+
+    weights_before_train = [
+        weight.numpy().copy() 
+        for weight in model.trainable_weights
+    ]
+    train_result = model.train_step((x, y))
+    assert set(train_result) == {
+        "loss", 
+        "kl_loss", 
+        "recon_loss", 
+        "clf_loss", 
+        "clf_accuracy", 
+    }
+    assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
+    assert any(
+        not np.array_equal(before, after.numpy())
+        for before, after in zip(weights_before_train, 
+                            model.trainable_weights)
+    )
+
+    weights_before_test = [
+        weight.numpy().copy() 
+        for weight in model.trainable_weights
+    ]
+    test_result = model.test_step((x, y))
+    assert set(test_result) == set(train_result)
+    assert all(bool(tf.math.is_finite(value)) for value in test_result.values())
+    for before, after in zip(weights_before_test, model.trainable_weights):
+        np.testing.assert_array_equal(before, after.numpy())
+
+    model.seen_classes = [0, 2]
+    generated_x, generated_y = model.generate(
+        samples_per_class=1, 
+        onehot_y_output=False
+    )
+    assert generated_x.shape == (2, 4)
+    np.testing.assert_array_equal(
+        generated_y, 
+        np.array([0, 2])
+    )
+
+    frozen_classifier = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(4,)), 
+        tf.keras.layers.Dense(3, activation="softmax"), 
+    ])
+    frozen_classifier.trainable = False
+    zero_alpha_model = ClassifierVAE(
+        3, 
+        frozen_classifier, 
+        alpha=0.0, 
+        data_dim=4, 
+        latent_dim=1, 
+        hiddens_dims=(), 
+        beta=0.0, 
+        compile_args={
+            "optimizer": tf.keras.optimizers.SGD(0.01), 
+            "loss": "mean_squared_error", 
+            "run_eagerly": True, 
+        },
+    )
+    zero_alpha_result = zero_alpha_model.train_step((x, y))
+    assert all(bool(tf.math.is_finite(value)) for value in zero_alpha_result.values())
+    assert zero_alpha_model.alpha == 0.0
+    assert frozen_classifier.trainable is False
+
+
+    def callable_classifier(inputs: tf.Tensor) -> tf.Tensor:
+        """Return deterministic uniform three-class probabilities.
+
+        Args:
+            inputs (tf.Tensor): Feature batch shaped ``[batch, 4]``.
+
+        Returns:
+            tf.Tensor: Uniform probabilities shaped ``[batch, 3]``.
+        """
+
+        return tf.fill(
+            (tf.shape(inputs)[0], 3), 
+            tf.constant(1.0 / 3.0, tf.float32)
+        )
+
+
+    callable_model = ClassifierVAE(
+        3, 
+        callable_classifier, 
+        alpha=-0.25, 
+        data_dim=4, 
+        latent_dim=1, 
+        hiddens_dims=(), 
+        compile_args={
+            "optimizer": "sgd", 
+            "loss": "mean_squared_error"
+        }, 
+    )
+    assert callable_model.alpha == -0.25
+    assert callable_model((x, y), training=False)[2].shape == (2, 3)
+    callable_result = callable_model.test_step((x, y))
+    assert all(bool(tf.math.is_finite(value)) for value in callable_result.values())
+
+    bad_classifier = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(4,)), 
+        tf.keras.layers.Dense(2, activation="softmax"), 
+    ])
+    bad_model = ClassifierVAE(
+        3, 
+        bad_classifier, 
+        data_dim=4, 
+        latent_dim=1, 
+        hiddens_dims=(), 
+        compile_args={
+            "optimizer": "sgd", 
+            "loss": "mean_squared_error"
+        },
+    )
+    try:
+        bad_model.test_step((x, y))
+    except (ValueError, tf.errors.InvalidArgumentError):
+        pass
+    else:
+        raise AssertionError("Classifier output width must match one-hot labels.")
+
+    try:
+        model.test_step((x, tf.constant([0, 2])))
+    except (ValueError, tf.errors.InvalidArgumentError):
+        pass
+    else:
+        raise AssertionError("ClassifierVAE train/test labels must be one-hot.")
+
+    with TemporaryDirectory() as temp_dir:
+        weights_path = Path(temp_dir) / "classifier_vae.weights.h5"
+        model.save_weights(weights_path)
+        clone_classifier = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(4,)), 
+            tf.keras.layers.Dense(3, activation="softmax"), 
+        ])
+        clone = ClassifierVAE(
+            3, 
+            clone_classifier, 
+            alpha=0.5, 
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(4,), 
+            hiddens_kwargs={"actv": "relu", "use_batch_norm": False}, 
+            last_activation=None, 
+            beta=0.25, 
+            compile_args={
+                "optimizer": "sgd", 
+                "loss": "mean_squared_error"
+            },
+        )
+        clone((x, y), training=False)
+        clone.load_weights(weights_path)
+        source_mean, source_log_var, _ = model.encoder((x, y), training=False)
+        clone_mean, clone_log_var, _ = clone.encoder((x, y), training=False)
+        tf.debugging.assert_near(source_mean, clone_mean)
+        tf.debugging.assert_near(source_log_var, clone_log_var)
+        tf.debugging.assert_near(classifier(x), clone_classifier(x))
+
+    delegated_history = {"loss": [0.75]}
+    with mock.patch.object(
+        VariationalAutoencoder, 
+        "train", 
+        autospec=True, 
+        return_value=delegated_history, 
+    ) as base_train:
+        returned_history = model.train(
+            x.numpy(), 
+            y.numpy(), 
+            epochs=1, 
+            batch_size=2, 
+            train_num=-1, 
+            callbacks_list=[], 
+            verbose=0, 
+        )
+        assert returned_history is delegated_history
+        call_args, call_kwargs = base_train.call_args
+        assert call_args[0] is model
+        np.testing.assert_array_equal(call_args[1], x.numpy())
+        np.testing.assert_array_equal(call_args[2], y.numpy())
+        assert call_kwargs["clf"] is classifier
+        assert call_kwargs["callbacks_monitor"] == "val_clf_accuracy"
+        assert call_kwargs["epochs"] == 1
+        assert call_kwargs["callbacks_list"] == []
+
+    for reserved_name, reserved_value in (
+        ("clf", classifier),
+        ("callbacks_monitor", "loss"),
+    ):
+        try:
+            model.train(
+                x.numpy(), 
+                y.numpy(), 
+                **{reserved_name: reserved_value}
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"Reserved training key {reserved_name!r} must fail."
+            )
+
+    for duplicate_name, duplicate_value in (
+        ("x", x.numpy()), 
+        ("y", y.numpy())
+    ):
+        try:
+            model.train(
+                x.numpy(), y.numpy(), 
+                **{duplicate_name: duplicate_value}
+            )
+        except TypeError:
+            pass
+        else:
+            raise AssertionError(
+                f"Duplicate positional training key {duplicate_name!r} must fail."
+            )
+
+    tf.keras.backend.clear_session()
+    return {"ClassifierVAE": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

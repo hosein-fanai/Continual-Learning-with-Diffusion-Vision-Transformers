@@ -220,3 +220,163 @@ class Downsample(BaseEmbedding):
         ) if self.mlp is not None else x
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test every :class:`Downsample` scaling and boolean branch.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after pooling/convolution, padding, stride,
+        normalization, class-token, position, projection, dtype, gradient,
+        validation, shape-error, and serialization checks pass.
+    """
+
+    import numpy as np
+
+
+    tf.random.set_seed(616)
+    condition = tf.ones((2, 3), dtype=tf.float32)
+    modes = ("avg_pooling", "max_pooling", "cnn_stride")
+    for mode in modes:
+        for use_layer_norm in (False, True):
+            for circumvent_cls_token in (False, True):
+                token_count = 17 if circumvent_cls_token else 16
+                layer = Downsample(
+                    dim=2, 
+                    grid_size=4, 
+                    scaling_method=mode, 
+                    strides=2, 
+                    padding="same", 
+                    cnn_dim_ratio=2, 
+                    cnn_kernel_size=3, 
+                    cnn_activation_func="relu", 
+                    circumvent_cls_token=circumvent_cls_token, 
+                    use_layer_norm=use_layer_norm, 
+                    pos_embed_type=None
+                )
+                output = layer(
+                    (tf.ones((2, token_count, 2)), condition), 
+                    training=True
+                )
+                expected_channels = 4 if mode == "cnn_stride" else 2
+                expected_tokens = 5 if circumvent_cls_token else 4
+                assert output.shape == (2, expected_tokens, expected_channels)
+                assert (layer.layer_norm is not None) is use_layer_norm
+                assert layer.output_grid_size == 2
+
+    values = tf.reshape(tf.range(16, dtype=tf.float32), (1, 16, 1))
+    average = Downsample(
+        dim=1, grid_size=4, 
+        scaling_method="avg_pooling", 
+        strides=2, padding="valid", 
+        use_layer_norm=False, 
+        pos_embed_type=None
+    )((values, None))
+    maximum = Downsample(
+        dim=1, grid_size=4, 
+        scaling_method="max_pooling", 
+        strides=2, padding="valid", 
+        use_layer_norm=False, 
+        pos_embed_type=None
+    )((values, None))
+    np.testing.assert_allclose(average.numpy().reshape(-1), [2.5, 4.5, 10.5, 12.5])
+    np.testing.assert_array_equal(maximum.numpy().reshape(-1), [5.0, 7.0, 13.0, 15.0])
+
+    valid_convolution = Downsample(
+        dim=2, 
+        grid_size=4, 
+        scaling_method="cnn_stride", 
+        strides=2, 
+        padding="valid", 
+        cnn_kernel_size=3, 
+        use_layer_norm=False, 
+        pos_embed_type=None
+    )
+    assert valid_convolution((tf.ones((1, 16, 2)), None)).shape == (1, 1, 2)
+
+    positioned = Downsample(
+        dim=2, 
+        grid_size=4, 
+        scaling_method="cnn_stride", 
+        cnn_dim_ratio=2, 
+        use_layer_norm=True, 
+        ln_no_adaptation=True, 
+        circumvent_cls_token=True, 
+        pos_embed_type="2d_sincos", 
+        pos_merger_type="concat", 
+        mlp_ratio=2, 
+        mlp_output_dim=3
+    )
+    positioned_output = positioned((tf.ones((1, 17, 2)), None), training=False)
+    assert positioned_output.shape == (1, 5, 3)
+
+    with tf.GradientTape() as tape:
+        convolution_output = valid_convolution(
+            (tf.ones((1, 16, 2)), None), training=True
+        )
+        loss = tf.reduce_sum(convolution_output)
+    gradients = tape.gradient(loss, valid_convolution.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    for invalid_grid in (0, 1):
+        try:
+            Downsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Downsampling requires grid_size >= 2.")
+    for invalid_mode in ("median_pooling", "", None):
+        try:
+            Downsample(
+                dim=2, grid_size=2, 
+                scaling_method=invalid_mode,
+                pos_embed_type=None
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unknown downsampling modes must fail.")
+
+    malformed = Downsample(
+        dim=2, grid_size=4, 
+        use_layer_norm=False, 
+        pos_embed_type=None
+    )
+    try:
+        malformed((tf.ones((1, 15, 2)), None))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Non-square token grids must fail.")
+
+    dtype_layer = Downsample(
+        dim=2, grid_size=2, 
+        use_layer_norm=False, 
+        pos_embed_type=None, 
+        dtype="float64",
+    )
+    dtype_output = dtype_layer((tf.ones((1, 4, 2), tf.float64), None))
+    assert dtype_layer.compute_dtype == "float64"
+    # TensorFlow 2.10's nested pooling layer retains its default float32 policy.
+    assert dtype_output.dtype == tf.float32
+
+    config = malformed.get_config()
+    try:
+        Downsample.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate-ln_dim limit changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("ln_dim")
+    restored = Downsample.from_config(filtered_config)
+    assert restored.scaling_method == "avg_pooling" and restored.strides == 2
+
+    return {"Downsample": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

@@ -53,6 +53,7 @@ class ArgumentSaver:
             rename={"enabled": "is_enabled"})`` saves the constructor key
             ``enabled`` and exposes its value as ``self.is_enabled``.
         """
+
         if not hasattr(self, "_init_config"):
             self._init_config = {}
 
@@ -66,7 +67,9 @@ class ArgumentSaver:
                 value
             )
 
-            self._init_config[name] = deepcopy(value) if isinstance(value, (list, set, dict)) else value
+            self._init_config[name] = deepcopy(
+                value
+            ) if isinstance(value, (list, set, dict)) else value
 
         return self._init_config
 
@@ -81,6 +84,7 @@ class ArgumentSaver:
             AttributeError: If the subclass never called
                 :meth:`_save_init_args` and therefore has no ``_init_config``.
         """
+
         config = super().get_config()
         config.update(self._init_config)
 
@@ -97,6 +101,7 @@ class ArgumentSaver:
         Returns:
             ArgumentSaver: A new ``cls`` instance initialized with ``config``.
         """
+
         config = deepcopy(config)
 
         return cls(**config)
@@ -118,3 +123,168 @@ class ArgumentSaverModel(ArgumentSaver, models.Model):
     it so nested Keras objects and their constructor settings can be recreated
     from a saved config.
     """
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic serialization tests for every class in this module.
+
+    The checks cover exclusions and renames, cumulative saves, defensive
+    copying of mutable configuration values, superclass Keras configuration,
+    and ``from_config`` reconstruction for both layer and model subclasses.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: Exactly one ``"passed"`` entry for
+        :class:`ArgumentSaver`, :class:`ArgumentSaverLayer`, and
+        :class:`ArgumentSaverModel` when every assertion succeeds.
+    """
+
+    saver = ArgumentSaver()
+    source_list = [1, {"nested": 2}]
+    source_dict = {"enabled": True}
+    source_set = {1, 2}
+    saved = saver._save_init_args({
+        "self": saver, 
+        "items": source_list, 
+        "options": source_dict, 
+        "members": source_set, 
+        "build": "deferred", 
+        "kwargs": {"ignored": True}, 
+        "temp_val": "ignored", 
+        "__class__": ArgumentSaver, 
+    })
+    assert saved is saver._init_config
+    assert saver.items is source_list
+    assert saver.options is source_dict
+    assert saver.members is source_set
+    assert saver.build_ == "deferred" and not hasattr(saver, "build")
+    assert set(saved) == {"items", "options", "members", "build"}
+    source_list[1]["nested"] = 99
+    source_dict["enabled"] = False
+    source_set.add(3)
+    assert saved["items"] == [1, {"nested": 2}]
+    assert saved["options"] == {"enabled": True}
+    assert saved["members"] == {1, 2}
+    cumulative = saver._save_init_args(
+        {"self": saver, "value": 7, "skip": 8}, 
+        exclude=("self", "skip"), 
+        rename={"value": "renamed_value"}, 
+    )
+    assert cumulative is saved
+    assert saver.renamed_value == 7 and not hasattr(saver, "value")
+    assert cumulative["value"] == 7 and "skip" not in cumulative
+    try:
+        saver.get_config()
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("Bare ArgumentSaver must require a configurable superclass.")
+
+
+    def layer_probe_init(
+        self: ArgumentSaverLayer, 
+        value: int = 1, 
+        payload: dict[str, object] | None = None, 
+        **kwargs: object, 
+    ) -> None:
+        """Initialize the dynamic layer probe used by this self-test.
+
+        Args:
+            self (ArgumentSaverLayer): Probe instance being initialized.
+            value (int): Scalar constructor value to preserve.
+            payload (dict[str, object] | None): Mutable value to preserve.
+            **kwargs (object): Standard Keras ``Layer`` constructor options.
+
+        Returns:
+            None.
+        """
+
+        layers.Layer.__init__(self, **kwargs)
+        payload = {} if payload is None else payload
+        self._save_init_args(locals())
+
+
+    layer_probe_type = type(
+        "ArgumentSaverLayerProbe", 
+        (ArgumentSaverLayer,), 
+        {"__init__": layer_probe_init}, 
+    )
+    layer = layer_probe_type(
+        value=4, 
+        payload={"items": [1, 2]}, 
+        name="argument_saver_layer_probe", 
+        trainable=False, 
+        dtype="float64", 
+    )
+    layer_config = layer.get_config()
+    assert layer_config["value"] == 4
+    assert layer_config["payload"] == {"items": [1, 2]}
+    assert layer_config["name"] == "argument_saver_layer_probe"
+    assert layer_config["trainable"] is False
+    assert layer_config["dtype"] == "float64"
+    layer_clone = layer_probe_type.from_config(layer_config)
+    assert isinstance(layer_clone, ArgumentSaverLayer)
+    assert layer_clone.value == 4
+    assert layer_clone.payload == {"items": [1, 2]}
+    layer_config["payload"]["items"].append(3)
+    assert layer_clone.payload == {"items": [1, 2]}
+
+
+    def model_probe_init(
+        self: ArgumentSaverModel, 
+        width: int = 2, 
+        metadata: dict[str, object] | None = None, 
+        **kwargs: object, 
+    ) -> None:
+        """Initialize the dynamic model probe used by this self-test.
+
+        Args:
+            self (ArgumentSaverModel): Probe instance being initialized.
+            width (int): Scalar constructor value to preserve.
+            metadata (dict[str, object] | None): Mutable value to preserve.
+            **kwargs (object): Standard Keras ``Model`` constructor options.
+
+        Returns:
+            None.
+        """
+
+        models.Model.__init__(self, **kwargs)
+        metadata = {} if metadata is None else metadata
+        self._save_init_args(locals())
+
+
+    model_probe_type = type(
+        "ArgumentSaverModelProbe", 
+        (ArgumentSaverModel,), 
+        {"__init__": model_probe_init}, 
+    )
+    model = model_probe_type(
+        width=8, 
+        metadata={"labels": {1, 2}}, 
+        name="argument_saver_model_probe", 
+        trainable=True, 
+    )
+    model_config = model.get_config()
+    assert model_config["width"] == 8
+    assert model_config["metadata"] == {"labels": {1, 2}}
+    assert "name" not in model_config, (
+        "TensorFlow 2.10's subclassed Model.get_config does not include the "
+        "base name, unlike Layer.get_config."
+    )
+    model_clone = model_probe_type.from_config(model_config)
+    assert isinstance(model_clone, ArgumentSaverModel)
+    assert model_clone.width == 8
+    assert model_clone.metadata == {"labels": {1, 2}}
+    assert model_clone is not model
+
+    return {
+        "ArgumentSaver": "passed", 
+        "ArgumentSaverLayer": "passed", 
+        "ArgumentSaverModel": "passed", 
+    }
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

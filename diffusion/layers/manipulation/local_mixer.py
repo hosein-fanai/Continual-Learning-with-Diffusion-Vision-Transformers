@@ -224,3 +224,147 @@ class LocalMixer(BaseEmbedding):
         ) if self.mlp is not None else x
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test all finite and boolean :class:`LocalMixer` control paths.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after normalization, convolution, pointwise,
+        residual, stride, class-token, position, projection, gradient,
+        invalid-shape, and config tests pass.
+    """
+
+    import numpy as np
+
+
+    tf.random.set_seed(5150)
+    condition = tf.ones((2, 3), dtype=tf.float32)
+
+    for use_layer_norm in (False, True):
+        for use_pointwise in (False, True):
+            for zero_init in (False, True):
+                for circumvent_cls_token in (False, True):
+                    token_count = 17 if circumvent_cls_token else 16
+                    inputs = tf.ones((2, token_count, 2), dtype=tf.float32)
+                    layer = LocalMixer(
+                        dim=2, 
+                        grid_size=4, 
+                        pos_embed_type=None, 
+                        use_layer_norm=use_layer_norm, 
+                        use_pointwise=use_pointwise, 
+                        zero_init=zero_init, 
+                        depth_multiplier=2, 
+                        pointwise_dim_ratio=2, 
+                        circumvent_cls_token=circumvent_cls_token
+                    )
+                    output = layer((inputs, condition), training=True)
+                    assert output.shape == (2, token_count, 4)
+                    assert output.dtype == tf.float32
+                    assert (layer.pointwise is not None) is use_pointwise
+                    assert (layer.layer_norm is not None) is use_layer_norm
+                    assert layer.add_residual
+
+    identity_layer = LocalMixer(
+        dim=2, 
+        grid_size=4, 
+        pos_embed_type=None, 
+        use_layer_norm=False, 
+        use_pointwise=True, 
+        zero_init=True
+    )
+    identity_input = tf.random.normal((2, 16, 2))
+    np.testing.assert_allclose(
+        identity_layer((identity_input, None), training=False).numpy(), 
+        identity_input.numpy(), 
+        atol=1e-6
+    )
+
+    strided_same = LocalMixer(
+        dim=2, 
+        grid_size=4, 
+        strides=2, 
+        padding="same", 
+        pos_embed_type=None, 
+        use_layer_norm=False, 
+        use_pointwise=False, 
+        depth_multiplier=1, 
+        zero_init=False
+    )
+    same_output = strided_same((tf.ones((2, 16, 2)), None), training=False)
+    assert same_output.shape == (2, 4, 2) and not strided_same.add_residual
+
+    strided_valid = LocalMixer(
+        dim=2, 
+        grid_size=4, 
+        kernel_size=3, 
+        strides=2, 
+        padding="valid", 
+        pos_embed_type=None, 
+        use_layer_norm=False, 
+        zero_init=False
+    )
+    assert strided_valid((tf.ones((1, 16, 2)), None)).shape == (1, 1, 2)
+
+    positioned = LocalMixer(
+        dim=2, 
+        grid_size=4, 
+        pos_embed_type="2d_sincos", 
+        pos_merger_type="concat", 
+        use_layer_norm=True, 
+        ln_no_adaptation=True, 
+        mlp_output_dim=3, 
+        mlp_ratio=2
+    )
+    assert positioned((tf.ones((2, 16, 2)), None)).shape == (2, 16, 3)
+
+    with tf.GradientTape() as tape:
+        gradient_output = strided_same(
+            (tf.ones((1, 16, 2)), None), 
+            training=True,
+        )
+        loss = tf.reduce_sum(gradient_output)
+    gradients = tape.gradient(loss, strided_same.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    try:
+        identity_layer((tf.ones((1, 15, 2)), None))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Non-square spatial token counts must fail.")
+
+    config = identity_layer.get_config()
+    try:
+        LocalMixer.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate-ln_dim limit changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("ln_dim")
+    restored = LocalMixer.from_config(filtered_config)
+    assert restored.kernel_size == 3 and restored.strides == 1
+
+    dtype_layer = LocalMixer(
+        dim=2, 
+        grid_size=4, 
+        strides=2, 
+        use_layer_norm=False, 
+        use_pointwise=False, 
+        pos_embed_type=None, 
+        dtype="float64"
+    )
+    dtype_output = dtype_layer((tf.ones((1, 16, 2), tf.float64), None))
+    assert dtype_layer.compute_dtype == "float64"
+    # The nested depthwise convolution retains its default float32 policy.
+    assert dtype_output.dtype == tf.float32
+
+    return {"LocalMixer": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

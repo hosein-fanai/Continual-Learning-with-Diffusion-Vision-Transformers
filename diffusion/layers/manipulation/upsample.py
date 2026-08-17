@@ -131,7 +131,9 @@ class Upsample(BaseEmbedding):
                 )
             ], name=name)
         else:
-            raise ValueError(f"scaling_method method can only be one of {ScalingMethod}.")
+            raise ValueError(
+                f"scaling_method method can only be one of {ScalingMethod}."
+            )
 
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
@@ -217,3 +219,150 @@ class Upsample(BaseEmbedding):
         ) if self.mlp is not None else x
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test every finite and boolean :class:`Upsample` control path.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after all scaling modes, interpolation choices,
+        normalization, class-token, position, projection, gradient,
+        validation, malformed-shape, dtype, and config checks pass.
+    """
+
+    tf.random.set_seed(717)
+    condition = tf.ones((2, 3), dtype=tf.float32)
+    modes = ("cnn_transpose", "interpolate", "cnn_interpolate")
+    for mode in modes:
+        for interpolation in ("nearest", "bilinear"):
+            for use_layer_norm in (False, True):
+                for circumvent_cls_token in (False, True):
+                    token_count = 5 if circumvent_cls_token else 4
+                    layer = Upsample(
+                        dim=2, 
+                        grid_size=2, 
+                        scaling_method=mode, 
+                        scaling_interpolation_method=interpolation, 
+                        cnn_dim_ratio=2, 
+                        cnn_kernel_size=3, 
+                        cnn_activation_func="relu", 
+                        circumvent_cls_token=circumvent_cls_token, 
+                        use_layer_norm=use_layer_norm, 
+                        pos_embed_type=None, 
+                    )
+                    output = layer(
+                        (tf.ones((2, token_count, 2)), condition), training=True,
+                    )
+                    expected_channels = 2 if mode == "interpolate" else 4
+                    expected_tokens = 17 if circumvent_cls_token else 16
+                    assert output.shape == (2, expected_tokens, expected_channels)
+                    assert (layer.layer_norm is not None) is use_layer_norm
+                    assert layer.output_grid_size == 4
+
+    positioned = Upsample(
+        dim=2, 
+        grid_size=2, 
+        scaling_method="cnn_interpolate", 
+        scaling_interpolation_method="nearest", 
+        cnn_dim_ratio=2, 
+        use_layer_norm=True, 
+        ln_no_adaptation=True, 
+        circumvent_cls_token=True, 
+        pos_embed_type="1d_sincos", 
+        pos_merger_type="concat", 
+        mlp_ratio=2, 
+        mlp_output_dim=3, 
+    )
+    positioned_output = positioned((tf.ones((1, 5, 2)), None), training=False)
+    assert positioned_output.shape == (1, 17, 3)
+
+    pure_interpolation = Upsample(
+        dim=1, 
+        grid_size=2, 
+        scaling_method="interpolate", 
+        scaling_interpolation_method="nearest", 
+        use_layer_norm=False, 
+        pos_embed_type=None, 
+    )
+    source = tf.reshape(tf.constant([1.0, 2.0, 3.0, 4.0]), (1, 4, 1))
+    nearest = pure_interpolation((source, None))
+    assert nearest.shape == (1, 16, 1)
+    assert nearest[0, 0, 0] == 1.0 and nearest[0, -1, 0] == 4.0
+
+    trainable = Upsample(
+        dim=2, 
+        grid_size=2, 
+        scaling_method="cnn_transpose", 
+        use_layer_norm=False, 
+        pos_embed_type=None, 
+    )
+    with tf.GradientTape() as tape:
+        gradient_output = trainable(
+            (tf.ones((1, 4, 2)), None), 
+            training=True
+        )
+        loss = tf.reduce_sum(gradient_output)
+    gradients = tape.gradient(loss, trainable.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    for invalid_grid in (-1, 0):
+        try:
+            Upsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Upsampling requires a positive grid size.")
+    for invalid_mode in ("pixel_shuffle", "", None):
+        try:
+            Upsample(
+                dim=2, grid_size=2, 
+                scaling_method=invalid_mode, 
+                pos_embed_type=None
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unknown upsampling modes must fail.")
+
+    try:
+        pure_interpolation((tf.ones((1, 3, 1)), None))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Non-square token grids must fail.")
+
+    dtype_layer = Upsample(
+        dim=2, 
+        grid_size=2, 
+        scaling_method="interpolate", 
+        use_layer_norm=False, 
+        pos_embed_type=None, 
+        dtype="float64"
+    )
+    dtype_output = dtype_layer((tf.ones((1, 4, 2), tf.float64), None))
+    assert dtype_output.shape == (1, 16, 2)
+    assert dtype_layer.compute_dtype == "float64"
+    # The nested UpSampling2D layer retains its default float32 policy.
+    assert dtype_output.dtype == tf.float32
+
+    config = pure_interpolation.get_config()
+    try:
+        Upsample.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate-ln_dim limit changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("ln_dim")
+    restored = Upsample.from_config(filtered_config)
+    assert restored.scaling_method == "interpolate"
+    assert restored.scaling_interpolation_method == "nearest"
+
+    return {"Upsample": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

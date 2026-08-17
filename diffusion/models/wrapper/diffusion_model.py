@@ -89,6 +89,8 @@ class DiffusionModel(ArgumentSaverModel):
                 ``DiTClassifier`` subclass is accepted by classifier wrappers.
             use_ema (bool): Clone ``network`` from its Keras config and maintain
                 exponential moving-average weights after each train step.
+                Deferred raw and cloned networks are built before the initial
+                weight copy.
             test_network_name (NetworkName): ``"ema"`` or ``"raw"`` network
                 selected by the default test step.  Use ``"raw"`` when
                 ``use_ema=False``.
@@ -150,15 +152,20 @@ class DiffusionModel(ArgumentSaverModel):
             raw/EMA networks are initialized; metric trackers are created later
             by :meth:`compile`.
         """
+
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
         self._refresh_loss_flags()
 
         if self.use_ema:
+            if not self.network.built:
+                self.network.build()
             self.ema_network = self.network.__class__.from_config(
                 self.network.get_config()
             )
+            if not self.ema_network.built:
+                self.ema_network.build()
             self.ema_network.set_weights(
                 self.network.get_weights()
             )
@@ -197,6 +204,7 @@ class DiffusionModel(ArgumentSaverModel):
             values, or unconditional regularizer configuration raise
             ``AssertionError``.
         """
+
         assert 0. <= local_vars["ema_decay"] < 1., \
             "ema_decay must be in the range of [0., 1.)."
 
@@ -421,6 +429,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tuple[int, int]: Inclusive minimum and exclusive maximum timestep.
         """
+
         return self._active_min_timestep, self._active_max_timestep
 
     @property
@@ -443,6 +452,7 @@ class DiffusionModel(ArgumentSaverModel):
             regularizer loss trackers and regularizer accuracy tracker.  They
             exist after :meth:`compile`.
         """
+
         return [
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
@@ -469,6 +479,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None.  ``scce_loss_fn`` and six metric trackers are initialized.
         """
+
         super().compile(loss=loss, **kwargs)
 
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
@@ -481,7 +492,8 @@ class DiffusionModel(ArgumentSaverModel):
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(name="ctr_accuracy")
 
     def fit(self, x: tf.data.Dataset | None = None, 
-            y: tf.data.Dataset | None = None, **kwargs) -> dict | list[float]:
+            y: tf.data.Dataset | None = None, 
+            **kwargs) -> dict | list[float]:
         """Fit under configured training timestep bounds, then restore bounds.
 
         Args:
@@ -502,6 +514,7 @@ class DiffusionModel(ArgumentSaverModel):
             bounds are restored; an exception raised by Keras bypasses that
             restoration in this direct method.
         """
+
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
 
@@ -543,6 +556,7 @@ class DiffusionModel(ArgumentSaverModel):
             previous name in the legacy ``test_network`` attribute while
             invalidating the cached test function.
         """
+
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
         prev_test_network_name = self.test_network_name
@@ -580,6 +594,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None: Keras summary output is written through ``print_fn``.
         """
+
         return self.network.summary(**kwargs)
 
     def train_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
@@ -595,6 +610,7 @@ class DiffusionModel(ArgumentSaverModel):
             loss is always present; total/image/KL/regularizer values appear
             according to active loss flags.
         """
+
         (x0, noises, 
         t, x_t, 
         cfg_labels, 
@@ -638,6 +654,7 @@ class DiffusionModel(ArgumentSaverModel):
             dict[str, tf.Tensor]: Running evaluation metrics.  Image loss is
             explicitly evaluated even when its training coefficient is zero.
         """
+
         (x0, noises, 
         t, x_t, 
         cond_labels, 
@@ -1169,6 +1186,7 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: Propagated when the network rejects a nonpositive,
                 nonintegral, or patch-incompatible resolution.
         """
+
         resolution = self.image_size if resolution is None else resolution
 
         self.network.set_current_resolution(
@@ -1203,6 +1221,7 @@ class DiffusionModel(ArgumentSaverModel):
             None.  ``self.schedules`` maps schedule-statistic names to float32
             rank-1 tensors and schedule metadata attributes are updated.
         """
+
         scheduler_name = self.scheduler_name if scheduler_name is None else scheduler_name
         timesteps = self.timesteps if timesteps is None else timesteps
 
@@ -1247,6 +1266,7 @@ class DiffusionModel(ArgumentSaverModel):
             sqrt_one_minus_alpha_bar)`` with the same index shape as ``t`` and
             dtype ``tf.float32``.
         """
+
         a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
         b = tf.gather(self.schedules["sqrt_one_minus_alpha_bar"], t)
 
@@ -1269,6 +1289,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor: Noisy images ``x_t = sqrt(alpha_bar_t)*x0 +
             sqrt(1-alpha_bar_t)*noise`` with the same shape/dtype as ``x0``.
         """
+
         a, b = self.get_noise_and_signal_rates(t)
         a = tf.reshape(a, (-1, 1, 1, 1))
         b = tf.reshape(b, (-1, 1, 1, 1))
@@ -1300,6 +1321,7 @@ class DiffusionModel(ArgumentSaverModel):
             standard-normal noise, and int32 timesteps, with image tensors
             matching ``x0`` shape.
         """
+
         min_timesteps = self._active_min_timestep if min_timesteps is None else min_timesteps
         max_timesteps = self._active_max_timestep if max_timesteps is None else max_timesteps
         seed = self.seed if seed is None else seed
@@ -1334,6 +1356,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tf.Tensor: ``(x + 1) / 2`` clipped elementwise to ``[0,1]``.
         """
+
         x = (x + 1) / 2
         x = tf.clip_by_value(x, 0., 1.)
 
@@ -1352,6 +1375,7 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: If EMA is requested while ``use_ema=False``.
             ValueError: If the name is unsupported.
         """
+
         if not self.use_ema:
             assert network_name != "ema", \
                 "network_name cannot be ema when use_ema is False."
@@ -1378,6 +1402,7 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: If raw and EMA topologies have different weight
                 counts.
         """
+
         if not self.use_ema:
             return False
 
@@ -1405,6 +1430,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None.  Optimizer slots, iterations, and variables are updated.
         """
+
         if variables is None:
             variables = self.network.trainable_variables
 
@@ -1424,6 +1450,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor: Same shape/dtype as ``labels``; each element becomes 0
             independently with probability ``p_uncond``.
         """
+
         seed = self.seed if seed is None else seed
 
         mask = tf.random.uniform(
@@ -1456,6 +1483,7 @@ class DiffusionModel(ArgumentSaverModel):
             replaced by 0; ``uncond_labels`` are all 0.  With
             ``swap_noise_image=True``, the returned ``noises`` target is ``x_t``.
         """
+
         x0, labels = inputs
 
         x0 = tf.image.resize(x0, 
@@ -1559,6 +1587,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor | float, tf.Tensor]: Weighted total, raw noise loss, raw
             image loss, KL loss, class-token loss, and averaged token predictions.
         """
+
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
@@ -1655,6 +1684,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tf.Tensor: Selected or guided noise prediction.
         """
+
         if self.use_cfg and scale is not None:
             eps = eps_u + scale * (eps_c - eps_u)
         else:
@@ -1687,6 +1717,7 @@ class DiffusionModel(ArgumentSaverModel):
             tuple[tf.Tensor, tf.Tensor]: Reconstructed ``x0`` and the selected/
             guided noise, both matching ``x_t`` shape.
         """
+
         eps = self.compute_eps(
             eps_c, 
             eps_u, 
@@ -1734,6 +1765,7 @@ class DiffusionModel(ArgumentSaverModel):
             tuple: ``(x0, eps, (regs_c, regs_u), (z_c, z_u))``.  Image tensors
             match ``x_t``; regularizers and latent pairs preserve branch outputs.
         """
+
         (eps_c, eps_u), *others = self.call_network(
             x_t, 
             t_batch, 
@@ -1794,6 +1826,7 @@ class DiffusionModel(ArgumentSaverModel):
             tuple: Weighted total, noise, image, KL, and class-token losses plus
             averaged token class probabilities, in that order.
         """
+
         x0_pred, noises_pred, *others = self.forward(
             network_name, 
             x_t, t, t, 
@@ -1853,6 +1886,7 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             AssertionError: If an enabled metric's required value is missing.
         """
+
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
         use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
@@ -1863,8 +1897,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         if use_total_loss:
             assert total_loss is not None, \
-                "When use_total_loss is True, "\
-                "total_loss cannot be None."
+                "When use_total_loss is True, total_loss cannot be None."
 
 
             self.total_loss_tracker.update_state(total_loss)
@@ -1881,8 +1914,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         if use_image_loss:
             assert image_loss is not None, \
-                "When use_image_loss is True, "\
-                "image_loss cannot be None."
+                "When use_image_loss is True, image_loss cannot be None."
 
 
             self.image_loss_tracker.update_state(image_loss)
@@ -2156,3 +2188,1001 @@ class DiffusionModel(ArgumentSaverModel):
             return outputs[0]
 
         return outputs
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic end-to-end tests for DiffusionModel.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"DiffusionModel": "passed"}`` after schedule,
+        noising, CFG, loss, optimizer, EMA, fit/evaluate, sampling, curriculum,
+        serialization-facing state, and invalid-input checks pass.
+    """
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(105)
+
+
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, Mock
+
+
+    def make_network(**overrides: object) -> DiffusionTransformer:
+        """Build a fresh depth-zero network for wrapper tests.
+
+        Args:
+            **overrides (object): Transformer arguments overriding test defaults.
+
+        Returns:
+            DiffusionTransformer: A built CPU-small raw network.
+        """
+
+        config = {
+            "num_classes": 2, 
+            "use_cfg": True, 
+            "timesteps": 4, 
+            "image_size": 4, 
+            "channels": 1, 
+            "patch_size": 2, 
+            "dim": 4, 
+            "depth": 0, 
+            "mha_num_heads": 1, 
+            "vit_block_mlp_ratio": 1.0, 
+            **overrides
+        }
+        return DiffusionTransformer(**config)
+
+
+    def make_wrapper(**overrides: object) -> DiffusionModel:
+        """Build and eagerly compile a fresh test wrapper.
+
+        Args:
+            **overrides (object): DiffusionModel arguments overriding defaults.
+
+        Returns:
+            DiffusionModel: Compiled wrapper with a fresh raw network.
+        """
+
+        network = overrides.pop("network", make_network())
+        config = {
+            "network": network,
+            "use_ema": True,
+            "test_network_name": "ema",
+            "scheduler_name": "linear",
+            "test_steps": 2,
+            "test_eta": 0.0,
+            "seed": 17,
+            **overrides,
+        }
+        wrapper = DiffusionModel(**config)
+        wrapper.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3),
+            loss="mse",
+            run_eagerly=True,
+        )
+        return wrapper
+
+
+    wrapper = make_wrapper()
+    assert wrapper.image_size == wrapper.current_resolution[0] == 4
+    assert wrapper.current_resolution == (4, 4)
+    assert wrapper.current_timesteps_bounds == (0, 4)
+    assert wrapper.use_ema and wrapper.ema_network is not wrapper.network
+    assert len(wrapper.network.weights) == len(wrapper.ema_network.weights)
+    for raw_weight, ema_weight in zip(
+        wrapper.network.weights, wrapper.ema_network.weights
+    ):
+        tf.debugging.assert_near(raw_weight, ema_weight)
+    assert [metric.name for metric in wrapper.metrics] == [
+        "loss", "noise_loss", "image_loss", "kl_loss", "ctr_loss",
+        "ctr_accuracy",
+    ]
+
+    # Before ``compile`` there is no optimizer to register variables with;
+    # both the implicit and explicit-variable forms are documented no-ops.
+    uncompiled = DiffusionModel(
+        network=make_network(), 
+        use_ema=False, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+        test_eta=0.0, 
+    )
+    assert getattr(uncompiled, "optimizer", None) is None
+    assert uncompiled._register_optimizer_variables() is None
+    assert uncompiled._register_optimizer_variables(variables=[]) is None
+
+    required_schedule_keys = {
+        "betas", "alpha_bar", "sqrt_alpha_bar",
+        "sqrt_one_minus_alpha_bar", "sigmas", "timesteps",
+    }
+    assert required_schedule_keys <= set(wrapper.schedules)
+    assert all(value.dtype == tf.float32 for value in wrapper.schedules.values())
+    assert all(value.shape == (4,) for value in wrapper.schedules.values())
+    assert wrapper._get_progressive_timestep_boundaries(2, "uniform") == [0, 2, 4]
+    log_boundaries = wrapper._get_progressive_timestep_boundaries(2, "log_snr")
+    assert log_boundaries[0] == 0 and log_boundaries[-1] == 4
+    assert log_boundaries[0] < log_boundaries[1] < log_boundaries[2]
+    for bad_stage_count in (0, 5):
+        try:
+            wrapper._get_progressive_timestep_boundaries(bad_stage_count)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid progressive stage counts must fail")
+    try:
+        wrapper._get_progressive_timestep_boundaries(2, "unknown")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown timestep clustering must fail")
+
+    for scheduler_name in (
+        "linear", "scaled_linear", "squaredcos_cap_v2", "clipped_cosine",
+        "sigmoid", "quadratic", "ve", "karras", "sub_vp", "logistic",
+    ):
+        wrapper.load_schedules(scheduler_name=scheduler_name, timesteps=4)
+        assert wrapper.scheduler_name == scheduler_name
+        assert wrapper.timesteps == 4
+        assert wrapper.schedules["alpha_bar"].shape == (4,)
+    wrapper.load_schedules("linear", 4)
+    modified = make_wrapper(modify_first_t=True)
+    assert float(modified.schedules["sqrt_alpha_bar"][0]) == 1.0
+    assert float(modified.schedules["sqrt_one_minus_alpha_bar"][0]) == 0.0
+    assert float(modified.schedules["alpha_bar"][0]) == 1.0
+
+    wrapper.set_timestep_bounds(1, 3)
+    assert wrapper.current_timesteps_bounds == (1, 3)
+    wrapper.set_timestep_bounds(None, None)
+    assert wrapper.current_timesteps_bounds == (0, 4)
+    for invalid_bounds in ((-1, 2), (2, 2), (3, 2), (0, 5)):
+        try:
+            wrapper.set_timestep_bounds(*invalid_bounds)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Invalid timestep bounds accepted: {invalid_bounds}")
+    wrapper.set_current_resolution(8)
+    assert wrapper.current_resolution == (8, 8)
+    wrapper.set_current_resolution(None)
+    assert wrapper.current_resolution == (4, 4)
+
+    images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
+    classes = tf.constant([0, 1], dtype=tf.uint8)
+    fixed_t = tf.constant([0, 3], dtype=tf.int32)
+    fixed_noise = tf.ones_like(images)
+    signal, noise_rate = wrapper.get_noise_and_signal_rates(fixed_t)
+    assert signal.shape == noise_rate.shape == (2,)
+    sampled = wrapper.q_sample(images, fixed_t, fixed_noise)
+    expected = (
+        signal[:, None, None, None] * images
+        + noise_rate[:, None, None, None] * fixed_noise
+    )
+    tf.debugging.assert_near(sampled, expected)
+    x_t, noises, returned_t = wrapper.noisify(images, t=fixed_t, seed=19)
+    assert x_t.shape == noises.shape == images.shape
+    tf.debugging.assert_equal(returned_t, fixed_t)
+    random_x_t, random_noise, random_t = wrapper.noisify(
+        images, min_timesteps=1, max_timesteps=3, seed=19
+    )
+    assert random_x_t.shape == random_noise.shape == images.shape
+    assert bool(tf.reduce_all((1 <= random_t) & (random_t < 3)))
+
+    processed = wrapper.postprocess(tf.constant([-3.0, -1.0, 0.0, 1.0, 3.0]))
+    tf.debugging.assert_near(processed, [0.0, 0.0, 0.5, 1.0, 1.0])
+    no_dropout = make_wrapper(p_uncond=0.0)
+    shifted = tf.constant([1, 2], dtype=tf.uint8)
+    tf.debugging.assert_equal(no_dropout.get_cfg_labels(shifted), shifted)
+    all_dropout = make_wrapper(p_uncond=1.0)
+    tf.debugging.assert_equal(
+        all_dropout.get_cfg_labels(shifted), tf.zeros_like(shifted)
+    )
+
+    prepared = wrapper.prep_inputs((images, classes), use_label_dropout=False, seed=23)
+    assert len(prepared) == 7
+    clean, prepared_noise, prepared_t, prepared_x_t, cfg_labels, nulls, original = prepared
+    assert clean.shape == prepared_noise.shape == prepared_x_t.shape == images.shape
+    tf.debugging.assert_equal(cfg_labels, tf.constant([1, 2], dtype=tf.uint8))
+    tf.debugging.assert_equal(nulls, tf.zeros_like(classes))
+    tf.debugging.assert_equal(original, classes)
+    resized_wrapper = make_wrapper()
+    resized_wrapper.set_current_resolution(8)
+    resized_prepared = resized_wrapper.prep_inputs((images, classes), seed=23)
+    assert resized_prepared[0].shape == (2, 8, 8, 1)
+
+    empty_ctr_loss, empty_ctr_pred = wrapper.compute_ctr_loss(classes, [None, None])
+    assert empty_ctr_loss == 0.0 and empty_ctr_pred.shape == (2, 2)
+    prediction1 = tf.constant([[0.8, 0.2], [0.1, 0.9]])
+    prediction2 = tf.constant([[0.6, 0.4], [0.3, 0.7]])
+    ctr_loss, ctr_prediction = wrapper.compute_ctr_loss(
+        classes, [prediction1, None, prediction2]
+    )
+    tf.debugging.assert_near(ctr_prediction, (prediction1 + prediction2) / 2)
+    assert float(ctr_loss) > 0.0
+
+    conditional = tf.ones_like(images)
+    unconditional = tf.zeros_like(images)
+    tf.debugging.assert_equal(wrapper.compute_eps(conditional), conditional)
+    tf.debugging.assert_equal(
+        wrapper.compute_eps(conditional, unconditional, scale=2.0),
+        2.0 * conditional,
+    )
+    reconstructed, selected_eps = wrapper.denoise(
+        x_t, fixed_t, conditional, unconditional, scale=1.0, 
+        reshape_coefs=True,
+    )
+    assert reconstructed.shape == selected_eps.shape == images.shape
+    network_outputs = wrapper.call_network(
+        x_t, fixed_t, cfg_labels, nulls, scale=2.0, 
+        network_name="raw", training=False,
+    )
+    assert network_outputs[0][0].shape == network_outputs[0][1].shape == images.shape
+    assert network_outputs[1][0] == [None]
+    forward = wrapper.forward(
+        "raw", x_t, fixed_t, fixed_t, cfg_labels, nulls, 
+        scale=2.0, training=False,
+    )
+    assert forward[0].shape == forward[1].shape == images.shape
+    losses_tuple = wrapper.forward_and_compute_loss(
+        "raw", images, noises, fixed_t, x_t, cfg_labels, nulls, classes,
+        cfg_scale=None, use_image_loss=True, training=False,
+    )
+    assert len(losses_tuple) == 6
+    assert all(bool(tf.reduce_all(tf.math.is_finite(value))) for value in losses_tuple[:5])
+
+    weighted = make_wrapper(
+        noise_loss_coef=0.5, 
+        image_loss_coef=0.25, 
+        train_noisified_min_timesteps=1, 
+        train_noisified_max_timesteps=3, 
+        test_noisified_min_timesteps=2, 
+        test_noisified_max_timesteps=4, 
+        resize_method="bilinear", 
+        resize_antialias=False, 
+    )
+    assert float(weighted.noise_loss_coef) == 0.5
+    assert float(weighted.image_loss_coef) == 0.25
+    assert weighted.use_image_loss is True
+    assert weighted.train_noisified_min_timesteps == 1
+    assert weighted.train_noisified_max_timesteps == 3
+    assert weighted.test_noisified_min_timesteps == 2
+    assert weighted.test_noisified_max_timesteps == 4
+    assert weighted.resize_method == "bilinear"
+    assert weighted.resize_antialias is False
+    weighted.set_timestep_bounds(
+        weighted.train_noisified_min_timesteps, 
+        weighted.train_noisified_max_timesteps, 
+    )
+    weighted_prepared = weighted.prep_inputs((images, classes), seed=47)
+    assert bool(tf.reduce_all((1 <= weighted_prepared[2]) & (weighted_prepared[2] < 3)))
+    weighted.set_timestep_bounds(
+        weighted.test_noisified_min_timesteps,
+        weighted.test_noisified_max_timesteps,
+    )
+    assert bool(
+        tf.reduce_all(
+            weighted.noisify(images, seed=47)[2]
+            >= weighted.test_noisified_min_timesteps
+        )
+    )
+    weighted.set_timestep_bounds()
+    weighted_losses = weighted.forward_and_compute_loss(
+        "raw", 
+        weighted_prepared[0], 
+        weighted_prepared[1], 
+        weighted_prepared[2], 
+        weighted_prepared[3], 
+        weighted_prepared[4], 
+        weighted_prepared[5], 
+        weighted_prepared[6], 
+        cfg_scale=None, 
+        use_image_loss=True, 
+        training=False, 
+    )
+    tf.debugging.assert_near(
+        weighted_losses[0], 
+        0.5 * weighted_losses[1] + 0.25 * weighted_losses[2], 
+        atol=1e-5, 
+    )
+    weighted.set_current_resolution(8)
+    assert weighted.prep_inputs((images, classes), seed=47)[0].shape == (
+        2, 8, 8, 1
+    )
+    weighted.set_current_resolution(None)
+
+    # Exercise every direct metric-input contract independently.  Total,
+    # image, and KL tracking each require their scalar, while CTR tracking
+    # requires all of its loss, prediction, and label inputs.
+    results_probe = make_wrapper()
+    common_result_flags = {
+        "use_total_loss": False, 
+        "use_image_loss": False, 
+        "use_kl_loss": False, 
+        "use_ctr_loss": False, 
+    }
+    missing_result_cases = (
+        ({**common_result_flags, "use_total_loss": True}, "total_loss"), 
+        ({**common_result_flags, "use_image_loss": True}, "image_loss"), 
+        ({**common_result_flags, "use_kl_loss": True}, "kl_loss"), 
+    )
+    for result_flags, missing_name in missing_result_cases:
+        try:
+            results_probe.get_results_dict(
+                noise_loss=tf.constant(0.0), 
+                **result_flags,
+            )
+        except AssertionError as error:
+            assert missing_name in str(error)
+        else:
+            raise AssertionError(
+                f"Enabled {missing_name} tracking must require its input"
+            )
+    valid_ctr_predictions = tf.one_hot(classes, depth=2, dtype=tf.float32)
+    for ctr_inputs, missing_name in (
+        ({"ctr_preds": valid_ctr_predictions, "classes": classes}, "ctr_loss"), 
+        ({"ctr_loss": tf.constant(0.0), "classes": classes}, "ctr_preds"), 
+        (
+            {
+                "ctr_loss": tf.constant(0.0), 
+                "ctr_preds": valid_ctr_predictions, 
+            }, 
+            "classes", 
+        ),
+    ):
+        try:
+            results_probe.get_results_dict(
+                noise_loss=tf.constant(0.0), 
+                use_total_loss=False, 
+                use_image_loss=False, 
+                use_kl_loss=False, 
+                use_ctr_loss=True, 
+                **ctr_inputs, 
+            )
+        except AssertionError as error:
+            assert "ctr_loss, ctr_preds, and classes" in str(error)
+        else:
+            raise AssertionError(
+                f"CTR tracking must reject a missing {missing_name}"
+            )
+    complete_results = results_probe.get_results_dict(
+        noise_loss=tf.constant(1.0), 
+        total_loss=tf.constant(2.0), 
+        image_loss=tf.constant(3.0), 
+        kl_loss=tf.constant(4.0), 
+        ctr_loss=tf.constant(5.0), 
+        ctr_preds=valid_ctr_predictions, 
+        classes=classes, 
+        use_total_loss=True, 
+        use_image_loss=True, 
+        use_kl_loss=True, 
+        use_ctr_loss=True, 
+    )
+    assert set(complete_results) == {
+        "loss", "noise_loss", "image_loss", "kl_loss", "ctr_loss",
+        "ctr_accuracy",
+    }
+
+    training_results = wrapper.train_step((images, classes))
+    assert "noise_loss" in training_results
+    testing_results = wrapper.test_step((images, classes))
+    assert {"loss", "noise_loss", "image_loss"} <= set(testing_results)
+    dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
+    history = wrapper.fit(dataset, epochs=1, verbose=0)
+    assert len(history.history["noise_loss"]) == 1
+    evaluated = wrapper.evaluate(
+        dataset, network_name="raw", verbose=0, return_dict=True
+    )
+    assert "noise_loss" in evaluated
+    summary_lines = []
+    wrapper.summary(print_fn=summary_lines.append)
+    assert any("Total params" in line for line in summary_lines)
+
+    raw_sample = wrapper.sample(
+        network_name="raw", labels=[1, 2], steps=2, eta=0.0, seed=29
+    )
+    assert raw_sample.shape == (2, 4, 4, 1)
+    assert bool(tf.reduce_all((0.0 <= raw_sample) & (raw_sample <= 1.0)))
+    trajectories = wrapper.sample(
+        network_name="raw", labels=[1], steps=3, eta=1.0,
+        return_x_ts=True, return_x0s=True, seed=29,
+    )
+    assert len(trajectories) == 3
+    assert trajectories[0].shape == (1, 4, 4, 1)
+    assert len(trajectories[1]) == len(trajectories[2]) == 3
+    all_label_sample = wrapper.sample(
+        network_name="raw", labels=None, steps=2, eta=0.0, seed=29
+    )
+    assert all_label_sample.shape == (wrapper.network.num_labels, 4, 4, 1)
+    supplied_state = tf.zeros((1, 4, 4, 1), dtype=tf.float32)
+    supplied_sample = wrapper.sample(
+        network_name="raw", labels=[1], x_t=supplied_state,
+        steps=2, eta=0.0, seed=29,
+    )
+    assert supplied_sample.shape == supplied_state.shape
+    states_only = wrapper.sample(
+        network_name="raw", labels=[1], steps=2, eta=0.0,
+        return_x_ts=True, return_x0s=False, seed=29,
+    )
+    clean_only = wrapper.sample(
+        network_name="raw", labels=[1], steps=2, eta=0.0,
+        return_x_ts=False, return_x0s=True, seed=29, verbose=True,
+    )
+    assert len(states_only) == len(clean_only) == 2
+    assert len(states_only[1]) == len(clean_only[1]) == 2
+
+    # Constructor bounds are intentionally not revalidated for per-call
+    # overrides.  Record the current permissive legacy behavior on both sides
+    # of the documented steps and eta ranges.
+    for permissive_sample_kwargs in (
+        {"steps": 1, "eta": 0.0},
+        {"steps": 5, "eta": 0.0},
+        {"steps": 2, "eta": -0.1},
+        {"steps": 2, "eta": 1.1},
+    ):
+        permissive_sample = wrapper.sample(
+            network_name="raw", 
+            labels=[1], 
+            seed=31, 
+            **permissive_sample_kwargs
+        )
+        assert permissive_sample.shape == (1, 4, 4, 1)
+        assert bool(tf.reduce_all(tf.math.is_finite(permissive_sample)))
+    try:
+        wrapper.sample_vae(network_name="raw", labels=[1])
+    except ValueError as error:
+        assert "flatten reshaper" in str(error)
+    else:
+        raise AssertionError("VAE sampling without a bottleneck must fail")
+
+
+    def make_variational_network(
+        latent_dim_ratio: float = 1.0,
+        add_kl: bool = True,
+        build: bool = True,
+        connection_ids_dict: dict[int, list[int]] | None = None,
+    ) -> DiffusionTransformer:
+        """Build a tiny KL bottleneck network for wrapper self-tests.
+
+        Args:
+            latent_dim_ratio (float): Latent-to-flattened-width ratio.
+            add_kl (bool): Whether the flatten reshaper exposes a KL latent.
+            build (bool): Whether to symbolically build the raw network.
+            connection_ids_dict (dict[int, list[int]] | None): Optional routes
+                used to exercise the VAE bypass validator.
+
+        Returns:
+            DiffusionTransformer: A two-depth flatten/unflatten network.
+        """
+
+        return make_network(
+            depth=2, 
+            vit_block_ids=[1], 
+            cls_token_type="new_weight", 
+            cls_token_regularizer_ids=[None], 
+            reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+            reshaper_kwargs={
+                "add_kl": add_kl, 
+                "latent_dim_ratio": latent_dim_ratio, 
+            }, 
+            connection_ids_dict=(
+                {} if connection_ids_dict is None else connection_ids_dict
+            ), 
+            build=build, 
+        )
+
+
+    variational_cond = make_wrapper(
+        network=make_variational_network(), 
+        kl_loss_coef=0.01, 
+        ctr_loss_coef=0.01, 
+        kl_train_type="cond", 
+        ctr_train_type="cond", 
+        train_cfg_scale=None, 
+    )
+    assert variational_cond.use_kl_loss and variational_cond.use_ctr_loss
+    variational_cond_results = variational_cond.train_step((images, classes))
+    assert {"kl_loss", "ctr_loss", "ctr_accuracy"} <= set(
+        variational_cond_results
+    )
+    variational_uncond = make_wrapper(
+        network=make_variational_network(), 
+        kl_loss_coef=0.01, 
+        ctr_loss_coef=0.01, 
+        kl_train_type="uncond", 
+        ctr_train_type="uncond", 
+        train_cfg_scale=1.0, 
+    )
+    variational_uncond_results = variational_uncond.train_step((images, classes))
+    assert {"kl_loss", "ctr_loss", "ctr_accuracy"} <= set(
+        variational_uncond_results
+    )
+
+    tensor_vae_labels = tf.constant([1, 2], dtype=tf.uint8)
+    vae_images = variational_cond.sample_vae(
+        network_name="raw", labels=tensor_vae_labels, seed=53
+    )
+    assert vae_images.shape == (2, 4, 4, 1)
+    assert bool(tf.reduce_all((0.0 <= vae_images) & (vae_images <= 1.0)))
+    full_reshaper = variational_cond.network.layers_dicts[0][
+        variational_cond.network.R
+    ]
+    full_latent_width = int(full_reshaper.output_shape[1][-1])
+    supplied_full_latent = tf.zeros((2, full_latent_width), dtype=tf.float32)
+    supplied_vae_images = variational_cond.sample_vae(
+        network_name="raw", labels=tensor_vae_labels, z=supplied_full_latent
+    )
+    assert supplied_vae_images.shape == (2, 4, 4, 1)
+    for legacy_labels in ([1, 2], None):
+        try:
+            variational_cond.sample_vae(
+                network_name="raw", labels=legacy_labels, seed=53
+            )
+        except AttributeError as error:
+            assert "dtype" in str(error)
+        else:
+            raise AssertionError(
+                "sample_vae currently requires Tensor labels before Embedding"
+            )
+    projected_vae = make_wrapper(
+        network=make_variational_network(latent_dim_ratio=0.5),
+        use_ema=False,
+        test_network_name="raw",
+    )
+    random_projected_images = projected_vae.sample_vae(
+        network_name="raw", labels=tensor_vae_labels, seed=53
+    )
+    assert random_projected_images.shape == (2, 4, 4, 1)
+    projected_reshaper = projected_vae.network.layers_dicts[0][
+        projected_vae.network.R
+    ]
+    projected_latent_width = int(projected_reshaper.output_shape[1][-1])
+    projected_latent = tf.zeros((2, projected_latent_width), dtype=tf.float32)
+    projected_images = projected_vae.sample_vae(
+        network_name="raw", labels=tensor_vae_labels, z=projected_latent
+    )
+    assert projected_images.shape == (2, 4, 4, 1)
+    non_variational = make_wrapper(
+        network=make_variational_network(add_kl=False),
+        use_ema=False,
+        test_network_name="raw",
+    )
+    try:
+        non_variational.sample_vae(
+            network_name="raw", labels=tensor_vae_labels, seed=53
+        )
+    except ValueError as error:
+        assert "add_kl=True" in str(error)
+    else:
+        raise AssertionError("VAE sampling without add_kl must fail")
+    bypass_vae = make_wrapper(
+        network=make_variational_network(
+            build=False,
+            connection_ids_dict={2: [0]},
+        ),
+        use_ema=False,
+        test_network_name="raw",
+    )
+    try:
+        bypass_vae.sample_vae(
+            network_name="raw", labels=tf.constant([1], dtype=tf.uint8)
+        )
+    except ValueError as error:
+        assert "cannot use features before" in str(error)
+    else:
+        raise AssertionError("VAE routes bypassing the bottleneck must fail")
+
+    original_bounds = wrapper.current_timesteps_bounds
+    original_resolution = wrapper.current_resolution
+    progressive_history = wrapper.fit_progressively(
+        stage_tasks=[
+            {"timesteps": (2, 4)}, 
+            {"resolution": 4}, 
+        ],
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=1, 
+        final_epochs=0, 
+        verbose=0, 
+    )
+    assert len(progressive_history.progressive_stages) == 2
+    assert wrapper.current_timesteps_bounds == original_bounds
+    assert wrapper.current_resolution == original_resolution
+    assert wrapper._add_depths(None)["network"]["added"] == 0
+
+    syntax_wrapper = make_wrapper()
+    syntax_history = syntax_wrapper.fit_progressively(
+        stage_tasks=[
+            "timesteps", 
+            ("resolution", 4), 
+            ["resolution", 4], 
+            {"timesteps", "resolution"}, 
+            frozenset({"timesteps"}), 
+            {"timesteps": (0, 4), "resolution": 4}, 
+        ], 
+        timestep_boundaries=[(2, 4), None, None, (1, 4), (0, 4), None], 
+        resolutions=[None, None, None, 4, None, None], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=0, 
+        verbose=0
+    )
+    assert len(syntax_history.progressive_stages) == 6
+    assert syntax_history.epoch == []
+    assert syntax_history.progressive_stages[3]["updates"] == {
+        "timesteps": (1, 4), 
+        "resolution": 4, 
+    }
+
+    autogenerated_timesteps = make_wrapper().fit_progressively(
+        "timesteps_only", 
+        stages_num=2, 
+        timestep_clustering_type="uniform", 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=0, 
+        verbose=0, 
+    )
+    assert autogenerated_timesteps.timestep_boundaries == [(2, 4), (0, 4)]
+    assert autogenerated_timesteps.stage_tasks == ["timesteps", "timesteps"]
+    autogenerated_resolutions = make_wrapper().fit_progressively(
+        "resolutions_only", 
+        stages_num=2, 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=0, 
+        verbose=0
+    )
+    assert autogenerated_resolutions.resolutions == [2, 4]
+    assert [
+        record["resolution"]
+        for record in autogenerated_resolutions.progressive_stages
+    ] == [2, 4]
+
+    supplied_timesteps = make_wrapper().fit_progressively(
+        "timesteps_only", 
+        timestep_boundaries=[(3, 4), (0, 4)], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=0, 
+        verbose=0
+    )
+    assert supplied_timesteps.stages_num == 2
+    supplied_resolutions = make_wrapper().fit_progressively(
+        "resolutions_only", 
+        resolutions=[2, 4], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=0, 
+        verbose=0
+    )
+    assert supplied_resolutions.stages_num == 2
+
+    depth_wrapper = make_wrapper()
+    depth_history = depth_wrapper.fit_progressively(
+        "depths_only", 
+        depths=[None, "vision_transformer_block"], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=0, 
+        final_epochs=1, 
+        verbose=0
+    )
+    assert depth_wrapper.network.depth == depth_wrapper.ema_network.depth == 1
+    assert (
+        depth_history.progressive_stages[0]["depth_growth"]["network"]["added"]
+        == 0
+    )
+    assert (
+        depth_history.progressive_stages[1]["depth_growth"]["network"]["added"]
+        == 1
+    )
+    assert depth_history.progressive_stages[-1]["stage"] == "final"
+    assert depth_history.progressive_stages[-1]["network_depth"] == 1
+    assert depth_history.progressive_stages[-1]["epochs_ran"] == 1
+
+    epoch_plateau = make_wrapper().fit_progressively(
+        [{"resolution": 4}], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=4, 
+        final_epochs=0, 
+        pacing_type="plateau", 
+        earlystopping_type="epoch_wise", 
+        monitor="noise_loss", 
+        patience=0, 
+        min_delta=1e9, 
+        verbose=0
+    )
+    assert epoch_plateau.progressive_stages[0]["epochs_ran"] == 2
+    batch_plateau = make_wrapper().fit_progressively(
+        [{"resolution": 4}], 
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=5, 
+        final_epochs=0, 
+        pacing_type="plateau", 
+        earlystopping_type="batch_wise", 
+        monitor="noise_loss", 
+        patience=1, 
+        min_delta=1e9, 
+        verbose=0, 
+    )
+    assert batch_plateau.progressive_stages[0]["epochs_ran"] == 3
+
+    failing_progressive = make_wrapper()
+    failing_entry_bounds = failing_progressive.current_timesteps_bounds
+    failing_entry_resolution = failing_progressive.current_resolution
+    try:
+        failing_progressive.fit_progressively(
+            [{"timesteps": (2, 4), "resolution": 2}, object()], 
+            x=dataset, 
+            stages_verbose=False, 
+            stage_epochs=0, 
+            final_epochs=0, 
+            verbose=0, 
+        )
+    except ValueError as error:
+        assert "Invalid stage task at index 1" in str(error)
+    else:
+        raise AssertionError("Invalid progressive stage objects must fail")
+    assert failing_progressive.current_timesteps_bounds == failing_entry_bounds
+    assert failing_progressive.current_resolution == failing_entry_resolution
+
+    for forbidden_fit_argument in ({"epochs": 1}, {"initial_epoch": 0}):
+        try:
+            wrapper.fit_progressively(
+                [{"resolution": 4}], 
+                x=dataset, 
+                stage_epochs=0, 
+                final_epochs=0, 
+                **forbidden_fit_argument
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Managed progressive epoch arguments must fail")
+    for invalid_progressive_control in (
+        {"timestep_clustering_type": "unknown"}, 
+        {"pacing_type": "unknown"}, 
+        {"earlystopping_type": "unknown"}, 
+        {"monitor": "unknown"}, 
+    ):
+        try:
+            wrapper.fit_progressively(
+                [{"resolution": 4}], 
+                x=dataset, 
+                stage_epochs=0, 
+                final_epochs=0, 
+                **invalid_progressive_control
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"Expected invalid progressive control: {invalid_progressive_control}"
+            )
+    for only_mode, missing_values in (
+        ("timesteps_only", {}), 
+        ("resolutions_only", {}), 
+        ("depths_only", {"stages_num": 1}), 
+    ):
+        try:
+            wrapper.fit_progressively(
+                only_mode, 
+                stage_epochs=0, 
+                final_epochs=0, 
+                **missing_values, 
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Missing values must fail for {only_mode}")
+
+    serialization_network = make_network(build=False)
+    serialization_network.built = True
+    serialization_wrapper = DiffusionModel(
+        network=serialization_network,
+        use_ema=False,
+        test_network_name="raw",
+        test_steps=2,
+    )
+    wrapper_config = serialization_wrapper.get_config()
+    assert wrapper_config["network"] is serialization_wrapper.network
+    try:
+        DiffusionModel.from_config(wrapper_config)
+    except ValueError as error:
+        assert "cannot be saved" in str(error)
+    else:
+        raise AssertionError(
+            "Wrapper reconstruction with an embedded network currently must fail"
+        )
+
+    policy_wrapper = make_wrapper(
+        use_ema=False, 
+        test_network_name="raw", 
+        name="policy_wrapper", 
+        trainable=False, 
+        dtype="float64", 
+        dynamic=True, 
+    )
+    assert policy_wrapper.name == "policy_wrapper"
+    assert policy_wrapper.trainable is False
+    assert policy_wrapper.dtype_policy.name == "float64"
+    assert policy_wrapper.dynamic is True
+    assert policy_wrapper.sample(
+        network_name="raw", labels=[1], steps=2, eta=0.0, seed=61
+    ).dtype == tf.float32
+
+    ema_before = [value.numpy().copy() for value in wrapper.ema_network.weights]
+    wrapper.network.weights[0].assign_add(tf.ones_like(wrapper.network.weights[0]))
+    assert wrapper.update_ema() is True
+    assert not np.array_equal(ema_before[0], wrapper.ema_network.weights[0].numpy())
+    assert wrapper.get_network("raw") is wrapper.network
+    assert wrapper.get_network("ema") is wrapper.ema_network
+    try:
+        wrapper.get_network("unknown")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown network names must fail")
+
+    topology_probe = SimpleNamespace(
+        use_ema=True, 
+        network=SimpleNamespace(weights=[tf.Variable(0.0)]), 
+        ema_network=SimpleNamespace(weights=[]), 
+        ema_decay=0.9, 
+    )
+    try:
+        DiffusionModel.update_ema(topology_probe)
+    except AssertionError as error:
+        assert "same topology" in str(error)
+    else:
+        raise AssertionError("Raw/EMA topology mismatch must fail")
+
+    # Progressive growth has two distinct EMA-alignment guards: the number of
+    # newly created weights must match, then every aligned shape must assign.
+    raw_count_weights = MagicMock()
+    raw_count_weights.__iter__.side_effect = [
+        iter(()), 
+        iter((tf.Variable(0.0),)), 
+    ]
+    ema_count_weights = MagicMock()
+    ema_count_weights.__iter__.side_effect = [iter(()), iter(())]
+    progressive_count_probe = SimpleNamespace(
+        network=SimpleNamespace(
+            weights=raw_count_weights, 
+            add_depths=Mock(return_value={"network": {"added": 1}}), 
+            build_model=Mock(return_value=None), 
+        ), 
+        ema_network=SimpleNamespace(
+            weights=ema_count_weights, 
+            add_depths=Mock(return_value={"network": {"added": 0}}), 
+            build_model=Mock(return_value=None), 
+        )
+    )
+    try:
+        DiffusionModel._add_depths(progressive_count_probe, "probe")
+    except ValueError as error:
+        assert "progressive depths have different weights" in str(error)
+    else:
+        raise AssertionError(
+            "Progressive raw/EMA new-weight count mismatch must fail"
+        )
+
+    raw_shape_weights = MagicMock()
+    raw_shape_weights.__iter__.side_effect = [
+        iter(()),
+        iter((tf.Variable(tf.zeros((1,))),)),
+    ]
+    ema_shape_weights = MagicMock()
+    ema_shape_weights.__iter__.side_effect = [
+        iter(()),
+        iter((tf.Variable(tf.zeros((2,))),)),
+    ]
+    progressive_shape_probe = SimpleNamespace(
+        network=SimpleNamespace(
+            weights=raw_shape_weights, 
+            add_depths=Mock(return_value={"network": {"added": 1}}), 
+            build_model=Mock(return_value=None), 
+        ), 
+        ema_network=SimpleNamespace(
+            weights=ema_shape_weights, 
+            add_depths=Mock(return_value={"network": {"added": 1}}), 
+            build_model=Mock(return_value=None), 
+        ), 
+    )
+    try:
+        DiffusionModel._add_depths(progressive_shape_probe, "probe")
+    except ValueError as error:
+        assert "shape" in str(error).lower()
+    else:
+        raise AssertionError(
+            "Progressive raw/EMA new-weight shape mismatch must fail"
+        )
+
+    without_ema = make_wrapper(
+        network=make_network(use_cfg=False), 
+        use_ema=False, 
+        test_network_name="raw", 
+        p_uncond=0.9, 
+        test_cfg_scale=9.0, 
+    )
+    assert without_ema.ema_network is None
+    assert without_ema.p_uncond == 0.0 and without_ema.test_cfg_scale == 1.0
+    assert without_ema.update_ema() is False
+    no_cfg_prepared = without_ema.prep_inputs(
+        (images, classes), use_label_dropout=True, seed=59
+    )
+    tf.debugging.assert_equal(no_cfg_prepared[4], classes)
+    assert "noise_loss" in without_ema.train_step((images, classes))
+    no_cfg_sample = without_ema.sample(
+        network_name="raw", labels=None, steps=2, eta=0.0, seed=59
+    )
+    assert no_cfg_sample.shape == (without_ema.network.num_labels, 4, 4, 1)
+    try:
+        without_ema.get_network("ema")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("EMA lookup without EMA must fail")
+
+    # These constructor values are outside their documented domains but the
+    # legacy implementation currently accepts them.  Keep the behavior visible
+    # without changing production validation in this test-only pass.
+    unknown_kl_type = make_wrapper(kl_train_type="unknown")
+    assert unknown_kl_type.kl_train_type == "unknown"
+    negative_dropout = make_wrapper(p_uncond=-0.25)
+    excessive_dropout = make_wrapper(p_uncond=1.25)
+    assert negative_dropout.p_uncond == -0.25
+    assert excessive_dropout.p_uncond == 1.25
+    tf.debugging.assert_equal(
+        negative_dropout.get_cfg_labels(shifted),
+        shifted,
+    )
+    tf.debugging.assert_equal(
+        excessive_dropout.get_cfg_labels(shifted),
+        tf.zeros_like(shifted),
+    )
+
+    swap = make_wrapper(swap_noise_image=True)
+    swap_prepared = swap.prep_inputs((images, classes), seed=31)
+    tf.debugging.assert_near(swap_prepared[1], swap_prepared[3])
+    try:
+        swap.sample(network_name="raw", labels=[1])
+    except ValueError as error:
+        assert "flatten reshaper" in str(error)
+    else:
+        raise AssertionError("swap_noise_image must route through VAE sampling")
+
+    invalid_cases = (
+        {"ema_decay": -0.1}, 
+        {"ema_decay": 1.0}, 
+        {"test_steps": 1}, 
+        {"test_steps": 5}, 
+        {"test_eta": -0.1}, 
+        {"test_eta": 1.1}, 
+        {"ctr_train_type": "unknown"}, 
+        {"ctr_train_type": "uncond", "train_cfg_scale": None}, 
+    )
+    for overrides in invalid_cases:
+        try:
+            DiffusionModel(network=make_network(), **overrides)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid wrapper config: {overrides}")
+
+    tf.keras.backend.clear_session()
+    return {"DiffusionModel": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

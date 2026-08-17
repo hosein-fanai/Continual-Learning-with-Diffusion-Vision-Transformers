@@ -13,9 +13,9 @@ wrapper attributes and are not all compatible with an arbitrary Keras model.
 from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 
 stopper = BatchLossPlateau(
-    monitor="noise_loss",
-    patience=200,
-    min_delta=1e-4,
+    monitor="noise_loss", 
+    patience=200, 
+    min_delta=1e-4, 
 )
 model.fit(dataset, callbacks=[stopper])
 ```
@@ -68,12 +68,12 @@ results into epoch logs:
 
 ```python
 from diffusion.callbacks.raw_network_validation_callback import (
-    RawNetworkValidationCallback,
+    RawNetworkValidationCallback, 
 )
 
 raw_validation = RawNetworkValidationCallback(
-    val_x=validation_dataset,
-    val_y=None,
+    val_x=validation_dataset, 
+    val_y=None, 
 )
 model.fit(train_dataset, callbacks=[raw_validation])
 ```

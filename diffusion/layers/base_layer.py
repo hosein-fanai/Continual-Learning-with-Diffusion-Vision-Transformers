@@ -186,3 +186,94 @@ class BaseLayer(ArgumentSaverLayer):
             mlp = None
 
         return mlp
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test all factories and validation paths exposed by :class:`BaseLayer`.
+
+    Args:
+        None.
+
+    Returns:
+        ``{"BaseLayer": "passed"}`` after factory, override, config, shape,
+        and expected abstract-call checks pass.
+    """
+
+    import tensorflow as tf
+
+
+    try:
+        BaseLayer(use_layer_norm=True)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Adaptive normalization requires ln_dim.")
+
+    disabled = BaseLayer(use_layer_norm=False, ln_dim=4)
+    assert disabled._create_layer_norm() is None
+    assert disabled._create_layer_norm(use_layer_norm=False, dim=2) is None
+
+    adaptive = BaseLayer(
+        use_layer_norm=True, 
+        ln_dim=4, 
+        ln_mlp_ratio=2, 
+        mlp_ratio=2, 
+        mlp_activation_func="relu", 
+        mlp_output_dim=3, 
+        name="base_factory_test", 
+    )
+    normalizer = adaptive._create_layer_norm(gate_dim=2, return_gate=True)
+    normalized, gate = normalizer((tf.ones((2, 3, 4)), tf.ones((2, 5))))
+    assert normalized.shape == (2, 3, 4) and gate.shape == (2, 1, 2)
+    overridden_plain = adaptive._create_layer_norm(
+        dim=3, 
+        gate_dim=1, 
+        mlp_ratio=1, 
+        return_gate=False, 
+        no_adaptation=True, 
+        name="plain_override", 
+    )
+    assert overridden_plain((tf.ones((1, 2, 3)), None)).shape == (1, 2, 3)
+
+    two_layer_mlp = adaptive._create_mlp(prev_output_dim=4)
+    assert len(two_layer_mlp.layers) == 2
+    assert two_layer_mlp(tf.ones((2, 4))).shape == (2, 3)
+    assert adaptive.prev_output_dim == 4 and adaptive.output_dim == 3
+
+    single_layer_mlp = adaptive._create_mlp(
+        prev_output_dim=3, 
+        mlp_ratio=None, 
+        mlp_output_dim=2, 
+    )
+    # A ``None`` override inherits the instance ratio by design.
+    assert len(single_layer_mlp.layers) == 2
+    one_projection = BaseLayer(mlp_output_dim=2)._create_mlp(3)
+    assert len(one_projection.layers) == 1
+    assert one_projection(tf.ones((1, 3))).shape == (1, 2)
+
+    no_mlp = BaseLayer()._create_mlp(prev_output_dim=5)
+    assert no_mlp is None
+    no_projection_layer = BaseLayer()
+    assert no_projection_layer._create_mlp(5) is None
+    assert no_projection_layer.prev_output_dim == 5
+    assert no_projection_layer.output_dim == 5
+
+    restored = BaseLayer.from_config(adaptive.get_config())
+    assert restored.ln_dim == 4 and restored.mlp_output_dim == 3
+    direct_input = tf.ones((1, 4))
+    # TensorFlow 2.10's base Keras Layer call is an identity when a subclass
+    # does not override it; subclasses in this project add the real behavior.
+    assert restored(direct_input) is direct_input
+
+    dtype_layer = BaseLayer(mlp_output_dim=2, dtype="float64")
+    dtype_projection = dtype_layer._create_mlp(4)
+    dtype_output = dtype_projection(tf.ones((1, 4), dtype=tf.float64))
+    assert dtype_layer.compute_dtype == "float64"
+    # Factory-created nested Dense layers retain the global float32 policy.
+    assert dtype_output.dtype == tf.float32
+
+    return {"BaseLayer": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

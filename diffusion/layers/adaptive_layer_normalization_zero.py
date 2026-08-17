@@ -137,3 +137,88 @@ class AdaLNZero(ArgumentSaverLayer):
 
         shift, scale = tf.split(params, 2, axis=-1)
         return h * (1 + scale) + shift
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic, CPU-small tests for :class:`AdaLNZero`.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping whose value is ``"passed"`` after all adaptive,
+        non-adaptive, gated, ungated, shape, dtype, gradient, and
+        serialization checks succeed.
+    """
+
+    import numpy as np
+
+    tf.random.set_seed(1701)
+    x = tf.constant([
+        [[1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 1.0]], 
+         [[0.0, 1.0, 0.0, 1.0], [2.0, 4.0, 6.0, 8.0]]
+    ], dtype=tf.float32)
+    cond = tf.ones((2, 3), dtype=tf.float32)
+
+    for mlp_ratio in (None, 2.0):
+        layer = AdaLNZero(dim=4, gate_dim=2, mlp_ratio=mlp_ratio)
+        normalized, gate = layer((x, cond), training=True)
+        expected = layer.norm(x, training=False)
+        np.testing.assert_allclose(normalized.numpy(), expected.numpy(), atol=1e-6)
+        np.testing.assert_array_equal(gate.numpy(), np.zeros((2, 1, 2)))
+        assert normalized.shape == x.shape
+        assert normalized.dtype == tf.float32
+        assert layer.mlp.layers[-1].kernel.shape[-1] == 10
+
+        with tf.GradientTape() as tape:
+            result, result_gate = layer((x, cond), training=True)
+            loss = tf.reduce_sum(result) + tf.reduce_sum(result_gate)
+        gradients = tape.gradient(loss, layer.trainable_variables)
+        assert gradients and all(gradient is not None for gradient in gradients)
+
+    ungated = AdaLNZero(dim=4, return_gate=False)
+    ungated_result = ungated((x, cond), training=False)
+    assert isinstance(ungated_result, tf.Tensor)
+    assert ungated_result.shape == x.shape
+    assert ungated.mlp_output_dim == 8
+
+    plain_gated = AdaLNZero(dim=4, no_adaptation=True, return_gate=True)
+    plain_result, plain_gate = plain_gated((x, None), training=True)
+    np.testing.assert_allclose(plain_result.numpy(), plain_gated.norm(x).numpy())
+    assert plain_gate == 1.0
+    assert plain_gated.mlp is None
+
+    plain_ungated = AdaLNZero(
+        dim=4, 
+        no_adaptation=True, 
+        return_gate=False, 
+        epsilon=1e-4, 
+        dtype="float64", 
+    )
+    x64 = tf.cast(x[:, 0, :], tf.float64)
+    plain_ungated_result = plain_ungated((x64, None))
+    assert plain_ungated_result.shape == (2, 4)
+    assert plain_ungated.compute_dtype == "float64"
+    # The nested LayerNormalization retains the global float32 policy in
+    # TensorFlow 2.10 because the outer policy is not forwarded explicitly.
+    assert plain_ungated_result.dtype == tf.float32
+    assert plain_ungated.norm.epsilon == 1e-4
+
+    config = AdaLNZero(dim=4, gate_dim=3, mlp_ratio=1.5).get_config()
+    restored = AdaLNZero.from_config(config)
+    assert restored.dim == 4 and restored.gate_dim == 3
+    assert restored.mlp_ratio == 1.5 and restored.return_gate
+
+    incompatible = AdaLNZero(dim=4)
+    try:
+        incompatible((x, tf.ones((3, 2))))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Mismatched feature and condition batches must fail.")
+
+    return {"AdaLNZero": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

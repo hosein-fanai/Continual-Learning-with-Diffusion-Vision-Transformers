@@ -142,3 +142,128 @@ class ImageGeneratorCallback(callbacks.Callback):
             )
         else:
             plot_images(imgs)
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test display and filesystem modes of :class:`ImageGeneratorCallback`.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after constructor combinations, directory creation,
+        sampling arguments, image/GIF paths, plotting flags, and hook returns.
+    """
+
+    import tempfile
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    for invalid_kwargs in (
+        {"show_images": False, "save_gifs": False, "results_path": None},
+        {"show_images": True, "save_gifs": True, "results_path": None},
+        {"show_images": True, "save_gifs": False, "results_path": "unused"},
+        {"show_images": False, "save_gifs": True, "results_path": None},
+        {"show_images": False, "save_gifs": False, "results_path": "unused"},
+    ):
+        try:
+            ImageGeneratorCallback(**invalid_kwargs)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid output-mode combinations must fail.")
+
+    display_callback = ImageGeneratorCallback(show_images=True)
+    display_sample = Mock(return_value="images")
+    display_callback.set_model(SimpleNamespace(
+        test_steps=4, 
+        test_cfg_scale=1.5, 
+        test_eta=0.25, 
+        sample=display_sample, 
+    ))
+    with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
+        assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
+    display_sample.assert_called_once_with(steps=4, scale=1.5, eta=0.25)
+    plot_mock.assert_called_once_with("images")
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        saving_callback = ImageGeneratorCallback(
+            show_images=False, 
+            save_gifs=True, 
+            results_path=temporary_directory, 
+            project_tag="smoke", 
+        )
+        result_root = Path(saving_callback.results_path)
+        assert result_root.parent == Path(temporary_directory)
+        assert result_root.name.endswith(" smoke")
+        assert (result_root / "images").is_dir()
+        assert (result_root / "gifs").is_dir()
+
+        frames_one = ["frame-1"]
+        frames_two = ["frame-2"]
+        save_sample = Mock(return_value=("saved-images", frames_one, frames_two))
+        saving_callback.set_model(SimpleNamespace(
+            test_steps=3, 
+            test_cfg_scale=2.0, 
+            test_eta=0.125, 
+            sample=save_sample, 
+        ))
+        with patch.object(
+            sys.modules[__name__], "create_gif",
+        ) as gif_mock, patch.object(
+            sys.modules[__name__], "plot_images",
+        ) as saved_plot_mock:
+            assert saving_callback.on_epoch_end(1, None) is None
+        save_sample.assert_called_once_with(
+            steps=3, 
+            scale=2.0, 
+            eta=0.125, 
+            return_x_ts=True, 
+            return_x0s=True, 
+        )
+        gif_args, gif_kwargs = gif_mock.call_args
+        assert Path(gif_args[0]).name == "epoch-2_steps-3_scale-2.0_eta-0.1250.gif"
+        assert gif_args[1:] == (frames_one, frames_two)
+        assert gif_kwargs == {"verbose": 0}
+        plot_args, plot_kwargs = saved_plot_mock.call_args
+        assert plot_args == ("saved-images",)
+        assert plot_kwargs["show_images"] is False
+        assert Path(plot_kwargs["save_path"]).name == (
+            "epoch-2_steps-3_scale-2.0_eta-0.1250.png"
+        )
+
+        shown_saving_callback = ImageGeneratorCallback(
+            show_images=True, 
+            save_gifs=True, 
+            results_path=temporary_directory, 
+        )
+        shown_sample = Mock(return_value=("shown-images", [], []))
+        shown_saving_callback.set_model(SimpleNamespace(
+            test_steps=1, 
+            test_cfg_scale=1.0, 
+            test_eta=0.0, 
+            sample=shown_sample, 
+        ))
+        with patch.object(
+            sys.modules[__name__], "create_gif",
+        ) as shown_gif_mock, patch.object(
+            sys.modules[__name__], "plot_images",
+        ) as shown_plot_mock:
+            shown_saving_callback.on_epoch_end(0)
+        shown_sample.assert_called_once_with(
+            steps=1, 
+            scale=1.0, 
+            eta=0.0, 
+            return_x_ts=True, 
+            return_x0s=True, 
+        )
+        assert shown_gif_mock.call_count == 1
+        assert shown_plot_mock.call_args.kwargs["show_images"] is True
+
+    return {"ImageGeneratorCallback": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

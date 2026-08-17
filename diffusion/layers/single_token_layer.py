@@ -116,3 +116,129 @@ class SingleTokenLayer(BaseEmbedding):
         )
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test trainable and input-backed :class:`SingleTokenLayer` variants.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after positional, merge, projection, shape,
+        gradient, invalid-mode, and documented serialization checks pass.
+    """
+
+    import numpy as np
+
+
+    tf.random.set_seed(123)
+    images = tf.zeros((3, 2, 2, 1), dtype=tf.float32)
+
+    learned_with_position = SingleTokenLayer(dim=4, with_pos_embed=True)
+    positioned = learned_with_position((images, None), training=False)
+    assert positioned.shape == (3, 1, 4)
+    assert learned_with_position.token.shape == (1, 1, 4)
+    assert learned_with_position.pos_embed.shape == (1, 1, 4)
+    assert len(learned_with_position.trainable_variables) == 2
+
+    learned_without_position = SingleTokenLayer(dim=4, with_pos_embed=False)
+    unbatched = learned_without_position((images, None), training=True)
+    assert unbatched.shape == (1, 1, 4)
+    assert learned_without_position.pos_embed is None
+
+    supplied = tf.reshape(tf.range(12, dtype=tf.float32), (3, 4))
+    input_token = SingleTokenLayer(
+        dim=4, 
+        with_pos_embed=False, 
+        input_as_token=True
+    )
+    supplied_result = input_token((images, supplied))
+    np.testing.assert_array_equal(supplied_result[:, 0, :].numpy(), supplied.numpy())
+    assert input_token.token is None and input_token.token_mlp is None
+
+    supplied_positioned = SingleTokenLayer(
+        dim=4, 
+        with_pos_embed=True, 
+        input_as_token=True
+    )
+    assert supplied_positioned((images, supplied)).shape == (3, 1, 4)
+
+    concatenated = SingleTokenLayer(
+        dim=6, 
+        with_pos_embed=True, 
+        pos_merger_type="concat"
+    )
+    assert concatenated((images[:1], None)).shape == (1, 1, 6)
+    batched_concatenated = SingleTokenLayer(
+        dim=6, 
+        with_pos_embed=True, 
+        input_as_token=True, 
+        pos_merger_type="concat"
+    )
+    assert batched_concatenated(
+        (images, tf.ones((3, 3))),
+    ).shape == (3, 1, 6)
+    odd_concatenated = SingleTokenLayer(
+        dim=5, 
+        with_pos_embed=True, 
+        pos_merger_type="concat"
+    )
+    assert odd_concatenated((images[:1], None)).shape == (1, 1, 4)
+
+    projected = SingleTokenLayer(
+        dim=4, 
+        with_pos_embed=True, 
+        embed_freq_dim=2, 
+        mlp_ratio=None, 
+        mlp_output_dim=None
+    )
+    assert projected.token_mlp is not None and projected.pos_embed_mlp is not None
+    assert projected((images, None), training=True).shape == (3, 1, 4)
+
+    with tf.GradientTape() as tape:
+        token_output = learned_with_position(
+            (images, None), 
+            training=True
+        )
+        loss = tf.reduce_sum(token_output)
+    gradients = tape.gradient(loss, learned_with_position.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    try:
+        SingleTokenLayer(dim=4, pos_merger_type="invalid")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Invalid positional merge modes must fail.")
+
+    config = learned_with_position.get_config()
+    try:
+        SingleTokenLayer.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate-ln_dim limit changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("ln_dim")
+    restored = SingleTokenLayer.from_config(filtered_config)
+    assert restored.dim == 4 and restored.with_pos_embed
+
+    dtype_layer = SingleTokenLayer(
+        dim=4, 
+        with_pos_embed=False, 
+        dtype="float64"
+    )
+    dtype_output = dtype_layer((tf.ones((2, 1), dtype=tf.float64), None))
+    assert dtype_layer.compute_dtype == "float64"
+    assert dtype_output.dtype == tf.float64
+
+    # Without positional broadcasting, this mode legitimately carries the
+    # supplied token batch independently of the image batch.
+    assert input_token((images, tf.ones((2, 4)))).shape == (2, 1, 4)
+
+    return {"SingleTokenLayer": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

@@ -45,6 +45,7 @@ class BatchLossPlateau(callbacks.Callback):
         """
 
         super().__init__()
+
         if patience < 1:
             raise ValueError("patience must be >= 1.")
 
@@ -84,3 +85,72 @@ class BatchLossPlateau(callbacks.Callback):
         self.wait += 1
         if self.wait > self.patience:
             self.model.stop_training = True
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test initialization and every update branch of :class:`BatchLossPlateau`.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after patience boundaries, missing logs,
+        improvements, minimum deltas, plateau stopping, and scalar conversion.
+    """
+
+    from types import SimpleNamespace
+
+
+    for invalid_patience in (-3, 0):
+        try:
+            BatchLossPlateau(patience=invalid_patience)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("patience values below one must fail.")
+
+    callback = BatchLossPlateau(
+        monitor="custom_loss", 
+        patience=2, 
+        min_delta=0.1,
+    )
+    model = SimpleNamespace(stop_training=False)
+    callback.set_model(model)
+    assert np.isinf(callback.best) and callback.wait == 0
+
+    callback.on_train_batch_end(0, None)
+    callback.on_train_batch_end(1, {})
+    callback.on_train_batch_end(2, {"other": 1.0})
+    assert np.isinf(callback.best) and callback.wait == 0
+
+    callback.on_train_batch_end(3, {"custom_loss": np.float32(2.0)})
+    assert callback.best == 2.0 and callback.wait == 0
+    callback.on_train_batch_end(4, {"custom_loss": 1.95})
+    assert callback.best == 2.0 and callback.wait == 1
+    callback.on_train_batch_end(5, {"custom_loss": 1.9})
+    assert callback.wait == 2 and not model.stop_training
+    callback.on_train_batch_end(6, {"custom_loss": 1.89})
+    assert callback.best == 1.89 and callback.wait == 0
+    callback.on_train_batch_end(7, {"custom_loss": 1.9})
+    callback.on_train_batch_end(8, {"custom_loss": 2.0})
+    assert not model.stop_training and callback.wait == 2
+    callback.on_train_batch_end(9, {"custom_loss": 3.0})
+    assert model.stop_training and callback.wait == 3
+
+    default_callback = BatchLossPlateau(patience=1)
+    default_model = SimpleNamespace(stop_training=False)
+    default_callback.set_model(default_model)
+    default_callback.on_train_batch_end(0, {"noise_loss": 1})
+    default_callback.on_train_batch_end(1, {"noise_loss": 1})
+    assert not default_model.stop_training
+    default_callback.on_train_batch_end(2, {"noise_loss": 1})
+    assert default_model.stop_training
+
+    permissive_delta = BatchLossPlateau(patience=1, min_delta=-0.5)
+    assert permissive_delta.min_delta == -0.5
+
+    return {"BatchLossPlateau": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

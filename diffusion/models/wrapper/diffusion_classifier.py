@@ -83,6 +83,7 @@ class DiffusionClassifier(DiffusionModel):
             None.  Classifier coefficients, threshold, and loss flags are
             initialized; trackers are created by :meth:`compile`.
         """
+
         super().__init__(**kwargs)
         self._check_clf_assertions(locals())
         self._save_init_args(locals())
@@ -238,6 +239,7 @@ class DiffusionClassifier(DiffusionModel):
             classifier loss/accuracy, classifier KL loss, classifier token loss,
             and classifier token accuracy.  Available after :meth:`compile`.
         """
+
         return [
             *super().metrics, 
             self.clf_loss_tracker, 
@@ -261,6 +263,7 @@ class DiffusionClassifier(DiffusionModel):
             None.  Creates ``EnsembleAccuracy`` when enabled plus five
             classifier metric trackers.
         """
+
         super().compile(**kwargs)
 
         self.ensemble_loss_fn = EnsembleAccuracy(
@@ -286,6 +289,7 @@ class DiffusionClassifier(DiffusionModel):
             classifier mask selects CFG-null and/or low-timestep examples when
             configured; divide-no-nan makes an empty selection contribute zero.
         """
+
         (x0, noises, 
         t, x_t, 
         cfg_labels, 
@@ -358,6 +362,7 @@ class DiffusionClassifier(DiffusionModel):
 
         return results
 
+
     def test_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict:
         """Evaluate diffusion plus unconditional clean-image classification.
@@ -375,6 +380,7 @@ class DiffusionClassifier(DiffusionModel):
             dict[str, tf.Tensor]: Running enabled diffusion and classifier
             losses/accuracies.
         """
+
         (x0, noises, 
         t, x_t, 
         cond_labels, 
@@ -469,6 +475,7 @@ class DiffusionClassifier(DiffusionModel):
             classifier latent-statistic pairs.  Unconditional members are None
             when no second pass is requested.
         """
+
         network = self.get_network(network_name)
 
         output_dict_c = network(
@@ -693,3 +700,389 @@ class DiffusionClassifier(DiffusionModel):
             })
 
         return results
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run CPU-small joint diffusion/classification wrapper tests.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"DiffusionClassifier": "passed"}`` after masking,
+        conditional/unconditional, ensemble, auxiliary-loss, metric,
+        optimization, evaluation, progressive-growth, and rejection checks.
+    """
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(106)
+
+
+    from diffusion.models.transformer.di_t_classifier import DiTClassifier
+
+
+    def make_network(**overrides: object) -> DiTClassifier:
+        """Construct a fresh tiny classifier network with safe mutable IDs.
+
+        Args:
+            **overrides (object): Values replacing classifier-network defaults.
+
+        Returns:
+            DiTClassifier: A built raw classifier network.
+        """
+
+        config = {
+            "num_classes": 2, 
+            "use_cfg": True, 
+            "timesteps": 4, 
+            "image_size": 4, 
+            "channels": 1, 
+            "patch_size": 2, 
+            "dim": 4, 
+            "depth": 1, 
+            "mha_num_heads": 1, 
+            "vit_block_mlp_ratio": 1.0, 
+            "clf_mha_num_heads": 1, 
+            "clf_vit_block_mlp_ratio": 1.0, 
+            "feature_aggregation_ids_dict": {1: (-1,)}, 
+            "clf_connection_ids_dict": {-1: (-1,)}, 
+            **overrides
+        }
+
+        return DiTClassifier(**config)
+
+
+    def make_wrapper(**overrides: object) -> DiffusionClassifier:
+        """Construct and compile a fresh tiny classifier wrapper.
+
+        Args:
+            **overrides (object): Wrapper arguments replacing test defaults.
+
+        Returns:
+            DiffusionClassifier: An eagerly compiled wrapper.
+        """
+
+        network = overrides.pop("network", make_network())
+        config = {
+            "network": network, 
+            "use_ema": True, 
+            "test_network_name": "ema", 
+            "scheduler_name": "linear", 
+            "test_steps": 2, 
+            "p_uncond": 1.0, 
+            "seed": 37, 
+            **overrides
+        }
+        wrapper = DiffusionClassifier(**config)
+        wrapper.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3), 
+            loss="mse", 
+            run_eagerly=True, 
+        )
+
+        return wrapper
+
+
+    wrapper = make_wrapper(mask_by_nulls=True, mask_by_t_threshold=True)
+    assert wrapper.mask_by_nulls and wrapper.mask_by_t_threshold
+    assert int(wrapper.filter_t_threshold) == 2
+    assert abs(float(wrapper.clf_loss_coef) - 8.6e-3) < 1e-7
+    assert wrapper.use_clf_kl_loss is False
+    assert wrapper.use_clf_ctr_loss is False
+    assert wrapper.ensemble_loss_fn is None
+    assert [metric.name for metric in wrapper.metrics][-5:] == [
+        "classifier_loss", "classifier_accuracy", "clf_kl_loss",
+        "clf_ctr_loss", "clf_ctr_accuracy",
+    ]
+
+    threshold_only = make_wrapper(
+        mask_by_nulls=False, 
+        mask_by_t_threshold=True, 
+        mask_t_percentage=25, 
+        p_uncond=0.0, 
+    )
+    assert threshold_only.mask_by_nulls is False
+    assert threshold_only.mask_by_t_threshold is True
+    assert int(threshold_only.filter_t_threshold) == 1
+    unclamped_low = make_wrapper(
+        mask_by_nulls=False, 
+        mask_t_percentage=-25, 
+        p_uncond=0.0, 
+    )
+    unclamped_high = make_wrapper(
+        mask_by_nulls=False, 
+        mask_t_percentage=150, 
+        p_uncond=0.0, 
+    )
+    assert int(unclamped_low.filter_t_threshold) == -1
+    assert int(unclamped_high.filter_t_threshold) == 6
+
+    images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
+    classes = tf.constant([0, 1], dtype=tf.uint8)
+    t = tf.constant([0, 3], dtype=tf.int32)
+    x_t, _, _ = wrapper.noisify(images, t=t, seed=41)
+    cond_labels = tf.constant([1, 2], dtype=tf.uint8)
+    null_labels = tf.zeros_like(cond_labels)
+    conditional_only = wrapper.call_network(
+        x_t, t, cond_labels, null_labels, scale=None,
+        network_name="raw", training=False,
+    )
+    assert len(conditional_only) == 6
+    assert conditional_only[0][0].shape == images.shape
+    assert conditional_only[0][1] is None
+    assert conditional_only[3][0].shape == (2, 2)
+    both = wrapper.call_network(
+        x_t, t, cond_labels, null_labels, scale=2.0,
+        network_name="raw", training=False,
+    )
+    assert all(pair[1] is not None for pair in both)
+
+    mask = tf.constant([1.0, 0.0])
+    clf_values = wrapper.compute_clf_kl_ctr_loss(
+        classes, 
+        both[3][0], both[5][0], both[4][0], 
+        classes_pred_u=both[3][1], 
+        clf_z_vals_u=both[5][1], 
+        clf_regs_list_u=both[4][1], 
+        clf_loss_mask=mask, 
+        clf_train_type="cond", 
+    )
+    assert len(clf_values) == 6 and float(clf_values[1]) >= 0.0
+    empty_values = wrapper.compute_clf_kl_ctr_loss(
+        classes, 
+        both[3][0], both[5][0], both[4][0], 
+        classes_pred_u=both[3][1], 
+        clf_z_vals_u=both[5][1], 
+        clf_regs_list_u=both[4][1], 
+        clf_loss_mask=tf.zeros((2,)), 
+        clf_train_type="uncond",
+    )
+    assert float(empty_values[1]) == 0.0
+
+    train_results = wrapper.train_step((images, classes))
+    assert {
+        "loss", "noise_loss", "classifier_loss", "classifier_accuracy"
+    } <= set(train_results)
+    test_results = wrapper.test_step((images, classes))
+    assert {
+        "loss", "noise_loss", "image_loss", "classifier_loss",
+        "classifier_accuracy",
+    } <= set(test_results)
+    dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
+    history = wrapper.fit(dataset, epochs=1, verbose=0)
+    assert len(history.history["classifier_loss"]) == 1
+    evaluation = wrapper.evaluate(
+        dataset, network_name="raw", verbose=0, return_dict=True
+    )
+    assert "classifier_accuracy" in evaluation
+
+    unmasked = make_wrapper(
+        mask_by_nulls=False, 
+        mask_by_t_threshold=False, 
+        p_uncond=0.0, 
+    )
+    assert "classifier_loss" in unmasked.train_step((images, classes))
+    unconditional = make_wrapper(
+        clf_train_type="uncond", 
+        train_cfg_scale=1.0, 
+        mask_by_nulls=False, 
+    )
+    try:
+        unconditional.train_step((images, classes))
+    except (TypeError, ValueError):
+        pass
+    else:
+        raise AssertionError(
+            "The current positional unconditioned classifier-loss mismatch changed"
+        )
+
+    ensemble = make_wrapper(
+        use_ensemble_loss_instead=True, 
+        mask_by_nulls=False, 
+    )
+    assert ensemble.ensemble_loss_fn is not None
+    ensemble_predictions = ensemble.compute_clf_kl_ctr_loss(
+        classes, 
+        both[3][0], both[5][0], both[4][0], 
+        x0=images, 
+        training=False, 
+    )[4]
+    assert ensemble_predictions.shape == (2, 2)
+    tf.debugging.assert_near(
+        tf.reduce_sum(ensemble_predictions, axis=-1), 
+        tf.ones((2,)), atol=1e-5
+    )
+
+    auxiliary_network = make_network(
+        clf_depth=2, 
+        clf_vit_block_ids=[], 
+        clf_reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 1.0}, 
+        clf_cls_token_regularizer_ids=[None], 
+        force_global_avg_pooling=True, 
+    )
+    auxiliary = make_wrapper(
+        network=auxiliary_network, 
+        kl_loss_coef=0.01, 
+        ctr_loss_coef=0.01, 
+        mask_by_nulls=False, 
+    )
+    assert auxiliary.use_clf_kl_loss and auxiliary.use_clf_ctr_loss
+    auxiliary_outputs = auxiliary.network(
+        (x_t, t, cond_labels), 
+        full_return=True, 
+        training=False
+    )
+    auxiliary_losses = auxiliary.compute_clf_kl_ctr_loss(
+        classes, 
+        auxiliary_outputs["classes"], 
+        auxiliary_outputs["clf_z_vals"], 
+        auxiliary_outputs["clf_regs_list"], 
+    )
+    assert float(auxiliary_losses[2]) >= 0.0
+    assert float(auxiliary_losses[3]) >= 0.0
+    auxiliary_metrics = auxiliary.get_clf_results_dict(
+        auxiliary_losses[1], classes, 
+        auxiliary_losses[4], 
+        total_loss=auxiliary_losses[0], 
+        clf_kl_loss=auxiliary_losses[2], 
+        clf_ctr_loss=auxiliary_losses[3], 
+        clf_ctr_preds=auxiliary_losses[5], 
+    )
+    assert {"clf_kl_loss", "clf_ctr_loss", "clf_ctr_accuracy"} <= set(
+        auxiliary_metrics
+    )
+    auxiliary_test = auxiliary.test_step((images, classes))
+    assert {"clf_kl_loss", "clf_ctr_loss", "clf_ctr_accuracy"} <= set(
+        auxiliary_test
+    )
+
+    from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
+    raw_network = DiffusionTransformer(
+        num_classes=2, 
+        use_cfg=True, 
+        timesteps=4, 
+        image_size=4, 
+        channels=1, 
+        patch_size=2, 
+        dim=4, 
+        depth=0, 
+        mha_num_heads=1, 
+        vit_block_mlp_ratio=1.0, 
+    )
+    metadata_free = DiffusionClassifier(
+        network=raw_network, 
+        mask_by_nulls=False, 
+        use_ema=False, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+    )
+    assert metadata_free.use_clf_kl_loss is None
+    assert metadata_free.use_clf_ctr_loss is None
+
+    progressive = make_wrapper(mask_by_nulls=False)
+    progressive_history = progressive.fit_progressively(
+        stage_tasks=[{"depth": {"classifier": "vision_transformer_block"}}],
+        x=dataset, 
+        stages_verbose=False, 
+        stage_epochs=1, 
+        final_epochs=0, 
+        verbose=0, 
+    )
+    record = progressive_history.progressive_stages[0]
+    assert record["classifier_depth"] == 1
+    assert record["post_classifier_depth"] == 2
+    assert record["depth_growth"]["classifier"]["added"] == 1
+
+    branch_growth = make_wrapper(mask_by_nulls=False)
+    network_growth = branch_growth._add_depths({
+        "network": "vision_transformer_block", 
+        "classifier": [], 
+    })
+    assert network_growth["network"]["added"] == 1
+    assert network_growth["classifier"]["added"] == 0
+    both_growth = branch_growth._add_depths({
+        "network": "vision_transformer_block", 
+        "classifier": "vision_transformer_block", 
+    })
+    assert both_growth["network"]["added"] == 1
+    assert both_growth["classifier"]["added"] == 1
+
+    policy = DiffusionClassifier(
+        network=make_network(), 
+        mask_by_nulls=False, 
+        use_ema=False, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+        name="policy_classifier_wrapper", 
+        trainable=False, 
+        dtype="float64", 
+    )
+    assert policy.name == "policy_classifier_wrapper"
+    assert policy.trainable is False
+    assert policy.dtype_policy.name == "float64"
+    policy_config = policy.get_config()
+    assert policy_config["mask_t_percentage"] == 70
+    assert "name" not in policy_config and "dtype" not in policy_config
+    try:
+        DiffusionClassifier.from_config(policy_config)
+    except (TypeError, ValueError):
+        pass
+    else:
+        raise AssertionError(
+            "Wrapper config cloning must expose nested-model serialization limits."
+        )
+
+    for kwargs in (
+        {"mask_by_nulls": True, "p_uncond": 0.0},
+        {"clf_train_type": "unknown", "mask_by_nulls": False},
+        {
+            "clf_train_type": "uncond", "train_cfg_scale": None,
+            "mask_by_nulls": False,
+        },
+    ):
+        try:
+            DiffusionClassifier(
+                network=make_network(), test_steps=2, **kwargs
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid classifier wrapper: {kwargs}")
+    try:
+        wrapper.get_clf_results_dict(
+            tf.constant(1.0), classes, both[3][0], 
+            use_total_loss=True,
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Missing requested total loss must fail")
+    try:
+        wrapper.get_clf_results_dict(
+            tf.constant(1.0), classes, both[3][0], 
+            use_kl_loss=True,
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Missing requested classifier KL loss must fail")
+    try:
+        wrapper.get_clf_results_dict(
+            tf.constant(1.0), classes, both[3][0], 
+            use_ctr_loss=True,
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Missing requested classifier token loss must fail")
+
+    tf.keras.backend.clear_session()
+
+    return {"DiffusionClassifier": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

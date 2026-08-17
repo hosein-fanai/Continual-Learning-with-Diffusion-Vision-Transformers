@@ -40,7 +40,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
     """
 
     def __init__(
-        self,
+        self, 
         **kwargs
     ):
         """Create the inherited branches and a second attention branch.
@@ -171,3 +171,134 @@ class DiTDecoderBlock(VisionTransformerBlock):
         )
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test self/cross attention and MLP paths of :class:`DiTDecoderBlock`.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry success mapping after causal-mask, external-source,
+        dimensions, normalization, stochastic-depth, gradient, constructor
+        conflict, and serialization checks pass.
+    """
+
+    import numpy as np
+    import tensorflow as tf
+
+
+    tf.random.set_seed(909)
+    x = tf.random.normal((2, 3, 4))
+    condition = tf.random.normal((2, 5))
+    causal_mask = tf.linalg.band_part(
+        tf.ones((3, 3), dtype=tf.bool), -1, 0
+    )
+
+    identity = DiTDecoderBlock(dim=4, num_heads=2)
+    for mask in (None, causal_mask, tf.ones((2, 3, 3), tf.float32)):
+        for training in (False, True):
+            output = identity(
+                (x, condition), 
+                causal_mask=mask, 
+                training=training
+            )
+            assert output.shape == x.shape
+            np.testing.assert_allclose(
+                output.numpy(), x.numpy(), atol=1e-6
+            )
+
+    for drop_per_sample in (False, True):
+        for mlp_ratio in (None, 2):
+            decoder = DiTDecoderBlock(
+                dim=4, 
+                query_dim=6, 
+                key_dim=1, 
+                value_dim=2, 
+                num_heads=2, 
+                mlp_ratio=mlp_ratio, 
+                mlp_output_dim=3, 
+                drop_prob=0.25, 
+                drop_per_sample=drop_per_sample, 
+                ln_no_adaptation=True
+            )
+            output = decoder(
+                (x, condition), 
+                queries=tf.ones((2, 3, 6)), 
+                values=tf.ones((2, 5, 7)), 
+                causal_mask=causal_mask, 
+                training=True, 
+            )
+            assert output.shape == (2, 3, 3)
+            assert tf.reduce_all(tf.math.is_finite(output))
+            assert decoder.mha_layer_norm2.gate_dim == 6
+            assert decoder.mha_drop_path2.per_sample is drop_per_sample
+
+    cross_self = identity(
+        (x, condition), 
+        queries=None, 
+        values=tf.ones((2, 5, 4)), 
+        causal_mask=causal_mask, 
+        training=False, 
+    )
+    assert cross_self.shape == x.shape
+
+    with tf.GradientTape() as tape:
+        gradient_output = identity((x, condition), training=True)
+        loss = tf.reduce_sum(gradient_output)
+    gradients = tape.gradient(loss, identity.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    try:
+        DiTDecoderBlock(dim=4, gate_query_flag=True)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("gate_query_flag is constructor-controlled.")
+    try:
+        identity(
+            (x, condition), 
+            causal_mask=tf.ones((2, 4, 5), dtype=tf.bool), 
+        )
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("An incompatible causal mask must fail.")
+
+    config = identity.get_config()
+    try:
+        DiTDecoderBlock.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate base keys changed.")
+    filtered_config = dict(config)
+    for key in ("gate_query_flag", "use_layer_norm", "ln_dim"):
+        filtered_config.pop(key)
+    restored = DiTDecoderBlock.from_config(filtered_config)
+    assert restored.dim == 4 and restored.num_heads == 2
+
+    dtype_decoder = DiTDecoderBlock(
+        dim=4, 
+        num_heads=2, 
+        dtype="float64"
+    )
+    assert dtype_decoder.compute_dtype == "float64"
+    try:
+        dtype_decoder((
+            tf.ones((1, 3, 4), dtype=tf.float64), 
+            tf.ones((1, 2), dtype=tf.float64), 
+        ))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError(
+            "Nested float32 attention currently rejects a float64 outer policy."
+        )
+
+    return {"DiTDecoderBlock": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

@@ -102,6 +102,7 @@ class VariationalAutoencoder(models.Model):
                 inconsistent.
             TypeError: If either keyword mapping contains unsupported keys.
         """
+
         super().__init__(**kwargs)
 
         assert (conditioned and class_num is not None) \
@@ -156,6 +157,7 @@ class VariationalAutoencoder(models.Model):
             tf.keras.Sequential: An unbuilt block mapping ``[..., input_dim]``
             to ``[..., units]``.
         """
+
         dlayer = models.Sequential()
 
         dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
@@ -187,6 +189,7 @@ class VariationalAutoencoder(models.Model):
             ``[batch, class_num]``.  It returns three tensors, each shaped
             ``[batch, latent_dim]``: mean, log variance, and sampled latent.
         """
+
         x_inputs = layers.Input(shape=(input_dim,), name="x_input")
 
         if self.conditioned:
@@ -204,7 +207,11 @@ class VariationalAutoencoder(models.Model):
         z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
         z = VariationalAutoencoder.compute_z(z_mean, z_log_var)
 
-        encoder = models.Model(inputs, [z_mean, z_log_var, z], name="encoder")
+        encoder = models.Model(
+            inputs, 
+            [z_mean, z_log_var, z], 
+            name="encoder"
+        )
 
         return encoder
 
@@ -228,6 +235,7 @@ class VariationalAutoencoder(models.Model):
             ``[batch, latent_dim]`` or conditional ``(z, y)`` and returning a
             tensor shaped ``[batch, output_dim]``.
         """
+
         z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
 
         if self.conditioned:
@@ -241,9 +249,16 @@ class VariationalAutoencoder(models.Model):
         for hidden_dim in hiddens_dims:
             z = self._dense_layer(hidden_dim, **hiddens_kwargs)(z)
 
-        outputs = layers.Dense(output_dim, activation=last_activation)(z)
+        outputs = layers.Dense(
+            output_dim, 
+            activation=last_activation
+        )(z)
 
-        decoder = models.Model(inputs, outputs, name="decoder")
+        decoder = models.Model(
+            inputs, 
+            outputs, 
+            name="decoder"
+        )
 
         return decoder
 
@@ -263,6 +278,7 @@ class VariationalAutoencoder(models.Model):
             ``epsilon`` is newly drawn from a standard normal distribution on
             every call.
         """
+
         epsilon = tf.random.normal(shape=tf.shape(z_mean))
         z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
@@ -280,6 +296,7 @@ class VariationalAutoencoder(models.Model):
             tf.Tensor: Scalar floating tensor.  Divergence is summed over
             latent axis 1 and averaged across the batch.
         """
+
         return -0.5 * tf.reduce_mean(
             tf.reduce_sum(
                 1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
@@ -295,6 +312,7 @@ class VariationalAutoencoder(models.Model):
             list[tf.keras.metrics.Mean]: Total, KL, and reconstruction trackers,
             in that order.
         """
+
         return [
             self.total_loss_tracker, 
             self.kl_loss_tracker, 
@@ -318,6 +336,7 @@ class VariationalAutoencoder(models.Model):
             shape ``[batch, latent_dim]`` and reconstruction matches
             ``[batch, data_dim]``.
         """
+
         z_mean, z_log_var, z = self.encoder(inputs, training=training)
 
         if self.conditioned:
@@ -326,7 +345,8 @@ class VariationalAutoencoder(models.Model):
         else:
             decoder_inputs = z
 
-        return (z_mean, z_log_var, z), self.decoder(decoder_inputs, training=training)
+        return ((z_mean, z_log_var, z), 
+                self.decoder(decoder_inputs, training=training))
 
     def train_step(self, data):
         """Run one optimizer step for reconstruction plus beta-weighted KL.
@@ -340,6 +360,7 @@ class VariationalAutoencoder(models.Model):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, and ``recon_loss``.
         """
+
         if self.conditioned:
             x, _ = data
         else:
@@ -382,6 +403,7 @@ class VariationalAutoencoder(models.Model):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, and ``recon_loss``.
         """
+
         if self.conditioned:
             x, _ = data
         else:
@@ -433,6 +455,7 @@ class VariationalAutoencoder(models.Model):
             in contiguous class groups.  With no conditional classes, both
             outputs are empty Python lists rather than arrays.
         """
+
         if self.conditioned:
             if classes is None:
                 classes = self.seen_classes
@@ -454,7 +477,9 @@ class VariationalAutoencoder(models.Model):
 
             return x, y
 
-        z = tf.random.normal(shape=(samples_per_class, self.latent_dim))
+        z = tf.random.normal(
+            shape=(samples_per_class, self.latent_dim)
+        )
         x = self.decoder(z, training=False)
 
         x = x.numpy()
@@ -509,7 +534,9 @@ class VariationalAutoencoder(models.Model):
         Raises:
             AssertionError: If label presence does not match conditional mode.
         """
+
         assert (self.conditioned and (y is not None)) or (not self.conditioned and (y is None)) 
+
 
         if train_num != -1:
             input_size = len(x)
@@ -550,22 +577,469 @@ class VariationalAutoencoder(models.Model):
         return history
 
 
-if __name__ == "__main__":
-    from common.dataloader import load_cifar10
-    from common.utils import init
+def run_self_tests() -> dict[str, str]:
+    """Run CPU-small tests for every VAE mode and public behavior.
+
+    The suite covers valid and invalid conditioning, compilation choices,
+    every dense-block activation/normalization branch, empty/nonempty hidden
+    stacks, latent sampling and KL mathematics, conditional/unconditional
+    calls, real eager train/test steps, metric state, generation boundaries,
+    weight persistence, and every callback/resampling branch of :meth:`train`.
+    ``fit`` orchestration is mocked so this module never downloads data or
+    starts a long training job.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"VariationalAutoencoder": "passed"}`` after all
+        assertions succeed.
+    """
+
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+    from unittest import mock
+    import sys
 
 
-    init()
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(2026)
+    np.random.seed(2026)
 
-    x_train, y_train, *_ = load_cifar10(return_features=True, 
-                                        onehot_labels=True, 
-                                        preprocess="normalize", 
-                                        verbose=0)
+    for conditioned, class_num in ((True, None), (False, 2)):
+        try:
+            VariationalAutoencoder(
+                data_dim=4, 
+                latent_dim=2, 
+                hiddens_dims=(), 
+                conditioned=conditioned, 
+                class_num=class_num, 
+                compile=False, 
+            )
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Conditioning and class_num must agree.")
 
-    vae = VariationalAutoencoder(conditioned=True, class_num=10)
+    try:
+        VariationalAutoencoder(
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(3,), 
+            hiddens_kwargs={"unknown_option": True}, 
+            compile=False, 
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("Unknown dense-block options must be rejected.")
 
-    vae.train(
-        x_train, y_train, 
-        train_num=-1, 
-        clf=models.load_model("./models/hyperas/cifar10_dnn_model_00B.h5")
+    uncompiled = VariationalAutoencoder(
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=(), 
+        last_activation=None, 
+        beta=0.0, 
+        compile=False, 
+        name="uncompiled_vae", 
+        trainable=False, 
     )
+    assert uncompiled.name == "uncompiled_vae"
+    assert uncompiled.trainable is False
+    assert uncompiled._is_compiled is False
+    assert uncompiled.latent_dim == 2 and uncompiled.beta == 0.0
+    assert uncompiled.conditioned is False and uncompiled.class_num is None
+    assert len(uncompiled.encoder.layers) > 0 and len(uncompiled.decoder.layers) > 0
+
+    unconditioned = VariationalAutoencoder(
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=(5,), 
+        hiddens_kwargs={
+            "actv": "relu", 
+            "use_batch_norm": False, 
+            "kernel_init": "glorot_uniform", 
+        }, 
+        last_activation=None, 
+        beta=0.5, 
+        compile_args={
+            "optimizer": tf.keras.optimizers.SGD(learning_rate=0.01), 
+            "loss": "mean_squared_error", 
+            "run_eagerly": True, 
+        },
+        name="unconditional_vae",
+    )
+    assert unconditioned._is_compiled is True
+    assert isinstance(unconditioned.optimizer, tf.keras.optimizers.SGD)
+    assert unconditioned.run_eagerly is True
+
+    relu_no_bn = unconditioned._dense_layer(
+        3, 
+        actv="relu", 
+        use_batch_norm=False, 
+        kernel_init="ones"
+    )
+    assert len(relu_no_bn.layers) == 1
+    assert isinstance(relu_no_bn.layers[0], layers.Dense)
+    assert relu_no_bn.layers[0].use_bias is True
+    assert relu_no_bn.layers[0].activation is tf.keras.activations.relu
+    tf.debugging.assert_equal(
+        tf.shape(relu_no_bn(tf.ones((2, 4)))), 
+        tf.constant([2, 3])
+    )
+
+    relu_with_bn = unconditioned._dense_layer(
+        3, 
+        actv="relu", 
+        use_batch_norm=True, 
+        kernel_init="ones"
+    )
+    assert [type(layer) for layer in relu_with_bn.layers] == [
+        layers.Dense,
+        layers.Activation,
+        layers.BatchNormalization,
+    ]
+    assert relu_with_bn.layers[0].use_bias is False
+    tf.debugging.assert_equal(
+        tf.shape(relu_with_bn(tf.ones((2, 4)), training=True)), 
+        tf.constant([2, 3]), 
+    )
+
+    prelu_no_bn = unconditioned._dense_layer(
+        3, 
+        actv="prelu", 
+        use_batch_norm=False
+    )
+    assert [type(layer) for layer in prelu_no_bn.layers] == [
+        layers.Dense, 
+        layers.PReLU, 
+    ]
+    assert prelu_no_bn.layers[0].activation is tf.keras.activations.linear
+    assert prelu_no_bn.layers[0].use_bias is True
+    tf.debugging.assert_equal(
+        tf.shape(prelu_no_bn(tf.ones((2, 4)))), 
+        tf.constant([2, 3])
+    )
+
+    prelu_with_bn = unconditioned._dense_layer(
+        3, 
+        actv="prelu", 
+        use_batch_norm=True
+    )
+    assert [type(layer) for layer in prelu_with_bn.layers] == [
+        layers.Dense, 
+        layers.PReLU, 
+        layers.BatchNormalization, 
+    ]
+    assert prelu_with_bn.layers[0].use_bias is False
+    tf.debugging.assert_equal(
+        tf.shape(prelu_with_bn(tf.ones((2, 4)))), 
+        tf.constant([2, 3])
+    )
+
+    x = tf.constant([
+        [0.0, 0.25, 0.5, 0.75], 
+        [1.0, 0.75, 0.5, 0.25]
+    ], dtype=tf.float32)
+    (z_mean, z_log_var, z), reconstruction = unconditioned(x, training=False)
+    for latent in (z_mean, z_log_var, z):
+        assert latent.shape == (2, 2) and latent.dtype == tf.float32
+        assert bool(tf.reduce_all(tf.math.is_finite(latent)))
+    assert reconstruction.shape == (2, 4)
+    assert reconstruction.dtype == tf.float32
+
+    zero_latents = tf.zeros((3, 2), tf.float32)
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(zero_latents, zero_latents), 
+        tf.constant(0.0), 
+    )
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(tf.ones((3, 2)), zero_latents), 
+        tf.constant(1.0), 
+    )
+    tf.random.set_seed(77)
+    sampled_a = VariationalAutoencoder.compute_z(zero_latents, zero_latents)
+    tf.random.set_seed(77)
+    sampled_b = VariationalAutoencoder.compute_z(zero_latents, zero_latents)
+    tf.debugging.assert_near(sampled_a, sampled_b)
+    assert sampled_a.shape == zero_latents.shape
+    assert bool(tf.reduce_any(tf.not_equal(sampled_a, zero_latents)))
+    try:
+        VariationalAutoencoder.compute_z(
+            tf.zeros((1, 2), tf.float64), 
+            tf.zeros((1, 2), tf.float64)
+        )
+    except (tf.errors.InvalidArgumentError, TypeError):
+        pass
+    else:
+        raise AssertionError("compute_z currently requires float32 latent inputs.")
+
+    metric_names = [metric.name for metric in unconditioned.metrics]
+    assert metric_names == ["total_loss", "kl_loss", "recon_loss"]
+    unconditioned.reset_metrics()
+    assert all(float(metric.result()) == 0.0 for metric in unconditioned.metrics)
+    weights_before_train = [
+        weight.numpy().copy() 
+        for weight in unconditioned.trainable_weights
+    ]
+    train_result = unconditioned.train_step(x)
+    assert set(train_result) == {"loss", "kl_loss", "recon_loss"}
+    assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
+    assert any(
+        not np.array_equal(before, after.numpy())
+        for before, after in zip(weights_before_train, 
+                                unconditioned.trainable_weights)
+    )
+    weights_before_test = [
+        weight.numpy().copy() 
+        for weight in unconditioned.trainable_weights
+    ]
+    test_result = unconditioned.test_step(x)
+    assert set(test_result) == {"loss", "kl_loss", "recon_loss"}
+    assert all(bool(tf.math.is_finite(value)) for value in test_result.values())
+    for before, after in zip(weights_before_test, 
+                            unconditioned.trainable_weights):
+        np.testing.assert_array_equal(before, after.numpy())
+
+    generated = unconditioned.generate(classes=[999], samples_per_class=3)
+    assert isinstance(generated, np.ndarray)
+    assert generated.shape == (3, 4) and generated.dtype == np.float32
+    generated_zero = unconditioned.generate(samples_per_class=0)
+    assert generated_zero.shape == (0, 4)
+    try:
+        unconditioned.generate(samples_per_class=-1)
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("A negative generation count must fail.")
+
+    sigmoid_vae = VariationalAutoencoder(
+        data_dim=3, 
+        latent_dim=1, 
+        hiddens_dims=(), 
+        last_activation="sigmoid", 
+        compile=False, 
+    )
+    sigmoid_samples = sigmoid_vae.generate(samples_per_class=2)
+    assert sigmoid_samples.shape == (2, 3)
+    assert np.all(sigmoid_samples >= 0.0) and np.all(sigmoid_samples <= 1.0)
+
+    conditioned = VariationalAutoencoder(
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=(4,), 
+        hiddens_kwargs={"actv": "prelu", "use_batch_norm": True}, 
+        last_activation="tanh", 
+        beta=0.25, 
+        conditioned=True, 
+        class_num=3, 
+        compile_args={
+            "optimizer": tf.keras.optimizers.SGD(learning_rate=0.01), 
+            "loss": "mean_squared_error", 
+            "run_eagerly": True, 
+        },
+    )
+    y = tf.one_hot([0, 2], depth=3)
+    (cond_mean, cond_log_var, cond_z), cond_reconstruction = conditioned(
+        (x, y), 
+        training=True
+    )
+    assert cond_mean.shape == cond_log_var.shape == cond_z.shape == (2, 2)
+    assert cond_reconstruction.shape == (2, 4)
+    assert bool(tf.reduce_all(cond_reconstruction <= 1.0))
+    assert bool(tf.reduce_all(cond_reconstruction >= -1.0))
+    conditioned.reset_metrics()
+    cond_train_result = conditioned.train_step((x, y))
+    assert set(cond_train_result) == {"loss", "kl_loss", "recon_loss"}
+    cond_test_result = conditioned.test_step((x, y))
+    assert set(cond_test_result) == {"loss", "kl_loss", "recon_loss"}
+
+    assert conditioned.generate(classes=[], samples_per_class=2) == ([], [])
+    conditioned.seen_classes = [1]
+    seen_x, seen_y = conditioned.generate(classes=None, samples_per_class=2)
+    assert seen_x.shape == (2, 4)
+    np.testing.assert_array_equal(seen_y, np.array([1, 1]))
+    explicit_x, explicit_y = conditioned.generate(
+        classes=[2, 0], 
+        samples_per_class=2, 
+        onehot_y_output=False
+    )
+    assert explicit_x.shape == (4, 4)
+    np.testing.assert_array_equal(explicit_y, np.array([2, 2, 0, 0]))
+    onehot_x, onehot_y = conditioned.generate(
+        classes=[0, 2], 
+        samples_per_class=1, 
+        onehot_y_output=True
+    )
+    assert onehot_x.shape == (2, 4)
+    assert onehot_y.shape == (2, 3) and onehot_y.dtype == np.float32
+    np.testing.assert_array_equal(onehot_y, np.eye(3, dtype=np.float32)[[0, 2]])
+    zero_cond_x, zero_cond_y = conditioned.generate(
+        classes=[1], 
+        samples_per_class=0, 
+        onehot_y_output=True
+    )
+    assert zero_cond_x.shape == (0, 4) and zero_cond_y.shape == (0, 3)
+    invalid_id_x, invalid_id_y = conditioned.generate(
+        classes=[3], 
+        samples_per_class=1, 
+        onehot_y_output=True
+    )
+    assert invalid_id_x.shape == (1, 4)
+    np.testing.assert_array_equal(invalid_id_y, np.zeros((1, 3), np.float32))
+
+    with TemporaryDirectory() as temp_dir:
+        weights_path = Path(temp_dir) / "vae.weights.h5"
+        unconditioned.save_weights(weights_path)
+        weight_clone = VariationalAutoencoder(
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(5,), 
+            hiddens_kwargs={
+                "actv": "relu", 
+                "use_batch_norm": False, 
+                "kernel_init": "glorot_uniform", 
+            }, 
+            last_activation=None, 
+            beta=0.5, 
+            compile=False, 
+        )
+        weight_clone(x, training=False)
+        weight_clone.load_weights(weights_path)
+        source_mean, source_log_var, _ = unconditioned.encoder(x, training=False)
+        clone_mean, clone_log_var, _ = weight_clone.encoder(x, training=False)
+        tf.debugging.assert_near(source_mean, clone_mean)
+        tf.debugging.assert_near(source_log_var, clone_log_var)
+        fixed_z = tf.zeros((2, 2), tf.float32)
+        tf.debugging.assert_near(
+            unconditioned.decoder(fixed_z, training=False), 
+            weight_clone.decoder(fixed_z, training=False), 
+        )
+
+    fit_history = SimpleNamespace(history={"loss": [1.0]})
+    sentinel_callback = tf.keras.callbacks.Callback()
+    classifier = tf.keras.Sequential([
+        layers.Input(shape=(4,)), 
+        layers.Dense(3, activation="softmax", kernel_initializer="zeros"), 
+    ])
+    module = sys.modules[__name__]
+    x_numpy = x.numpy()
+    y_numpy = y.numpy()
+
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock, mock.patch.object(
+        module, "get_callbacks", return_value=[sentinel_callback]
+    ) as callbacks_mock:
+        history = unconditioned.train(
+            x_numpy, 
+            train_num=-1, 
+            epochs=2, 
+            batch_size=1, 
+            validation_data=x_numpy, 
+            callbacks_monitor="custom_metric", 
+            verbose=0, 
+        )
+        assert history == {"loss": [1.0]}
+        callbacks_mock.assert_called_once_with(monitor="custom_metric", verbose=0)
+        fit_args, fit_kwargs = fit_mock.call_args
+        assert fit_args[0] is unconditioned
+        np.testing.assert_array_equal(fit_args[1], x_numpy)
+        assert fit_args[2] is None
+        assert fit_kwargs["epochs"] == 2 and fit_kwargs["batch_size"] == 1
+        assert fit_kwargs["validation_data"] is x_numpy
+        assert fit_kwargs["callbacks"] == [sentinel_callback]
+
+    explicit_callback = tf.keras.callbacks.Callback()
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock, mock.patch.object(module, "get_callbacks") as callbacks_mock:
+        history = unconditioned.train(
+            x_numpy, 
+            train_num=-1, 
+            epochs=1, 
+            callbacks_list=[explicit_callback], 
+            verbose=0, 
+        )
+        assert history == {"loss": [1.0]}
+        callbacks_mock.assert_not_called()
+        assert fit_mock.call_args.kwargs["callbacks"] == [explicit_callback]
+
+    deterministic_indices = np.array([1, 0, 1, 0, 1], dtype=np.int64)
+    conditioned.seen_classes = []
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock, mock.patch.object(
+        module, "get_callbacks", return_value=[sentinel_callback]
+    ) as callbacks_mock, mock.patch.object(
+        np.random, "randint", return_value=deterministic_indices
+    ) as randint_mock:
+        history = conditioned.train(
+            x_numpy, 
+            y_numpy, 
+            train_num=5, 
+            epochs=1, 
+            batch_size=2, 
+            clf=classifier, 
+            verbose=0, 
+        )
+        assert history == {"loss": [1.0]}
+        randint_mock.assert_called_once_with(0, 2, (5,))
+        callbacks_mock.assert_called_once_with(
+            monitor="decoder_accuracy", verbose=0
+        )
+        fit_args, fit_kwargs = fit_mock.call_args
+        np.testing.assert_array_equal(fit_args[1], x_numpy[deterministic_indices])
+        np.testing.assert_array_equal(fit_args[2], y_numpy[deterministic_indices])
+        assert isinstance(fit_kwargs["callbacks"][0], DecoderAccuracyCallback)
+        assert fit_kwargs["callbacks"][0].classifier is classifier
+        assert fit_kwargs["callbacks"][1] is sentinel_callback
+        assert set(int(item) for item in conditioned.seen_classes) == {0, 2}
+
+    lower_count_indices = np.array([0, 1], dtype=np.int64)
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock, mock.patch.object(module, "get_callbacks") as callbacks_mock, \
+            mock.patch.object(
+                np.random, "randint", return_value=lower_count_indices
+            ) as randint_mock:
+        conditioned.train(
+            x_numpy, 
+            y_numpy, 
+            train_num=1, 
+            callbacks_list=[explicit_callback], 
+            clf=classifier, 
+            verbose=0, 
+        )
+        randint_mock.assert_called_once_with(0, 2, (2,))
+        callbacks_mock.assert_not_called()
+        fit_callbacks = fit_mock.call_args.kwargs["callbacks"]
+        assert isinstance(fit_callbacks[0], DecoderAccuracyCallback)
+        assert fit_callbacks[1] is explicit_callback
+
+    try:
+        unconditioned.train(x_numpy, y_numpy, train_num=-1, verbose=0)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Unconditional training must reject labels.")
+    try:
+        conditioned.train(x_numpy, None, train_num=-1, verbose=0)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Conditional training must require labels.")
+    try:
+        unconditioned.train(np.empty((0, 4), np.float32), train_num=0, verbose=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Resampling an empty input must fail.")
+
+    tf.keras.backend.clear_session()
+    return {"VariationalAutoencoder": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

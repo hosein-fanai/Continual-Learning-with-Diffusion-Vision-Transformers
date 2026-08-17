@@ -323,6 +323,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None.  A configured ``tf.keras.Model`` is initialized in place.
         """
+
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
@@ -395,6 +396,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             A non-dictionary ID sequence is treated as ``{1: sequence}`` for
             validation.  This helper validates but does not normalize IDs.
         """
+
         if check_items_num:
             assert local_vars[depth_name] == 0 or \
                 len(local_vars[dict_name]) <= local_vars[depth_name], \
@@ -442,6 +444,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             raise ``AssertionError``.  The allowed-key tuples are retained on
             the instance for classifier-branch validation.
         """
+
         assert local_vars["image_size"] % local_vars["patch_size"] == 0, \
             "image_size must be divisible by patch_size."
 
@@ -623,10 +626,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             dict[int, list[int]]: The same mapping object after expansion.
         """
+
         for key in ids_dict:
             max_id_ = key if max_id is None else max_id+1
-            ids_dict[key] = list(range(min_id, max_id_)) \
-                            if None in ids_dict[key] \
+            ids_dict[key] = list(range(min_id, max_id_)) if None in ids_dict[key] \
                             else ids_dict[key]
 
         return ids_dict
@@ -644,6 +647,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             dict[int, list[int]]: The same normalized mapping.
         """
+
         for key, value in ids_dict.items():
             value = list(value)
 
@@ -676,6 +680,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             With ``depth=4``, ``[None]`` and bounds 1..4 becomes
             ``[1, 2, 3, 4]``; ``[-1, -5]`` becomes ``[4, 0]``.
         """
+
         if not_dict:=(not isinstance(ids_dict, dict)):
             ids_dict = {1: ids_dict}
 
@@ -705,6 +710,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None.  Corresponding instance attributes are replaced or mutated
             with integer-only IDs.
         """
+
         self.vit_block_ids = self._handle_ids(
             self.vit_block_ids, 
             depth=self.depth, 
@@ -764,6 +770,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             int | None: Width from the last dimension-changing component, or
             ``None`` when the stage does not establish a width.
         """
+
         last_output_dim = None
 
         if (key:=self.FC) in layers_dict:
@@ -797,6 +804,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             int: Resolved feature width, falling back to ``base_dim``.
         """
+
         if i == -1:
             return base_dim
 
@@ -831,6 +839,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             int: Current inferred feature width.
         """
+
         layers_dicts = layers_dicts + [layers_dict]
         output_dim = self._get_last_output_dim(
             i, 
@@ -864,6 +873,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             AssertionError: If ``connect_type="add"`` sources have unequal
                 widths.
         """
+
         dims = []
 
         for i in ids_set:
@@ -880,8 +890,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if len(dims) == 0:
             return 0
 
-        if kwargs is None or \
-        kwargs.get("connect_type", "concat") == "concat":
+        if kwargs is None or kwargs.get("connect_type", "concat") == "concat":
             return sum(dims)
 
         for dim_1 in dims:
@@ -907,6 +916,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             int | None: Grid side, or ``None`` when the latest representation
             is a flat vector with no spatial grid.
         """
+
         if i == -1:
             return base_grid_size
 
@@ -949,6 +959,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             int | None: Current spatial grid side.
         """
+
         layers_dicts = layers_dicts + [layers_dict]
         grid_size = self._get_last_grid_size(
             i, 
@@ -978,6 +989,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             AssertionError: If a common grid was requested but sizes differ.
         """
+
         grid_sizes = []
 
         for i in ids_set:
@@ -1011,6 +1023,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ConditionEmbedding: Layer mapping integer tensors of shape ``[B]``
             to float embeddings of shape ``[B, cond_embedder_dim]``.
         """
+
         time_embedder = ConditionEmbedding(
             dim=self.cond_embedder_dim, 
             pos_embed_type=self.time_embed_type, 
@@ -1033,6 +1046,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ConditionEmbedding: Layer mapping label IDs of shape ``[B]`` to
             float embeddings of shape ``[B, cond_embedder_dim]``.
         """
+
         label_embedder = ConditionEmbedding(
             dim=self.cond_embedder_dim, 
             pos_embed_type=self.label_embed_type, 
@@ -1060,6 +1074,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             ValueError: If ``merger_type`` is unsupported.
         """
+
         if merger_type == "concat":
             merger_layer = layers.Concatenate(
                 axis=-1, 
@@ -1085,6 +1100,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None.  Embedder and merger attributes are assigned in place.
         """
+
         self._cond_type = self.cond_type if self.cond_type is not None and \
                         (not self.ln_no_adaptation or self.patches_conds_merger_type is not None) \
                         else []
@@ -1147,6 +1163,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             SingleTokenLayer | None: Layer returning one ``[B, 1, dim]`` token,
             or ``None`` when no class token is requested.
         """
+
         cls_token = SingleTokenLayer(
             dim=dim, 
             pos_merger_type=cls_token_pos_merger_type, 
@@ -1189,6 +1206,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             AssertionError: If additive sources have incompatible widths.
         """
+
         increased_dim_ = self._get_unforced_total_dim(
             ids_set, 
             layers_dicts, 
@@ -1255,6 +1273,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             VisionTransformerBlock | DiTDecoderBlock: A block mapping token and
             condition tensors to a token tensor.
         """
+
         block_kwargs = {
             "dim": self._get_current_output_dim(
                 i, 
@@ -1320,6 +1339,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             LocalMixer: Configured rank-3 token mixer.
         """
+
         local_mixer_kwargs = {
             "dim": self._get_current_output_dim(
                 i, 
@@ -1385,6 +1405,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             ValueError: If ``scaler_type`` is unsupported.
         """
+
         scaler_kwargs = {
             "dim": self._get_current_output_dim(
                 i, 
@@ -1444,6 +1465,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``[B, output_grid_size**2 + int(grid_has_cls_token), dim]``.  At the
             base image resolution the input tensor is returned unchanged.
         """
+
         if self._current_resolution == self.image_size:
             return x
 
@@ -1519,6 +1541,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ValueError: If ``reshape_type`` is not ``"flatten"`` or
                 ``"unflatten"``.
         """
+
         grid_size = self._get_current_grid_size(
             i=i, 
             layers_dicts=layers_dicts, 
@@ -1630,6 +1653,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             tf.keras.layers.Dense: Layer mapping ``[B, features]`` to class
             probabilities of shape ``[B, num_classes]``.
         """
+
         token_regularizer = layers.Dense(
             self.num_classes, 
             activation="softmax", 
@@ -1652,6 +1676,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             in connector, cross-attention, block, mixer, downsample, upsample,
             reshape, regularizer order.
         """
+
         layers_dict = {}
         key = i+1
 
@@ -1774,6 +1799,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None.  ``layers_dicts`` is replaced by a list of length ``depth``;
             with ``depth=0`` it is an empty list.
         """
+
         self.layers_dicts = []
 
         for i in range(self.depth):
@@ -1793,6 +1819,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None.  ``self.unpatchifier`` is assigned when
             ``use_unpatchify=True``.  No attribute is created otherwise.
         """
+
         if self.use_unpatchify:
             dim = self._get_unforced_total_dim(
                 [self.depth], 
@@ -1909,6 +1936,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None.  Variables are created and the Keras built flag is set.
         """
+
         input_shape = self.build_model()
         super().build(input_shape)
 
@@ -1942,6 +1970,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             regs_list, (z_mean, z_log_var))``.  Feature index 0 is depth 0 and
             index k is depth k; absent regularizers/statistics are ``None``.
         """
+
         x, cond, features_list, regs_list, z_vals = self.encode(
             inputs, 
             min_depth=min_depth,
@@ -1971,6 +2000,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             AssertionError: If the value is nonintegral, nonpositive, or not
                 divisible by ``patch_size``.
         """
+
         resolution = self.image_size if resolution is None else resolution
 
         assert int(resolution) == resolution, \
@@ -1996,6 +2026,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             created image dtype is ``tf.float32``, timestep ``tf.int32``, and
             label ``tf.uint8``.
         """
+
         noisy_images = layers.Input(
             shape=(
                 self._current_resolution, 
@@ -2049,6 +2080,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             optionally as ``(combined, time_embedding, label_embedding)``.
             ``"add"`` preserves per-embedder width; ``"concat"`` appends it.
         """
+
         cond_type = [] if cond_type is None else cond_type
 
         time_embeds = self.time_embedder(
@@ -2100,6 +2132,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``patches_conds_merger_type`` is set, the merged condition is
             repeated across and merged into every patch token.
         """
+
         images, times, labels = inputs
 
         conds_list = self.embed_conditions(
@@ -2152,6 +2185,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             tf.Tensor: Token sequence ``[B, P + 1, D_out]`` with the new token
             at index 0.
         """
+
         if cls_token_type == "time":
             embeds = self.time_embedder(
                 times, 
@@ -2196,6 +2230,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             tf.Tensor: Rank-2 tensor ``[B, (end-start)*D]``.
         """
+
         if x.shape.rank == 3:
             x = x[:, start: end, :]
 
@@ -2242,6 +2277,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             AssertionError: If ``min_depth`` is outside ``0..depth``.
         """
+
         assert 0 <= min_depth <= self.depth, \
             "min_depth must be in the range of [0, depth]."
 
@@ -2533,7 +2569,705 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             list[str]: Variable names in input/model order.
         """
+
         vars = self.trainable_variables if vars is None else vars
         names = [var.name for var in vars]
 
         return names
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic, CPU-small integration tests for DiffusionTransformer.
+
+    The checks cover depth-zero and multi-depth execution, every condition and
+    class-token mode, additive/concatenative mergers, CNN and linear patching,
+    decoder/encoder attention blocks, both cross-attention plug directions,
+    routed and relative IDs, spatial mixers/scalers, variational reshaping,
+    auxiliary token heads, output alternatives, progressive depth growth,
+    configuration reconstruction, resolution changes, and invalid arguments.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"DiffusionTransformer": "passed"}`` after all
+        assertions succeed.
+    """
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(101)
+    images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
+    times = tf.constant([0, 3], dtype=tf.int32)
+    labels = tf.constant([1, 2], dtype=tf.uint8)
+    inputs = (images, times, labels)
+    base = {
+        "num_classes": 2, 
+        "use_cfg": True, 
+        "timesteps": 4, 
+        "image_size": 4, 
+        "channels": 1, 
+        "patch_size": 2, 
+        "dim": 4, 
+        "mha_num_heads": 1, 
+        "vit_block_mlp_ratio": 1.0, 
+    }
+
+    depth_zero = DiffusionTransformer(depth=0, **base)
+    output, cond, features, regs, z_values = depth_zero(
+        inputs, full_return=True, training=False
+    )
+    assert output.shape == (2, 4, 4, 1)
+    assert output.dtype == tf.float32
+    assert cond.shape == (2, 4)
+    assert len(depth_zero.layers_dicts) == 0
+    assert len(features) == len(regs) == 1
+    assert z_values == (None, None)
+    assert depth_zero.current_resolution == 4
+    assert depth_zero.build_model(call_model=False) == [
+        tf.TensorShape([None, 4, 4, 1]),
+        tf.TensorShape([None]),
+        tf.TensorShape([None]),
+    ]
+
+    for cond_type in (None, "time", "label", "time_label"):
+        model = DiffusionTransformer(
+            depth=1,
+            cond_type=cond_type,
+            ln_no_adaptation=cond_type is None,
+            use_unpatchify=cond_type is not None,
+            **base,
+        )
+        value, merged, stage_features, stage_regs, _ = model(
+            inputs, full_return=True, training=False
+        )
+        assert value.shape == (
+            (2, 4, 4, 1) if cond_type is not None else (2, 4, 4)
+        )
+        assert len(stage_features) == len(stage_regs) == 2
+        assert (merged is None) == (cond_type is None)
+
+    concat_conditions = DiffusionTransformer(
+        depth=0, 
+        cond_dim=4, 
+        conds_merger_type="concat", 
+        patches_conds_merger_type="concat", 
+        **base
+    )
+    concat_tokens, concat_cond = concat_conditions.embed_inputs(
+        inputs, 
+        "time_label", 
+        training=False
+    )
+    assert concat_cond.shape == (2, 4)
+    assert concat_tokens.shape == (2, 4, 8)
+    additive_patches = DiffusionTransformer(
+        depth=0, 
+        cond_dim=4, 
+        patches_conds_merger_type="add", 
+        **base
+    )
+    assert additive_patches(inputs, training=False).shape == (2, 4, 4, 1)
+
+    for patchify_with_cnn in (False, True):
+        for shift_inputs in (False, True):
+            model = DiffusionTransformer(
+                depth=0, 
+                patchify_with_cnn=patchify_with_cnn, 
+                shift_inputs=shift_inputs, 
+                **base
+            )
+            tokens, _ = model.embed_inputs(
+                inputs, model.cond_type, training=False
+            )
+            assert tokens.shape == (2, 4, 4)
+            if shift_inputs:
+                tf.debugging.assert_near(
+                    tokens[:, 0, :],
+                    tf.repeat(tokens[:1, 0, :], 2, axis=0),
+                )
+
+    for token_type in ("new_weight", "time", "label", "time_label"):
+        for merger_type in ("add", "concat"):
+            if merger_type == "concat" and token_type != "new_weight":
+                try:
+                    DiffusionTransformer(
+                        depth=0, 
+                        cls_token_type=token_type, 
+                        cls_token_pos_merger_type=merger_type, 
+                        **base
+                    )
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(
+                        "Condition-backed concat class tokens must expose their "
+                        "documented width mismatch"
+                    )
+                continue
+            model = DiffusionTransformer(
+                depth=0, 
+                cls_token_type=token_type, 
+                cls_token_pos_merger_type=merger_type, 
+                **base
+            )
+            single_weight_concat = token_type == "new_weight" and merger_type == "concat"
+            selected_inputs = (
+                tuple(value[:1] for value in inputs) if single_weight_concat else inputs
+            )
+            selected_times, selected_labels = selected_inputs[1:]
+            tokens, (_, time_embeds, label_embeds) = model.embed_inputs(
+                selected_inputs, model.cond_type, 
+                full_return=True, training=False
+            )
+            tokens = model.prepend_cls_token(
+                tokens, token_type, 
+                time_embeds=time_embeds, 
+                label_embeds=label_embeds, 
+                times=selected_times, 
+                labels=selected_labels, 
+                training=False, 
+            )
+            expected_batch = 1 if single_weight_concat else 2
+            assert tokens.shape[0] == expected_batch and tokens.shape[1] == 5
+            assert model(selected_inputs, training=False).shape == (
+                expected_batch, 4, 4, 1
+            )
+            if single_weight_concat:
+                try:
+                    model(inputs, training=False)
+                except tf.errors.InvalidArgumentError:
+                    pass
+                else:
+                    raise AssertionError(
+                        "The learned concat token's single-row limitation changed"
+                    )
+
+    configured_token = DiffusionTransformer(
+        depth=0, 
+        cls_token_type="new_weight", 
+        cls_token_freq_dim=2, 
+        cls_token_mlp_ratio=2.0, 
+        final_ffn_activation_func="tanh", 
+        **base,
+    )
+    configured_token_output = configured_token(inputs, training=False)
+    assert configured_token.cls_token_freq_dim == 2
+    assert configured_token.cls_token_mlp_ratio == 2.0
+    assert configured_token.final_ffn_activation_func == "tanh"
+    assert configured_token_output.shape == (2, 4, 4, 1)
+    assert bool(tf.reduce_all(tf.abs(configured_token_output) <= 1.0))
+
+    for plug_type in ("values", "queries"):
+        routed = DiffusionTransformer(
+            depth=2, 
+            connection_ids_dict={2: [0, 1]}, 
+            connection_kwargs={"connect_type": "concat", "mlp_output_dim": 4}, 
+            cross_attention_ids_dict={2: [-2]}, 
+            cross_attention_kwargs={"connect_type": "concat", "mlp_output_dim": 4}, 
+            cross_attention_plug_type=plug_type, 
+            vit_block_ids=[1, 2], 
+            use_decoder_ids=[1], 
+            **base,
+        )
+        routed_output = routed(inputs, training=False)
+        assert routed_output.shape == (2, 4, 4, 1)
+        assert routed.connection_ids_dict == {2: [0, 1]}
+        assert routed.cross_attention_ids_dict == {2: [1]}
+        assert routed.vit_block_ids == [1, 2]
+        assert routed.use_decoder_ids == [1]
+
+    normalized = DiffusionTransformer(
+        depth=2, 
+        build=False, 
+        vit_block_ids=[None], 
+        local_mixer_ids=[-1], 
+        cls_token_regularizer_ids=[None], 
+        connection_ids_dict={2: [None]}, 
+        **base,
+    )
+    assert normalized.vit_block_ids == [1, 2]
+    assert normalized.local_mixer_ids == [2]
+    assert normalized.cls_token_regularizer_ids == [0, 1, 2]
+    assert normalized.connection_ids_dict == {2: [0, 1]}
+    assert normalized._handle_ids([-1, -3], depth=2) == [2, 0]
+
+    local = DiffusionTransformer(
+        depth=1, 
+        vit_block_ids=[], 
+        local_mixer_ids=[1], 
+        local_mixer_kwargs={
+            "kernel_size": 3, 
+            "use_pointwise": True, 
+            "pointwise_dim_ratio": 1, 
+            "pos_embed_type": None, 
+        }, 
+        **base,
+    )
+    assert local(inputs, training=False).shape == (2, 4, 4, 1)
+
+    for method in ("avg_pooling", "max_pooling", "cnn_stride"):
+        down = DiffusionTransformer(
+            depth=1, 
+            vit_block_ids=[], 
+            downsample_ids=[1], 
+            downsample_kwargs={"scaling_method": method}, 
+            use_unpatchify=False, 
+            **base, 
+        )
+        assert down(inputs, training=False).shape[1] == 1
+    for method in ("cnn_transpose", "interpolate", "cnn_interpolate"):
+        up = DiffusionTransformer(
+            depth=1, 
+            vit_block_ids=[], 
+            upsample_ids=[1], 
+            upsample_kwargs={"scaling_method": method}, 
+            use_unpatchify=False, 
+            **base,
+        )
+        assert up(inputs, training=False).shape[1] == 16
+
+    for add_kl in (False, True):
+        bottleneck = DiffusionTransformer(
+            depth=2, 
+            vit_block_ids=[], 
+            reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+            reshaper_kwargs={"add_kl": add_kl, "latent_dim_ratio": 1.0}, 
+            **base, 
+        )
+        value, _, _, _, latent = bottleneck(inputs, full_return=True, training=False)
+        assert value.shape == (2, 4, 4, 1)
+        if add_kl:
+            assert latent[0].shape == latent[1].shape == (2, 16)
+        else:
+            assert latent[0].shape == latent[1].shape == tf.TensorShape([])
+            assert int(latent[0]) == int(latent[1]) == 2
+
+    regularized = DiffusionTransformer(
+        depth=1, 
+        cls_token_type="new_weight", 
+        cls_token_regularizer_ids=[None], 
+        cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+        **base,
+    )
+    _, _, _, regularizers, _ = regularized(inputs, full_return=True, training=False)
+    assert len(regularizers) == 2
+    assert all(item.shape == (2, 2) for item in regularizers)
+    tf.debugging.assert_near(
+        tf.reduce_sum(regularizers[1], axis=-1), tf.ones((2,)), atol=1e-5
+    )
+    flat = regularized.slice_and_flatten_tokens(tf.ones((2, 3, 4)), 0, 2)
+    assert flat.shape == (2, 8)
+
+    for residual in (False, True):
+        refined = DiffusionTransformer(
+            depth=0, 
+            use_refiner_cnn=True, 
+            refiner_cnn_hidden_dim=2, 
+            refiner_cnn_residual=residual, 
+            final_activation_func="sigmoid", 
+            **base, 
+        )
+        refined_output = refined(inputs, training=False)
+        assert refined_output.shape == (2, 4, 4, 1)
+        assert bool(tf.reduce_all((0.0 <= refined_output) & (refined_output <= 1.0)))
+    token_output = DiffusionTransformer(depth=0, use_unpatchify=False, **base)(
+        inputs, training=False
+    )
+    assert token_output.shape == (2, 4, 4)
+
+    resized = DiffusionTransformer(depth=0, **base)
+    resized.set_current_resolution(8)
+    large_inputs = (
+        tf.zeros((1, 8, 8, 1)), 
+        tf.zeros((1,), dtype=tf.int32), 
+        tf.ones((1,), dtype=tf.uint8), 
+    )
+    assert resized(large_inputs, training=False).shape == (1, 8, 8, 1)
+    resized.set_current_resolution(None)
+    assert resized.current_resolution == 4
+
+    progressive = DiffusionTransformer(depth=0, **base)
+    assert progressive.add_depths(None)["network"] == {
+        "before": 0, "added": 0, "after": 0
+    }
+    growth = progressive.add_depths([
+        "vision_transformer_block", 
+        {"feature_connector": {"ids": [-1]}}, 
+        ("vision_transformer_block", "cls_token_regularizer"), 
+    ])
+    assert growth["network"] == {"before": 0, "added": 3, "after": 3}
+    assert progressive(inputs, training=False).shape == (2, 4, 4, 1)
+    assert progressive.get_variables_names()
+    clone = DiffusionTransformer.from_config(progressive.get_config())
+    assert clone.depth == 3
+    assert clone(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_cross = DiffusionTransformer(depth=0, **base)
+    cross_growth = progressive_cross.add_depths({
+        "cross_attention_connector": {"ids": [-1]}, 
+        "vision_transformer_block": {
+            "use_decoder": True, 
+            "mlp_output_dim": 4, 
+        }, 
+    })
+    assert cross_growth["network"] == {"before": 0, "added": 1, "after": 1}
+    assert progressive_cross.cross_attention_ids_dict == {1: [0]}
+    assert progressive_cross.use_decoder_ids == [1]
+    assert progressive_cross.vit_block_mlp_output_dims == {1: 4}
+    assert progressive_cross.CAC in progressive_cross.layers_dicts[0]
+    assert isinstance(
+        progressive_cross.layers_dicts[0][progressive_cross.VTB],
+        DiTDecoderBlock,
+    )
+    assert progressive_cross(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_local = DiffusionTransformer(depth=0, **base)
+    assert progressive_local.add_depths("local_mixer")["network"]["added"] == 1
+    assert progressive_local.local_mixer_ids == [1]
+    assert progressive_local.LM in progressive_local.layers_dicts[0]
+    assert progressive_local(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_spatial = DiffusionTransformer(depth=0, **base)
+    spatial_growth = progressive_spatial.add_depths([
+        "downsampler", 
+        "upsampler", 
+    ])
+    assert spatial_growth["network"] == {"before": 0, "added": 2, "after": 2}
+    assert progressive_spatial.downsample_ids == [1]
+    assert progressive_spatial.upsample_ids == [2]
+    assert progressive_spatial.DS in progressive_spatial.layers_dicts[0]
+    assert progressive_spatial.US in progressive_spatial.layers_dicts[1]
+    assert progressive_spatial(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_reshape = DiffusionTransformer(depth=0, **base)
+    reshape_growth = progressive_reshape.add_depths([
+        {"reshaper": {"reshape_type": "flatten"}}, 
+        {"reshaper": {"reshape_type": "unflatten"}}, 
+    ])
+    assert reshape_growth["network"] == {"before": 0, "added": 2, "after": 2}
+    assert progressive_reshape.reshaper_ids_dict == {
+        1: "flatten", 
+        2: "unflatten", 
+    }
+    assert all(
+        progressive_reshape.R in stage
+        for stage in progressive_reshape.layers_dicts
+    )
+    assert progressive_reshape(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_disabled = DiffusionTransformer(depth=0, **base)
+    disabled_growth = progressive_disabled.add_depths({
+        "vision_transformer_block": False,
+    })
+    assert disabled_growth["network"] == {"before": 0, "added": 1, "after": 1}
+    assert progressive_disabled.layers_dicts[0] == {}
+    assert progressive_disabled.vit_block_ids == []
+    assert progressive_disabled(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_empty = DiffusionTransformer(depth=0, **base)
+    assert progressive_empty.add_depths([])["network"] == {
+        "before": 0, 
+        "added": 0, 
+        "after": 0, 
+    }
+    collection_growth = progressive_empty.add_depths({
+        "local_mixer", 
+        "vision_transformer_block", 
+    })
+    assert collection_growth["network"] == {"before": 0, "added": 1, "after": 1}
+    frozen_growth = progressive_empty.add_depths(
+        frozenset({"vision_transformer_block"})
+    )
+    assert frozen_growth["network"] == {"before": 1, "added": 1, "after": 2}
+    assert progressive_empty.local_mixer_ids == [1]
+    assert progressive_empty.vit_block_ids == [1, 2]
+    assert progressive_empty(inputs, training=False).shape == (2, 4, 4, 1)
+
+    progressive_connector_options = DiffusionTransformer(depth=0, **base)
+    connector_growth = progressive_connector_options.add_depths([
+        {"feature_connector": True}, 
+        {"feature_connector": None}, 
+        {"feature_connector": 0}, 
+        {"cross_attention_connector": True}, 
+    ])
+    assert connector_growth["network"] == {"before": 0, "added": 4, "after": 4}
+    assert progressive_connector_options.connection_ids_dict == {
+        1: [0], 
+        2: [1], 
+        3: [0], 
+    }
+    assert progressive_connector_options.cross_attention_ids_dict == {4: [3]}
+    assert progressive_connector_options(inputs, training=False).shape == (
+        2, 4, 4, 1
+    )
+
+    progressive_rollback = DiffusionTransformer(depth=0, **base)
+    rollback_metadata_names = (
+        "connection_ids_dict", 
+        "cross_attention_ids_dict", 
+        "vit_block_ids", 
+        "use_decoder_ids", 
+        "vit_block_mlp_output_dims", 
+        "local_mixer_ids", 
+        "downsample_ids", 
+        "upsample_ids", 
+        "reshaper_ids_dict", 
+        "cls_token_regularizer_ids", 
+    )
+    rollback_metadata = {
+        name: getattr(progressive_rollback, name).copy()
+        for name in rollback_metadata_names
+    }
+    for incompatible_specification in (
+        {"vision_transformer_block": {"mlp_output_dim": 6}},
+        {"reshaper": {"reshape_type": "flatten"}},
+    ):
+        try:
+            progressive_rollback.add_depths(incompatible_specification)
+        except ValueError as error:
+            assert "preserve the output-head feature dimension" in str(error)
+        else:
+            raise AssertionError("Incompatible progressive output width must fail")
+        assert progressive_rollback.depth == 0
+        assert len(progressive_rollback.layers_dicts) == 0
+        assert all(
+            getattr(progressive_rollback, name) == rollback_metadata[name]
+            for name in rollback_metadata_names
+        )
+    assert progressive_rollback(inputs, training=False).shape == (2, 4, 4, 1)
+
+    parser_rollback = DiffusionTransformer(depth=0, **base)
+    parser_metadata = {
+        name: getattr(parser_rollback, name).copy()
+        for name in rollback_metadata_names
+    }
+    try:
+        parser_rollback.add_depths(["local_mixer", "unknown"])
+    except ValueError as error:
+        assert "Unknown progressive classifier layer" in str(error)
+    else:
+        raise AssertionError("A later unknown progressive layer must fail")
+    assert parser_rollback.depth == 0
+    assert len(parser_rollback.layers_dicts) == 0
+    assert all(
+        getattr(parser_rollback, name) == parser_metadata[name]
+        for name in rollback_metadata_names
+    )
+
+    positional_modes = (
+        "new_weight", "1d_sincos", "1d_interpolate",
+        "1d_learned_interpolate", "2d_sincos", 
+        "2d_interpolate", "2d_learned_interpolate",
+    )
+    for positional_mode in positional_modes:
+        positional = DiffusionTransformer(
+            depth=0, 
+            patches_pos_embed_type=positional_mode, 
+            **base,
+        )
+        assert positional(inputs, training=False).shape == (2, 4, 4, 1)
+        positional.set_current_resolution(8)
+        assert positional(large_inputs, training=False).shape == (1, 8, 8, 1)
+    concatenated_position = DiffusionTransformer(
+        depth=0, 
+        patches_pos_merger_type="concat", 
+        **base
+    )
+    concat_position_tokens, _ = concatenated_position.embed_inputs(
+        inputs, concatenated_position.cond_type, training=False
+    )
+    assert concat_position_tokens.shape == (2, 4, 4)
+    assert concatenated_position(inputs, training=False).shape == (2, 4, 4, 1)
+
+    embedding_options = (
+        {
+            "time_embed_type": "new_weight", 
+            "time_freq_dim": 2, 
+            "time_embed_trainable": False, 
+            "time_mlp_ratio": 2.0, 
+            "label_embed_type": "new_weight", 
+            "label_freq_dim": 2, 
+            "label_embed_trainable": False, 
+            "label_mlp_ratio": 2.0, 
+        }, 
+        {
+            "time_embed_type": "1d_sincos", 
+            "time_freq_dim": 4, 
+            "time_embed_trainable": True, 
+            "time_mlp_ratio": 1.0, 
+            "label_embed_type": "1d_sincos", 
+            "label_freq_dim": 4, 
+            "label_embed_trainable": True, 
+            "label_mlp_ratio": 1.0, 
+        },
+    )
+    for embed_kwargs in embedding_options:
+        embedded = DiffusionTransformer(depth=0, **base, **embed_kwargs)
+        embedded_cond, embedded_time, embedded_label = embedded.embed_conditions(
+            times, labels, "time_label", full_return=True, training=True
+        )
+        assert embedded_cond.shape == embedded_time.shape == embedded_label.shape == (
+            2, 4
+        )
+        assert embedded(inputs, training=True).shape == (2, 4, 4, 1)
+        assert embedded.time_embedder.embed.trainable is (
+            True if embed_kwargs["time_embed_type"] == "new_weight"
+            else embed_kwargs["time_embed_trainable"]
+        )
+        assert embedded.label_embedder.embed.trainable is (
+            True if embed_kwargs["label_embed_type"] == "new_weight"
+            else embed_kwargs["label_embed_trainable"]
+        )
+
+    unforced = DiffusionTransformer(
+        depth=2, 
+        dim_forced=False, 
+        connection_ids_dict={2: [0, 1]}, 
+        connection_kwargs={"connect_type": "concat"}, 
+        **base,
+    )
+    assert unforced.layers_dicts[1][unforced.FC].output_dim == 8
+    assert unforced(inputs, training=False).shape == (2, 4, 4, 1)
+    additive_connection = DiffusionTransformer(
+        depth=2, 
+        connection_ids_dict={2: [0, 1]}, 
+        connection_kwargs={"connect_type": "add"}, 
+        **base,
+    )
+    assert additive_connection(inputs, training=False).shape == (2, 4, 4, 1)
+
+    explicit_attention = DiffusionTransformer(
+        depth=1, 
+        mha_key_dim=2, 
+        mha_value_dim=3, 
+        mha_num_heads=2, 
+        vit_block_mlp_output_dims={1: 6}, 
+        drop_prob=0.5, 
+        drop_per_sample=False, 
+        **{key: value for key, value in base.items() if key != "mha_num_heads"},
+    )
+    attention_block = explicit_attention.layers_dicts[0][explicit_attention.VTB]
+    assert attention_block.key_dim == 2
+    assert attention_block.value_dim == 3
+    assert attention_block.mlp_output_dim == 6
+    assert attention_block.drop_prob == 0.5
+    assert attention_block.drop_per_sample is False
+    attention_training = explicit_attention(inputs, training=True)
+    attention_evaluation = explicit_attention(inputs, training=False)
+    assert attention_training.shape == attention_evaluation.shape == (2, 4, 4, 1)
+    assert bool(tf.reduce_all(tf.math.is_finite(attention_training)))
+
+    broad_local = DiffusionTransformer(
+        depth=1,
+        vit_block_ids=[],
+        local_mixer_ids=[1],
+        local_mixer_kwargs={
+            "embed_temperature": 10.0, 
+            "use_layer_norm": True, 
+            "ln_mlp_ratio": 1.0, 
+            "ln_no_adaptation": False, 
+            "kernel_size": 3, 
+            "strides": 1, 
+            "depth_multiplier": 2, 
+            "use_pointwise": False, 
+            "zero_init": True, 
+            "pos_embed_type": "2d_sincos", 
+            "pos_interpolation_method": "bilinear", 
+            "pos_merger_type": "add", 
+            "mlp_ratio": 1.0, 
+            "mlp_activation_func": "gelu", 
+            "mlp_output_dim": 4, 
+        }, 
+        **base, 
+    )
+    assert broad_local(inputs, training=True).shape == (2, 4, 4, 1)
+
+    resumable = DiffusionTransformer(depth=2, **base)
+    full_tokens, full_cond, _, _, _ = resumable.encode(inputs, training=False)
+    first_tokens, first_cond, first_features, first_regs, _ = resumable.encode(
+        inputs, max_depth=1, training=False
+    )
+    assert first_tokens.shape == (2, 4, 4)
+    assert first_cond.shape == full_cond.shape == (2, 4)
+    assert len(first_features) == len(first_regs) == 2
+    resumed_tokens, resumed_cond, resumed_features, resumed_regs, _ = resumable.encode(
+        (first_features[1], times, labels), 
+        min_depth=1, training=False
+    )
+    tf.debugging.assert_near(resumed_tokens, full_tokens, atol=1e-5)
+    tf.debugging.assert_near(resumed_cond, full_cond, atol=1e-5)
+    assert resumed_features[0] is None and resumed_features[1] is first_features[1]
+    assert len(resumed_regs) == 3
+    resumed_output = resumable(
+        (first_features[1], times, labels), 
+        min_depth=1, 
+        training=False
+    )
+    assert resumed_output.shape == (2, 4, 4, 1)
+
+    policy = DiffusionTransformer(
+        depth=0, 
+        name="policy_transformer", 
+        name_prefix="policy/", 
+        dtype="float64", 
+        **base
+    )
+    assert policy.name == "policy_transformer"
+    assert policy.dtype_policy.name == "float64"
+    assert policy.patch_embedder.name.startswith("policy/")
+    assert policy(inputs, training=False).dtype == tf.float32
+    policy_config = policy.get_config()
+    assert policy_config["name_prefix"] == "policy/"
+    assert "name" not in policy_config and "dtype" not in policy_config
+    policy_clone = DiffusionTransformer.from_config(policy_config)
+    assert policy_clone.name != policy.name
+    assert policy_clone.dtype_policy.name == "float32"
+    assert policy_clone.patch_embedder.name.startswith("policy/")
+
+    invalid_cases = (
+        {"image_size": 5}, 
+        {"cond_type": None, "ln_no_adaptation": False}, 
+        {"cls_token_type": "unknown"}, 
+        {"cross_attention_plug_type": "unknown"}, 
+        {"connection_ids_dict": {2: [0]}, "depth": 1}, 
+        {"connection_kwargs": {"unknown": 1}}, 
+        {"cross_attention_kwargs": {"unknown": 1}}, 
+        {"local_mixer_kwargs": {"unknown": 1}}, 
+        {"downsample_kwargs": {"unknown": 1}}, 
+        {"upsample_kwargs": {"unknown": 1}}, 
+        {"reshaper_kwargs": {"unknown": 1}}, 
+        {"cls_token_regularizer_kwargs": {"unknown": 1}}, 
+    )
+    for overrides in invalid_cases:
+        try:
+            DiffusionTransformer(build=False, **{**base, **overrides})
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid configuration to fail: {overrides}")
+    for bad_resolution in (0, 3, 4.5):
+        try:
+            depth_zero.set_current_resolution(bad_resolution)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid resolution: {bad_resolution}")
+    try:
+        depth_zero.encode(inputs, min_depth=1)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("min_depth greater than depth must be rejected")
+    try:
+        progressive.add_depths("unknown")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown progressive layers must be rejected")
+
+    tf.keras.backend.clear_session()
+    return {"DiffusionTransformer": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

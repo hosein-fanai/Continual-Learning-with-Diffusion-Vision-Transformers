@@ -233,6 +233,7 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             None.  Both branches and the classifier head are initialized.
         """
+
         temp_val = kwargs.pop("cls_token_type", None)
         super().__init__(
             cls_token_type=None if classifier_only_cls_token and \
@@ -266,8 +267,7 @@ class DiTClassifier(DiffusionTransformer):
 
         self._create_clf_embedders()
         self.cls_token = self._create_cls_token(
-            self.first_aggregated_dim if self.aggregate_from_noises \
-                                      else self.clf_dim, 
+            self.first_aggregated_dim if self.aggregate_from_noises else self.clf_dim, 
             self.cls_token_pos_merger_type, 
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
@@ -329,6 +329,7 @@ class DiTClassifier(DiffusionTransformer):
             terminal IDs, out-of-range depths, unsupported kwargs keys, and
             invalid attention plug types raise ``AssertionError``.
         """
+
         local_vars["depth"] = self.depth
 
         assert self.use_cfg, \
@@ -531,6 +532,7 @@ class DiTClassifier(DiffusionTransformer):
         Raises:
             AssertionError: If ``clf_dim_forced=True`` but ``clf_dim`` is None.
         """
+
         for name, clf_part_value in local_vars.items():
             if not name.startswith("clf_") or name in exclude:
                 continue
@@ -556,6 +558,7 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             None.  ID attributes are normalized in place.
         """
+
         self.clf_vit_block_ids = self._handle_ids(
             self.clf_vit_block_ids, 
             depth=self.clf_depth, 
@@ -625,6 +628,7 @@ class DiTClassifier(DiffusionTransformer):
             int | None: Feature-aggregator width when it is the latest relevant
             component, otherwise the width resolved by the base implementation.
         """
+
         last_output_dim = None
 
         if (key:=self.FA) in layers_dict:
@@ -651,6 +655,7 @@ class DiTClassifier(DiffusionTransformer):
             None.  Embedder, merger, and ``clf_labels_embed_reg`` attributes are
             assigned in place.
         """
+
         self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None and not self.clf_ln_no_adaptation else []
         self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None else []
 
@@ -892,6 +897,7 @@ class DiTClassifier(DiffusionTransformer):
             the final dictionary normally contains the mandatory connector
             moved from constructor key ``-1``.
         """
+
         self.clf_layers_dicts = []
 
         for i in range(self.clf_depth+1):
@@ -920,6 +926,7 @@ class DiTClassifier(DiffusionTransformer):
             branch and ``clf_cond``, ``clf_features_list``, ``clf_regs_list``,
             ``clf_z_vals`` for the classifier branch.
         """
+
         noises, cond, features_list, regs_list, z_vals = super().call(
             inputs, 
             full_return=True, 
@@ -963,6 +970,7 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             None.  ``self.max_encoder_num`` is assigned.
         """
+
         aggregation_ids = []
         [aggregation_ids.extend(value) for value in \
             self.feature_aggregation_ids_dict.values()]
@@ -994,6 +1002,7 @@ class DiTClassifier(DiffusionTransformer):
             tf.Tensor | tuple: Same output contract as
             ``DiffusionTransformer.call``; no classifier output is computed.
         """
+
         outputs = super().call(
             inputs, 
             full_return=full_return, 
@@ -1029,6 +1038,7 @@ class DiTClassifier(DiffusionTransformer):
             None, and latent statistics are ``(mean, log_variance)`` or
             ``(None, None)``.
         """
+
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
             times, labels, 
             self.clf_cond_type, 
@@ -1184,6 +1194,7 @@ class DiTClassifier(DiffusionTransformer):
             ``full_return=True``, ``(classes, clf_cond, clf_features_list,
             clf_regs_list, clf_z_vals)``.
         """
+
         max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
 
         x, cond, features_list, _, _ = self.encode(
@@ -1493,3 +1504,636 @@ class DiTClassifier(DiffusionTransformer):
                 "after": self.clf_depth, 
             }, 
         }
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run deterministic integration tests for every DiTClassifier branch.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: ``{"DiTClassifier": "passed"}`` after classifier
+        depth, routing, token, pooling, auxiliary, progressive, serialization,
+        prediction, and invalid-configuration checks pass.
+    """
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(102)
+    images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
+    times = tf.constant([0, 3], dtype=tf.int32)
+    labels = tf.constant([1, 2], dtype=tf.uint8)
+    inputs = (images, times, labels)
+    base = {
+        "num_classes": 2, 
+        "use_cfg": True, 
+        "timesteps": 4, 
+        "image_size": 4, 
+        "channels": 1, 
+        "patch_size": 2, 
+        "dim": 4, 
+        "depth": 1, 
+        "mha_num_heads": 1, 
+        "vit_block_mlp_ratio": 1.0, 
+        "clf_mha_num_heads": 1, 
+        "clf_vit_block_mlp_ratio": 1.0, 
+    }
+
+
+    def make_model(**overrides: object) -> DiTClassifier:
+        """Construct a classifier with fresh mutable routing dictionaries.
+
+        Args:
+            **overrides (object): Values replacing the CPU-small base config.
+
+        Returns:
+            DiTClassifier: A newly initialized test model.
+        """
+
+        config = {
+            **base,
+            "feature_aggregation_ids_dict": {1: (-1,)},
+            "clf_connection_ids_dict": {-1: (-1,)},
+            **overrides,
+        }
+
+        return DiTClassifier(**config)
+
+    # Exercise the public mutable defaults without passing replacements.  The
+    # first construction mutates both dictionaries in place and consumes the
+    # mandatory ``-1`` terminal key, so a second construction currently fails.
+    # Restore the actual signature-owned objects so this regression check is
+    # isolated and the runner remains idempotent.
+    import inspect
+
+
+    public_parameters = inspect.signature(DiTClassifier.__init__).parameters
+    public_aggregation_default = public_parameters[
+        "feature_aggregation_ids_dict"
+    ].default
+    public_connection_default = public_parameters["clf_connection_ids_dict"].default
+    public_aggregation_default.clear()
+    public_aggregation_default.update({1: (-1,)})
+    public_connection_default.clear()
+    public_connection_default.update({-1: (-1,)})
+    try:
+        public_default_first = DiTClassifier(**base)
+        assert public_default_first.feature_aggregation_ids_dict == {1: [1]}
+        assert public_default_first.clf_connection_ids_dict == {2: [1]}
+        assert -1 not in public_connection_default
+        try:
+            DiTClassifier(**base)
+        except AssertionError as error:
+            assert "extract from the classifier" in str(error)
+        else:
+            raise AssertionError(
+                "Repeated use of the currently mutable public default must fail"
+            )
+    finally:
+        public_aggregation_default.clear()
+        public_aggregation_default.update({1: (-1,)})
+        public_connection_default.clear()
+        public_connection_default.update({-1: (-1,)})
+
+    model = make_model()
+    outputs = model(inputs, full_return=True, training=False)
+    assert set(outputs) == {
+        "noises", "cond", "features_list", "regs_list", "z_vals",
+        "classes", "clf_cond", "clf_features_list", "clf_regs_list",
+        "clf_z_vals",
+    }
+    assert outputs["noises"].shape == (2, 4, 4, 1)
+    assert outputs["classes"].shape == (2, 2)
+    assert outputs["classes"].dtype == tf.float32
+    tf.debugging.assert_near(
+        tf.reduce_sum(outputs["classes"], axis=-1), tf.ones((2,)), atol=1e-5
+    )
+    assert len(model.clf_layers_dicts) == model.clf_depth + 1 == 2
+    assert set(model.clf_layers_dicts[-1]) == {model.FC}
+    assert model.feature_aggregation_ids_dict == {1: [1]}
+    assert model.clf_connection_ids_dict == {2: [1]}
+    assert model.max_encoder_num == 1
+    assert model.clf_dim == model.first_aggregated_dim == 4
+    assert model.clf_mha_num_heads == model.mha_num_heads == 1
+    assert model.clf_connection_kwargs == model.connection_kwargs
+    assert model.clf_cross_attention_plug_type == model.cross_attention_plug_type
+    assert model.clf_drop_prob == model.drop_prob == 0.0
+    assert model.clf_drop_per_sample == model.drop_per_sample is True
+    assert model.clf_ln_mlp_ratio is None
+    assert model.clf_reshaper_ids_dict == {}
+    assert model.clf_cls_token_regularizer_ids == []
+
+    inherited = make_model(
+        build=False, 
+        mha_num_heads=2, 
+        vit_block_mlp_ratio=2.0, 
+        vit_block_mlp_output_dims={1: 4}, 
+        ln_no_adaptation=True, 
+        drop_prob=0.2, 
+        drop_per_sample=False, 
+        connection_kwargs={"connect_type": "add"}, 
+        cross_attention_kwargs={"connect_type": "add"}, 
+        local_mixer_kwargs={"pos_embed_type": None}, 
+        downsample_kwargs={"scaling_method": "avg_pooling"}, 
+        upsample_kwargs={"scaling_method": "interpolate"}, 
+        cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+        clf_mha_num_heads=None, 
+        clf_vit_block_mlp_ratio=None, 
+        clf_vit_block_mlp_output_dims=None, 
+    )
+    assert inherited.clf_connection_kwargs == inherited.connection_kwargs
+    assert inherited.clf_cross_attention_kwargs == inherited.cross_attention_kwargs
+    assert inherited.clf_mha_num_heads == inherited.mha_num_heads == 2
+    assert inherited.clf_vit_block_mlp_ratio == inherited.vit_block_mlp_ratio == 2.0
+    assert inherited.clf_vit_block_mlp_output_dims == {1: 4}
+    assert inherited.clf_ln_no_adaptation is inherited.ln_no_adaptation is True
+    assert inherited.clf_drop_prob == inherited.drop_prob == 0.2
+    assert inherited.clf_drop_per_sample is inherited.drop_per_sample is False
+    assert inherited.clf_local_mixer_kwargs == inherited.local_mixer_kwargs
+    assert inherited.clf_downsample_kwargs == inherited.downsample_kwargs
+    assert inherited.clf_upsample_kwargs == inherited.upsample_kwargs
+    assert (
+        inherited.clf_cls_token_regularizer_kwargs
+        == inherited.cls_token_regularizer_kwargs
+    )
+
+    overridden = make_model(
+        build=False, 
+        mha_num_heads=1, 
+        vit_block_mlp_ratio=1.0, 
+        drop_prob=0.0, 
+        drop_per_sample=True, 
+        clf_mha_num_heads=2, 
+        clf_vit_block_mlp_ratio=3.0, 
+        clf_vit_block_mlp_output_dims={}, 
+        clf_ln_no_adaptation=True, 
+        clf_drop_prob=0.25, 
+        clf_drop_per_sample=False, 
+        clf_connection_kwargs={}, 
+        clf_cross_attention_kwargs={}, 
+        clf_local_mixer_kwargs={"pos_embed_type": None}, 
+        clf_downsample_kwargs={"scaling_method": "max_pooling"}, 
+        clf_upsample_kwargs={"scaling_method": "cnn_transpose"}, 
+        clf_cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+    )
+    assert overridden.clf_mha_num_heads == 2 != overridden.mha_num_heads
+    assert overridden.clf_vit_block_mlp_ratio == 3.0
+    assert overridden.clf_vit_block_mlp_output_dims == {}
+    assert overridden.clf_ln_no_adaptation is True
+    assert overridden.clf_drop_prob == 0.25
+    assert overridden.clf_drop_per_sample is False
+    assert overridden.clf_connection_kwargs == {}
+    assert overridden.clf_cross_attention_kwargs == {}
+
+    assert model.predict_noise(inputs, training=False).shape == (2, 4, 4, 1)
+    assert model.predict_class(inputs, training=False).shape == (2, 2)
+    class_full = model.predict_class(inputs, full_return=True, training=False)
+    assert len(class_full) == 5 and class_full[0].shape == (2, 2)
+    model.set_max_encoder_num(0)
+    assert model.max_encoder_num == 0
+    model.set_max_encoder_num(None)
+    assert model.max_encoder_num == 1
+
+    depth_zero = make_model(clf_depth=0, depth=0)
+    assert len(depth_zero.layers_dicts) == 0
+    assert len(depth_zero.clf_layers_dicts) == 1
+    assert depth_zero(inputs, training=False)["classes"].shape == (2, 2)
+
+    for clf_cond_type in (None, "time", "label", "time_label"):
+        candidate = make_model(
+            clf_cond_type=clf_cond_type, 
+            clf_ln_no_adaptation=clf_cond_type is None, 
+        )
+        result = candidate(inputs, full_return=True, training=False)
+        assert result["classes"].shape == (2, 2)
+        assert (result["clf_cond"] is None) == (clf_cond_type is None)
+
+    for token_type in (None, "new_weight", "time", "label", "time_label"):
+        for force_pool in (False, True):
+            candidate = make_model(
+                clf_cls_token_type=token_type, 
+                force_global_avg_pooling=force_pool, 
+                classifier_mlp_ratio=1, 
+                dropout_rate=0.25, 
+            )
+            candidate_output = candidate(inputs, training=False)
+            assert candidate_output["classes"].shape == (2, 2)
+            expected_pool = force_pool or token_type is None
+            assert isinstance(
+                candidate.classifier_feature_extractor,
+                layers.GlobalAveragePooling1D if expected_pool else layers.Lambda,
+            )
+            assert len(candidate.classifier.layers) == 3
+
+    shared_token = make_model(
+        classifier_only_cls_token=False, 
+        cls_token_type="new_weight", 
+        clf_cls_token_type=None, 
+    )
+    assert shared_token.cls_token_type == "new_weight"
+    assert shared_token(inputs, training=False)["classes"].shape == (2, 2)
+
+    from_noises = make_model(
+        aggregate_from_noises=True, 
+        force_global_avg_pooling=True, 
+    )
+    assert from_noises.max_encoder_num == from_noises.depth
+    assert from_noises(inputs, training=False)["classes"].shape == (2, 2)
+    assert from_noises.predict_class(inputs, training=False).shape == (2, 2)
+    from_noises_full = from_noises.predict_class(
+        inputs, full_return=True, training=False
+    )
+    assert len(from_noises_full) == 5
+    assert from_noises_full[0].shape == (2, 2)
+
+    for plug_type in ("values", "queries"):
+        cross = make_model(
+            feature_aggregation_ids_dict={1: [1]}, 
+            cross_attention_aggregation_ids_dict={1: [0]}, 
+            cross_attention_aggregation_kwargs={"mlp_output_dim": 4}, 
+            clf_cross_attention_plug_type=plug_type, 
+            clf_cls_token_type=None, 
+            force_global_avg_pooling=True, 
+        )
+        assert cross(inputs, training=False)["classes"].shape == (2, 2)
+        assert cross.cross_attention_aggregation_ids_dict == {1: [0]}
+
+    for plug_type in ("values", "queries"):
+        cross_connected = make_model(
+            clf_depth=2, 
+            clf_connection_ids_dict={2: [0, 1], -1: [-1]}, 
+            clf_connection_kwargs={"mlp_output_dim": 4}, 
+            clf_cross_attention_ids_dict={2: [0]}, 
+            clf_cross_attention_kwargs={"mlp_output_dim": 4}, 
+            clf_cross_attention_plug_type=plug_type, 
+            clf_vit_block_ids=[1, 2], 
+        )
+        assert cross_connected(inputs, training=False)["classes"].shape == (2, 2)
+        assert cross_connected.clf_connection_ids_dict == {2: [0, 1], 3: [2]}
+
+    additive_aggregation = make_model(
+        depth=2, 
+        feature_aggregation_ids_dict={1: [0, 1]}, 
+        feature_aggregation_kwargs={"connect_type": "add"}, 
+    )
+    assert additive_aggregation.feature_aggregation_ids_dict == {1: [0, 1]}
+    assert additive_aggregation(inputs, training=False)["classes"].shape == (2, 2)
+
+    expanded_aggregation = make_model(
+        depth=2, 
+        feature_aggregation_ids_dict={1: [None]}, 
+    )
+    assert expanded_aggregation.feature_aggregation_ids_dict == {1: [0, 1, 2]}
+    assert expanded_aggregation.first_aggregated_dim == 12
+    assert expanded_aggregation(inputs, training=False)["classes"].shape == (2, 2)
+
+    from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
+
+    explicit_classifier_block = make_model(
+        clf_dim=4, 
+        clf_dim_forced=True, 
+        clf_use_decoder_ids=[1], 
+        clf_mha_key_dim=2, 
+        clf_mha_value_dim=3, 
+        clf_mha_num_heads=2, 
+        clf_vit_block_mlp_output_dims={1: 4}, 
+        clf_drop_prob=0.5, 
+        clf_drop_per_sample=False, 
+        classifier_mlp_ratio=2, 
+        classifier_mlp_activation_func="relu", 
+        dropout_rate=0.25, 
+    )
+    explicit_block = explicit_classifier_block.clf_layers_dicts[0][
+        explicit_classifier_block.VTB
+    ]
+    assert isinstance(explicit_block, DiTDecoderBlock)
+    assert explicit_classifier_block.clf_use_decoder_ids == [1]
+    assert explicit_block.key_dim == 2
+    assert explicit_block.value_dim == 3
+    assert explicit_block.mlp_output_dim == 4
+    assert explicit_block.drop_prob == 0.5
+    assert explicit_block.drop_per_sample is False
+    explicit_training_output = explicit_classifier_block(inputs, training=True)
+    assert explicit_training_output["classes"].shape == (2, 2)
+    assert bool(tf.reduce_all(tf.math.is_finite(explicit_training_output["classes"])))
+    assert explicit_classifier_block.classifier.layers[0].activation.__name__ == "relu"
+
+    policy = make_model(
+        name="policy_classifier", 
+        name_prefix="policy/", 
+        dtype="float64", 
+        trainable=False, 
+        dynamic=True, 
+    )
+    policy_output = policy(inputs, training=False)
+    assert policy.name == "policy_classifier"
+    assert policy.name_prefix == "policy/"
+    assert policy.dtype_policy.name == "float64"
+    assert policy.dynamic is True
+    assert policy.trainable is False
+    assert policy_output["noises"].dtype == tf.float32
+    assert policy_output["classes"].dtype == tf.float32
+
+    scaled = make_model(
+        clf_depth=2, 
+        clf_vit_block_ids=[], 
+        clf_downsample_ids=[1], 
+        clf_upsample_ids=[2], 
+        clf_downsample_kwargs={"scaling_method": "avg_pooling"}, 
+        clf_upsample_kwargs={"scaling_method": "interpolate"}, 
+    )
+    assert scaled(inputs, training=False)["classes"].shape == (2, 2)
+    mixed = make_model(
+        clf_local_mixer_ids=[1], 
+        clf_local_mixer_kwargs={"pos_embed_type": None}, 
+    )
+    assert mixed(inputs, training=False)["classes"].shape == (2, 2)
+
+    for add_kl in (False, True):
+        reshaped = make_model(
+            clf_depth=2, 
+            clf_vit_block_ids=[], 
+            clf_reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+            clf_reshaper_kwargs={"add_kl": add_kl, "latent_dim_ratio": 1.0}, 
+            force_global_avg_pooling=True, 
+        )
+        reshaped_outputs = reshaped(inputs, full_return=True, training=False)
+        assert reshaped_outputs["classes"].shape == (2, 2)
+        latent = reshaped_outputs["clf_z_vals"]
+        assert latent[0] is not None and latent[1] is not None
+
+    regularized = make_model(
+        clf_cls_token_regularizer_ids=[None], 
+        cls_token_regularizer_ids=[None], 
+    )
+    regularized_outputs = regularized(inputs, full_return=True, training=False)
+    assert all(
+        item.shape == (2, 2)
+        for item in regularized_outputs["clf_regs_list"][:2]
+    )
+    assert regularized_outputs["clf_regs_list"][-1] is None
+    assert all(item.shape == (2, 2) for item in regularized_outputs["regs_list"])
+
+    progressive = make_model(clf_depth=1)
+    growth = progressive.add_depths({
+        "network": "vision_transformer_block", 
+        "classifier": "vision_transformer_block", 
+    })
+    assert growth["network"] == {"before": 1, "added": 1, "after": 2}
+    assert growth["classifier"] == {"before": 1, "added": 1, "after": 2}
+    assert progressive(inputs, training=False)["classes"].shape == (2, 2)
+    no_growth = progressive.add_depths({"network": [], "classifier": []})
+    assert no_growth["network"]["added"] == no_growth["classifier"]["added"] == 0
+    clone = DiTClassifier.from_config(progressive.get_config())
+    assert clone.depth == 2 and clone.clf_depth == 2
+    assert clone(inputs, training=False)["classes"].shape == (2, 2)
+
+    progressive_components = make_model(
+        clf_dim=4, 
+        clf_dim_forced=True, 
+        clf_cls_token_type=None, 
+        force_global_avg_pooling=True, 
+    )
+    component_growth = progressive_components.add_depths({
+        "classifier": [
+            {"feature_aggregator": {"ids": [-1]}}, 
+            {"feature_connector": {"ids": [-1]}}, 
+            {
+                "cross_attention_aggregator": {"ids": [-1]}, 
+                "vision_transformer_block": True, 
+            }, 
+            {
+                "cross_attention_connector": {"ids": [-1]}, 
+                "vision_transformer_block": True, 
+            },
+            "local_mixer", 
+            "downsampler", 
+            "upsampler", 
+            {"reshaper": {"reshape_type": "flatten"}}, 
+            {"reshaper": {"reshape_type": "unflatten"}}, 
+            "cls_token_regularizer", 
+            {
+                "vision_transformer_block": {
+                    "use_decoder": True, 
+                    "mlp_output_dim": 4, 
+                }
+            }, 
+            {"vision_transformer_block": False}, 
+        ]
+    })
+    assert component_growth["network"] == {
+        "before": 1, 
+        "added": 0, 
+        "after": 1, 
+    }
+    assert component_growth["classifier"] == {
+        "before": 1, 
+        "added": 12, 
+        "after": 13, 
+    }
+    assert progressive_components.feature_aggregation_ids_dict[2] == [1]
+    assert progressive_components.clf_connection_ids_dict[3] == [2]
+    assert progressive_components.cross_attention_aggregation_ids_dict[4] == [1]
+    assert progressive_components.clf_cross_attention_ids_dict[5] == [4]
+    assert progressive_components.clf_local_mixer_ids == [6]
+    assert progressive_components.clf_downsample_ids == [7]
+    assert progressive_components.clf_upsample_ids == [8]
+    assert progressive_components.clf_reshaper_ids_dict == {
+        9: "flatten", 
+        10: "unflatten", 
+    }
+    assert progressive_components.clf_cls_token_regularizer_ids == [11]
+    assert progressive_components.clf_use_decoder_ids == [12]
+    assert progressive_components.clf_vit_block_mlp_output_dims == {12: 4}
+    assert progressive_components.clf_layers_dicts[12] == {}
+    component_outputs = progressive_components(
+        inputs, full_return=True, training=False
+    )
+    assert component_outputs["classes"].shape == (2, 2)
+    assert component_outputs["clf_regs_list"][11].shape == (2, 2)
+
+    progressive_noop = make_model()
+    for empty_classifier_spec in (None, []):
+        noop_growth = progressive_noop.add_depths({
+            "network": [], 
+            "classifier": empty_classifier_spec, 
+        })
+        assert noop_growth["network"]["added"] == 0
+        assert noop_growth["classifier"] == {
+            "before": 1, 
+            "added": 0, 
+            "after": 1, 
+        }
+
+    for collection_specification in (
+        ("local_mixer", "vision_transformer_block"), 
+        {"local_mixer", "vision_transformer_block"}, 
+        frozenset({"local_mixer", "vision_transformer_block"}), 
+    ):
+        collection_classifier = make_model(
+            clf_cls_token_type=None, 
+            force_global_avg_pooling=True, 
+        )
+        collection_result = collection_classifier.add_depths({
+            "classifier": collection_specification, 
+        })
+        assert collection_result["classifier"] == {
+            "before": 1, 
+            "added": 1, 
+            "after": 2, 
+        }
+        assert collection_classifier.clf_local_mixer_ids == [2]
+        assert collection_classifier.clf_vit_block_ids == [1, 2]
+        assert collection_classifier(inputs, training=False)["classes"].shape == (
+            2, 2
+        )
+
+    normalized_handlers = make_model(
+        clf_dim=4, 
+        clf_dim_forced=True, 
+        clf_cls_token_type=None, 
+        force_global_avg_pooling=True, 
+    )
+    handler_growth = normalized_handlers.add_depths({
+        "classifier": [
+            "feature_aggregator", 
+            {"feature_connector": None}, 
+            {
+                "cross_attention_aggregator": 0, 
+                "vision_transformer_block": True, 
+            }, 
+            {
+                "cross_attention_connector": True, 
+                "vision_transformer_block": True, 
+            }, 
+        ]
+    })
+    assert handler_growth["classifier"] == {
+        "before": 1, 
+        "added": 4, 
+        "after": 5, 
+    }
+    assert normalized_handlers.feature_aggregation_ids_dict[2] == [1]
+    assert normalized_handlers.clf_connection_ids_dict[3] == [2]
+    assert normalized_handlers.cross_attention_aggregation_ids_dict[4] == [0]
+    assert normalized_handlers.clf_cross_attention_ids_dict[5] == [4]
+    assert normalized_handlers(inputs, training=False)["classes"].shape == (2, 2)
+
+    terminal_error = make_model()
+    terminal_stage = terminal_error.clf_layers_dicts[-1]
+    terminal_stage["extra"] = terminal_stage[terminal_error.FC]
+    try:
+        terminal_error.add_depths({"classifier": "vision_transformer_block"})
+    except ValueError as error:
+        assert "terminal classifier depth must contain only its connector" in str(
+            error
+        )
+    else:
+        raise AssertionError("A non-connector terminal classifier stage must fail")
+
+    classifier_rollback = make_model()
+    classifier_rollback.clf_layers_dicts[-1][
+        classifier_rollback.FC
+    ].output_dim = None
+    rollback_depth = classifier_rollback.clf_depth
+    rollback_layers_count = len(classifier_rollback.clf_layers_dicts)
+    rollback_metadata_names = (
+        "feature_aggregation_ids_dict", 
+        "cross_attention_aggregation_ids_dict", 
+        "clf_connection_ids_dict", 
+        "clf_cross_attention_ids_dict", 
+        "clf_vit_block_ids", 
+        "clf_use_decoder_ids", 
+        "clf_vit_block_mlp_output_dims", 
+        "clf_local_mixer_ids", 
+        "clf_downsample_ids", 
+        "clf_upsample_ids", 
+        "clf_reshaper_ids_dict", 
+        "clf_cls_token_regularizer_ids", 
+    )
+    rollback_metadata = {
+        name: deepcopy(getattr(classifier_rollback, name))
+        for name in rollback_metadata_names
+    }
+    try:
+        classifier_rollback.add_depths({
+            "classifier": {
+                "vision_transformer_block": {"mlp_output_dim": 6}
+            }
+        })
+    except ValueError as error:
+        assert "preserve the classifier-head dimension" in str(error)
+    else:
+        raise AssertionError("A progressive classifier head-width change must fail")
+    assert classifier_rollback.clf_depth == rollback_depth
+    assert len(classifier_rollback.clf_layers_dicts) == rollback_layers_count
+    assert all(
+        getattr(classifier_rollback, name) == rollback_metadata[name]
+        for name in rollback_metadata_names
+    )
+    assert classifier_rollback(inputs, training=False)["classes"].shape == (2, 2)
+
+    parser_rollback = make_model()
+    parser_depth = parser_rollback.clf_depth
+    parser_layers_count = len(parser_rollback.clf_layers_dicts)
+    parser_metadata = {
+        name: deepcopy(getattr(parser_rollback, name))
+        for name in rollback_metadata_names
+    }
+    try:
+        parser_rollback.add_depths({
+            "classifier": ["local_mixer", "unknown"]
+        })
+    except ValueError as error:
+        assert "Unknown progressive classifier layer" in str(error)
+    else:
+        raise AssertionError("A later unknown classifier component must fail")
+    assert parser_rollback.clf_depth == parser_depth
+    assert len(parser_rollback.clf_layers_dicts) == parser_layers_count
+    assert all(
+        getattr(parser_rollback, name) == parser_metadata[name]
+        for name in rollback_metadata_names
+    )
+
+    invalid_cases = (
+        {"use_cfg": False}, 
+        {"aggregate_from_noises": True, "use_unpatchify": False}, 
+        {"feature_aggregation_ids_dict": {2: [0]}}, 
+        {"clf_connection_ids_dict": {1: [0]}}, 
+        {"clf_dim_forced": True, "clf_dim": None}, 
+        {"clf_cross_attention_plug_type": "unknown"}, 
+        {"feature_aggregation_kwargs": {"unknown": 1}}, 
+        {"cross_attention_aggregation_kwargs": {"unknown": 1}}, 
+        {"clf_connection_kwargs": {"unknown": 1}}, 
+        {"clf_local_mixer_kwargs": {"unknown": 1}}, 
+        {"clf_downsample_kwargs": {"unknown": 1}}, 
+        {"clf_upsample_kwargs": {"unknown": 1}}, 
+        {"clf_reshaper_kwargs": {"unknown": 1}}, 
+        {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
+    )
+    for overrides in invalid_cases:
+        try:
+            make_model(build=False, **overrides)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid classifier config: {overrides}")
+    try:
+        progressive.add_depths({"classifier": "unknown"})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown progressive classifier layers must fail")
+    try:
+        progressive.add_depths({"network": [], "classifier": [], "bad": []})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown targeted progressive keys must fail")
+
+    tf.keras.backend.clear_session()
+    return {"DiTClassifier": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

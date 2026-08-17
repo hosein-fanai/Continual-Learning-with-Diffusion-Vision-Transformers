@@ -290,3 +290,298 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         self.tracker.reset_state()
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test all ensembling and state paths of :class:`EnsembleAccuracy`.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after network selection, both compute strategies,
+        weighting, chunk boundaries, seeds, training flags, metric state,
+        evaluation looping, invalid modes, and numeric boundaries pass.
+    """
+
+    import contextlib
+    import io
+    import numpy as np
+    from types import SimpleNamespace
+
+
+    predict_calls = []
+    noisify_calls = []
+
+
+    def predict_class(
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        training: bool | None = None, 
+    ) -> tf.Tensor:
+        """Return deterministic timestep-dependent three-class scores.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Replicated images,
+                timesteps, and labels.
+            training (bool | None): Optional flag recorded for forwarding
+                verification.
+
+        Returns:
+            A float32 one-hot score tensor shaped ``[batch, 3]``.
+        """
+
+        _, timesteps, labels = inputs
+        predict_calls.append((timesteps.numpy(), labels.numpy(), training))
+
+        return tf.one_hot(tf.math.floormod(timesteps, 3), 3, dtype=tf.float32)
+
+    def noisify(
+        images: tf.Tensor, 
+        timesteps: tf.Tensor, 
+        seed: int | None = None, 
+    ) -> tuple[tf.Tensor]:
+        """Record noising arguments while returning images unchanged.
+
+        Args:
+            images (tf.Tensor): Replicated clean image tensor.
+            timesteps (tf.Tensor): Integer timestep tensor paired with
+                ``images``.
+            seed (int | None): Optional random seed supplied by the metric.
+
+        Returns:
+            A one-item tuple containing ``images``.
+        """
+
+        noisify_calls.append((tuple(images.shape), timesteps.numpy(), seed))
+
+        return (images,)
+
+    raw_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
+    ema_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
+    wrapper = SimpleNamespace(
+        timesteps=8, 
+        network=raw_network, 
+        ema_network=ema_network, 
+        noisify=noisify, 
+    )
+    images = tf.ones((2, 2, 2, 1), dtype=tf.float32)
+
+    for weighted in (False, True):
+        predict_calls.clear()
+        noisify_calls.clear()
+        batched = EnsembleAccuracy(
+            wrapper, 
+            netwrok_name="ema", 
+            compute_type="batched", 
+            weighted=weighted, 
+            max_t=5, 
+            t_chunk_size=2, 
+            random_seed=17, 
+        )
+        batched_prediction = batched.ensemble_predict(images, training=True)
+        assert batched.network is ema_network
+        assert batched_prediction.shape == (2, 3)
+        assert batched_prediction.dtype == tf.float32
+        assert len(predict_calls) == 1 and predict_calls[0][2] is True
+        assert np.all(predict_calls[0][1] == 0)
+        assert noisify_calls[0][0] == (10, 2, 2, 1)
+        assert noisify_calls[0][2] == 17
+        expected_row = (
+            np.array([1.4, 1.0, 0.6], dtype=np.float32) / 3.0
+            if weighted
+            else np.array([2.0, 2.0, 1.0], dtype=np.float32) / 5.0
+        )
+        np.testing.assert_allclose(
+            batched_prediction.numpy(), 
+            np.repeat(expected_row[None, :], 2, axis=0), 
+            atol=1e-6,
+        )
+
+        predict_calls.clear()
+        noisify_calls.clear()
+        chunked = EnsembleAccuracy(
+            wrapper, 
+            netwrok_name="raw", 
+            compute_type="chunked", 
+            weighted=weighted, 
+            max_t=5, 
+            t_chunk_size=2, 
+            random_seed=17, 
+        )
+        chunked_prediction = chunked.ensemble_predict(images, training=False)
+        assert chunked.network is raw_network
+        np.testing.assert_allclose(
+            chunked_prediction.numpy(), 
+            batched_prediction.numpy(), 
+            atol=1e-6
+        )
+        assert len(predict_calls) == 3
+        assert [call[0].shape[0] for call in predict_calls] == [4, 4, 2]
+        assert all(call[2] is False for call in predict_calls)
+
+    oversized_chunk = EnsembleAccuracy(
+        wrapper, 
+        compute_type="chunked", 
+        max_t=4, 
+        t_chunk_size=99,
+    )
+    predict_calls.clear()
+    assert oversized_chunk.ensemble_predict(images).shape == (2, 3)
+    assert len(predict_calls) == 1
+
+    fallback = EnsembleAccuracy(
+        wrapper, 
+        netwrok_name="not-ema", 
+        compute_type="batched", 
+        max_t=1,
+    )
+    assert fallback.network is raw_network
+
+    stateful = EnsembleAccuracy(wrapper, compute_type="batched", max_t=4)
+    labels = tf.zeros((2,), dtype=tf.int32)
+    assert float(stateful.test_step(labels, images).numpy()) == 1.0
+    assert float(stateful.result().numpy()) == 1.0
+    stateful.reset_state()
+    assert float(stateful.result().numpy()) == 0.0
+    stateful.update_state(
+        tf.constant([0, 1]), 
+        tf.constant([[2.0, 1.0, 0.0], [0.0, 3.0, 1.0]])
+    )
+    assert float(stateful.result().numpy()) == 1.0
+    stateful.reset_state()
+    with contextlib.redirect_stdout(io.StringIO()):
+        evaluated = stateful.evaluate([(images, labels), (images, labels)])
+    assert float(evaluated) == 1.0
+
+    try:
+        EnsembleAccuracy(wrapper, max_t=9)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("max_t above wrapper timesteps must fail.")
+    try:
+        EnsembleAccuracy(wrapper, compute_type="all-at-once", max_t=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown compute strategies must fail.")
+
+    zero_steps = EnsembleAccuracy(
+        wrapper, compute_type="batched", max_t=0,
+    ).ensemble_predict(images)
+    assert tf.reduce_all(tf.math.is_nan(zero_steps))
+    zero_chunk = EnsembleAccuracy(
+        wrapper, compute_type="chunked", max_t=2, t_chunk_size=0,
+    )
+    try:
+        zero_chunk.ensemble_predict(images)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("A zero chunk size must fail when iterated.")
+
+    fractional_steps = EnsembleAccuracy(
+        wrapper, compute_type="batched", max_t=2.9,
+    )
+    assert fractional_steps.max_t == 2
+    np.testing.assert_allclose(
+        fractional_steps.ensemble_predict(images).numpy(), 
+        np.repeat([[0.5, 0.5, 0.0]], 2, axis=0), 
+        atol=1e-6,
+    )
+    negative_steps = EnsembleAccuracy(
+        wrapper, compute_type="batched", max_t=-1,
+    )
+    assert negative_steps.max_t == -1
+    try:
+        negative_steps.ensemble_predict(images)
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Negative repeat counts must fail during prediction.")
+
+    fractional_chunk = EnsembleAccuracy(
+        wrapper, compute_type="chunked", max_t=4, t_chunk_size=2.9,
+    )
+    assert fractional_chunk.t_chunk_size == 2
+    assert fractional_chunk.ensemble_predict(images).shape == (2, 3)
+    negative_chunk = EnsembleAccuracy(
+        wrapper, compute_type="chunked", max_t=2, t_chunk_size=-1,
+    )
+    assert negative_chunk.t_chunk_size == -1
+    negative_chunk_output = negative_chunk.ensemble_predict(images)
+    # Python's negative-step range is empty for these positive bounds, so the
+    # current implementation returns its zero-initialized accumulator.
+    np.testing.assert_array_equal(
+        negative_chunk_output.numpy(), np.zeros((2, 3), dtype=np.float32),
+    )
+
+    for weighted in (False, True):
+        chunked_negative_horizon = EnsembleAccuracy(
+            wrapper, 
+            compute_type="chunked", 
+            weighted=weighted, 
+            max_t=-1, 
+            t_chunk_size=2, 
+        )
+        if weighted:
+            try:
+                chunked_negative_horizon.ensemble_predict(images)
+            except tf.errors.InvalidArgumentError:
+                pass
+            else:
+                raise AssertionError(
+                    "Weighted negative horizons must fail in tf.range."
+                )
+        else:
+            negative_horizon_output = (
+                chunked_negative_horizon.ensemble_predict(images)
+            )
+            np.testing.assert_array_equal(
+                negative_horizon_output.numpy(), 
+                np.zeros((2, 3), dtype=np.float32), 
+            )
+
+        chunked_zero_horizon = EnsembleAccuracy(
+            wrapper, 
+            compute_type="chunked", 
+            weighted=weighted, 
+            max_t=0, 
+            t_chunk_size=2, 
+        )
+        zero_horizon_output = chunked_zero_horizon.ensemble_predict(images)
+        assert tf.reduce_all(tf.math.is_nan(zero_horizon_output))
+
+        full_horizon = EnsembleAccuracy(
+            wrapper, 
+            compute_type="chunked", 
+            weighted=weighted, 
+            max_t=wrapper.timesteps, 
+            t_chunk_size=3, 
+        )
+        assert full_horizon.max_t == wrapper.timesteps
+        full_horizon_output = full_horizon.ensemble_predict(images)
+        expected_full_row = (
+            np.array([1.875, 1.5, 1.125], dtype=np.float32) / 4.5
+            if weighted
+            else np.array([3.0, 3.0, 2.0], dtype=np.float32) / 8.0
+        )
+        np.testing.assert_allclose(
+            full_horizon_output.numpy(), 
+            np.repeat(expected_full_row[None, :], 2, axis=0), 
+            atol=1e-6,
+        )
+
+    named = EnsembleAccuracy(
+        wrapper, 
+        max_t=1, 
+        name="custom_ensemble", 
+        dtype="float64"
+    )
+    assert named.name == "custom_ensemble" and named.dtype == "float64"
+
+    return {"EnsembleAccuracy": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

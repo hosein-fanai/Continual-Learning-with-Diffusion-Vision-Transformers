@@ -144,3 +144,106 @@ class FeatureHandler(BaseLayer):
         ) if self.mlp is not None else x
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run compact tests for every :class:`FeatureHandler` branch.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry success mapping after selection, merge, normalization,
+        projection, override, empty-input, config, and invalid-input tests.
+    """
+
+    import numpy as np
+
+    features = [
+        tf.ones((2, 2, 2), dtype=tf.float32),
+        tf.fill((2, 2, 2), 2.0),
+        tf.fill((2, 2, 2), 3.0),
+    ]
+
+    for invalid_mode in ("multiply", "", None):
+        try:
+            FeatureHandler(ids=[0], connect_type=invalid_mode, ln_dim=2)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Unknown feature merge modes must fail.")
+
+    try:
+        FeatureHandler(ids=[0])
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented ln_dim construction limit changed.")
+
+    concat = FeatureHandler(ids=[-1, 0, 0], connect_type="concat", ln_dim=2)
+    concatenated = concat(features)
+    assert concatenated.shape == (2, 2, 6)
+    np.testing.assert_array_equal(
+        concatenated[0, 0].numpy(), [3.0, 3.0, 1.0, 1.0, 1.0, 1.0],
+    )
+    overridden = concat(features, ids=[1], second_list=[features[0]])
+    assert overridden.shape == (2, 2, 4)
+
+    add = FeatureHandler(ids=[0, 1], connect_type="add", ln_dim=2)
+    np.testing.assert_array_equal(add(features).numpy(), tf.fill((2, 2, 2), 3.0))
+    np.testing.assert_array_equal(
+        add(features, ids=[], second_list=[features[2]]).numpy(), features[2].numpy(),
+    )
+    assert add(features, ids=[], second_list=[]) is None
+
+    deferred = FeatureHandler(ids=None, connect_type="add", ln_dim=2)
+    assert deferred(features, ids=[2]).shape == (2, 2, 2)
+    try:
+        deferred(features)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("A deferred selector requires call-time ids.")
+
+    normalized = FeatureHandler(
+        ids=[0], connect_type="add", ln_dim=2,
+        use_layer_norm=True, ln_no_adaptation=True,
+    )(features, cond=None, training=True)
+    np.testing.assert_allclose(normalized.numpy(), np.zeros((2, 2, 2)), atol=1e-6)
+
+    adaptive = FeatureHandler(
+        ids=[0], connect_type="add", ln_dim=2,
+        use_layer_norm=True, mlp_output_dim=3, mlp_ratio=2,
+    )
+    projected = adaptive(features, cond=tf.ones((2, 4)), training=False)
+    assert projected.shape == (2, 2, 3)
+    assert adaptive.prev_output_dim == 2 and adaptive.output_dim == 3
+
+    axis_one = FeatureHandler(ids=[0, 1], connect_axis=1, ln_dim=2)
+    assert axis_one(features).shape == (2, 4, 2)
+    try:
+        concat([tf.ones((1, 2, 2)), tf.ones((1, 3, 3))], ids=[0, 1])
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Incompatible concatenation shapes must fail.")
+    try:
+        add(features, ids=[99])
+    except IndexError:
+        pass
+    else:
+        raise AssertionError("Out-of-range feature IDs must fail.")
+
+    restored = FeatureHandler.from_config(add.get_config())
+    assert restored.ids == [0, 1] and restored.connect_type == "add"
+
+    dtype_layer = FeatureHandler(ids=[0], ln_dim=2, dtype="float64")
+    dtype_output = dtype_layer([tf.ones((1, 2, 2), dtype=tf.float64)])
+    assert dtype_layer.compute_dtype == "float64"
+    assert dtype_output.dtype == tf.float64
+
+    return {"FeatureHandler": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

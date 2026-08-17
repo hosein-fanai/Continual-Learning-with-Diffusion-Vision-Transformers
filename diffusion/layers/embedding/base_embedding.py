@@ -524,3 +524,199 @@ class BaseEmbedding(BaseLayer):
 
         if self.pos_merger_type == "add":
             return x + pos_embed
+
+
+def run_self_tests() -> dict[str, str]:
+    """Exercise every embedding-table and positional-merge mode.
+
+    Args:
+        None.
+
+    Returns:
+        ``{"BaseEmbedding": "passed"}`` after sinusoidal, learned,
+        interpolated, lookup, merge, dtype, validation, and config checks.
+    """
+
+    import numpy as np
+
+
+    for invalid_type in ("rotary", "", 1):
+        try:
+            BaseEmbedding(dim=4, pos_embed_type=invalid_type)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Unknown positional embedding modes must fail.")
+    for invalid_merge in ("multiply", "", None):
+        try:
+            BaseEmbedding(dim=4, pos_merger_type=invalid_merge)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Unknown positional merge modes must fail.")
+
+    helper = BaseEmbedding(dim=5, pos_embed_type=None)
+    positions = np.array([0.0, 1.0, 2.0], dtype=np.float32)
+    for width in (1, 2, 5):
+        embedding_1d = helper._get_1d_sincos_embedding(width, positions, 100.0)
+        assert embedding_1d.shape == (3, width)
+        assert np.isfinite(embedding_1d).all()
+    embedding_2d = helper._get_2d_sincos_embedding(5, 2, temperature=100.0)
+    assert embedding_2d.shape == (1, 4, 5)
+    assert embedding_2d.dtype == tf.float32
+    assert helper._get_t_embedding(tf.constant([0.0, 1.0]), 5).shape == (2, 4)
+    assert helper._get_2d_pos_embed(2, 3, 6).shape == (1, 6, 4)
+
+    specifications = {
+        "new_weight": (1, 9, 4), 
+        "1d_sincos": (1, 9, 4), 
+        "1d_interpolate": (1, 4, 4), 
+        "1d_learned_interpolate": (1, 4, 4), 
+        "2d_sincos": (1, 9, 4), 
+        "2d_interpolate": (1, 4, 4), 
+        "2d_learned_interpolate": (1, 2, 2, 4), 
+    }
+    for mode, expected_shape in specifications.items():
+        table_owner = BaseEmbedding(dim=4, grid_size=2, pos_embed_type=mode)
+        table = table_owner._create_embeddings(output_grid_size=3)
+        assert tuple(table.shape) == expected_shape, (mode, table.shape)
+        if "learned" in mode or mode == "new_weight":
+            assert any(variable is table for variable in table_owner.trainable_variables)
+        else:
+            assert not table_owner.trainable_variables
+
+    disabled = BaseEmbedding(dim=4, pos_embed_type=None)
+    assert disabled._create_embeddings(output_grid_size=2) is None
+    identity_input = tf.ones((2, 4, 4))
+    assert disabled._pos_merger(identity_input) is identity_input
+
+    condition_owner = BaseEmbedding(
+        dim=4, 
+        pos_embed_type="1d_sincos", 
+        embed_steps=5
+    )
+    condition_table = condition_owner._create_embeddings(output_grid_size=None)
+    assert condition_table.shape == (5, 4)
+
+    learned_lookup_owner = BaseEmbedding(
+        dim=3, 
+        pos_embed_type="new_weight", 
+        embed_steps=4,
+        embed_trainable=False
+    )
+    learned_lookup = learned_lookup_owner._create_embedding_layer()
+    assert learned_lookup.trainable
+    assert learned_lookup(tf.constant([[0, 3]], tf.int32)).shape == (1, 2, 3)
+
+    for trainable in (False, True):
+        fixed_lookup_owner = BaseEmbedding(
+            dim=4, pos_embed_type="1d_sincos", 
+            embed_steps=4,
+            embed_trainable=trainable,
+        )
+        fixed_lookup = fixed_lookup_owner._create_embedding_layer()
+        assert fixed_lookup.trainable is trainable
+        assert fixed_lookup(tf.constant([0, 1, 3], tf.int64)).shape == (3, 4)
+    try:
+        out_of_range = fixed_lookup(tf.constant([4], tf.int32))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        # TensorFlow documents device-dependent behavior for out-of-range
+        # Embedding gathers; some GPU kernels return a finite row.
+        assert out_of_range.shape == (1, 4)
+        assert np.isfinite(out_of_range.numpy()).all()
+
+    for mode in ("1d_interpolate", "2d_interpolate",
+                 "1d_learned_interpolate", "2d_learned_interpolate"):
+        for interpolation in (
+            "nearest", "bilinear", "bicubic", "area", "lanczos3",
+            "lanczos5", "gaussian", "mitchellcubic",
+        ):
+            merger = BaseEmbedding(
+                dim=4, 
+                grid_size=2, 
+                pos_embed_type=mode, 
+                pos_interpolation_method=interpolation, 
+                pos_merger_type="add"
+            )
+            merger.output_grid_size = 3
+            merger.pos_embed = merger._create_embeddings(output_grid_size=3)
+            merged = merger._pos_merger(tf.ones((2, 9, 4)), training=False)
+            assert merged.shape == (2, 9, 4)
+
+    invalid_interpolation = BaseEmbedding(
+        dim=4, 
+        grid_size=2, 
+        pos_embed_type="2d_interpolate", 
+        pos_interpolation_method="not-a-resizer"
+    )
+    invalid_interpolation.output_grid_size = 3
+    invalid_interpolation.pos_embed = invalid_interpolation._create_embeddings(
+        output_grid_size=3,
+    )
+    try:
+        invalid_interpolation._pos_merger(tf.ones((1, 9, 4)))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown TensorFlow resize methods must fail.")
+
+    additive = BaseEmbedding(
+        dim=4, grid_size=2, 
+        pos_embed_type="new_weight", 
+        pos_merger_type="add"
+    )
+    additive.output_grid_size = 2
+    additive.pos_embed = additive._create_embeddings(output_grid_size=2)
+    assert additive._pos_merger(tf.ones((2, 4, 4))).shape == (2, 4, 4)
+    assert additive._pos_merger(
+        tf.ones((2, 9, 4)), 
+        output_grid_size=3, 
+    ).shape == (2, 9, 4)
+
+    concatenating = BaseEmbedding(
+        dim=2, grid_size=2, 
+        pos_embed_type="2d_sincos",
+        pos_merger_type="concat"
+    )
+    concatenating.output_grid_size = 2
+    concatenating.pos_embed = concatenating._create_embeddings(output_grid_size=2)
+    assert concatenating._pos_merger(tf.ones((3, 4, 2))).shape == (3, 4, 4)
+
+    try:
+        additive._pos_merger(tf.ones((1, 3, 4)))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("Mismatched content and position counts must fail.")
+
+    config = BaseEmbedding(dim=4, grid_size=2).get_config()
+    try:
+        BaseEmbedding.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate-ln_dim limit changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("ln_dim")
+    restored = BaseEmbedding.from_config(filtered_config)
+    assert restored.dim == 4 and restored.grid_size == 2
+
+    dtype_fixed = BaseEmbedding(
+        dim=4, pos_embed_type="2d_sincos", dtype="float64",
+    )
+    fixed_table = dtype_fixed._create_embeddings(output_grid_size=2)
+    assert dtype_fixed.compute_dtype == "float64"
+    assert fixed_table.dtype == tf.float32
+    dtype_learned = BaseEmbedding(
+        dim=4, pos_embed_type="new_weight", dtype="float64",
+    )
+    learned_table = dtype_learned._create_embeddings(output_grid_size=2)
+    assert learned_table.dtype == tf.float64
+
+    return {"BaseEmbedding": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())

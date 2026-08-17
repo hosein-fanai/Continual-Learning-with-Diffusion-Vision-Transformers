@@ -264,3 +264,160 @@ class VisionTransformerBlock(BaseLayer):
         )
 
         return x
+
+
+def run_self_tests() -> dict[str, str]:
+    """Test attention, MLP, residual, mask, and DropPath block behavior.
+
+    Args:
+        None.
+
+    Returns:
+        A one-entry mapping after every finite boolean branch and representative
+        dimension, training, error, gradient, and serialization case passes.
+    """
+
+    import numpy as np
+    import tensorflow as tf
+
+
+    tf.random.set_seed(808)
+    x = tf.random.normal((2, 3, 4))
+    condition = tf.random.normal((2, 5))
+
+    identity = VisionTransformerBlock(dim=4, num_heads=2, drop_prob=0.0)
+    for training in (None, False, True):
+        output = identity((x, condition), training=training)
+        assert output.shape == x.shape and output.dtype == tf.float32
+        np.testing.assert_allclose(output.numpy(), x.numpy(), atol=1e-6)
+    assert identity.key_dim == 2 and identity.query_dim == 4
+    assert identity.mha_residual_projector is None
+    assert identity.mlp_residual_projector is None
+
+    masks = (
+        None, 
+        tf.linalg.band_part(tf.ones((3, 3), dtype=tf.bool), -1, 0), 
+        tf.ones((2, 3, 3), dtype=tf.float32),
+    )
+    for gate_query_flag in (False, True):
+        for drop_per_sample in (False, True):
+            for mlp_ratio in (None, 2):
+                block = VisionTransformerBlock(
+                    dim=4, 
+                    key_dim=1, 
+                    value_dim=2, 
+                    query_dim=6, 
+                    num_heads=2, 
+                    gate_query_flag=gate_query_flag, 
+                    drop_prob=0.25, 
+                    drop_per_sample=drop_per_sample, 
+                    mlp_ratio=mlp_ratio, 
+                    mlp_output_dim=3, 
+                    ln_no_adaptation=True, 
+                )
+                for mask in masks:
+                    output = block(
+                        (x, condition), 
+                        queries=tf.ones((2, 3, 6)), 
+                        values=tf.ones((2, 3, 7)), 
+                        mask=mask, 
+                        training=True, 
+                    )
+                    assert output.shape == (2, 3, 3)
+                    assert tf.reduce_all(tf.math.is_finite(output))
+                assert (block.mha_residual_projector is not None)
+                assert (block.mlp_residual_projector is not None)
+                expected_gate = 6 if gate_query_flag else 4
+                assert block.mha_layer_norm.gate_dim == expected_gate
+
+    external_values = identity(
+        (x, condition), 
+        values=tf.ones((2, 5, 4)), 
+        training=False
+    )
+    assert external_values.shape == x.shape
+    external_queries = identity(
+        (x, condition), 
+        queries=tf.ones((2, 3, 4)), 
+        training=False
+    )
+    assert external_queries.shape == x.shape
+
+    stochastic = VisionTransformerBlock(
+        dim=4, 
+        num_heads=2, 
+        drop_prob=0.5, 
+        drop_per_sample=False, 
+        ln_no_adaptation=True, 
+        mlp_activation_func="relu", 
+    )
+    evaluation = stochastic((x, condition), training=False)
+    tf.random.set_seed(809)
+    training_output = stochastic((x, condition), training=True)
+    assert evaluation.shape == training_output.shape == x.shape
+
+    with tf.GradientTape() as tape:
+        gradient_output = identity((x, condition), training=True)
+        loss = tf.reduce_sum(gradient_output)
+    gradients = tape.gradient(loss, identity.trainable_variables)
+    assert gradients and all(gradient is not None for gradient in gradients)
+
+    for invalid_probability in (-0.1, 1.0):
+        try:
+            VisionTransformerBlock(dim=4, drop_prob=invalid_probability)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Invalid stochastic-depth probabilities must fail.")
+    try:
+        VisionTransformerBlock(dim=4, num_heads=0)
+    except (ZeroDivisionError, ValueError):
+        pass
+    else:
+        raise AssertionError("num_heads=0 must fail.")
+    try:
+        identity(
+            (x, condition), 
+            mask=tf.ones((2, 4, 5), dtype=tf.bool), 
+        )
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError("An incompatible attention mask must fail.")
+
+    config = identity.get_config()
+    try:
+        VisionTransformerBlock.from_config(config)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("The documented duplicate base keys changed.")
+    filtered_config = dict(config)
+    filtered_config.pop("use_layer_norm")
+    filtered_config.pop("ln_dim")
+    restored = VisionTransformerBlock.from_config(filtered_config)
+    assert restored.dim == 4 and restored.num_heads == 2
+
+    dtype_block = VisionTransformerBlock(
+        dim=4, 
+        num_heads=2, 
+        dtype="float64"
+    )
+    assert dtype_block.compute_dtype == "float64"
+    try:
+        dtype_block((
+            tf.ones((1, 3, 4), dtype=tf.float64), 
+            tf.ones((1, 2), dtype=tf.float64)
+        ))
+    except (tf.errors.InvalidArgumentError, ValueError):
+        pass
+    else:
+        raise AssertionError(
+            "Nested float32 attention currently rejects a float64 outer policy."
+        )
+
+    return {"VisionTransformerBlock": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())
