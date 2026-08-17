@@ -1,520 +1,251 @@
-"""Conditional convolutional U-Net compatible with diffusion wrappers."""
+"""Depth-based conditional convolutional U-Net for diffusion training."""
 
 import tensorflow as tf
-from tensorflow.keras import layers
+from tensorflow.keras import layers, models
 
-from collections.abc import Sequence
-from typing import NoReturn
+from collections.abc import Mapping, Sequence
 
-from . import UNetInputs, DTypeLike, UNetFullOutput
+from copy import deepcopy
+
+from . import UNetFullOutput, UNetInputs
 
 from common.argument_saver import ArgumentSaverModel
 
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
-
-
-class _ResidualBlock(layers.Layer):
-    """Apply two convolutions and add a shape-compatible residual path.
-
-    The residual path is left unchanged when the input already has ``width``
-    channels. Otherwise, a learned 1x1 convolution projects it to the required
-    width. This retains the behavior of the original U-Net while making the
-    block a reusable Keras layer whose variables are created once.
-
-    Args:
-        width: Number of output channels produced by both spatial
-            convolutions.
-        activation_func: Keras activation used by the first convolution.
-        use_batch_norm: Whether to normalize the input before the
-            convolutions.
-        name: Optional Keras layer name.
-        dtype: Optional Keras computation and variable dtype policy.
-
-    Inputs:
-        Floating channels-last feature tensor
-        ``[batch, height, width, channels]``.
-
-    Outputs:
-        Floating tensor ``[batch, height, width, width]``.
-    """
-
-    def __init__(
-        self,
-        width: int,
-        activation_func: str = "swish",
-        use_batch_norm: bool = True,
-        name: str | None = None,
-        dtype: DTypeLike | None = None,
-    ) -> None:
-        """Initialize residual projections and two spatial convolutions.
-
-        Args and accepted data types are defined in the class documentation.
-
-        Returns:
-            ``None``. Variables whose shape depends on input channels are
-            completed by :meth:`build`.
-        """
-
-        super().__init__(name=name, dtype=dtype)
-        self.width = width
-        self.activation_func = activation_func
-        self.use_batch_norm = use_batch_norm
-
-        self.normalization = layers.BatchNormalization(
-            center=False,
-            scale=False,
-            dtype=self.dtype_policy,
-            name=f"{self.name}/normalization",
-        ) if self.use_batch_norm else None
-        self.first_convolution = layers.Conv2D(
-            filters=self.width,
-            kernel_size=3,
-            padding="same",
-            activation=self.activation_func,
-            dtype=self.dtype_policy,
-            name=f"{self.name}/first_convolution",
-        )
-        self.second_convolution = layers.Conv2D(
-            filters=self.width,
-            kernel_size=3,
-            padding="same",
-            dtype=self.dtype_policy,
-            name=f"{self.name}/second_convolution",
-        )
-        self.residual_projector: layers.Conv2D | None = None
-
-    def build(self, input_shape: tf.TensorShape) -> None:
-        """Create a residual projection only when channel widths differ.
-
-        Args:
-            input_shape: Shape of the feature map that will enter the block.
-
-        Returns:
-            ``None``. The method creates the optional projection layer and
-            marks this residual block as built.
-        """
-
-        input_width = tf.TensorShape(input_shape)[-1]
-        if input_width is None:
-            raise ValueError("A residual block requires a known channel size.")
-
-        if int(input_width) != self.width:
-            self.residual_projector = layers.Conv2D(
-                filters=self.width,
-                kernel_size=1,
-                dtype=self.dtype_policy,
-                name=f"{self.name}/residual_projector",
-            )
-
-        super().build(input_shape)
-
-    def call(
-        self,
-        inputs: tf.Tensor,
-        training: bool | None = None,
-    ) -> tf.Tensor:
-        """Transform a feature map and add its residual representation.
-
-        Args:
-            inputs: Image-like tensor shaped ``[batch, height, width,
-                channels]``.
-            training: Keras training flag forwarded to batch normalization.
-
-        Returns:
-            A tensor shaped ``[batch, height, width, width]``, where the last
-            ``width`` refers to this block's configured channel count.
-        """
-
-        residual = self.residual_projector(
-            inputs,
-            training=training,
-        ) if self.residual_projector is not None else inputs
-        x = self.normalization(
-            inputs,
-            training=training,
-        ) if self.normalization is not None else inputs
-        x = self.first_convolution(x, training=training)
-        x = self.second_convolution(x, training=training)
-
-        return x + residual
-
-
-class _DownBlock(layers.Layer):
-    """Run residual blocks, retain their outputs, and reduce spatial size.
-
-    Args:
-        width: Channel width used by every residual block at this level.
-        block_depth: Number of residual blocks and therefore skip tensors at
-            this level.
-        activation_func: Keras activation used inside residual blocks.
-        use_batch_norm: Whether residual blocks use batch normalization.
-        name: Optional Keras layer name.
-        dtype: Optional Keras computation and variable dtype policy.
-
-    Inputs:
-        Floating channels-last feature tensor
-        ``[batch, height, width, channels]``.
-
-    Outputs:
-        Pair of a downsampled floating feature tensor and an ordered
-        ``list[tf.Tensor]`` of full-resolution skips.
-    """
-
-    def __init__(
-        self,
-        width: int,
-        block_depth: int,
-        activation_func: str = "swish",
-        use_batch_norm: bool = True,
-        name: str | None = None,
-        dtype: DTypeLike | None = None,
-    ) -> None:
-        """Create one encoder level and its fixed 2x average pool.
-
-        Args and accepted data types are defined in the class documentation.
-
-        Returns:
-            ``None``.
-        """
-
-        super().__init__(name=name, dtype=dtype)
-        self.residual_blocks = [
-            _ResidualBlock(
-                width=width,
-                activation_func=activation_func,
-                use_batch_norm=use_batch_norm,
-                dtype=self.dtype_policy,
-                name=f"{self.name}/residual_{block_id + 1}",
-            )
-            for block_id in range(block_depth)
-        ]
-        self.downsampler = layers.AveragePooling2D(
-            pool_size=2,
-            padding="same",
-            dtype=self.dtype_policy,
-            name=f"{self.name}/downsampler",
-        )
-
-    def call(
-        self,
-        inputs: tf.Tensor,
-        training: bool | None = None,
-    ) -> tuple[tf.Tensor, list[tf.Tensor]]:
-        """Encode one level and return its downsampled output and skips.
-
-        Args:
-            inputs: Feature tensor shaped ``[batch, height, width, channels]``.
-            training: Keras training flag forwarded to residual blocks.
-
-        Returns:
-            A pair containing the spatially downsampled feature tensor and the
-            ordered residual outputs that the decoder will consume as skips.
-        """
-
-        x = inputs
-        skips = []
-        for residual_block in self.residual_blocks:
-            x = residual_block(x, training=training)
-            skips.append(x)
-
-        return self.downsampler(x), skips
-
-
-class _UpBlock(layers.Layer):
-    """Upsample one decoder level and consume encoder skips in LIFO order.
-
-    Args:
-        width: Channel width produced by every residual block at this level.
-        block_depth: Number of skip tensors consumed at this level.
-        activation_func: Keras activation used inside residual blocks.
-        use_batch_norm: Whether residual blocks use batch normalization.
-        interpolation: Image-resize interpolation used by the decoder.
-        name: Optional Keras layer name.
-        dtype: Optional Keras computation and variable dtype policy.
-
-    Inputs:
-        Pair ``(decoder, skips)`` where ``decoder`` is a floating channels-last
-        tensor and ``skips`` is ``list[tf.Tensor]`` at the target spatial size.
-
-    Outputs:
-        Floating decoded tensor at the skip height/width and configured width.
-    """
-
-    def __init__(
-        self,
-        width: int,
-        block_depth: int,
-        activation_func: str = "swish",
-        use_batch_norm: bool = True,
-        interpolation: str = "bilinear",
-        name: str | None = None,
-        dtype: DTypeLike | None = None,
-    ) -> None:
-        """Create one decoder level and its residual blocks.
-
-        Args and accepted data types are defined in the class documentation.
-
-        Returns:
-            ``None``.
-        """
-
-        super().__init__(name=name, dtype=dtype)
-        self.block_depth = block_depth
-        self.interpolation = interpolation
-        self.residual_blocks = [
-            _ResidualBlock(
-                width=width,
-                activation_func=activation_func,
-                use_batch_norm=use_batch_norm,
-                dtype=self.dtype_policy,
-                name=f"{self.name}/residual_{block_id + 1}",
-            )
-            for block_id in range(block_depth)
-        ]
-
-    def call(
-        self,
-        inputs: tuple[tf.Tensor, list[tf.Tensor]],
-        training: bool | None = None,
-    ) -> tf.Tensor:
-        """Decode one level using the most recently stored skips first.
-
-        The decoder tensor is resized once to this level's exact skip shape.
-        This makes the U-Net work with odd and progressively changed image
-        resolutions without applying an extra alignment interpolation.
-
-        Args:
-            inputs: Pair of the current decoder tensor and this level's encoder
-                skip tensors. The skips are read in reverse order.
-            training: Keras training flag forwarded to residual blocks.
-
-        Returns:
-            The decoded feature tensor at the spatial size of this level's
-            encoder features.
-        """
-
-        x, skips = inputs
-        x = tf.image.resize(
-            x,
-            size=tf.shape(skips[-1])[1:3],
-            method=self.interpolation,
-        )
-        x = tf.cast(x, skips[-1].dtype)
-
-        for residual_block, skip in zip(
-            self.residual_blocks,
-            reversed(skips),
-        ):
-            x = tf.concat([x, skip], axis=-1)
-            x = residual_block(x, training=training)
-
-        return x
+from diffusion.layers.feature_handler import FeatureHandler
+from diffusion.layers.convolution import ImageDownsample
+from diffusion.layers.convolution import ImageUpsample
+from diffusion.layers.convolution import LayerDict
+from diffusion.layers.convolution import ResidualConvStack
+from diffusion.layers.convolution import VariationalReshaper
 
 
 class UNet(ArgumentSaverModel):
-    """A conditional convolutional U-Net for diffusion noise prediction.
+    """Build a hierarchical convolutional diffusion network.
 
-    ``UNet`` modernizes the architecture previously stored in this module and
-    implements the ``DiffusionModel`` call and serialization contract used by
-    ``DiffusionTransformer``. It takes a noisy image, an integer diffusion
-    timestep, and an integer class label; embeds both conditions; predicts the
-    noise component of the image; and can be passed directly to
-    ``diffusion.models.wrapper.diffusion_model``'s ``DiffusionModel``.
+    The model follows the public raw-network contract of
+    :class:`DiffusionTransformer`: depth 0 is the embedded image, every later
+    depth is stored in ``layers_dicts``, ``encode`` returns intermediate
+    features and auxiliary values, and ``call(..., full_return=True)`` returns
+    ``(noise, condition, features, regularizers, latent_statistics)``.
 
-    The encoder applies residual blocks at each configured channel width and
-    stores every residual output as a skip. The bottleneck processes the most
-    compressed representation. The decoder then consumes the skips in reverse
-    order, resizing with the configured interpolation method to each skip's
-    exact size. Consequently the network accepts progressive resolutions below,
-    above, or unrelated to its construction-time ``image_size`` and always
-    returns the input spatial size. The final 1x1 convolution is
-    zero-initialized, as is common for diffusion noise heads.
-
-    Classifier-free guidance is coordinated by ``DiffusionModel``. When
-    ``use_cfg=True``, embedding index 0 represents the unconditional class and
-    real classes use indices 1 through ``num_classes``. During training and
-    evaluation, callers provide ordinary zero-based dataset labels and the
-    wrapper performs this shift. Direct network calls and ``DiffusionModel``
-    sampling use embedding indices, so use 0 for unconditional generation and
-    1 through ``num_classes`` for real classes. The wrapper combines conditional
-    and unconditional predictions when guidance is requested.
+    ``widths`` creates the encoder hierarchy. Each encoder level has one
+    residual stack and one downsampler. A residual bottleneck follows, then the
+    decoder upsamples through the widths in reverse order. Normal U-Net mode
+    uses encoder skips. Setting ``reshaper_kwargs={"add_kl": True}`` inserts a
+    flatten/unflatten variational bottleneck and disables skips by default, so
+    :meth:`DiffusionModel.sample_vae` can decode a latent without bypassing it.
 
     Args:
-        num_classes: Number of real dataset classes. One additional embedding
-            is created for the unconditional class when ``use_cfg`` is true.
-        use_cfg: Whether the network reserves label 0 for classifier-free
-            guidance. Guidance evaluation itself remains in ``DiffusionModel``.
-        timesteps: Number of integer diffusion steps and entries in the fixed
-            sinusoidal timestep embedding table.
-        image_size: Native square image size. This initializes
-            ``current_resolution`` but does not constrain later progressive
-            resolutions.
-        channels: Number of channels in both noisy-image inputs and predicted
-            noise outputs.
-        widths: Encoder channel widths, ordered from highest to lowest spatial
-            resolution. The decoder uses the reverse order.
-        block_depth: Number of residual blocks created per encoder and decoder
-            level. Every encoder block contributes one skip tensor.
-        bottleneck_width: Channel width used between the encoder and decoder.
-        bottleneck_depth: Number of residual blocks in the bottleneck.
-        image_embedding_dim: Channels used to project the noisy image before
-            concatenating its conditions. The original implementation used 21.
-        time_embedding_dim: Width of the fixed sinusoidal timestep embedding.
-            The original implementation used 22.
-        label_embedding_dim: Width of the learned class embedding. The original
-            implementation used 21.
-        activation_func: Keras activation used by residual-block convolutions.
-        final_activation_func: Keras activation applied to predicted noise.
-            ``"linear"`` leaves the prediction unconstrained.
-        use_batch_norm: Whether residual blocks apply batch normalization.
-        upsampling_interpolation: Resize method used in decoder levels.
-        name_prefix: Prefix added to internally created layer names.
-        build: Whether to build all variables immediately. Keep this enabled
-            when wrapping the model with ``DiffusionModel`` so its EMA clone can
-            copy weights immediately.
-        **kwargs: Standard Keras model arguments such as ``name``, ``dtype``,
-            and ``trainable``.
-
-    Inputs:
-        A tuple ``(noisy_images, timesteps, labels)``. Images have shape
-        ``[batch, height, width, channels]``; timesteps and labels have shape
-        ``[batch]``.
-
-    Outputs:
-        By default, predicted noise with the same shape as ``noisy_images``.
-        With ``full_return=True``, returns the five-item auxiliary structure
-        expected by ``DiffusionModel``. This plain U-Net has no KL or token
-        regularizers, so their entries are compatibility placeholders.
+        num_classes: Number of real dataset classes.
+        use_cfg: Reserve label ID 0 for classifier-free guidance.
+        timesteps: Number of discrete diffusion timesteps.
+        image_size: Native square input resolution.
+        channels: Input and output image channels.
+        widths: Encoder feature widths from high to low resolution.
+        block_depth: Residual blocks per encoder and decoder stack.
+        bottleneck_width: Bottleneck feature width.
+        bottleneck_depth: Residual blocks in the bottleneck stack.
+        image_embedding_dim: Width of the initial 1x1 image projection.
+        time_embedding_dim: Timestep embedding width.
+        label_embedding_dim: Label embedding width.
+        activation_func: Keras activation used in residual blocks.
+        final_activation_func: Activation applied to predicted noise.
+        use_batch_norm: Enable batch normalization in residual blocks.
+        dropout_rate: Spatial dropout rate inside residual blocks.
+        downsampling_method: ``avg_pooling``, ``max_pooling``, or
+            ``cnn_stride``.
+        upsampling_method: ``interpolate``, ``cnn_interpolate``, or
+            ``cnn_transpose``.
+        upsampling_interpolation: Interpolation used by image upsamplers.
+        use_skip_connections: Use encoder-to-decoder skips. ``None`` enables
+            them for an ordinary U-Net and disables them for a reshaped/VAE
+            bottleneck. Explicit ``True`` is rejected with a bottleneck because
+            the unchanged VAE sampler cannot provide pre-latent features.
+        reshaper_ids_dict: Optional explicit bottleneck depth mapping. The only
+            valid mapping is the model-computed consecutive flatten/unflatten
+            pair. Leave empty and set ``add_kl`` to create that pair
+            automatically.
+        reshaper_kwargs: ``add_kl`` and ``latent_dim_ratio``.
+        cls_token_regularizer_ids: Depth IDs for auxiliary class heads. ID 0
+            regularizes the label embedding; ``[None]`` selects every depth.
+            The historical name is retained for wrapper compatibility.
+        cls_token_regularizer_kwargs: Retained transformer-compatible metadata.
+        extra_depth_specs: Shape-preserving residual depths previously added by
+            :meth:`add_depths`; normally left empty at construction.
+        name_prefix: Prefix for generated layer names.
+        build: Build all variables immediately for EMA cloning.
+        **kwargs: Standard Keras model options.
     """
 
+    FC = "0_feature_connector"
+    CB = "1_convolution_block"
+    DS = "2_downsampler"
+    US = "3_upsampler"
+    R = "4_reshaper"
+    CTR = "5_cls_token_regularizer"
+
     def __init__(
-        self,
-        num_classes: int = 10,
-        use_cfg: bool = True,
-        timesteps: int = 1_000,
-        image_size: int = 32,
-        channels: int = 1,
-        widths: Sequence[int] = (32, 64, 96),
-        block_depth: int = 2,
-        bottleneck_width: int = 128,
-        bottleneck_depth: int = 2,
-        image_embedding_dim: int = 21,
-        time_embedding_dim: int = 22,
-        label_embedding_dim: int = 21,
-        activation_func: str = "swish",
-        final_activation_func: str = "linear",
-        use_batch_norm: bool = True,
-        upsampling_interpolation: str = "bilinear",
-        name_prefix: str = "",
-        build: bool = True,
-        **kwargs,
+        self, 
+        num_classes: int = 10, 
+        use_cfg: bool = True, 
+        timesteps: int = 1_000, 
+        image_size: int = 32, 
+        channels: int = 1, 
+        widths: Sequence[int] = (32, 64, 96), 
+        block_depth: int = 2, 
+        bottleneck_width: int = 128, 
+        bottleneck_depth: int = 2, 
+        image_embedding_dim: int = 21, 
+        time_embedding_dim: int = 22, 
+        label_embedding_dim: int = 21, 
+        activation_func: str = "swish", 
+        final_activation_func: str = "linear", 
+        use_batch_norm: bool = True, 
+        dropout_rate: float = 0.0, 
+        downsampling_method: str = "avg_pooling", 
+        upsampling_method: str = "interpolate", 
+        upsampling_interpolation: str = "bilinear", 
+        use_skip_connections: bool | None = None, 
+        reshaper_ids_dict: Mapping[int, str] = {}, 
+        reshaper_kwargs: Mapping[str, object] = {}, 
+        cls_token_regularizer_ids: Sequence[int | None] = (), 
+        cls_token_regularizer_kwargs: Mapping[str, int] = {
+            "start": 0, 
+            "end": 1, 
+        }, 
+        extra_depth_specs: Sequence[object] = (), 
+        name_prefix: str = "", 
+        build: bool = True, 
+        **kwargs
     ) -> None:
-        """Construct, validate, and optionally build the conditional U-Net.
-
-        The full argument contract—including allowed values, Keras ``**kwargs``,
-        input tensor dtypes/shapes, and output structure—is documented on
-        :class:`UNet`.
-
-        Returns:
-            ``None``. When ``build=True``, all nested variables and symbolic
-            input/output tensors are created before construction returns.
-        """
-
         widths = tuple(widths)
+        reshaper_ids_dict = {
+            int(key) if isinstance(key, str) and key.lstrip("-").isdigit()
+            else key: value
+            for key, value in dict(reshaper_ids_dict).items()
+        }
+        reshaper_kwargs = dict(reshaper_kwargs)
+        cls_token_regularizer_ids = list(cls_token_regularizer_ids)
+        cls_token_regularizer_kwargs = dict(cls_token_regularizer_kwargs)
+        extra_depth_specs = list(extra_depth_specs)
+
         super().__init__(**kwargs)
         self._check_arguments(
-            num_classes=num_classes,
-            timesteps=timesteps,
-            image_size=image_size,
-            channels=channels,
-            widths=widths,
-            block_depth=block_depth,
-            bottleneck_width=bottleneck_width,
-            bottleneck_depth=bottleneck_depth,
-            image_embedding_dim=image_embedding_dim,
-            time_embedding_dim=time_embedding_dim,
-            label_embedding_dim=label_embedding_dim,
+            num_classes=num_classes, 
+            timesteps=timesteps, 
+            image_size=image_size, 
+            channels=channels, 
+            widths=widths, 
+            block_depth=block_depth, 
+            bottleneck_width=bottleneck_width, 
+            bottleneck_depth=bottleneck_depth, 
+            image_embedding_dim=image_embedding_dim, 
+            time_embedding_dim=time_embedding_dim, 
+            label_embedding_dim=label_embedding_dim, 
+            dropout_rate=dropout_rate, 
+            use_skip_connections=use_skip_connections, 
+            reshaper_kwargs=reshaper_kwargs, 
+            cls_token_regularizer_kwargs=cls_token_regularizer_kwargs, 
         )
         self._save_init_args(locals())
         self._init_config.update({
-            "name": self.name,
-            "trainable": self.trainable,
-            "dtype": self.dtype_policy.name,
+            "name": self.name, 
+            "trainable": self.trainable, 
+            "dtype": self.dtype_policy.name, 
+            "dynamic": self.dynamic, 
         })
 
         self.num_labels = self.num_classes + int(self.use_cfg)
-        self.depth = len(self.widths)
-        self.reshaper_kwargs = {}
-        self.cls_token_regularizer_ids = []
+        self.condition_dim = self.time_embedding_dim + self.label_embedding_dim
+        self.use_reshaper = bool(self.reshaper_ids_dict) or bool(
+            self.reshaper_kwargs.get("add_kl", False)
+        )
+        if self.use_skip_connections is None:
+            self.use_skip_connections = not self.use_reshaper
+        if self.use_reshaper and self.use_skip_connections:
+            raise ValueError(
+                "use_skip_connections must be False for a resumable VAE "
+                "bottleneck."
+            )
+
+        self._base_depth = self._compute_base_depth()
+        flatten_depth = 2 * len(self.widths) + 2
+        expected_reshapers = {
+            flatten_depth: "flatten", 
+            flatten_depth + 1: "unflatten", 
+        } if self.use_reshaper else {}
+        if self.reshaper_ids_dict and self.reshaper_ids_dict != expected_reshapers:
+            raise ValueError(
+                "reshaper_ids_dict must be the bottleneck pair "
+                f"{expected_reshapers}."
+            )
+        self.reshaper_ids_dict = expected_reshapers
+        self.depth = self._base_depth + len(self.extra_depth_specs)
+        self.cls_token_regularizer_ids = self._handle_ids(
+            self.cls_token_regularizer_ids, 
+            depth=self.depth, 
+            min_id=0, 
+            max_id=self.depth, 
+        )
+        self.connection_ids_dict: dict[int, list[int]] = {}
+        self.cross_attention_ids_dict: dict[int, list[int]] = {}
         self.set_current_resolution()
 
+        # Persist resolved values so EMA/config cloning recreates one topology.
+        self._init_config.update({
+            "use_skip_connections": self.use_skip_connections, 
+            "reshaper_ids_dict": deepcopy(self.reshaper_ids_dict), 
+            "reshaper_kwargs": deepcopy(self.reshaper_kwargs), 
+            "cls_token_regularizer_ids": list(self.cls_token_regularizer_ids), 
+            "extra_depth_specs": deepcopy(self.extra_depth_specs), 
+        })
+
         self.image_embedder = layers.Conv2D(
-            filters=self.image_embedding_dim,
-            kernel_size=1,
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}image_embedder",
+            filters=self.image_embedding_dim, 
+            kernel_size=1, 
+            name=f"{self.name_prefix}image_embedder", 
+            dtype=self.dtype_policy, 
         )
+        # DiffusionClassifierV2 uses the transformer's historical attribute.
+        self.patch_embedder = self.image_embedder
         self.time_embedder = ConditionEmbedding(
-            dim=self.time_embedding_dim,
-            pos_embed_type="1d_sincos",
-            embed_steps=self.timesteps,
-            embed_trainable=False,
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}time_embedder",
+            dim=self.time_embedding_dim, 
+            pos_embed_type="1d_sincos", 
+            embed_steps=self.timesteps, 
+            embed_trainable=False, 
+            name=f"{self.name_prefix}time_embedder", 
+            dtype=self.dtype_policy, 
         )
         self.label_embedder = ConditionEmbedding(
-            dim=self.label_embedding_dim,
-            pos_embed_type="new_weight",
-            embed_steps=self.num_labels,
-            embed_trainable=True,
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}label_embedder",
+            dim=self.label_embedding_dim, 
+            pos_embed_type="new_weight", 
+            embed_steps=self.num_labels, 
+            embed_trainable=True, 
+            name=f"{self.name_prefix}label_embedder", 
+            dtype=self.dtype_policy, 
         )
-        self.encoder_blocks = [
-            _DownBlock(
-                width=width,
-                block_depth=self.block_depth,
-                activation_func=self.activation_func,
-                use_batch_norm=self.use_batch_norm,
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}encoder_{level + 1}",
-            )
-            for level, width in enumerate(self.widths)
-        ]
-        self.bottleneck_blocks = [
-            _ResidualBlock(
-                width=self.bottleneck_width,
-                activation_func=self.activation_func,
-                use_batch_norm=self.use_batch_norm,
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}bottleneck_{block_id + 1}",
-            )
-            for block_id in range(self.bottleneck_depth)
-        ]
-        self.decoder_blocks = [
-            _UpBlock(
-                width=width,
-                block_depth=self.block_depth,
-                activation_func=self.activation_func,
-                use_batch_norm=self.use_batch_norm,
-                interpolation=self.upsampling_interpolation,
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}decoder_{level + 1}",
-            )
-            for level, width in enumerate(reversed(self.widths))
-        ]
+        self.labels_embed_reg = self._create_regularizer(
+            f"{self.name_prefix}labels_embed_regularizer", 
+            spatial=False,
+        ) if 0 in self.cls_token_regularizer_ids else None
+        self.cls_token = None
+
+        self._stage_kinds: list[str] = []
+        self.layers_dicts: list[LayerDict] = []
+        self._create_layers()
         self.output_projection = layers.Conv2D(
-            filters=self.channels,
-            kernel_size=1,
-            kernel_initializer="zeros",
-            bias_initializer="zeros",
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}noise_projection",
+            filters=self.channels, 
+            kernel_size=1, 
+            kernel_initializer="zeros", 
+            bias_initializer="zeros", 
+            name=f"{self.name_prefix}noise_projection", 
+            dtype=self.dtype_policy, 
         )
         self.output_activation = layers.Activation(
-            self.final_activation_func,
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}predicted_noise",
+            self.final_activation_func, 
+            name=f"{self.name_prefix}predicted_noise", 
+            dtype=self.dtype_policy, 
         )
 
         if self.build_:
@@ -522,283 +253,701 @@ class UNet(ArgumentSaverModel):
 
     @staticmethod
     def _check_arguments(
-        num_classes: int,
-        timesteps: int,
-        image_size: int,
-        channels: int,
-        widths: tuple[int, ...],
-        block_depth: int,
-        bottleneck_width: int,
-        bottleneck_depth: int,
-        image_embedding_dim: int,
-        time_embedding_dim: int,
-        label_embedding_dim: int,
+        num_classes: int, 
+        timesteps: int, 
+        image_size: int, 
+        channels: int, 
+        widths: tuple[int, ...], 
+        block_depth: int, 
+        bottleneck_width: int, 
+        bottleneck_depth: int, 
+        image_embedding_dim: int, 
+        time_embedding_dim: int, 
+        label_embedding_dim: int, 
+        dropout_rate: float, 
+        use_skip_connections: bool | None, 
+        reshaper_kwargs: dict, 
+        cls_token_regularizer_kwargs: dict, 
     ) -> None:
-        """Validate dimensions that determine the U-Net's variable shapes.
-
-        Args:
-            num_classes: Number of real classes.
-            timesteps: Number of diffusion timesteps.
-            image_size: Native square image size.
-            channels: Image and output channel count.
-            widths: Encoder channel widths.
-            block_depth: Residual blocks per encoder/decoder level.
-            bottleneck_width: Bottleneck channel width.
-            bottleneck_depth: Number of bottleneck residual blocks.
-            image_embedding_dim: Noisy-image projection width.
-            time_embedding_dim: Timestep embedding width.
-            label_embedding_dim: Class embedding width.
-
-        Returns:
-            ``None``. Invalid non-positive dimensions raise ``ValueError``.
-        """
-
         dimensions = {
-            "num_classes": num_classes,
-            "timesteps": timesteps,
-            "image_size": image_size,
-            "channels": channels,
-            "block_depth": block_depth,
-            "bottleneck_width": bottleneck_width,
-            "bottleneck_depth": bottleneck_depth,
-            "image_embedding_dim": image_embedding_dim,
-            "time_embedding_dim": time_embedding_dim,
-            "label_embedding_dim": label_embedding_dim,
+            "num_classes": num_classes, 
+            "timesteps": timesteps, 
+            "image_size": image_size, 
+            "channels": channels, 
+            "block_depth": block_depth, 
+            "bottleneck_width": bottleneck_width, 
+            "bottleneck_depth": bottleneck_depth, 
+            "image_embedding_dim": image_embedding_dim, 
+            "time_embedding_dim": time_embedding_dim, 
+            "label_embedding_dim": label_embedding_dim, 
         }
         for name, value in dimensions.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer.")
 
-        if len(widths) == 0:
-            raise ValueError("widths must contain at least one encoder width.")
-        if any(
+        if not widths or any(
             not isinstance(width, int) or isinstance(width, bool) or width < 1
             for width in widths
         ):
-            raise ValueError("Every item in widths must be a positive integer.")
+            raise ValueError("widths must contain positive integers.")
+        if not isinstance(dropout_rate, (int, float)) or isinstance(
+            dropout_rate, bool
+        ) or not 0.0 <= dropout_rate < 1.0:
+            raise ValueError("dropout_rate must be in the range [0, 1).")
+        if use_skip_connections is not None and not isinstance(
+            use_skip_connections, bool
+        ):
+            raise ValueError("use_skip_connections must be bool or None.")
+        unknown_reshaper_keys = set(reshaper_kwargs) - {
+            "add_kl", 
+            "latent_dim_ratio", 
+        }
+        if unknown_reshaper_keys:
+            raise ValueError(
+                f"Unknown reshaper kwargs: {sorted(unknown_reshaper_keys)}."
+            )
+        add_kl = reshaper_kwargs.get("add_kl", False)
+        ratio = reshaper_kwargs.get("latent_dim_ratio", 1.0)
+        if not isinstance(add_kl, bool):
+            raise ValueError("reshaper add_kl must be boolean.")
+        if not isinstance(ratio, (int, float)) or isinstance(
+            ratio, bool
+        ) or ratio <= 0:
+            raise ValueError("latent_dim_ratio must be positive.")
+        if set(cls_token_regularizer_kwargs) != {"start", "end"}:
+            raise ValueError(
+                "cls_token_regularizer_kwargs must contain start and end."
+            )
+
+    def _compute_base_depth(self) -> int:
+        encoder_depth = 2 * len(self.widths)
+        bottleneck_depth = 1 + 2 * int(self.use_reshaper)
+        decoder_depth = len(self.widths) * (
+            3 if self.use_skip_connections else 2
+        )
+
+        return encoder_depth + bottleneck_depth + decoder_depth
+
+    @staticmethod
+    def _handle_ids(
+        ids_dict: dict | Sequence[int | None], 
+        depth: int | None, 
+        min_id: int = 0, 
+        max_id: int | None = None, 
+    ):
+        """Normalize ``None`` and negative IDs like DiffusionTransformer."""
+
+        is_dict = isinstance(ids_dict, dict)
+        values_dict = ids_dict if is_dict else {1: list(ids_dict)}
+        values_dict = {key: list(value) for key, value in values_dict.items()}
+        for key, values in values_dict.items():
+            upper = key if max_id is None else max_id
+            if None in values:
+                values = list(range(min_id, upper + 1))
+            fixed = []
+            for value in values:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError("Layer IDs must be integers or None.")
+                if value < 0:
+                    if depth is None:
+                        raise ValueError("Negative IDs require a known depth.")
+                    value += depth + 1
+                if value < min_id or (max_id is not None and value > max_id):
+                    raise ValueError(
+                        f"Layer ID {value} is outside [{min_id}, {upper}]."
+                    )
+                fixed.append(value)
+            values_dict[key] = fixed
+
+        return values_dict if is_dict else values_dict[1]
+
+    def _create_regularizer(
+        self, 
+        name: str, 
+        spatial: bool, 
+    ) -> models.Model:
+        regularizer_layers = []
+        if spatial:
+            regularizer_layers.append(
+                layers.GlobalAveragePooling2D(name=f"{name}/pool")
+            )
+
+        return models.Sequential(
+            [
+                *regularizer_layers,
+                layers.Dense(
+                    self.num_classes,
+                    activation="softmax",
+                    dtype="float32",
+                    name=f"{name}/classes",
+                ),
+            ],
+            name=name,
+        )
+
+    def _append_stage(
+        self, 
+        layers_dict: dict[str, layers.Layer], 
+        kind: str, 
+    ) -> int:
+        key = len(self.layers_dicts) + 1
+        if key in self.cls_token_regularizer_ids and self.CTR not in layers_dict:
+            layers_dict[self.CTR] = self._create_regularizer(
+                f"{self.name_prefix}depth_{key}_{self.CTR[2:]}",
+                spatial=kind != "flatten",
+            )
+        stage = LayerDict(
+            layers_dict, 
+            name=f"{self.name_prefix}depth_{key}", 
+            dtype=self.dtype_policy, 
+        )
+        self.layers_dicts.append(stage)
+        self._stage_kinds.append(kind)
+
+        return key
+
+    def _residual_stack(self, filters: int, depth: int, name: str):
+        return ResidualConvStack(
+            filters=filters, 
+            depth=depth, 
+            condition_dim=self.condition_dim, 
+            activation_func=self.activation_func, 
+            use_batch_norm=self.use_batch_norm, 
+            dropout_rate=self.dropout_rate, 
+            name=name, 
+            dtype=self.dtype_policy, 
+        )
+
+    def _bottleneck_resolution(self, resolution: int) -> int:
+        for _ in self.widths:
+            resolution = (resolution + 1) // 2
+        return resolution
+
+    def _create_layers(self) -> None:
+        skip_depths = []
+        for width in self.widths:
+            block_key = len(self.layers_dicts) + 1
+            self._append_stage(
+                {
+                    self.CB: self._residual_stack(
+                        width, 
+                        self.block_depth, 
+                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}", 
+                    )
+                }, 
+                "convolution", 
+            )
+            skip_depths.append(block_key)
+            down_key = len(self.layers_dicts) + 1
+            self._append_stage(
+                {
+                    self.DS: ImageDownsample(
+                        filters=width, 
+                        scaling_method=self.downsampling_method, 
+                        name=f"{self.name_prefix}depth_{down_key}_{self.DS[2:]}", 
+                        dtype=self.dtype_policy, 
+                    )
+                },
+                "downsample",
+            )
+
+        bottleneck_key = len(self.layers_dicts) + 1
+        self._append_stage(
+            {
+                self.CB: self._residual_stack(
+                    self.bottleneck_width, 
+                    self.bottleneck_depth, 
+                    f"{self.name_prefix}depth_{bottleneck_key}_{self.CB[2:]}", 
+                )
+            }, 
+            "convolution",
+        )
+
+        if self.use_reshaper:
+            base_side = self._bottleneck_resolution(self.image_size)
+            source_shape = (base_side, base_side, self.bottleneck_width)
+            flatten_key = len(self.layers_dicts) + 1
+            flatten_name = f"{self.name_prefix}depth_{flatten_key}_{self.R[2:]}"
+            self._append_stage(
+                {
+                    self.R: VariationalReshaper(
+                        "flatten",  
+                        source_shape, 
+                        add_kl=bool(self.reshaper_kwargs.get("add_kl", False)), 
+                        latent_dim_ratio=float(
+                            self.reshaper_kwargs.get("latent_dim_ratio", 1.0)
+                        ), 
+                        name=flatten_name, 
+                        dtype=self.dtype_policy, 
+                    )
+                }, 
+                "flatten", 
+            )
+            unflatten_key = len(self.layers_dicts) + 1
+            self._append_stage(
+                {
+                    self.R: VariationalReshaper(
+                        "unflatten", 
+                        source_shape, 
+                        name=(
+                            f"{self.name_prefix}depth_{unflatten_key}_"
+                            f"{self.R[2:]}"
+                        ), 
+                        dtype=self.dtype_policy, 
+                    )
+                }, 
+                "unflatten", 
+            )
+
+        for width, skip_depth in zip(reversed(self.widths), reversed(skip_depths)):
+            up_key = len(self.layers_dicts) + 1
+            self._append_stage(
+                {
+                    self.US: ImageUpsample(
+                        filters=width, 
+                        scaling_method=self.upsampling_method, 
+                        interpolation=self.upsampling_interpolation, 
+                        name=f"{self.name_prefix}depth_{up_key}_{self.US[2:]}", 
+                        dtype=self.dtype_policy, 
+                    )
+                }, 
+                "upsample", 
+            )
+
+            if self.use_skip_connections:
+                connector_key = len(self.layers_dicts) + 1
+                self.connection_ids_dict[connector_key] = [skip_depth]
+                self._append_stage(
+                    {
+                        self.FC: FeatureHandler(
+                            ids=[skip_depth], 
+                            connect_axis=-1, 
+                            connect_type="concat", 
+                            use_layer_norm=False, 
+                            ln_dim=2 * width, 
+                            name=(
+                                f"{self.name_prefix}depth_{connector_key}_"
+                                f"{self.FC[2:]}"
+                            ), 
+                            dtype=self.dtype_policy, 
+                        )
+                    }, 
+                    "connector", 
+                )
+            block_key = len(self.layers_dicts) + 1
+            self._append_stage(
+                {
+                    self.CB: self._residual_stack(
+                        width, 
+                        self.block_depth, 
+                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}", 
+                    )
+                }, 
+                "convolution",
+            )
+
+        for spec in self.extra_depth_specs:
+            self._append_extra_stage(spec)
+
+        if len(self.layers_dicts) != self.depth:
+            raise RuntimeError("Constructed U-Net depth does not match its config.")
+
+    def _normalize_extra_spec(self, spec: object) -> dict[str, object]:
+        if isinstance(spec, str):
+            spec = {spec: True}
+        elif isinstance(spec, (tuple, set, frozenset)):
+            spec = dict.fromkeys(spec, True)
+        if not isinstance(spec, Mapping):
+            raise ValueError("A depth specification must be a string or mapping.")
+        aliases = {
+            "convolution_block": self.CB, 
+            "residual_block": self.CB, 
+            "vision_transformer_block": self.CB, 
+            self.CB: self.CB, 
+            "cls_token_regularizer": self.CTR, 
+            self.CTR: self.CTR, 
+        }
+
+        normalized = {}
+        for name, options in spec.items():
+            if name not in aliases:
+                raise ValueError(f"Unknown progressive U-Net layer: {name}.")
+            if options is not False:
+                normalized[aliases[name]] = options
+
+        if not normalized:
+            raise ValueError("A progressive depth must contain a layer.")
+
+        return normalized
+
+    def _append_extra_stage(self, spec: object) -> int:
+        spec = self._normalize_extra_spec(spec)
+        key = len(self.layers_dicts) + 1
+        stage_layers = {}
+
+        if self.CB in spec:
+            stage_layers[self.CB] = self._residual_stack(
+                self.widths[0], 
+                self.block_depth, 
+                f"{self.name_prefix}depth_{key}_{self.CB[2:]}", 
+            )
+
+        if self.CTR in spec:
+            stage_layers[self.CTR] = self._create_regularizer(
+                f"{self.name_prefix}depth_{key}_{self.CTR[2:]}", 
+                spatial=True,
+            )
+
+        return self._append_stage(stage_layers, "extra")
 
     def _broadcast_condition(
-        self,
-        condition: tf.Tensor,
-        images: tf.Tensor,
+        self, 
+        condition: tf.Tensor, 
+        images: tf.Tensor, 
     ) -> tf.Tensor:
-        """Broadcast per-example conditions across an image's spatial axes.
-
-        Args:
-            condition: Tensor shaped ``[batch, condition_channels]``.
-            images: Image-like tensor whose dynamic height and width determine
-                the broadcast target.
-
-        Returns:
-            Condition map shaped ``[batch, height, width,
-            condition_channels]``.
-        """
-
-        condition_dim = self.time_embedding_dim + self.label_embedding_dim
         condition = tf.cast(condition, images.dtype)
-        condition = tf.reshape(condition, (-1, 1, 1, condition_dim))
-        condition = tf.broadcast_to(
-            condition,
-            shape=tf.concat([
-                tf.shape(images)[:3],
-                tf.constant([condition_dim], dtype=tf.int32),
-            ], axis=0),
+        condition = condition[:, None, None, :]
+        shape = tf.concat(
+            [tf.shape(images)[:3], [self.condition_dim]], 
+            axis=0, 
         )
-        condition.set_shape((None, None, None, condition_dim))
+        condition = tf.broadcast_to(condition, shape)
+        condition.set_shape(
+            (None, None, None, self.condition_dim)
+        )
 
         return condition
 
-    @property
-    def current_resolution(self) -> int:
-        """Return the square image resolution currently processed.
-
-        Returns:
-            The active positive integer resolution.
-        """
-
-        return self._current_resolution
-
-    def build(
-        self,
-        input_shape: tuple[tf.TensorShape, tf.TensorShape, tf.TensorShape]
-        | None = None,
-    ) -> None:
-        """Build every U-Net variable using the active resolution.
-
-        ``input_shape`` is accepted for normal Keras compatibility. The model's
-        canonical three-input shapes are created by ``build_model`` so that an
-        EMA clone has exactly the same variables and weight ordering.
-
-        Args:
-            input_shape: Optional Keras-provided input shape. It does not alter
-                the configured image, timestep, or label contracts.
-
-        Returns:
-            ``None``. All nested layers are built as a side effect.
-        """
-
-        del input_shape
-        model_input_shapes = self.build_model()
-        super().build(model_input_shapes)
-
-    def call(
-        self,
-        inputs: UNetInputs,
-        full_return: bool = False,
-        training: bool | None = None,
-    ) -> tf.Tensor | UNetFullOutput:
-        """Predict diffusion noise from an image, timestep, and class label.
-
-        Args:
-            inputs: Tuple ``(noisy_images, timesteps, labels)``. Images are a
-                rank-four floating tensor; timesteps and labels are rank-one
-                integer tensors. Timestep values must be in
-                ``[0, timesteps)`` and label values in ``[0, num_labels)``.
-            full_return: When false, return only predicted noise. When true,
-                also return the condition embedding and compatibility
-                placeholders consumed by ``DiffusionModel``.
-            training: Keras training flag forwarded to batch normalization.
-
-        Returns:
-            Predicted noise matching ``noisy_images``. With ``full_return``,
-            returns ``(noise, condition, [], [None], (None, None))``. The empty
-            feature and regularization placeholders indicate that this plain
-            U-Net has no transformer features, token regularizer, or KL latent
-            state.
-        """
-
-        noisy_images, timesteps, labels = inputs
-        time_embeddings = self.time_embedder(timesteps, training=training)
+    def embed_conditions(
+        self, 
+        times: tf.Tensor, 
+        labels: tf.Tensor, 
+        full_return: bool = False, 
+        training: bool | None = None, 
+    ):
+        times = tf.convert_to_tensor(times)
+        labels = tf.convert_to_tensor(labels)
+        time_embeddings = self.time_embedder(times, training=training)
         label_embeddings = self.label_embedder(labels, training=training)
-        condition = tf.concat(
-            [time_embeddings, label_embeddings],
-            axis=-1,
-        )
+        condition = tf.concat([time_embeddings, label_embeddings], axis=-1)
         condition = tf.cast(condition, self.compute_dtype)
 
-        x = self.image_embedder(noisy_images, training=training)
-        condition_map = self._broadcast_condition(condition, x)
-        x = tf.concat([x, condition_map], axis=-1)
+        if full_return:
+            return condition, time_embeddings, label_embeddings
+        return condition
 
-        skips = []
-        for encoder_block in self.encoder_blocks:
-            x, level_skips = encoder_block(x, training=training)
-            skips.extend(level_skips)
+    def encode(
+        self, 
+        inputs: UNetInputs, 
+        max_depth: int = -1, 
+        training: bool | None = None, 
+        min_depth: int = 0, 
+    ) -> tuple[
+        tf.Tensor, 
+        tf.Tensor, 
+        list[tf.Tensor | None], 
+        list[tf.Tensor | None], 
+        tuple[tf.Tensor | None, tf.Tensor | None], 
+    ]:
+        """Run a contiguous range of convolutional depths."""
 
-        for bottleneck_block in self.bottleneck_blocks:
-            x = bottleneck_block(x, training=training)
+        if not 0 <= min_depth <= self.depth:
+            raise ValueError("min_depth must be in [0, depth].")
 
-        for decoder_block in self.decoder_blocks:
-            level_skips = skips[-decoder_block.block_depth:]
-            skips = skips[:-decoder_block.block_depth]
-            x = decoder_block((x, level_skips), training=training)
+        condition, _, label_embeddings = self.embed_conditions(
+            inputs[1], 
+            inputs[2], 
+            full_return=True, 
+            training=training, 
+        )
+        if min_depth == 0:
+            x = self.image_embedder(inputs[0], training=training)
+            x = tf.concat([x, self._broadcast_condition(condition, x)], axis=-1)
+        else:
+            x = inputs[0]
 
-        predicted_noise = self.output_projection(x, training=training)
-        predicted_noise = self.output_activation(predicted_noise)
+        label_reg = self.labels_embed_reg(
+            label_embeddings,
+            training=training,
+        ) if self.labels_embed_reg is not None else None
+
+        features_list: list[tf.Tensor | None] = [None] * min_depth + [x]
+        regs_list: list[tf.Tensor | None] = [label_reg] + [None] * min_depth
+        z_vals: tuple[tf.Tensor | None, tf.Tensor | None] = (None, None)
+
+        for index, stage in enumerate(self.layers_dicts):
+            if index == max_depth:
+                break
+            if index < min_depth:
+                continue
+
+            if self.FC in stage:
+                source_id = self.connection_ids_dict[index + 1][0]
+                source = features_list[source_id]
+                x = tf.image.resize(x, tf.shape(source)[1:3])
+                x = tf.cast(x, source.dtype)
+                x = stage[self.FC](
+                    features_list, 
+                    second_list=[x], 
+                    training=training, 
+                )
+
+            if self.US in stage:
+                x = stage[self.US]((x, condition), training=training)
+
+            if self.CB in stage:
+                x = stage[self.CB]((x, condition), training=training)
+
+            if self.DS in stage:
+                x = stage[self.DS]((x, condition), training=training)
+
+            if self.R in stage:
+                reshape_type = self.reshaper_ids_dict[index + 1]
+                if reshape_type == "flatten":
+                    base_side = self._bottleneck_resolution(self.image_size)
+                    x = tf.image.resize(x, (base_side, base_side))
+
+                x, x_mean, x_log_var = stage[self.R](x, training=training)
+
+                if reshape_type == "unflatten":
+                    side = self._bottleneck_resolution(self.current_resolution)
+                    x = tf.image.resize(x, (side, side))
+
+                if reshape_type == "flatten" and bool(
+                    self.reshaper_kwargs.get("add_kl", False)
+                ):
+                    z_vals = (x_mean, x_log_var)
+
+            regularizer = stage[self.CTR](
+                x, 
+                training=training,
+            ) if self.CTR in stage else None
+
+            features_list.append(x)
+            regs_list.append(regularizer)
+
+        return x, condition, features_list, regs_list, z_vals
+
+    def call(
+        self, 
+        inputs: UNetInputs, 
+        full_return: bool = False, 
+        training: bool | None = None, 
+        min_depth: int = 0, 
+    ) -> tf.Tensor | UNetFullOutput:
+        x, condition, features_list, regs_list, z_vals = self.encode(
+            inputs,
+            min_depth=min_depth,
+            training=training,
+        )
+        target_size = tf.shape(inputs[0])[1:3] if min_depth == 0 else tf.constant(
+            [self.current_resolution, self.current_resolution],
+            dtype=tf.int32,
+        )
+        x = tf.image.resize(x, target_size)
+        x = self.output_projection(x, training=training)
+        predicted_noise = self.output_activation(x)
 
         if full_return:
-            return (
-                predicted_noise,
-                condition,
-                [],
-                [None],
-                (None, None),
-            )
-
+            return predicted_noise, condition, features_list, regs_list, z_vals
         return predicted_noise
 
+    def predict_noise(
+        self, 
+        inputs: UNetInputs, 
+        full_return: bool = False, 
+        training: bool | None = None, 
+    ):
+        return UNet.call(
+            self, 
+            inputs, 
+            full_return=full_return, 
+            training=training, 
+        )
+
+    @property
+    def current_resolution(self) -> int:
+        return self._current_resolution
+
     def set_current_resolution(self, resolution: int | None = None) -> None:
-        """Select the resolution used by progressive diffusion training.
-
-        Convolution kernels are spatially reusable, and decoder activations are
-        aligned to their skip tensors dynamically. The selected resolution may
-        therefore be lower than, higher than, or equal to ``image_size``.
-        ``DiffusionModel`` resizes input batches to this value before calling
-        the network.
-
-        Args:
-            resolution: Positive square image size. ``None`` restores the
-                constructor's native ``image_size``.
-
-        Returns:
-            ``None``. The method updates ``current_resolution`` and clears
-            cached Keras execution functions when the value changes.
-        """
-
         resolution = self.image_size if resolution is None else resolution
         if not isinstance(resolution, int) or isinstance(resolution, bool):
             raise ValueError("resolution must be an integer.")
         if resolution < 1:
             raise ValueError("resolution must be positive.")
-
         if getattr(self, "_current_resolution", None) != resolution:
             self._current_resolution = resolution
             self.train_function = None
             self.test_function = None
             self.predict_function = None
 
-    def build_model(
-        self,
-        call_model: bool = True,
-    ) -> list[tf.TensorShape]:
-        """Create symbolic inputs and optionally execute the U-Net graph.
+    def build(
+        self, 
+        input_shape: tuple[tf.TensorShape, tf.TensorShape, tf.TensorShape]
+        | None = None, 
+    ) -> None:
+        del input_shape
+        shapes = self.build_model()
+        super().build(shapes)
 
-        This mirrors ``DiffusionTransformer.build_model`` and gives
-        ``DiffusionModel`` an eagerly built, cloneable network for raw/EMA
-        weight synchronization.
-
-        Args:
-            call_model: Whether to call the U-Net with the symbolic inputs and
-                store its symbolic output. Set false only when a caller needs
-                input shapes without executing the graph.
-
-        Returns:
-            Shapes for noisy images, timesteps, and labels, in that order.
-        """
-
+    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         noisy_images = layers.Input(
-            shape=(
-                self._current_resolution,
-                self._current_resolution,
-                self.channels,
-            ),
-            dtype=self.compute_dtype,
-            name="noisy_images",
+            shape=(self.current_resolution, self.current_resolution, self.channels), 
+            dtype=self.compute_dtype, 
+            name="noisy_images", 
         )
-        timesteps = layers.Input(
-            shape=(),
-            dtype=tf.int32,
-            name="timesteps",
-        )
-        labels = layers.Input(
-            shape=(),
-            dtype=tf.int32,
-            name="labels",
-        )
-
-        self.inputs = (noisy_images, timesteps, labels)
+        times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
+        labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
+        self.inputs = (noisy_images, times, labels)
         self.outputs = self.call(self.inputs) if call_model else None
 
-        return [input_tensor.shape for input_tensor in self.inputs]
+        return [value.shape for value in self.inputs]
 
-    def add_depths(self, depth_spec: object) -> NoReturn:
-        """Reject transformer-style structural growth for this fixed U-Net.
+    def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
+        """Append shape-preserving convolution or regularizer stages."""
 
-        Timestep and resolution tasks in ``fit_progressively`` are fully
-        supported. Adding encoder/decoder levels after optimizer creation would
-        require a separate skip topology and output-head migration policy, so
-        this simple U-Net deliberately keeps its architecture fixed.
+        specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
+        specs = [spec for spec in specs if spec is not None]
+        before = self.depth
+        if not specs:
+            return {"network": {"before": before, "added": 0, "after": before}}
 
-        Args:
-            depth_spec: Depth specification received from
-                ``DiffusionModel.fit_progressively``.
+        normalized = [self._normalize_extra_spec(spec) for spec in specs]
+        serializable_specs = []
+        for spec in normalized:
+            saved = {}
+            if self.CB in spec:
+                saved["convolution_block"] = spec[self.CB]
+            if self.CTR in spec:
+                saved["cls_token_regularizer"] = spec[self.CTR]
+            serializable_specs.append(saved)
+            new_depth = self._append_extra_stage(saved)
+            if self.CTR in spec:
+                self.cls_token_regularizer_ids.append(new_depth)
 
-        Returns:
-            This method never returns; it raises ``NotImplementedError``.
-        """
-
-        raise NotImplementedError(
-            "UNet does not support progressive depth tasks. Use timestep and "
-            "resolution tasks, or construct a deeper UNet through widths, "
-            "block_depth, and bottleneck_depth before training."
+        self.extra_depth_specs.extend(serializable_specs)
+        self.depth = len(self.layers_dicts)
+        self._init_config["extra_depth_specs"] = deepcopy(self.extra_depth_specs)
+        self._init_config["cls_token_regularizer_ids"] = list(
+            self.cls_token_regularizer_ids
         )
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
+
+        return {
+            "network": {
+                "before": before, 
+                "added": self.depth - before, 
+                "after": self.depth, 
+            }
+        }
+
+    def get_variables_names(
+        self, 
+        vars: list[tf.Variable] | None = None, 
+    ) -> list[str]:
+        """Return TensorFlow names for all or selected trainable variables."""
+
+        vars = self.trainable_variables if vars is None else vars
+
+        return [variable.name for variable in vars]
+
+
+if __name__ != "__main__":
+    tf.keras.utils.register_keras_serializable(
+        package="continual_learning",
+    )(UNet)
+    # TensorFlow 2.10 writes subclassed models to JSON with the bare class
+    # name even when a registered package name exists.
+    tf.keras.utils.get_custom_objects()["UNet"] = UNet
+
+
+def run_self_tests() -> dict[str, str]:
+    """Run direct, wrapper, VAE, progressive, and serialization checks."""
+
+    tf.keras.backend.clear_session()
+    tf.random.set_seed(211)
+    common = {
+        "num_classes": 2, 
+        "timesteps": 4, 
+        "image_size": 5, 
+        "channels": 1, 
+        "widths": (2, 3), 
+        "block_depth": 1, 
+        "bottleneck_width": 4, 
+        "bottleneck_depth": 1, 
+        "image_embedding_dim": 2, 
+        "time_embedding_dim": 2, 
+        "label_embedding_dim": 2, 
+        "use_batch_norm": False, 
+        "build": False, 
+    }
+    model = UNet(**common)
+    images = tf.ones((2, 5, 7, 1))
+    times = tf.constant([0, 3], tf.int32)
+    labels = tf.constant([0, 1], tf.uint8)
+    output, condition, features, regs, z_vals = model(
+        (images, times, labels), full_return=True
+    )
+    assert output.shape == images.shape
+    assert condition.shape == (2, 4)
+    assert len(features) == len(regs) == model.depth + 1
+    assert z_vals == (None, None)
+    assert len(model.layers_dicts) == model.depth
+    assert model.connection_ids_dict
+
+    clone = UNet.from_config(model.get_config())
+    assert clone((images, times, labels)).shape == images.shape
+    assert len(clone.weights) == len(model.weights)
+    model.train_function = model.test_function = model.predict_function = object()
+    growth = model.add_depths("convolution_block")
+    assert growth["network"]["added"] == 1
+    assert model.train_function is model.test_function is model.predict_function is None
+    assert model((images, times, labels)).shape == images.shape
+
+    vae = UNet(
+        **common, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+    )
+    square_images = images[:, :5, :5]
+    vae_output = vae((square_images, times, labels), full_return=True)
+    assert vae_output[0].shape == (2, 5, 5, 1)
+    assert vae_output[-1][0].shape.rank == 2
+    assert vae_output[-1][1].shape == vae_output[-1][0].shape
+    assert not vae.connection_ids_dict and vae.reshaper_ids_dict
+    json_clone = tf.keras.models.model_from_json(vae.to_json())
+    assert json_clone.reshaper_ids_dict == vae.reshaper_ids_dict
+    assert json_clone((square_images, times, labels)).shape == square_images.shape
+
+
+    from diffusion.models.wrapper.diffusion_model import DiffusionModel
+
+
+    wrapper = DiffusionModel(
+        network=vae, 
+        use_ema=True, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+        p_uncond=0.0, 
+        swap_noise_image=True, 
+        kl_loss_coef=0.1, 
+    )
+    wrapper.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3), 
+        loss="mse", 
+        run_eagerly=True, 
+    )
+    batch = (square_images, tf.constant([0, 1], tf.uint8))
+    results = wrapper.train_step(batch)
+    assert "noise_loss" in results and "kl_loss" in results
+    samples = wrapper.sample_vae(network_name="raw", labels=[0, 1], seed=5)
+    assert samples.shape == (2, 5, 5, 1)
+
+    tf.keras.backend.clear_session()
+    return {"UNet": "passed"}
+
+
+if __name__ == "__main__":
+    print(run_self_tests())
