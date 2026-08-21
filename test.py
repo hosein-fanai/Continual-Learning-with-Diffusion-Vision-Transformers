@@ -1,6 +1,6 @@
 
 PROJECT_SELF_TEST_CLASSES = {
-    "autoencoder.classifier_variational_autoencoder": ("ClassifierVAE",), 
+    "autoencoder.vae_classifier": ("VAEClassifer",), 
     "autoencoder.decoder_accuracy_callback": ("DecoderAccuracyCallback",), 
     "autoencoder.variational_autoencoder": ("VariationalAutoencoder",), 
     "common.argument_saver": (
@@ -11,12 +11,21 @@ PROJECT_SELF_TEST_CLASSES = {
     "common.config": (
         "KwargsMixin", 
         "DiffusionTransformerConfig", 
+        "DiTDecoderConfig",
+        "DiTEncoderDecoderConfig",
         "DiTClassifierConfig", 
+        "DiTEncoderDecoderClassifierConfig",
+        "UNetConfig",
+        "UNetClassifierConfig",
         "DiffusionModelConfig", 
         "DiffusionClassifierConfig", 
+        "DiffusionClassifierV2Config",
+        "VariationalAutoencoderConfig",
+        "VAEClassiferConfig",
         "DatasetConfig", 
         "ModelConfig", 
         "OptimizerConfig", 
+        "ContinuallyLearnConfig",
         "TrainingConfig", 
         "ReportingConfig", 
         "Config", 
@@ -72,11 +81,7 @@ PROJECT_SELF_TEST_CLASSES = {
     "diffusion.models.wrapper.diffusion_classifier_v2": (
         "DiffusionClassifierV2", 
     ), 
-    "diffusion.models.wrapper.diffusion_encoder_decoder_model": (
-        "DiffusionEncoderDecoderModel", 
-    ), 
     "diffusion.models.wrapper.diffusion_model": ("DiffusionModel",), 
-    "diffusion.old.schedulers": ("ScheduleKind", "ScheduleConfig"), 
     "diffusion.schedulers": ("ScheduleKind", "ScheduleConfig"), 
 }
 """Classes that must be covered by each module's ``run_self_tests`` result."""
@@ -107,7 +112,7 @@ def run_project_self_tests(
 
     Returns:
         dict[str, dict[str, str]]: Ordered-by-registration module results.  A
-        successful result covers all 58 registered classes and every inner
+        successful result covers all 64 registered classes and every inner
         value is ``"passed"``.
 
     Raises:
@@ -121,10 +126,15 @@ def run_project_self_tests(
     import numpy as np
 
     import gc
+
     import importlib
+
     import inspect
+
     import random
+
     import time
+
     import traceback
 
 
@@ -204,7 +214,7 @@ def run_project_self_tests(
     expected_classes = sum(
         len(class_names) for class_names in PROJECT_SELF_TEST_CLASSES.values()
     )
-    assert tested_classes == expected_classes == 58
+    assert tested_classes == expected_classes == 64
 
     if verbose:
         elapsed = time.perf_counter() - started

@@ -5,6 +5,9 @@ from tensorflow.keras import metrics, layers, models, optimizers
 
 import numpy as np
 
+from collections.abc import Callable, Sequence
+
+from common.dataloader import get_dataset
 from common.model import get_callbacks
 
 from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
@@ -106,7 +109,7 @@ class VariationalAutoencoder(models.Model):
         super().__init__(**kwargs)
 
         assert (conditioned and class_num is not None) \
-            or (not conditioned and class_num is None), \
+        or (not conditioned and class_num is None), \
             "When conditioned is True, class_num cannot be None, " \
             "and when conditioned is False, class_num needs to be None."
 
@@ -486,13 +489,27 @@ class VariationalAutoencoder(models.Model):
         
         return x
 
-    def train(self, x, y=None, 
-            train_num=10_000, 
-            epochs=10, batch_size=512, 
-            validation_data=None, 
-            callbacks_list=None, 
-            callbacks_monitor="",
-            clf=None, verbose=1):
+    def train(
+        self, 
+        x: np.ndarray | tf.Tensor, 
+        y: np.ndarray | tf.Tensor | None = None, 
+        train_num: int = 10_000, 
+        epochs: int = 10, 
+        batch_size: int = 512, 
+        shuffle_buffer: int = 10_000, 
+        seed: int | None = None, 
+        validation_data: (
+            tf.data.Dataset
+            | np.ndarray
+            | tf.Tensor
+            | tuple[np.ndarray | tf.Tensor, np.ndarray | tf.Tensor]
+            | None
+        ) = None, 
+        callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
+        callbacks_monitor: str = "", 
+        clf: models.Model | Callable | None = None, 
+        verbose: bool | int = 1
+    ) -> dict[str, list[float]]:
         """Fit the VAE and optionally monitor generated-sample accuracy.
 
         Args:
@@ -508,11 +525,16 @@ class VariationalAutoencoder(models.Model):
                 creating a smaller subset, while larger values oversample to
                 the requested size.
             epochs (int): Positive maximum number of Keras training epochs.
-            batch_size (int): Positive examples per NumPy-input batch.
-            validation_data (object | None): Keras validation input.  For a
-                conditional VAE this is normally ``(x_val, y_val)``; for an
-                unconditional VAE it may be an ``x_val`` tensor/dataset.
-            callbacks_list (list[tf.keras.callbacks.Callback] | None): Exact
+            batch_size (int): Positive examples per ``tf.data.Dataset`` batch.
+            shuffle_buffer (int): Training shuffle capacity passed to
+                :func:`common.dataloader.get_dataset`; ``0`` disables shuffling.
+            seed (int | None): Optional training-dataset shuffle seed.
+            validation_data (tf.data.Dataset | numpy.ndarray | tf.Tensor |
+                tuple[numpy.ndarray | tf.Tensor, numpy.ndarray | tf.Tensor] |
+                None): Validation input. A passed dataset is preserved; raw
+                conditional ``(x_val, y_val)`` arrays or an unconditional
+                ``x_val`` array/tensor are converted to a fresh dataset.
+            callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Exact
                 callbacks to pass to ``fit``.  When omitted, :func:`get_callbacks`
                 adds early stopping; when ``clf`` is supplied, a
                 :class:`DecoderAccuracyCallback` is prepended.
@@ -535,43 +557,90 @@ class VariationalAutoencoder(models.Model):
             AssertionError: If label presence does not match conditional mode.
         """
 
-        assert (self.conditioned and (y is not None)) or (not self.conditioned and (y is None)) 
+        assert (self.conditioned and (y is not None)) \
+        or (not self.conditioned and (y is None)) 
 
 
-        if train_num != -1:
+        callbacks_list = list(callbacks_list) if callbacks_list is not None else None
+
+        if train_num != -1: # Resample to the requested minimum training size.
             input_size = len(x)
             train_num = max(train_num, input_size)
 
-            indices = np.random.randint(0, input_size, (train_num,))
-            x = x[indices]
-            if y is not None:
-                y = y[indices]
+            indices = np.random.randint(
+                0, 
+                input_size, 
+                (train_num,)
+            )
+            x = tf.gather(
+                x, 
+                indices
+            ) if isinstance(x, tf.Tensor) else x[indices]
+            y = tf.gather(# Keep conditional labels aligned with samples.
+                y, 
+                indices
+            ) if isinstance(y, tf.Tensor) and y is not None else y[indices]
 
-        if y is not None:
+        if y is not None: # Record classes available for conditional generation.
             new_classes = np.unique(np.argmax(y, axis=-1))
             self.seen_classes.extend(new_classes)
             self.seen_classes = list(set(self.seen_classes))
 
-        if clf is not None and callbacks_list is None:
-            callbacks_monitor = "decoder_accuracy" if callbacks_monitor == "" else callbacks_monitor
+        if clf is not None and callbacks_list is None: # Build classifier-aware defaults.
+            if callbacks_monitor == "": # Select the decoder metric by default.
+                callbacks_monitor = "decoder_accuracy"
 
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf)
-            ] + get_callbacks(monitor=callbacks_monitor, verbose=verbose)
-        elif clf is not None and callbacks_list is not None:
+                DecoderAccuracyCallback(classifier=clf), 
+                *get_callbacks(
+                    monitor=callbacks_monitor, 
+                    verbose=verbose
+                )
+            ]
+        elif clf is not None and callbacks_list is not None: # Add decoder evaluation to user callbacks.
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf)
-            ] + callbacks_list
-        elif clf is None and callbacks_list is None:
-            callbacks_list = get_callbacks(monitor=callbacks_monitor, verbose=verbose)
+                DecoderAccuracyCallback(classifier=clf), 
+                *callbacks_list
+            ]
+        elif clf is None and callbacks_list is None: # Build ordinary VAE callbacks.
+            callbacks_list = get_callbacks(
+                monitor=callbacks_monitor, 
+                verbose=verbose
+            )
+
+        trainset = get_dataset(
+            x, y, 
+            shuffle_buffer=shuffle_buffer, 
+            batch_size=batch_size, 
+            drop_remainder=False, 
+            seed=seed
+        )
+        if isinstance(validation_data, tf.data.Dataset): # Preserve prepared validation pipelines.
+            valset = validation_data
+        elif isinstance(validation_data, tuple): # Convert paired validation arrays.
+            valset = get_dataset(
+                validation_data[0], 
+                validation_data[1], 
+                shuffle_buffer=0, 
+                batch_size=batch_size, 
+                drop_remainder=False
+            )
+        elif validation_data is not None: # Convert unconditional validation inputs.
+            valset = get_dataset(
+                validation_data, 
+                shuffle_buffer=0, 
+                batch_size=batch_size, 
+                drop_remainder=False
+            )
+        else: # Train without validation when no input was supplied.
+            valset = None
 
         history = self.fit(
-            x, y,
-            epochs=epochs,
-            batch_size=batch_size,
-            validation_data=validation_data, 
+            trainset, 
+            epochs=epochs, 
+            validation_data=valset,
             callbacks=callbacks_list, 
-            verbose=verbose,
+            verbose=verbose
         ).history
 
         return history
@@ -945,13 +1014,30 @@ def run_self_tests() -> dict[str, str]:
         callbacks_mock.assert_called_once_with(monitor="custom_metric", verbose=0)
         fit_args, fit_kwargs = fit_mock.call_args
         assert fit_args[0] is unconditioned
-        np.testing.assert_array_equal(fit_args[1], x_numpy)
-        assert fit_args[2] is None
-        assert fit_kwargs["epochs"] == 2 and fit_kwargs["batch_size"] == 1
-        assert fit_kwargs["validation_data"] is x_numpy
+        assert isinstance(fit_args[1], tf.data.Dataset)
+        train_values = np.concatenate(
+            list(fit_args[1].as_numpy_iterator()),
+            axis=0
+        )
+        train_values = train_values[np.argsort(train_values[:, 0])]
+        expected_values = x_numpy[np.argsort(x_numpy[:, 0])]
+        np.testing.assert_array_equal(train_values, expected_values)
+        assert fit_kwargs["epochs"] == 2 and "batch_size" not in fit_kwargs
+        assert isinstance(fit_kwargs["validation_data"], tf.data.Dataset)
+        validation_values = np.concatenate(
+            list(fit_kwargs["validation_data"].as_numpy_iterator()),
+            axis=0
+        )
+        np.testing.assert_array_equal(validation_values, x_numpy)
         assert fit_kwargs["callbacks"] == [sentinel_callback]
 
     explicit_callback = tf.keras.callbacks.Callback()
+    explicit_valset = get_dataset(
+        x_numpy,
+        shuffle_buffer=0,
+        batch_size=2,
+        drop_remainder=False
+    )
     with mock.patch.object(
         VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
     ) as fit_mock, mock.patch.object(module, "get_callbacks") as callbacks_mock:
@@ -959,12 +1045,14 @@ def run_self_tests() -> dict[str, str]:
             x_numpy, 
             train_num=-1, 
             epochs=1, 
+            validation_data=explicit_valset,
             callbacks_list=[explicit_callback], 
             verbose=0, 
         )
         assert history == {"loss": [1.0]}
         callbacks_mock.assert_not_called()
         assert fit_mock.call_args.kwargs["callbacks"] == [explicit_callback]
+        assert fit_mock.call_args.kwargs["validation_data"] is explicit_valset
 
     deterministic_indices = np.array([1, 0, 1, 0, 1], dtype=np.int64)
     conditioned.seen_classes = []
@@ -990,8 +1078,18 @@ def run_self_tests() -> dict[str, str]:
             monitor="decoder_accuracy", verbose=0
         )
         fit_args, fit_kwargs = fit_mock.call_args
-        np.testing.assert_array_equal(fit_args[1], x_numpy[deterministic_indices])
-        np.testing.assert_array_equal(fit_args[2], y_numpy[deterministic_indices])
+        assert isinstance(fit_args[1], tf.data.Dataset)
+        train_batches = list(fit_args[1].as_numpy_iterator())
+        actual_x = np.concatenate([batch[0] for batch in train_batches], axis=0)
+        actual_y = np.concatenate([batch[1] for batch in train_batches], axis=0)
+        actual_rows = np.concatenate([actual_x, actual_y], axis=-1)
+        expected_rows = np.concatenate([
+            x_numpy[deterministic_indices],
+            y_numpy[deterministic_indices]
+        ], axis=-1)
+        actual_rows = actual_rows[np.lexsort(actual_rows.T[::-1])]
+        expected_rows = expected_rows[np.lexsort(expected_rows.T[::-1])]
+        np.testing.assert_array_equal(actual_rows, expected_rows)
         assert isinstance(fit_kwargs["callbacks"][0], DecoderAccuracyCallback)
         assert fit_kwargs["callbacks"][0].classifier is classifier
         assert fit_kwargs["callbacks"][1] is sentinel_callback
@@ -1014,6 +1112,7 @@ def run_self_tests() -> dict[str, str]:
         )
         randint_mock.assert_called_once_with(0, 2, (2,))
         callbacks_mock.assert_not_called()
+        assert isinstance(fit_mock.call_args.args[1], tf.data.Dataset)
         fit_callbacks = fit_mock.call_args.kwargs["callbacks"]
         assert isinstance(fit_callbacks[0], DecoderAccuracyCallback)
         assert fit_callbacks[1] is explicit_callback

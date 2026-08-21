@@ -18,19 +18,19 @@ class ImageGeneratorCallback(callbacks.Callback):
 
     * display only: ``show_images=True``, ``save_gifs=False``, and
       ``results_path=None``;
-    * save PNGs and GIFs: ``save_gifs=True`` and a non-``None``
-      ``results_path``; ``show_images`` then controls simultaneous display.
+    * save PNGs, with optional GIFs: a non-``None`` ``results_path``;
+      ``show_images`` controls simultaneous display.
 
-    Supplying ``results_path`` while ``save_gifs=False`` is rejected. A dated
-    run directory is created immediately during construction when saving.
+    A dated run directory is created immediately during construction when
+    saving. GIF output additionally requires a result path.
 
     Args:
         show_images: Whether ``plot_images`` displays the generated image grid.
         save_gifs: Whether to request intermediate ``x_t`` and ``x_0`` frames
             and write a denoising GIF per epoch.
         results_path: Optional string or path-like base directory. A timestamped
-            child containing ``images`` and ``gifs`` is created when GIF saving
-            is enabled.
+            child containing ``images`` is created; ``gifs`` is added when GIF
+            saving is enabled.
         project_tag: Optional text appended to the timestamped directory name.
         **kwargs: Arguments forwarded to ``tf.keras.callbacks.Callback``. The
             TensorFlow 2.10 base callback normally requires no extra options.
@@ -64,9 +64,8 @@ class ImageGeneratorCallback(callbacks.Callback):
 
         assert show_images or results_path is not None, \
             "The callback needs to either show images or save them."
-        assert (save_gifs and results_path is not None) or \
-            (not save_gifs and results_path is None), \
-                "save_gifs needs to be matched with results_path."
+        assert not save_gifs or results_path is not None, \
+            "save_gifs requires results_path."
 
 
         self.show_images = show_images
@@ -121,9 +120,14 @@ class ImageGeneratorCallback(callbacks.Callback):
                 return_x0s=True, 
             )
             create_gif(
-                os.path.join(self.results_path, "gifs", 
-                            f"epoch-{epoch+1}_steps-{steps}_scale-{cfg_scale:.1f}_eta-{eta:.4f}.gif"), 
-                frames1, frames2, 
+                os.path.join(
+                    self.results_path, 
+                    "gifs", 
+                    f"epoch-{epoch+1}_steps-{steps}_scale"
+                    f"-{cfg_scale:.1f}_eta-{eta:.4f}.gif"
+                ), 
+                frames1, 
+                frames2, 
                 verbose=0
             )
         else:
@@ -137,8 +141,12 @@ class ImageGeneratorCallback(callbacks.Callback):
             plot_images(
                 imgs, 
                 show_images=self.show_images, 
-                save_path=os.path.join(self.results_path, "images", 
-                                    f"epoch-{epoch+1}_steps-{steps}_scale-{cfg_scale:.1f}_eta-{eta:.4f}.png") 
+                save_path=os.path.join(
+                    self.results_path, 
+                    "images", 
+                    f"epoch-{epoch+1}_steps-{steps}_scale"
+                    f"-{cfg_scale:.1f}_eta-{eta:.4f}.png"
+                ) 
             )
         else:
             plot_images(imgs)
@@ -161,12 +169,11 @@ def run_self_tests() -> dict[str, str]:
     from types import SimpleNamespace
     from unittest.mock import Mock, patch
 
+
     for invalid_kwargs in (
-        {"show_images": False, "save_gifs": False, "results_path": None},
-        {"show_images": True, "save_gifs": True, "results_path": None},
-        {"show_images": True, "save_gifs": False, "results_path": "unused"},
-        {"show_images": False, "save_gifs": True, "results_path": None},
-        {"show_images": False, "save_gifs": False, "results_path": "unused"},
+        {"show_images": False, "save_gifs": False, "results_path": None}, 
+        {"show_images": True, "save_gifs": True, "results_path": None}, 
+        {"show_images": False, "save_gifs": True, "results_path": None}, 
     ):
         try:
             ImageGeneratorCallback(**invalid_kwargs)
@@ -187,6 +194,14 @@ def run_self_tests() -> dict[str, str]:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
     display_sample.assert_called_once_with(steps=4, scale=1.5, eta=0.25)
     plot_mock.assert_called_once_with("images")
+
+    with tempfile.TemporaryDirectory() as png_directory:
+        png_callback = ImageGeneratorCallback(
+            show_images=False, 
+            save_gifs=False, 
+            results_path=png_directory, 
+        )
+        assert os.path.isdir(png_callback.results_path)
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         saving_callback = ImageGeneratorCallback(

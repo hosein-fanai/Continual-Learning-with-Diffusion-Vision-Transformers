@@ -21,6 +21,7 @@ from . import NetworkName, TrainType, ClusteringType
 from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
+from diffusion.models.transformer.di_t_decoder import DiTDecoder
 from diffusion.schedulers import make_schedule, SchedulerName
 
 
@@ -1370,16 +1371,10 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             DiffusionTransformer: Selected network instance.
-
-        Raises:
-            AssertionError: If EMA is requested while ``use_ema=False``.
-            ValueError: If the name is unsupported.
         """
 
-        if not self.use_ema:
-            assert network_name != "ema", \
-                "network_name cannot be ema when use_ema is False."
-
+        if not self.use_ema and network_name == "ema":
+            network_name = "raw"
 
         if network_name == "ema":
             network = self.ema_network
@@ -1652,16 +1647,35 @@ class DiffusionModel(ArgumentSaverModel):
         """
         network = self.get_network(network_name)
 
-        eps_c, *_, regs_list_c, z_vals_c = network(
-            (x_t, t_batch, cond_labels), 
-            full_return=True, 
-            training=training
-        )
-        eps_u, *_, regs_list_u, z_vals_u = network(
-            (x_t, t_batch, uncond_labels), 
-            full_return=True, 
-            training=training
-        ) if self.use_cfg and scale is not None else (None, None, (None, None))
+        def run_network(labels):
+            if isinstance(network, DiTDecoder):
+                outputs = network(
+                    (x_t, t_batch, labels), 
+                    encoder_cond=None, 
+                    encoder_features_list=[None] * len(
+                        network.encoder_feature_dims
+                    ), 
+                    full_return=True, 
+                    training=training
+                )
+                return (
+                    outputs["noises"], 
+                    outputs["regs_list"], 
+                    outputs["z_vals"]
+                )
+
+            eps, *_, regs_list, z_vals = network(
+                (x_t, t_batch, labels), 
+                full_return=True, 
+                training=training
+            )
+
+            return eps, regs_list, z_vals
+
+        eps_c, regs_list_c, z_vals_c = run_network(cond_labels)
+        eps_u, regs_list_u, z_vals_u = run_network(uncond_labels) \
+                                    if self.use_cfg and scale is not None \
+                                    else (None, None, (None, None))
 
         return ((eps_c, eps_u), 
                 (regs_list_c, regs_list_u), 
@@ -3127,12 +3141,7 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=None, steps=2, eta=0.0, seed=59
     )
     assert no_cfg_sample.shape == (without_ema.network.num_labels, 4, 4, 1)
-    try:
-        without_ema.get_network("ema")
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("EMA lookup without EMA must fail")
+    assert without_ema.get_network("ema") is without_ema.network
 
     # These constructor values are outside their documented domains but the
     # legacy implementation currently accepts them.  Keep the behavior visible

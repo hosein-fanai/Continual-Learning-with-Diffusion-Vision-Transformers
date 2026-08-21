@@ -271,7 +271,7 @@ inputs even though eager three-input calls are valid. Configuration round trips
 preserve both nested dictionaries and standard Keras model state.
 
 The raw model may return decoder tokens when `use_unpatchify=False`. The
-`DiffusionEncoderDecoderModel` wrapper instead requires an unpatchified decoder
+`DiffusionModel` wrapper instead requires an unpatchified decoder
 image with the same shape as its sampled noise target. Encoder resume calls
 with `min_depth>0` also require an explicit fourth decoder image. Therefore the
 base wrapper's three-input `sample_vae` path cannot resume this composite;
@@ -387,7 +387,7 @@ expected by the already-created output/classifier head.
 ## Encoder/decoder status
 
 `DiTEncoderDecoder` adapts the decoder's separate condition and feature inputs
-to the standard denoiser return contract. Use `DiffusionEncoderDecoderModel`
+to the standard denoiser return contract. Use `DiffusionModel`
 for aligned denoising training, evaluation, and sampling, subject to the
 image-output and VAE limits above. Direct four-input calls remain available for
 custom teacher-forcing workflows.
@@ -413,6 +413,9 @@ condition/decoder-image only. Encoder-style blocks selected with
 `use_decoder_ids=[]` receive the same context without a causal mask.
 `get_config`/`from_config` preserve standard Keras `name`, `trainable`, `dtype`,
 and `dynamic` state in addition to decoder options.
+For context-free diffusion replay, `DiffusionModel` can supply
+empty encoder context when `decoder_separate_cond=True`, `shift_inputs=False`,
+and both encoder aggregation mappings are empty.
 
 The compositions above isolate callers from the decoder's structured context
 arguments; the remaining standalone decoder limitations still apply to their

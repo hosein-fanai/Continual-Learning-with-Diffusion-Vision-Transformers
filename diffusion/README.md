@@ -24,8 +24,8 @@ dictionaries and state.
 The raw `DiTEncoderDecoder` and `DiTEncoderDecoderClassifier` remain compatible
 with their standard three-input wrapper workflows and use the noisy encoder
 image as the decoder input. A four-input call may instead provide a distinct
-teacher-forcing image. `DiffusionEncoderDecoderModel` inherits the ordinary
-three-input wrapper pipeline; the raw model reuses `x_t` for its decoder, so
+teacher-forcing image. `DiffusionModel` uses the ordinary three-input wrapper
+pipeline; the raw model reuses `x_t` for its decoder, so
 training, evaluation, and sampling stay aligned and the target noise is never
 exposed to the network.
 Encoder-side progressive depth and decoder construction depth are owned

@@ -14,15 +14,14 @@ such as `from diffusion import DiffusionModel` resolve consistently.
 
 ## Environment
 
-The pinned runtime dependency is TensorFlow 2.10:
+Install the pinned TensorFlow runtime and the reporting/HPO dependencies with:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Dataset, reporting, and legacy continual-learning paths also import NumPy,
-PyYAML, pandas, scikit-learn, Matplotlib, and Pillow. Ensure those packages are
-available when using the corresponding modules.
+The requirements include Optuna, TensorBoard, PyYAML, pandas, scikit-learn,
+Matplotlib, and Pillow used by the experiment pipeline.
 
 ## How the diffusion API fits together
 
@@ -143,36 +142,76 @@ karras = generate_sigmas(ScheduleConfig(
 and normalized-time arrays. Use `generate_sigmas` directly for native VE or
 Karras magnitudes; the all-in-one helper reports a VP beta-equivalent curve.
 
-## Historical configuration-driven MNIST workflow
+## Configuration-driven experiments
 
 `common.config` defines nested dataclasses and YAML serialization.
-`common.train` loads normalized MNIST batches, constructs a diffusion wrapper,
-trains it, and writes configured reports:
+`common.train` supports MNIST, Fashion-MNIST, CIFAR-10, and CIFAR-100 plus every
+end-to-end model family used by the project. Set `model.name` for the generic
+path; leave it `null` to retain the original DiT/DiT-classifier behavior.
 
 ```python
 from common.config import load_config
-from common.train import main
+from common.train import run_experiment
 
-config = load_config("configs/default.yaml")
-print(config.model.dit_classifier.kwargs())
-# common.train.main(config) is the historical executor once its config schema
-# and selected model constructors use the same API revision.
+config = load_config("configs/my-run.yaml")
+result = run_experiment(config)
+print(result["results_path"])
 ```
 
-Omitted YAML fields use dataclass defaults and unknown fields are rejected.
-This configuration layer predates several generalized transformer constructor
-names and performs no alias translation. The tracked YAML examples therefore
-need the mappings documented in `common.config` before they can construct the
-current raw networks. That requires migrating the config dataclasses or
-translating at the `common.train.get_model` call site; changing the YAML keys
-alone is rejected by the present dataclasses. For a matching schema revision,
-`common.train.main` is the repository-root executor and `__main__.py` is the
-package-context command entry point.
+Generic model-specific constructor options live in `model.kwargs`; diffusion
+wrapper options live in `model.wrapper_kwargs`. Omitted fields keep defaults
+and unknown typed-section fields are rejected.
+
+## Hyperparameter optimization
+
+The 21 notebooks under [`notebooks/hpo/`](notebooks/hpo/README.md) cover all
+task/model pairings supported by the HPO runner. They call one API:
+
+```python
+from common.hpo import SEARCH_SPACES, run_hpo
+
+study = run_hpo(
+    task="generation",
+    model_name="unet",
+    dataset_name="CIFAR10",
+    n_trials=30,
+    epochs=50,
+    results_path="results/hpo",
+)
+```
+
+Each Optuna trial first writes and reloads a YAML config, then uses
+`common.train` for data, construction, training, and reports. Trial directories
+contain weights, resolved config, plots, GIFs, CSVs, and objective values;
+TensorBoard event filenames encode every optimized value and the event itself
+records the full name/value mapping. Study state is resumable from SQLite and
+is mirrored to `trials.csv`. Dataset-specific study directories prevent runs
+on CIFAR-10 and CIFAR-100 from sharing state. Joint models use a two-objective
+Pareto study.
 
 ## Class-incremental learning
 
-The legacy continual-learning interface adds one class per task and optionally
-rehearses prior classes from a bounded replay buffer or conditional VAE:
+`continually_learn` adds one class per task and accepts either a complete
+`Config` or the original inputs as direct keywords. Config mode builds the
+loader and model bundle through `common.dataloader.get_datasets` and
+`common.model.get_model`; every classifier and replay-model phase then uses the
+shared training and reporting APIs.
+
+```python
+from common.config import Config
+from common.learner import continually_learn
+
+config = Config(
+    dataset={"name": "cifar10", "preprocess": "min-max"},
+    model={"name": "cnn", "show_network_summary": False},
+    training={"task": "continual", "epochs": 20},
+    continually_learn={"use_buffer": True, "plot_results": True},
+)
+accuracies = continually_learn(config)
+```
+
+Direct mode remains useful with an existing classifier template or runtime
+model object:
 
 ```python
 from common.dataloader import load_cifar10
@@ -192,22 +231,30 @@ accuracies = continually_learn(
 )
 ```
 
-Replay and VAE rehearsal are mutually exclusive. See `common/README.md` for
-all loader callback requirements and dictionary keys, and
+Each task rebuilds its training and validation inputs as `tf.data.Dataset`
+pipelines. Both training and test evaluation are reported through
+`common.train`. Fixed-buffer and generative rehearsal are mutually exclusive.
+Configured sample limits, shuffling, raw-image padding, and seed are preserved
+inside the task loop; typed replay models derive their class count and padded
+dimensions from the dataset. `model.weights_path` initializes the replay model,
+or the incremental classifier when no replay model is built.
+See `common/README.md` for the complete direct-key list, config-field mapping,
+supported raw-model/wrapper mappings, loader requirements, and dictionary keys;
+see
 `autoencoder/README.md` for conditional labels, training, and generation.
 
 ## Directory guide
 
 - [`common/`](common/README.md): configuration, datasets, continual learner,
   replay buffer, losses, callbacks, plotting, and the training pipeline.
-- [`autoencoder/`](autoencoder/README.md): VAE and classifier-VAE models.
+- [`autoencoder/`](autoencoder/README.md): VAE and VAE-classifier models.
 - [`diffusion/`](diffusion/README.md): schedules, models, layers, metrics, and
   callbacks.
 - [`configs/`](configs/README.md): YAML configuration examples and schema use.
 - [`data/`](data/README.md): pre-extracted CIFAR feature arrays.
 - [`models/`](models/README.md): checkpoints and legacy model artifacts; this
   is not the `diffusion.models` source package.
-- [`notebooks/`](notebooks/README.md): exploratory and archived experiments.
+- [`notebooks/`](notebooks/README.md): exploratory, archived, and HPO experiments.
 - [`results/`](results/README.md): generated run artifacts and reports.
 - [`gifs/`](gifs/README.md): retained example animations.
 - [`others/`](others/README.md): conceptual reference material.

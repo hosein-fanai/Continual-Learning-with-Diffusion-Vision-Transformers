@@ -73,9 +73,9 @@ any `tf.keras.Model.compile` key such as `optimizer`, `loss`, `metrics`,
 Top-level `**kwargs` goes to `tf.keras.Model`, so common valid examples are
 `name`, `dtype`, and `trainable`; unknown keys fail in Keras.
 
-`train` accepts `train_num`, `epochs`, `batch_size`, `validation_data`,
-`callbacks_list`, `callbacks_monitor`, `clf`, and `verbose`. Its `train_num`
-behavior is exact but unusual:
+`train` accepts `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
+`validation_data`, `callbacks_list`, `callbacks_monitor`, `clf`, and `verbose`.
+Its `train_num` behavior is exact but unusual:
 
 - `-1`: use each supplied row once, with no manual resampling;
 - a value below `len(x)`: sample `len(x)` rows with replacement;
@@ -86,18 +86,18 @@ Conditional training records argmax label IDs in `seen_classes`. Calling
 list returns two empty Python lists; unconditional generation returns only the
 sample array and ignores `classes`/`onehot_y_output`.
 
-## `ClassifierVAE`
+## `VAEClassifer`
 
-`ClassifierVAE` fixes conditional mode, attaches a classifier, and adds
+`VAEClassifer` fixes conditional mode, attaches a classifier, and adds
 `alpha * categorical_crossentropy` plus accuracy trackers. The forward call
 returns classifier predictions for reconstructed vectors. Its custom training
 and test loss, however, evaluates `classifier(x)` on the original vectors and
 uses a batch **sum** for categorical cross-entropy.
 
 ```python
-from autoencoder.classifier_variational_autoencoder import ClassifierVAE
+from autoencoder.vae_classifier import VAEClassifer
 
-model = ClassifierVAE(
+model = VAEClassifer(
     class_num=10, 
     classifier=classifier, 
     alpha=0.01, 
@@ -113,9 +113,10 @@ model keys. Do not pass `conditioned` or `class_num`. The current implementation
 also cannot accept `compile` through `**kwargs` because it already forwards
 `compile=False` internally; doing so raises a duplicate-key `TypeError`.
 
-`ClassifierVAE.train(**kwargs)` accepts only the base training controls
-`train_num`, `epochs`, `batch_size`, `validation_data`, `callbacks_list`, and
-`verbose`. It supplies `clf` and monitors `val_clf_accuracy` itself.
+`VAEClassifer.train(**kwargs)` accepts only the base training controls
+`train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
+`validation_data`, `callbacks_list`, and `verbose`. It supplies `clf` and
+monitors `val_clf_accuracy` itself.
 
 ## Decoder accuracy callback
 
@@ -128,10 +129,18 @@ the callback runs.
 
 ## Continual-learning integration
 
-`common.learner.continually_learn(use_vae=True, ...)` creates a conditional
-`VariationalAutoencoder`, generates prior-class features before each classifier
-task, and retrains the VAE after that task. The dataset loader must return
-one-hot labels, and `data_dim` must match the loaded image/feature width.
+In direct mode, pass a conditional `VariationalAutoencoder` or `VAEClassifer`
+to `common.learner.continually_learn` with `generative_model=model`. In config
+mode, select `model.name="vae"` or `"vae_classifier"`; `get_model` creates the
+VAE and standalone classifier, while `get_datasets` supplies the loader. The
+continual loop generates prior-class features before each task and routes both
+VAE training and evaluation through `common.train`.
+
+The dataset loader must return one-hot labels, and `data_dim` must match the
+loaded image/feature width. With `use_generative_model_classifier=True`, a
+`VAEClassifer`'s attached classifier becomes the continual model; setting
+`train_classifier_separately=True` gives it an additional classifier-only fit
+and requires that classifier to already be compiled.
 
 See individual class and method docstrings with `help(...)` for tracker initial
 state, exact tensor shapes, return dictionaries, callback composition, and

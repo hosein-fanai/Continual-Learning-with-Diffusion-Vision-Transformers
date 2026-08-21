@@ -1,1 +1,8 @@
 tensorflow==2.10
+tensorboard==2.10.*
+optuna==3.6.1
+PyYAML>=6,<7
+pandas>=1.5,<2
+matplotlib>=3.5,<4
+Pillow>=9,<12
+scikit-learn>=1.1,<2

@@ -1,8 +1,8 @@
 # Pre-extracted datasets
 
-This directory stores NumPy feature artifacts used by the legacy continual-
-learning data loaders. The tracked files contain Xception global-average-
-pooled CIFAR-10 and CIFAR-100 features in train/validation/test order.
+This directory stores NumPy feature artifacts used by configured and direct
+dataset loaders. The tracked files contain Xception global-average-pooled
+CIFAR-10 and CIFAR-100 features in train/validation/test order.
 
 Load them through the public common helpers rather than assuming an on-disk
 array layout:
@@ -17,6 +17,7 @@ train_features, val_features, test_features = load_samples(
 ```
 
 `load_samples` appends the extension and returns the stored NumPy object. The
-continual-learning loaders infer the class count by looking for `cifar10_` or
-`cifar100_` in the feature path, so preserve that marker when adding compatible
-files. These artifacts are large and are inputs, not generated test fixtures.
+dataset loaders infer the class count by looking for `mnist_`, `fmnist_`,
+`cifar10_`, or `cifar100_` in the feature path, so preserve the matching marker
+when adding compatible files. These artifacts are large inputs, not generated
+test fixtures.

@@ -24,8 +24,6 @@ directly when you specifically need its tensor/intermediate-feature API.
   `DiTClassifier`.
 - `DiffusionClassifierV2`: alternating generator/discriminator variant with two
   optimizer states and explicit variable ownership.
-- `DiffusionEncoderDecoderModel`: aligned denoising specialization for
-  `DiTEncoderDecoder`.
 
 The package aliases `NetworkName` (`"raw" | "ema"`), `TrainType`
 (`"cond" | "uncond"`), and `ClusteringType` (`"uniform" | "log_snr"`).
@@ -296,8 +294,8 @@ after compilation.
 
 ## Encoder-decoder training
 
-`DiffusionEncoderDecoderModel` inherits the complete `DiffusionModel` training
-pipeline. Its raw-network call is `(x_t, t, labels)`; the
+`DiffusionModel` provides the complete training pipeline for
+`DiTEncoderDecoder`. Its raw-network call is `(x_t, t, labels)`; the
 `DiTEncoderDecoder` three-input adapter reuses `x_t` as the decoder image. The
 same convention is therefore used by training, evaluation, classifier-free
 guidance, and reverse sampling, while sampled `noise` remains only the loss
@@ -310,13 +308,13 @@ raw model's `full_return=True` output is the usual five-item
 statistics remain available to inherited wrapper logic.
 
 ```python
-from diffusion import DiTEncoderDecoder, DiffusionEncoderDecoderModel
+from diffusion import DiTEncoderDecoder, DiffusionModel
 
 network = DiTEncoderDecoder(
     encoder_kwargs={"image_size": 32, "channels": 3, "depth": 4}, 
     decoder_kwargs={"depth": 2, "use_unpatchify": True}, 
 )
-model = DiffusionEncoderDecoderModel(network=network, use_ema=True)
+model = DiffusionModel(network=network, use_ema=True)
 model.compile(optimizer="adam", loss="mse")
 model.fit(dataset, epochs=10)
 images = model.sample(labels=[1, 2], steps=50)
@@ -334,10 +332,15 @@ weights, preserve wrapper `name`/`trainable`/`dtype`/`dynamic` state, and
 initialize a new EMA copy when enabled. Use a training checkpoint when the
 historical moving-average weights and optimizer state must also be resumed.
 
-Do not combine this wrapper with `swap_noise_image=True`. The inherited
-`sample_vae` resumes a network with three inputs and `min_depth>0`, while
-`DiTEncoderDecoder` requires an explicit fourth decoder image for resumed
-encoding. Ordinary diffusion sampling remains supported.
+The wrapper also accepts a standalone, context-free `DiTDecoder` when it uses
+`decoder_separate_cond=True`, `shift_inputs=False`, and no encoder-feature
+aggregation mappings. In that mode the wrapper supplies empty encoder context,
+so the decoder uses its own time/label embeddings and decoder blocks fall back
+to self-attention.
+
+A standalone `DiTDecoder` cannot use `swap_noise_image=True`. A composed
+`DiTEncoderDecoder` can use the inherited VAE sampler when its reshaper and
+decoder routes satisfy the base wrapper's `sample_vae` constraints.
 
 For `DiTEncoderDecoderClassifier`, prefer `DiffusionClassifier` for ordinary
 training, evaluation, and sampling. Its three-input wrapper calls automatically

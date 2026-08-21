@@ -30,8 +30,8 @@ denoiser/classifier three-input contracts and additionally accept a fourth
 decoder image for teacher forcing. Their inherited transformer APIs, active
 resolution policy, and progressive depth belong to the encoder; resolution
 updates are synchronized to the attached decoder, whose architecture keeps its
-own fixed construction depth. Use `DiffusionEncoderDecoderModel` for
-plain encoder/decoder denoising, `DiffusionClassifier` for the classifier's
+own fixed construction depth. Use `DiffusionModel` for plain encoder/decoder
+denoising, `DiffusionClassifier` for the classifier's
 three-input workflow, and a custom classifier training step when its fourth
 tensor is required.
 

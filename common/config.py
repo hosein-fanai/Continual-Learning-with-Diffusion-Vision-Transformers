@@ -1,8 +1,9 @@
-"""Dataclass configuration tree and YAML serialization for MNIST training.
+"""Dataclass configuration tree and YAML serialization for experiments.
 
-Leaf model sections expose :meth:`KwargsMixin.kwargs`; ``common.train`` passes
-those mappings directly to transformer and wrapper constructors without key
-translation or validation.
+Legacy DiT sections expose :meth:`KwargsMixin.kwargs`. Generic model families
+use the compact ``name``/``kwargs`` fields consumed by :mod:`common.train` and
+the shared HPO runner. ``ContinuallyLearnConfig`` contains the policy unique to
+class-incremental runs while the other sections remain reusable.
 """
 
 from __future__ import annotations
@@ -151,6 +152,94 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
 
 
 @dataclass
+class DiTDecoderConfig(DiffusionTransformerConfig):
+    """Arguments forwarded to ``DiTDecoder``."""
+
+    encoder_output_grid_size: int | None = None
+    encoder_output_dim: int | None = None
+    encoder_feature_grid_sizes: list[int | None] | None = None
+    encoder_feature_dims: list[int] | None = None
+    shift_inputs: bool = True
+    use_decoder_ids: list[int | None] = field(default_factory=lambda: [None])
+    decoder_separate_cond: bool = False
+    use_causal_mask: bool = True
+    feature_aggregation_ids_dict: dict = field(default_factory=dict)
+    feature_aggregation_kwargs: dict = field(default_factory=dict)
+    cross_attention_aggregation_ids_dict: dict = field(default_factory=dict)
+    cross_attention_aggregation_kwargs: dict = field(default_factory=dict)
+
+
+@dataclass
+class DiTEncoderDecoderConfig(DiffusionTransformerConfig):
+    """Arguments forwarded to ``DiTEncoderDecoder``."""
+
+    encoder_kwargs: dict[str, object] | None = None
+    decoder_kwargs: dict[str, object] | None = None
+
+
+@dataclass
+class DiTEncoderDecoderClassifierConfig(DiTClassifierConfig):
+    """Arguments forwarded to ``DiTEncoderDecoderClassifier``."""
+
+    encoder_kwargs: dict[str, object] | None = None
+    decoder_kwargs: dict[str, object] | None = None
+
+
+@dataclass
+class UNetConfig(KwargsMixin):
+    """Arguments forwarded to ``UNet``."""
+
+    num_classes: int = 10
+    use_cfg: bool = True
+    timesteps: int = 1_000
+    image_size: int = 32
+    channels: int = 1
+    widths: list[int] = field(default_factory=lambda: [32, 64, 96])
+    block_depth: int = 2
+    bottleneck_width: int = 128
+    bottleneck_depth: int = 2
+    image_embedding_dim: int = 21
+    time_embedding_dim: int = 22
+    label_embedding_dim: int = 21
+    activation_func: str = "swish"
+    final_activation_func: str = "linear"
+    use_batch_norm: bool = True
+    dropout_rate: float = 0.0
+    downsampling_method: str = "avg_pooling"
+    upsampling_method: str = "interpolate"
+    upsampling_interpolation: str = "bilinear"
+    use_skip_connections: bool | None = None
+    reshaper_ids_dict: dict[int, str] = field(default_factory=dict)
+    reshaper_kwargs: dict = field(default_factory=dict)
+    cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
+    cls_token_regularizer_kwargs: dict = field(
+        default_factory=lambda: {"start": 0, "end": 1}
+    )
+    extra_depth_specs: list[object] = field(default_factory=list)
+    name_prefix: str = ""
+    build: bool = True
+
+
+@dataclass
+class UNetClassifierConfig(UNetConfig):
+    """Arguments forwarded to ``UNetClassifier``."""
+
+    aggregate_from_noises: bool = False
+    feature_aggregation_ids_dict: dict = field(
+        default_factory=lambda: {1: [-1]}
+    )
+    classifier_only_cls_token: bool = False
+    clf_dim: int | None = None
+    clf_depth: int = 1
+    clf_block_depth: int = 1
+    clf_reshaper_kwargs: dict = field(default_factory=dict)
+    clf_cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
+    force_global_avg_pooling: bool = True
+    classifier_mlp_ratio: float | None = None
+    classifier_mlp_activation_func: str = "tanh"
+
+
+@dataclass
 class DiffusionModelConfig(KwargsMixin):
     """Arguments forwarded to ``DiffusionModel`` except ``network``."""
 
@@ -193,19 +282,95 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
 
 
 @dataclass
+class DiffusionClassifierV2Config(DiffusionClassifierConfig):
+    """Arguments forwarded to ``DiffusionClassifierV2`` except ``network``."""
+
+    clf_loss_coef: float = 1.0
+    clf_vars_embedding_ids: list[int] = field(default_factory=list)
+    clf_vars_noise_part_ids: list[int] = field(default_factory=list)
+    clf_train_noisified_max_timesteps: int | None = None
+    clf_test_noisified_max_timesteps: int | None = None
+
+
+@dataclass
+class VariationalAutoencoderConfig(KwargsMixin):
+    """Arguments forwarded to ``VariationalAutoencoder``."""
+
+    data_dim: int = 2_048
+    latent_dim: int = 8
+    hiddens_dims: list[int] = field(default_factory=lambda: [16])
+    hiddens_kwargs: dict = field(default_factory=dict)
+    last_activation: str | None = "tanh"
+    beta: float = 0.25
+    conditioned: bool = False
+    class_num: int | None = None
+    compile: bool = True
+    compile_args: dict = field(default_factory=dict)
+
+
+@dataclass
+class VAEClassiferConfig(KwargsMixin):
+    """Arguments forwarded to ``VAEClassifer`` except its classifier inputs."""
+
+    data_dim: int = 2_048
+    latent_dim: int = 8
+    hiddens_dims: list[int] = field(default_factory=lambda: [16])
+    hiddens_kwargs: dict = field(default_factory=dict)
+    last_activation: str | None = "tanh"
+    beta: float = 0.25
+    alpha: float = 1.0
+    compile_args: dict = field(default_factory=dict)
+
+
+@dataclass
 class DatasetConfig:
-    """MNIST input-pipeline settings.
+    """Dataset selection, preprocessing, batching, and optional trial limits.
 
     Attributes:
+        name (str): ``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
+            ``"cifar100"``.
+        preprocess (str | None): ``"min-max"``, ``"normalize"``,
+            ``"standardize"``/``"diffusion"``, or no scaling.
+        indices (list[int] | None): Class IDs retained by ordinary dataset
+            construction. The continual loop introduces the zero-based prefix
+            selected by ``continually_learn.class_num``.
+        validation_ratio (float): Fraction of training rows reserved for a
+            stratified validation split; ``0`` disables the split.
+        features_path (str | None): Base path of an optional saved feature
+            archive.
+        return_features (bool): Use saved features instead of raw images.
+        onehot_labels (bool): Return full-width categorical labels instead of
+            sparse IDs.
+        max_train_samples (int | None): Optional positive training-row limit.
+            Continual runs apply a class-preserving limit once before per-task
+            selection, so the value must cover every represented class.
+        max_val_samples (int | None): Optional positive evaluation-row limit.
+            Limits preserve represented classes. Continual runs limit
+            validation rows, or test rows when no validation split exists.
         batch_size (int): Positive examples per batch; defaults to 128.
-        shuffle_buffer (int): Training shuffle-buffer capacity.  Values above
-            zero enable shuffling; ``0`` disables it.  Defaults to 10,000.
-        trainset_len (int): Number of training batches, added dynamically by
-            :func:`common.train.get_datasets`; it is not a constructor field.
+        shuffle_buffer (int): Training shuffle-buffer capacity, including each
+            continual task. Values above zero enable shuffling; ``0`` disables
+            it. Defaults to 10,000.
+        pad (int): Symmetric zero-padding applied to raw images. Continual runs
+            apply it before replay; saved features and pretrained/hp-tuned
+            classifiers do not support it.
+        trainset_len (int | None): Number of prepared training batches,
+            populated by ``get_datasets`` for optimizer scheduling.
     """
 
+    name: str = "mnist"
+    preprocess: str | None = None
+    indices: list[int] | None = None
+    validation_ratio: float = 0.
+    features_path: str | None = None
+    return_features: bool = False
+    onehot_labels: bool = False
+    max_train_samples: int | None = None
+    max_val_samples: int | None = None
     batch_size: int = 128
     shuffle_buffer: int = 10_000
+    pad: int = 0
+    trainset_len: int | None = None
 
 
 @dataclass
@@ -213,14 +378,24 @@ class ModelConfig:
     """Select the raw network, wrapper, visibility, and initial weights.
 
     Attributes:
+        name (str | None): Generic raw-model/family name. ``None`` retains the
+            legacy compact DiT selection below.
+        kwargs (dict): Generic raw-model or classifier constructor arguments.
+            When nonempty, these retain precedence over the typed section for
+            ``name``.
+        wrapper_kwargs (dict): Generic diffusion-wrapper arguments.
+        classifier_name (str | None): Target classifier for continual runs.
+        classifier_kwargs (dict): Target-classifier architecture arguments.
         with_classifier (bool): Build ``DiTClassifier`` inside
             ``DiffusionClassifier`` when true; otherwise build
             ``DiffusionTransformer`` inside ``DiffusionModel``.
         show_network_summary (bool): Print the wrapper/network summary after
             construction.
         weights_path (str | None): Keras weights file loaded after construction,
-            or ``None`` for fresh weights.  Training updates this field to its
-            saved ``model.weights.h5`` path.
+            or ``None`` for fresh weights. In continual runs it initializes the
+            replay model when one is built, otherwise the classifier and its
+            incremental head prefixes. Training updates this field to its saved
+            ``model.weights.h5`` path.
         diffusion_transformer (DiffusionTransformerConfig): Raw denoising
             network settings used only when ``with_classifier=False``.
         dit_classifier (DiTClassifierConfig): Raw joint network settings used
@@ -229,11 +404,22 @@ class ModelConfig:
             only when ``with_classifier=False``.
         diffusion_classifier (DiffusionClassifierConfig): Classifier wrapper
             settings used only when ``with_classifier=True``.
+        Other typed fields provide constructor settings for their matching
+            ``name`` or ``wrapper_name`` selection.
     """
 
     with_classifier: bool = True
     show_network_summary: bool = True
     weights_path: str | None = None
+
+    # Generic selections used by config-driven experiments and HPO. ``None``
+    # keeps the original DiT/DiT-classifier path above fully backward compatible.
+    name: str | None = None
+    wrapper_name: str | None = None
+    kwargs: dict = field(default_factory=dict)
+    wrapper_kwargs: dict = field(default_factory=dict)
+    classifier_name: str | None = None
+    classifier_kwargs: dict = field(default_factory=dict)
 
     diffusion_transformer: DiffusionTransformerConfig = field(
         default_factory=DiffusionTransformerConfig
@@ -241,31 +427,72 @@ class ModelConfig:
     dit_classifier: DiTClassifierConfig = field(
         default_factory=DiTClassifierConfig
     )
+    dit_decoder: DiTDecoderConfig = field(default_factory=DiTDecoderConfig)
+    dit_encoder_decoder: DiTEncoderDecoderConfig = field(
+        default_factory=DiTEncoderDecoderConfig
+    )
+    dit_encoder_decoder_classifier: DiTEncoderDecoderClassifierConfig = field(
+        default_factory=DiTEncoderDecoderClassifierConfig
+    )
+    unet: UNetConfig = field(default_factory=UNetConfig)
+    unet_classifier: UNetClassifierConfig = field(
+        default_factory=UNetClassifierConfig
+    )
+    variational_autoencoder: VariationalAutoencoderConfig = field(
+        default_factory=VariationalAutoencoderConfig
+    )
+    vae_classifier: VAEClassiferConfig = field(
+        default_factory=VAEClassiferConfig
+    )
     diffusion_model: DiffusionModelConfig = field(
         default_factory=DiffusionModelConfig
     )
     diffusion_classifier: DiffusionClassifierConfig = field(
         default_factory=DiffusionClassifierConfig
     )
+    diffusion_classifier_v2: DiffusionClassifierV2Config = field(
+        default_factory=DiffusionClassifierV2Config
+    )
 
     def __post_init__(self):
         """Convert nested model-section mappings to typed dataclass instances.
 
         Returns:
-            None: The four nested attributes are normalized in place.  Existing
+            None: The nested attributes are normalized in place.  Existing
             instances are preserved; mappings are expanded as constructor
             keywords and may omit fields to use their defaults.
         """
 
         self.diffusion_transformer = _section(self.diffusion_transformer, DiffusionTransformerConfig)
         self.dit_classifier = _section(self.dit_classifier, DiTClassifierConfig)
+        self.dit_decoder = _section(self.dit_decoder, DiTDecoderConfig)
+        self.dit_encoder_decoder = _section(
+            self.dit_encoder_decoder, DiTEncoderDecoderConfig
+        )
+        self.dit_encoder_decoder_classifier = _section(
+            self.dit_encoder_decoder_classifier,
+            DiTEncoderDecoderClassifierConfig,
+        )
+        self.unet = _section(self.unet, UNetConfig)
+        self.unet_classifier = _section(
+            self.unet_classifier, UNetClassifierConfig
+        )
+        self.variational_autoencoder = _section(
+            self.variational_autoencoder, VariationalAutoencoderConfig
+        )
+        self.vae_classifier = _section(
+            self.vae_classifier, VAEClassiferConfig
+        )
         self.diffusion_model = _section(self.diffusion_model, DiffusionModelConfig)
         self.diffusion_classifier = _section(self.diffusion_classifier, DiffusionClassifierConfig)
+        self.diffusion_classifier_v2 = _section(
+            self.diffusion_classifier_v2, DiffusionClassifierV2Config
+        )
 
 
 @dataclass
 class OptimizerConfig:
-    """Adam learning-rate schedule settings.
+    """Optimizer and learning-rate schedule settings.
 
     Attributes:
         initial_learning_rate (float): Initial cosine-decay learning rate;
@@ -273,27 +500,110 @@ class OptimizerConfig:
         decay_steps (int | None): Positive cosine-decay duration in optimizer
             steps.  ``None`` is replaced during model construction with
             ``epochs * trainset_len``.
+        name (str): ``"adam"``, ``"adamw"``, ``"nadam"``, ``"rmsprop"``,
+            or ``"sgd"``.
+        schedule (str | None): ``"cosine"``, ``"constant"``, or ``None``.
+        weight_decay (float | None): Optional AdamW-style weight decay; nonzero
+            values require ``name="adamw"`` under TensorFlow 2.10.
+        momentum (float): Momentum used by RMSprop/SGD.
+        clipnorm (float | None): Optional global gradient-norm clipping value.
     """
 
     initial_learning_rate: float = 5e-3
     decay_steps: int | None = None
+    name: str = "adam"
+    schedule: str = "cosine"
+    weight_decay: float | None = None
+    momentum: float = 0.0
+    clipnorm: float | None = None
+
+
+@dataclass
+class ContinuallyLearnConfig(KwargsMixin):
+    """Class-incremental learning and replay settings.
+
+    Dataset selection and preprocessing remain in :class:`DatasetConfig`,
+    model construction remains in :class:`ModelConfig`, and fit/reporting
+    controls remain in :class:`TrainingConfig` and :class:`ReportingConfig`.
+    This section contains only settings specific to the continual loop.
+
+    Attributes:
+        class_num (int | None): Number of classes introduced across the run.
+            ``None`` uses the selected dataset's complete class count; an
+            explicit value must be between 2 and that count.
+        remove_prev_classes (bool): Train later tasks on only the newly
+            introduced class when true; otherwise train on every seen class.
+        keep_same_model (bool): Carry shared classifier weights and old output
+            columns into the next expanded classifier.
+        use_loaded_opt (bool): Reuse the optimizer stored with the configured
+            classifier template. This preserves the optimizer created by
+            :func:`common.model.get_model` by default.
+        use_buffer (bool): Use fixed-size sample replay instead of a generative
+            replay model.
+        buffer_kwargs (dict): ``ReplayBuffer`` controls ``maxlen``,
+            ``sample_num``, ``insert_num``, and ``seed``.
+        plot_results (bool): Plot accuracy against the number of seen classes.
+        generative_model_kwargs (dict): Replay-model controls ``train_num``
+            and ``samples_per_class``.
+        use_generative_model_classifier (bool): Use the classifier attached to
+            a VAE or diffusion replay model instead of the standalone model.
+        train_classifier_separately (bool): Add the separate classifier phase
+            required by ``DiffusionClassifierV2`` and optionally used by a
+            ``VAEClassifer``.
+        return_details (bool): Return task histories and final models together
+            with accuracies from a direct configured call.
+    """
+
+    class_num: int | None = None
+    remove_prev_classes: bool = True
+    keep_same_model: bool = True
+    use_loaded_opt: bool = True
+    use_buffer: bool = False
+    buffer_kwargs: dict[str, object] = field(default_factory=lambda: {
+        "maxlen": 10_000, 
+        "sample_num": 1_000, 
+        "insert_num": 1_000, 
+        "seed": None
+    })
+    plot_results: bool = True
+    generative_model_kwargs: dict[str, int] = field(default_factory=lambda: {
+        "train_num": 1_000, 
+        "samples_per_class": 1_000
+    })
+    use_generative_model_classifier: bool = False
+    train_classifier_separately: bool = False
+    return_details: bool = False
 
 
 @dataclass
 class TrainingConfig:
-    """Fit-loop, callback, and artifact-persistence settings.
+    """Task, fit-loop, callback, TensorBoard, and persistence settings.
 
     Attributes:
         project_tag (str | None): Optional result-run identifier passed to the
             image callback; ``None`` lets that callback choose one.
         epochs (int): Positive fit epoch count; defaults to 20.
-        use_valset (bool): Build/pass MNIST test data as validation data.
+        use_valset (bool): Build and pass validation data for the selected
+            dataset; loaders without a split fall back to test rows.
         show_images (bool): Display callback sample grids during training.
         save_gifs (bool): Save callback denoising animations during training.
             Trajectory callbacks are skipped for no-EMA and VAE/swap models.
         results_path (str | None): Base artifact directory passed to the image
             callback; ``None`` delegates path selection to that callback.
         save_weights (bool): Save final wrapper weights and record their path.
+        task (str): ``legacy``, ``generation``, ``joint``, ``classification``,
+            or ``continual``.
+        seed (int | None): TensorFlow/Keras and dataset split seed.
+        verbose (int): Keras and project reporting verbosity.
+        patience (int): Early-stopping patience; ``0`` disables it.
+        monitor (str | None): Explicit early-stopping metric, or ``None`` for
+            the training API default.
+        monitor_mode (str): ``"auto"``, ``"min"``, or ``"max"``.
+        tensorboard (bool): Write TensorBoard summaries when true.
+        tensorboard_path (str | None): Optional TensorBoard root.
+        tensorboard_run_name (str | None): Event-file suffix used by HPO to
+            encode every sampled value.
+        report_every_epoch (bool): Enable compatible diffusion image callbacks.
     """
 
     project_tag: str | None = None
@@ -303,6 +613,16 @@ class TrainingConfig:
     save_gifs: bool = True
     results_path: str | None = "./results"
     save_weights: bool = True
+    task: str = "legacy"
+    seed: int | None = None
+    verbose: int = 1
+    patience: int = 0
+    monitor: str | None = None
+    monitor_mode: str = "auto"
+    tensorboard: bool = False
+    tensorboard_path: str | None = None
+    tensorboard_run_name: str | None = None
+    report_every_epoch: bool = True
 
 
 @dataclass
@@ -324,10 +644,7 @@ class ReportingConfig:
         run_trainset_eval (bool): Evaluate EMA and raw networks on training data.
         run_valset_eval (bool): Evaluate EMA and raw networks on validation
             data; requires a non-``None`` validation dataset.
-        save_history_csv (bool): Save epoch metric series as CSV.
-        save_evals_csv (bool): Save enabled evaluation dictionaries as CSV.
-        results_path (str): Actual run directory, added dynamically by
-            :func:`common.train.train_model`; it is not a constructor field.
+        save_csv (bool): Save epoch metrics and enabled evaluations as CSV.
     """
 
     show_history_plot: bool = False
@@ -340,8 +657,7 @@ class ReportingConfig:
     plot_without_20percent: bool = True
     run_trainset_eval: bool = True
     run_valset_eval: bool = True
-    save_history_csv: bool = True
-    save_evals_csv: bool = True
+    save_csv: bool = True
 
 
 @dataclass
@@ -353,7 +669,10 @@ class Config:
         model (ModelConfig): Network/wrapper selection and configuration.
         optimizer (OptimizerConfig): Adam cosine-decay settings.
         training (TrainingConfig): Fit and artifact settings.
+        continually_learn (ContinuallyLearnConfig): Class-incremental loop and
+            replay settings.
         reporting (ReportingConfig): Post-training reporting settings.
+        hpo (dict): Resolved study/trial metadata and sampled values.
 
     All fields accept either their declared dataclass instance or a mapping in
     ``Config(...)``/YAML input.  Missing top-level or nested fields use
@@ -364,7 +683,11 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    continually_learn: ContinuallyLearnConfig = field(
+        default_factory=ContinuallyLearnConfig
+    )
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
+    hpo: dict = field(default_factory=dict)
 
     def __post_init__(self):
         """Convert every supplied top-level mapping to its section dataclass.
@@ -372,10 +695,15 @@ class Config:
         Returns:
             None: Section attributes are normalized in place.
         """
+
         self.dataset = _section(self.dataset, DatasetConfig)
         self.model = _section(self.model, ModelConfig)
         self.optimizer = _section(self.optimizer, OptimizerConfig)
         self.training = _section(self.training, TrainingConfig)
+        self.continually_learn = _section(
+            self.continually_learn, 
+            ContinuallyLearnConfig
+        )
         self.reporting = _section(self.reporting, ReportingConfig)
 
 
@@ -464,13 +792,14 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        dict[str, str]: One ``"passed"`` entry for each of the eleven classes
+        dict[str, str]: One ``"passed"`` entry for each of the twenty classes
         defined by this module.
     """
 
     from dataclasses import make_dataclass
     from pathlib import Path
     from tempfile import TemporaryDirectory
+
 
     mixin_probe_type = make_dataclass(
         "KwargsMixinProbe",
@@ -529,6 +858,26 @@ def run_self_tests() -> dict[str, str]:
     )
     assert transformer_none_values.mha_key_dim is None
 
+    decoder_defaults = DiTDecoderConfig()
+    assert decoder_defaults.encoder_output_grid_size is None
+    assert decoder_defaults.shift_inputs is True
+    assert decoder_defaults.use_decoder_ids == [None]
+    decoder_custom = DiTDecoderConfig(
+        encoder_output_grid_size=4,
+        encoder_output_dim=8,
+        shift_inputs=False,
+        use_causal_mask=False,
+    )
+    assert decoder_custom.kwargs()["encoder_output_dim"] == 8
+
+    encoder_decoder_defaults = DiTEncoderDecoderConfig()
+    encoder_decoder_custom = DiTEncoderDecoderConfig(
+        encoder_kwargs={"depth": 1},
+        decoder_kwargs={"depth": 1},
+    )
+    assert encoder_decoder_defaults.encoder_kwargs is None
+    assert encoder_decoder_custom.kwargs()["decoder_kwargs"] == {"depth": 1}
+
     classifier_defaults = DiTClassifierConfig()
     assert isinstance(classifier_defaults, DiffusionTransformerConfig)
     assert classifier_defaults.aggregate_from_noises is False
@@ -542,6 +891,35 @@ def run_self_tests() -> dict[str, str]:
     )
     assert classifier_custom.kwargs()["aggregate_from_noises"] is True
     assert classifier_custom.kwargs()["num_classes"] == 3
+
+    encoder_decoder_classifier_defaults = DiTEncoderDecoderClassifierConfig()
+    assert isinstance(encoder_decoder_classifier_defaults, DiTClassifierConfig)
+    encoder_decoder_classifier_custom = DiTEncoderDecoderClassifierConfig(
+        encoder_kwargs={"clf_depth": 2},
+        decoder_kwargs={"depth": 1},
+    )
+    assert encoder_decoder_classifier_custom.encoder_kwargs == {"clf_depth": 2}
+
+    unet_defaults = UNetConfig()
+    unet_custom = UNetConfig(
+        image_size=8,
+        widths=[4, 8],
+        use_skip_connections=False,
+    )
+    assert unet_defaults.widths == [32, 64, 96]
+    assert unet_custom.kwargs()["widths"] == [4, 8]
+    unet_defaults.widths.append(128)
+    assert UNetConfig().widths == [32, 64, 96]
+
+    unet_classifier_defaults = UNetClassifierConfig()
+    assert isinstance(unet_classifier_defaults, UNetConfig)
+    assert unet_classifier_defaults.feature_aggregation_ids_dict == {1: [-1]}
+    unet_classifier_custom = UNetClassifierConfig(
+        aggregate_from_noises=True,
+        clf_depth=2,
+        force_global_avg_pooling=False,
+    )
+    assert unet_classifier_custom.kwargs()["clf_depth"] == 2
 
     diffusion_defaults = DiffusionModelConfig()
     assert diffusion_defaults.test_network_name == "ema"
@@ -572,6 +950,38 @@ def run_self_tests() -> dict[str, str]:
     assert diffusion_classifier_custom.kwargs()["mask_by_t_threshold"] is True
     assert diffusion_classifier_custom.kwargs()["clf_loss_coef"] == 0.0
 
+    diffusion_classifier_v2_defaults = DiffusionClassifierV2Config()
+    assert isinstance(diffusion_classifier_v2_defaults, DiffusionClassifierConfig)
+    assert diffusion_classifier_v2_defaults.clf_loss_coef == 1.0
+    diffusion_classifier_v2_custom = DiffusionClassifierV2Config(
+        clf_vars_embedding_ids=[0, 2],
+        clf_vars_noise_part_ids=[-1],
+        clf_train_noisified_max_timesteps=3,
+    )
+    assert diffusion_classifier_v2_custom.kwargs()["clf_vars_noise_part_ids"] == [-1]
+
+    vae_defaults = VariationalAutoencoderConfig()
+    vae_custom = VariationalAutoencoderConfig(
+        data_dim=4,
+        hiddens_dims=[],
+        conditioned=True,
+        class_num=2,
+        compile=False,
+    )
+    assert vae_defaults.hiddens_dims == [16]
+    assert vae_custom.kwargs()["class_num"] == 2
+
+    vae_classifier_defaults = VAEClassiferConfig()
+    vae_classifier_custom = VAEClassiferConfig(
+        data_dim=4,
+        hiddens_dims=[],
+        alpha=0.0,
+    )
+    assert "conditioned" not in vae_classifier_defaults.kwargs()
+    assert "class_num" not in vae_classifier_defaults.kwargs()
+    assert "compile" not in vae_classifier_defaults.kwargs()
+    assert vae_classifier_custom.kwargs()["alpha"] == 0.0
+
     dataset_defaults = DatasetConfig()
     dataset_boundary = DatasetConfig(batch_size=1, shuffle_buffer=0)
     assert dataset_defaults == DatasetConfig(batch_size=128, shuffle_buffer=10_000)
@@ -584,21 +994,54 @@ def run_self_tests() -> dict[str, str]:
         weights_path="weights.h5", 
         diffusion_transformer=transformer_instance, 
         dit_classifier=classifier_custom, 
+        dit_decoder=decoder_custom,
+        dit_encoder_decoder=encoder_decoder_custom,
+        dit_encoder_decoder_classifier=encoder_decoder_classifier_custom,
+        unet=unet_custom,
+        unet_classifier=unet_classifier_custom,
+        variational_autoencoder=vae_custom,
+        vae_classifier=vae_classifier_custom,
         diffusion_model=diffusion_custom, 
         diffusion_classifier=diffusion_classifier_custom, 
+        diffusion_classifier_v2=diffusion_classifier_v2_custom,
     )
     assert model_from_instances.diffusion_transformer is transformer_instance
     assert model_from_instances.dit_classifier is classifier_custom
     model_from_mappings = ModelConfig(
         diffusion_transformer={"dim": 11, "use_cfg": False}, 
         dit_classifier={"dropout_rate": 0.25}, 
+        dit_decoder={"encoder_output_grid_size": 7},
+        dit_encoder_decoder={"decoder_kwargs": {"depth": 1}},
+        dit_encoder_decoder_classifier={"encoder_kwargs": {"clf_depth": 2}},
+        unet={"widths": [4, 8]},
+        unet_classifier={"clf_depth": 2},
+        variational_autoencoder={"latent_dim": 3},
+        vae_classifier={"alpha": 0.5},
         diffusion_model={"test_network_name": "raw"}, 
         diffusion_classifier={"mask_by_nulls": False}, 
+        diffusion_classifier_v2={"clf_vars_embedding_ids": [0]},
     )
     assert isinstance(model_from_mappings.diffusion_transformer, DiffusionTransformerConfig)
     assert isinstance(model_from_mappings.dit_classifier, DiTClassifierConfig)
+    assert isinstance(model_from_mappings.dit_decoder, DiTDecoderConfig)
+    assert isinstance(model_from_mappings.dit_encoder_decoder, DiTEncoderDecoderConfig)
+    assert isinstance(
+        model_from_mappings.dit_encoder_decoder_classifier,
+        DiTEncoderDecoderClassifierConfig,
+    )
+    assert isinstance(model_from_mappings.unet, UNetConfig)
+    assert isinstance(model_from_mappings.unet_classifier, UNetClassifierConfig)
+    assert isinstance(
+        model_from_mappings.variational_autoencoder,
+        VariationalAutoencoderConfig,
+    )
+    assert isinstance(model_from_mappings.vae_classifier, VAEClassiferConfig)
     assert isinstance(model_from_mappings.diffusion_model, DiffusionModelConfig)
     assert isinstance(model_from_mappings.diffusion_classifier, DiffusionClassifierConfig)
+    assert isinstance(
+        model_from_mappings.diffusion_classifier_v2,
+        DiffusionClassifierV2Config,
+    )
     assert model_from_mappings.diffusion_transformer.dim == 11
     assert ModelConfig().diffusion_transformer is not ModelConfig().diffusion_transformer
     try:
@@ -612,6 +1055,25 @@ def run_self_tests() -> dict[str, str]:
     optimizer_custom = OptimizerConfig(initial_learning_rate=0.0, decay_steps=1)
     assert optimizer_defaults.decay_steps is None
     assert optimizer_custom == OptimizerConfig(0.0, 1)
+
+    continually_learn_defaults = ContinuallyLearnConfig()
+    continually_learn_custom = ContinuallyLearnConfig(
+        class_num=3,
+        remove_prev_classes=False,
+        keep_same_model=False,
+        use_loaded_opt=False,
+        use_buffer=True,
+        buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
+        plot_results=False,
+        generative_model_kwargs={"train_num": -1, "samples_per_class": 2},
+        return_details=True,
+    )
+    assert continually_learn_defaults.class_num is None
+    assert continually_learn_defaults.buffer_kwargs["maxlen"] == 10_000
+    assert continually_learn_custom.class_num == 3
+    assert continually_learn_custom.use_buffer is True
+    continually_learn_defaults.buffer_kwargs["maxlen"] = 1
+    assert ContinuallyLearnConfig().buffer_kwargs["maxlen"] == 10_000
 
     training_defaults = TrainingConfig()
     training_custom = TrainingConfig(
@@ -638,8 +1100,7 @@ def run_self_tests() -> dict[str, str]:
         plot_without_20percent=False, 
         run_trainset_eval=False, 
         run_valset_eval=False, 
-        save_history_csv=False, 
-        save_evals_csv=False, 
+        save_csv=False,
     )
     assert reporting_defaults.save_history_plot is True
     assert reporting_custom.show_history_plot is True
@@ -650,8 +1111,7 @@ def run_self_tests() -> dict[str, str]:
         reporting_custom.plot_without_20percent, 
         reporting_custom.run_trainset_eval, 
         reporting_custom.run_valset_eval, 
-        reporting_custom.save_history_csv, 
-        reporting_custom.save_evals_csv, 
+        reporting_custom.save_csv,
     ))
 
     default_config_a = Config()
@@ -660,20 +1120,27 @@ def run_self_tests() -> dict[str, str]:
     assert isinstance(default_config_a.model, ModelConfig)
     assert isinstance(default_config_a.optimizer, OptimizerConfig)
     assert isinstance(default_config_a.training, TrainingConfig)
+    assert isinstance(
+        default_config_a.continually_learn, ContinuallyLearnConfig
+    )
     assert isinstance(default_config_a.reporting, ReportingConfig)
     assert default_config_a.dataset is not default_config_b.dataset
     assert default_config_a.model is not default_config_b.model
+    assert default_config_a.continually_learn is not \
+        default_config_b.continually_learn
     mapped_config = Config(
         dataset={"batch_size": 2, "shuffle_buffer": 0}, 
         model={"with_classifier": False, "diffusion_transformer": {"depth": 0}}, 
         optimizer={"initial_learning_rate": 1e-4, "decay_steps": 3}, 
         training={"epochs": 1, "save_weights": False}, 
+        continually_learn={"class_num": 4, "plot_results": False},
         reporting={"run_trainset_eval": False, "run_valset_eval": False}, 
     )
     assert mapped_config.dataset.batch_size == 2
     assert mapped_config.model.diffusion_transformer.depth == 0
     assert mapped_config.optimizer.decay_steps == 3
     assert mapped_config.training.epochs == 1
+    assert mapped_config.continually_learn.class_num == 4
     assert mapped_config.reporting.run_trainset_eval is False
     assert _section(mapped_config.dataset, DatasetConfig) is mapped_config.dataset
     assert _section({"batch_size": 4}, DatasetConfig).batch_size == 4
@@ -751,12 +1218,21 @@ def run_self_tests() -> dict[str, str]:
     return {
         "KwargsMixin": "passed", 
         "DiffusionTransformerConfig": "passed", 
+        "DiTDecoderConfig": "passed",
+        "DiTEncoderDecoderConfig": "passed",
         "DiTClassifierConfig": "passed", 
+        "DiTEncoderDecoderClassifierConfig": "passed",
+        "UNetConfig": "passed",
+        "UNetClassifierConfig": "passed",
         "DiffusionModelConfig": "passed", 
         "DiffusionClassifierConfig": "passed", 
+        "DiffusionClassifierV2Config": "passed",
+        "VariationalAutoencoderConfig": "passed",
+        "VAEClassiferConfig": "passed",
         "DatasetConfig": "passed", 
         "ModelConfig": "passed", 
         "OptimizerConfig": "passed", 
+        "ContinuallyLearnConfig": "passed",
         "TrainingConfig": "passed", 
         "ReportingConfig": "passed", 
         "Config": "passed", 

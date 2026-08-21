@@ -6,7 +6,7 @@ from tensorflow.keras import metrics, losses
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
-class ClassifierVAE(VariationalAutoencoder):
+class VAEClassifer(VariationalAutoencoder):
     """Train a conditional dense VAE alongside a classification objective.
 
     The forward pass classifies reconstructed vectors, while the custom
@@ -259,9 +259,10 @@ class ClassifierVAE(VariationalAutoencoder):
                 ``[samples, class_num]``.
             **kwargs (object): Options accepted by
                 :meth:`VariationalAutoencoder.train`: ``train_num``, ``epochs``,
-                ``batch_size``, ``validation_data``, ``callbacks_list``, and
-                ``verbose``.  ``x``, ``y``, ``clf``, and ``callbacks_monitor``
-                are forbidden because this method supplies them.  Example:
+                ``batch_size``, ``shuffle_buffer``, ``seed``,
+                ``validation_data``, ``callbacks_list``, and ``verbose``.
+                ``x``, ``y``, ``clf``, and ``callbacks_monitor`` are forbidden
+                because this method supplies them. Example:
                 ``train(x, y, epochs=20, train_num=-1,
                 validation_data=(x_val, y_val))``.
 
@@ -300,7 +301,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        dict[str, str]: ``{"ClassifierVAE": "passed"}`` after every assertion
+        dict[str, str]: ``{"VAEClassifer": "passed"}`` after every assertion
         succeeds.
     """
 
@@ -324,7 +325,7 @@ def run_self_tests() -> dict[str, str]:
     ], name="self_test_classifier")
 
     try:
-        ClassifierVAE(
+        VAEClassifer(
             3, 
             classifier, 
             conditioned=True, 
@@ -335,10 +336,10 @@ def run_self_tests() -> dict[str, str]:
     except AssertionError:
         pass
     else:
-        raise AssertionError("ClassifierVAE must reject a conditioned override.")
+        raise AssertionError("VAEClassifer must reject a conditioned override.")
 
     try:
-        ClassifierVAE(
+        VAEClassifer(
             3, 
             classifier, 
             compile=False, 
@@ -355,7 +356,7 @@ def run_self_tests() -> dict[str, str]:
         )
 
     try:
-        ClassifierVAE(
+        VAEClassifer(
             3,
             classifier,
             data_dim=4,
@@ -368,7 +369,7 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Unknown Keras model options must be rejected.")
 
-    model = ClassifierVAE(
+    model = VAEClassifer(
         class_num=3, 
         classifier=classifier, 
         alpha=0.5, 
@@ -383,16 +384,16 @@ def run_self_tests() -> dict[str, str]:
             "loss": "mean_squared_error", 
             "run_eagerly": True, 
         }, 
-        name="classifier_vae", 
+        name="vae_classifier", 
     )
     assert model.conditioned is True and model.class_num == 3
     assert model.classifier is classifier and model.alpha == 0.5
-    assert model.name == "classifier_vae" and model._is_compiled is True
+    assert model.name == "vae_classifier" and model._is_compiled is True
     assert isinstance(model.optimizer, tf.keras.optimizers.SGD)
     assert model.run_eagerly is True
     assert "alpha" not in model.get_config(), (
         "The current subclassed-model config does not persist custom "
-        "ClassifierVAE constructor values."
+        "VAEClassifer constructor values."
     )
 
     x = tf.constant([
@@ -492,7 +493,7 @@ def run_self_tests() -> dict[str, str]:
         tf.keras.layers.Dense(3, activation="softmax"), 
     ])
     frozen_classifier.trainable = False
-    zero_alpha_model = ClassifierVAE(
+    zero_alpha_model = VAEClassifer(
         3, 
         frozen_classifier, 
         alpha=0.0, 
@@ -528,7 +529,7 @@ def run_self_tests() -> dict[str, str]:
         )
 
 
-    callable_model = ClassifierVAE(
+    callable_model = VAEClassifer(
         3, 
         callable_classifier, 
         alpha=-0.25, 
@@ -549,7 +550,7 @@ def run_self_tests() -> dict[str, str]:
         tf.keras.layers.Input(shape=(4,)), 
         tf.keras.layers.Dense(2, activation="softmax"), 
     ])
-    bad_model = ClassifierVAE(
+    bad_model = VAEClassifer(
         3, 
         bad_classifier, 
         data_dim=4, 
@@ -572,16 +573,16 @@ def run_self_tests() -> dict[str, str]:
     except (ValueError, tf.errors.InvalidArgumentError):
         pass
     else:
-        raise AssertionError("ClassifierVAE train/test labels must be one-hot.")
+        raise AssertionError("VAEClassifer train/test labels must be one-hot.")
 
     with TemporaryDirectory() as temp_dir:
-        weights_path = Path(temp_dir) / "classifier_vae.weights.h5"
+        weights_path = Path(temp_dir) / "vae_classifier.weights.h5"
         model.save_weights(weights_path)
         clone_classifier = tf.keras.Sequential([
             tf.keras.layers.Input(shape=(4,)), 
             tf.keras.layers.Dense(3, activation="softmax"), 
         ])
-        clone = ClassifierVAE(
+        clone = VAEClassifer(
             3, 
             clone_classifier, 
             alpha=0.5, 
@@ -664,7 +665,7 @@ def run_self_tests() -> dict[str, str]:
             )
 
     tf.keras.backend.clear_session()
-    return {"ClassifierVAE": "passed"}
+    return {"VAEClassifer": "passed"}
 
 
 if __name__ == "__main__":

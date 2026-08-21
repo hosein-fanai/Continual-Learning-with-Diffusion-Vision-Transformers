@@ -1,19 +1,82 @@
-"""Legacy class-incremental learning experiment with replay alternatives."""
+"""Configurable class-incremental learning with replay alternatives."""
+
+import tensorflow as tf
+
+from sklearn.metrics import accuracy_score
+
+import numpy as np
+
+from collections.abc import Callable, Sequence
+
+from common.config import Config
+from common.utils import CL_plot
+from common.model import get_model, copy_model, get_callbacks
+from common.replay_buffer import ReplayBuffer
+from common.dataloader import get_dataset, _limit_samples
+from common.train import train_model, report
+
+from autoencoder import VariationalAutoencoder, VAEClassifer
+
+from diffusion import (
+    DiffusionModel, 
+    DiffusionClassifier, 
+    DiffusionClassifierV2, 
+    DiffusionTransformer, 
+    DiTClassifier, 
+    DiTDecoder, 
+    DiTEncoderDecoder, 
+    DiTEncoderDecoderClassifier, 
+    UNet, 
+    UNetClassifier
+)
 
 
-def continually_learn(class_num: int, load_dataset_fn: callable, 
-                    load_dataset_fn_kwargs: dict = {},
-                    remove_prev_classes: bool = True, keep_same_model: bool = True, 
-                    tuned_model_path: str = "", compile_args: dict = {}, 
-                    use_loaded_opt: bool = False, batch_size: int = 128, 
-                    epochs: int = 100, use_buffer: bool = False, 
-                    buffer_kwargs: dict = {}, use_vae: bool = False, 
-                    vae_init_kwargs: dict = {}, vae_kwargs: dict[str, int] = {}, 
-                    plot_results: bool = True, verbose: bool = True) -> list[float]:
+DatasetArrays = tuple[
+    np.ndarray, np.ndarray, np.ndarray | None, 
+    np.ndarray | None, np.ndarray, np.ndarray
+]
+DatasetLoader = Callable[..., DatasetArrays]
+
+
+def _continually_learn(
+    class_num: int, 
+    load_dataset_fn: DatasetLoader, 
+    load_dataset_fn_kwargs: dict[str, object] | None = None, 
+    remove_prev_classes: bool = True, 
+    keep_same_model: bool = True, 
+    tuned_model_path: str = "", 
+    compile_args: dict[str, object] | None = None, 
+    use_loaded_opt: bool = False, 
+    batch_size: int = 128, 
+    epochs: int = 100, 
+    use_buffer: bool = False, 
+    buffer_kwargs: dict[str, object] | None = None, 
+    plot_results: bool = True, 
+    verbose: bool | int = True, 
+    generative_model: tf.keras.Model | None = None, 
+    generative_model_compile_args: dict[str, object] | None = None, 
+    generative_model_kwargs: dict[str, int] | None = None, 
+    use_generative_model_classifier: bool = False, 
+    train_classifier_separately: bool = False, 
+    callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
+    return_details: bool = False, 
+    use_valset: bool = True, 
+    return_features: bool | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    shuffle_buffer: int | None = None, 
+    pad: int = 0, 
+    dataset_seed: int | None = None, 
+    initial_classifier: tf.keras.Model | None = None, 
+    callback_patience: int | None = None, 
+    callback_monitor: str | None = None, 
+    callback_monitor_mode: str | None = None
+) -> list[float] | dict[str, object]:
     """Run class-incremental classifier training from two through N classes.
 
-    A new output head is created at each task.  Optional replay comes either
-    from a fixed-size sample buffer or a conditional dense VAE; the two modes
+    A new output head is created at each task unless a generative model's
+    full-width classifier is selected. Optional replay comes either from a
+    fixed-size sample buffer or a conditional generative model; the two modes
     are mutually exclusive.
 
     Args:
@@ -26,37 +89,41 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
             ``(x_train, y_train, x_val, y_val, x_test, y_test)``.  The built-in
             :func:`common.dataloader.load_cifar10` and ``load_cifar100`` satisfy
             this interface.
-        load_dataset_fn_kwargs (Mapping[str, object]): Loader options merged
-            over ``{"preprocess": "", "onehot_labels": False}``.  For built-in
-            loaders the optional additional key is ``features_path``.  Valid
-            ``preprocess`` values are ``"normalize"``, ``"min-max"``, or
-            ``""``/``None`` for no scaling; ``onehot_labels`` is bool.
+        load_dataset_fn_kwargs (dict[str, object] | None): Loader options merged
+            over ``{"preprocess": None, "onehot_labels": False}``. For built-in
+            loaders optional keys also include ``features_path``,
+            ``validation_ratio`` (float), and ``seed`` (int | None). Valid
+            ``preprocess`` values are ``"normalize"``, ``"min-max"``,
+            ``"standardize"``/``"diffusion"``, or ``""``/``None`` for no
+            scaling; ``onehot_labels`` is bool.
             Do not include ``indices``, ``return_features``, or ``verbose``
             because this function passes them explicitly.  A custom loader may
-            accept other keys.  Example: ``{"preprocess": "normalize",
-            "onehot_labels": True}`` is required by VAE replay.
+            accept other keys. VAE replay requires ``onehot_labels=True`` and
+            accepts every listed preprocessing value.
         remove_prev_classes (bool): If true, training receives classes 0 and 1
             at the first task and only the newly introduced class thereafter;
             validation/test still contain all seen classes.  If false, every
             split contains all classes seen so far.
         keep_same_model (bool): Copy learned non-head weights and old class-head
             columns into the next, one-class-wider model when true.  False uses
-            a freshly cloned tuned architecture at each task.
-        tuned_model_path (str | os.PathLike): Nonempty saved Keras model path.
+            a freshly cloned tuned architecture at each task. Ignored when the
+            generative model's classifier is selected.
+        tuned_model_path (str): Nonempty saved Keras model path.
             If its case-sensitive text contains ``"dnn"``, the loader is asked
             for saved 2,048-wide features; otherwise it is asked for images.
-        compile_args (Mapping[str, object]): Overrides the classifier defaults
+        compile_args (dict[str, object] | None): Overrides the classifier defaults
             accepted by ``tf.keras.Model.compile``, such as ``optimizer``,
             ``loss``, ``metrics``, ``loss_weights``, or ``run_eagerly``.
-            Example: ``{"optimizer": "adam", "metrics": ["accuracy"]}``.
+            ``None`` uses the existing defaults. Example:
+            ``{"optimizer": "adam", "metrics": ["accuracy"]}``.
         use_loaded_opt (bool): Inherit the optimizer deserialized from the tuned
             model instead of ``compile_args["optimizer"]``.
-        batch_size (int): Positive NumPy-input batch size for each classifier
-            fit; defaults to 128.
+        batch_size (int): Positive batch size used by each newly built
+            ``tf.data.Dataset``; defaults to 128.
         epochs (int): Positive maximum epochs per task; defaults to 100.
         use_buffer (bool): Enable fixed-capacity replay.  It must not be true
-            together with ``use_vae``.
-        buffer_kwargs (Mapping[str, object]): Replay controls merged over
+            together with ``generative_model``.
+        buffer_kwargs (dict[str, object] | None): Replay controls merged over
             ``{"maxlen": 10000, "sample_num": 1000, "insert_num": 1000,
             "seed": None}``.  ``maxlen`` is deque capacity; ``sample_num`` is
             the maximum prior pairs concatenated before a task; ``insert_num``
@@ -64,206 +131,1154 @@ def continually_learn(class_num: int, load_dataset_fn: callable,
             after fitting; and ``seed`` is accepted by ``random.seed``.  Extra
             keys are retained but unused.  Example: ``{"maxlen": 5000,
             "sample_num": 500, "insert_num": 500, "seed": 42}``.
-        use_vae (bool): Enable conditional-VAE replay.  This requires
-            ``load_dataset_fn_kwargs["onehot_labels"]`` to be true and cannot
-            be combined with ``use_buffer``.
-        vae_init_kwargs (Mapping[str, object]): Options forwarded to
-            :class:`autoencoder.variational_autoencoder.VariationalAutoencoder`
-            after this function fixes ``conditioned=True`` and ``class_num``.
-            Allowed project keys are ``data_dim``, ``latent_dim``,
-            ``hiddens_dims``, ``hiddens_kwargs``, ``last_activation``, ``beta``,
-            ``compile``, and ``compile_args``; Keras keys such as ``name``,
-            ``dtype``, and ``trainable`` are also accepted.  Do not repeat
-            ``conditioned`` or ``class_num``.  Within ``hiddens_kwargs``, only
-            ``actv``, ``use_batch_norm``, and ``kernel_init`` are valid.  For
-            example: ``{"data_dim": 2048, "latent_dim": 16,
-            "hiddens_dims": (256, 64), "hiddens_kwargs":
-            {"actv": "relu", "use_batch_norm": False}}``.
-        vae_kwargs (Mapping[str, int]): VAE action controls merged over
-            ``{"train_num": 1000, "samples_per_class": 1000}``.
+        plot_results (bool): Plot accuracy against the number of seen classes
+            after all tasks.
+        verbose (bool | int): Print task summaries, Keras progress, history
+            figures, classification reports, and confusion matrices when
+            truthy.
+        generative_model (tf.keras.Model | None): Optional already-created VAE,
+            diffusion wrapper, or raw diffusion network used for generative
+            replay. Raw classifier networks are connected to
+            ``DiffusionClassifier`` and all other supported diffusion networks
+            to ``DiffusionModel``. Pass a compiled wrapper directly
+            when custom wrapper or optimizer settings are needed. This cannot
+            be combined with ``use_buffer``. Diffusion replay requires image
+            data and accepts every loader preprocessing value.
+        generative_model_compile_args (dict[str, object] | None): Compilation
+            values used when this function wraps a raw diffusion network.
+            Values override ``{"optimizer": "adam", "loss": "mse"}``.
+            Already-wrapped models keep their existing compilation. ``None``
+            uses the defaults.
+        generative_model_kwargs (dict[str, int] | None): Generative replay controls
+            merged over ``{"train_num": 1000, "samples_per_class": 1000}``.
             ``samples_per_class`` sets prior generations per seen class.
             ``train_num=-1`` fits current data without resampling; any other
             value triggers with-replacement resampling of
-            ``max(train_num, len(x_train))`` rows, so a smaller positive value
-            does not downsample.  Extra keys are retained but unused.
-        plot_results (bool): Plot accuracy against the number of seen classes
-            after all tasks.
-        verbose (bool): Print task summaries, Keras progress, history figures,
-            classification reports, and confusion matrices when true.
-
+            ``max(train_num, len(x_train))`` rows.
+        use_generative_model_classifier (bool): Use the classifier attached to
+            a ``VAEClassifer`` or the classifier branch of a
+            ``DiffusionClassifier`` as the continually learned model. The
+            selected classifier keeps its original full-width output head.
+        train_classifier_separately (bool): Give the selected classifier its
+            own training step in addition to generative training. This remains
+            optional for ``VAEClassifer`` and requires its classifier to be
+            compiled. It must be false for ``DiffusionClassifier`` and true for
+            ``DiffusionClassifierV2`` because V2 separates its generator and
+            classifier variables. It has no effect when
+            ``use_generative_model_classifier`` is false.
+        callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Extra
+            callbacks appended to each enabled incremental classifier fit and
+            passed to generative-model fits. This is primarily useful for
+            experiment logging; ``None`` preserves the original callback
+            behavior.
+        return_details (bool): Return accuracies, histories, and the final
+            classifier/generator objects when true. The default keeps the
+            original accuracy-list return value.
+        use_valset (bool): Build and use a fresh validation dataset for every
+            task when true. If the loader has no validation split, the seen
+            test rows are used, matching :func:`common.dataloader.get_datasets`.
+            False disables task validation.
+        return_features (bool | None): Internal factory override for configured
+            runs. ``None`` preserves direct mode's legacy path-name inference.
+        max_train_samples (int | None): Internal configured limit applied once
+            to the loader's full training arrays before task selection.
+        max_val_samples (int | None): Internal configured limit applied to the
+            validation arrays, or test arrays when no validation split exists.
+        shuffle_buffer (int | None): Internal configured training shuffle
+            capacity. ``None`` preserves the legacy full-task shuffle.
+        pad (int): Internal configured symmetric image padding applied before
+            task selection and replay.
+        dataset_seed (int | None): Seed for configured limiting and shuffling.
+        initial_classifier (tf.keras.Model | None): Optional configured
+            classifier whose trunk and visible head columns initialize tasks.
+        callback_patience (int | None): Internal configured early-stopping
+            patience. ``None`` preserves direct mode's legacy value of 5;
+            ``0`` disables early stopping.
+        callback_monitor (str | None): Internal configured metric override.
+        callback_monitor_mode (str | None): Internal configured Keras monitor
+            direction. ``None`` preserves each phase's legacy direction.
     Returns:
-        list[float]: Test accuracy for each two-through-``class_num`` task, in
-        order.  Each value is in ``[0.0, 1.0]``.
+        list[float] | dict[str, object]: Test accuracy for each
+        two-through-``class_num`` task. When ``return_details=True``, returns
+        those accuracies plus task histories, report evaluations, and final
+        model objects.
 
     Raises:
-        AssertionError: If ``tuned_model_path`` is empty or both replay modes
-            are enabled.
+        AssertionError: If buffer and generative replay are both enabled.
         TypeError: If a forwarded dictionary contains a conflicting or
-            unsupported keyword.
+            unsupported keyword, or ``generative_model`` is unsupported.
         ValueError: If dataset shapes/labels cannot support the requested
             task, replay, or classifier loss.
     """
 
 
-    from sklearn.metrics import (accuracy_score, 
-                            classification_report, 
-                            ConfusionMatrixDisplay)
-
-    import numpy as np
-
-    from matplotlib import pyplot as plt
-
-    from common.utils import CL_plot, plot_history
-    from common.model import get_model, copy_model, get_callbacks
-    from common.replay_buffer import ReplayBuffer
-    from autoencoder.variational_autoencoder import VariationalAutoencoder
+    assert not (use_buffer and generative_model is not None), \
+        "The replay buffer and a generative model cannot be used together."
 
 
-    assert len(tuned_model_path) > 0, "tuned_model_path cannot be empty."
-    assert (not use_buffer and not use_vae) or (use_buffer and not use_vae) or (not use_buffer and use_vae), "Both of the replay buffer and VAE cannot be used."
+    def prepare_diffusion_x(
+        x: np.ndarray, 
+        data_min: float, 
+        data_range: float
+    ) -> np.ndarray:
+        """Map any supported loader representation to diffusion model space.
+
+        Args:
+            x (numpy.ndarray): Preprocessed image batch ``[samples, H, W, C]``.
+            data_min (float): Minimum of the current task's real training input.
+            data_range (float): Nonzero maximum-minus-minimum range of that input.
+
+        Returns:
+            numpy.ndarray: Float32 image data mapped affinely to ``[-1, 1]``.
+        """
+
+        x = np.asarray(x, dtype="float32")
+        x = ((x - data_min) / data_range * 2.) - 1.
+
+        return x
+
+
+    def select_classes(
+        x: np.ndarray, 
+        y: np.ndarray, 
+        classes: Sequence[int]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Select rows for class IDs without changing preprocessing space.
+
+        Args:
+            x (numpy.ndarray): Preprocessed samples shaped ``[samples, ...]``.
+            y (numpy.ndarray): Sparse or one-hot labels for ``x``.
+            classes (Sequence[int]): Integer class IDs to retain.
+
+        Returns:
+            tuple[numpy.ndarray, numpy.ndarray]: Filtered sample and label
+            arrays in their original dtypes and preprocessing coordinates.
+        """
+
+        labels = np.asarray(y)
+        if labels.ndim > 1 and labels.shape[-1] > 1:  # Read one-hot class IDs.
+            label_ids = np.argmax(labels, axis=-1)
+        else:  # Read sparse scalar or column-shaped class IDs.
+            label_ids = labels.reshape(-1)
+
+        selected = np.isin(label_ids, classes)
+
+        return np.asarray(x)[selected], labels[selected]
+
+
+    def predict_diffusion_classes(
+        model: "DiffusionClassifier", 
+        x: np.ndarray, 
+        y: np.ndarray, 
+        data_min: float, 
+        data_range: float
+    ) -> np.ndarray:
+        """Predict class scores from a diffusion classifier in data batches.
+
+        Args:
+            model (DiffusionClassifier): Trained diffusion classifier wrapper.
+            x (numpy.ndarray): Preprocessed images ``[samples, H, W, C]``.
+            y (numpy.ndarray): Integer labels ``[samples]`` used by V2 noising.
+            data_min (float): Current task training-input minimum.
+            data_range (float): Current nonzero training-input range.
+
+        Returns:
+            numpy.ndarray: Class scores shaped ``[samples, class_num]``.
+        """
+
+        x = prepare_diffusion_x(x, data_min, data_range)
+        y = np.asarray(y).reshape(-1)
+        network = model.get_network(model.test_network_name)
+        predictions = []
+
+        for start in range(0, len(x), batch_size):
+            end = start + batch_size
+            x_batch = x[start:end]
+
+            if isinstance(model, DiffusionClassifierV2):  # Build V2's configured noisy classifier input.
+                t_batch, x_batch, null_labels, _ = model.prep_clfv2_inputs(
+                    (x_batch, y[start: end]), 
+                    model.clf_test_noisified_max_timesteps
+                )
+            else:  # Evaluate standard diffusion classifiers at clean timestep zero.
+                t_batch = np.zeros((len(x_batch),), dtype="int32")
+                null_labels = np.zeros((len(x_batch),), dtype="uint8")
+
+            predictions.append(network.predict_class(
+                (x_batch, t_batch, null_labels), 
+                training=False
+            ).numpy())
+
+        return np.concatenate(predictions, axis=0)
+
+
+    def train_task_model(
+        model: tf.keras.Model, 
+        trainset: object, 
+        valset: object = None, 
+        task_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None, 
+        fit_method: str = "fit", 
+        fit_kwargs: dict[str, object] | None = None, 
+    ) -> dict[str, list[float]]:
+        """Train one continual phase through the shared training API."""
+
+        return train_model(
+            None, 
+            model, 
+            trainset, 
+            valset=valset, 
+            save_config_=False, 
+            extra_callbacks=task_callbacks, 
+            epochs=epochs, 
+            verbose=verbose, 
+            results_path=None, 
+            show_images=True, 
+            save_gifs=False, 
+            report_every_epoch=False, 
+            save_weights=False, 
+            fit_method=fit_method, 
+            fit_kwargs=fit_kwargs or {}
+        )
+
+
+    def report_task_model(
+        history: dict[str, list[float]], 
+        model: tf.keras.Model, 
+        trainset: object, 
+        testset: object
+    ) -> dict[str, object]:
+        """Report one continual phase through the shared reporting API."""
+
+        return report(
+            None, 
+            history, 
+            model, 
+            trainset, 
+            valset=testset, 
+            results_path=None, 
+            save_history_plot=False, 
+            save_csv=False, 
+            show_history_plot=bool(verbose), 
+            plot_without_20percent=False, 
+            run_trainset_eval=False, 
+            run_valset_eval=True, 
+            save_final_images=False, 
+            show_final_images=False, 
+            save_final_gifs=False, 
+            verbose=verbose
+        )
+
+
+    def reported_accuracy(evaluations: object) -> float | None:
+        """Find a classifier accuracy value in nested report output."""
+
+        if not isinstance(evaluations, dict):
+            return None
+
+        preferred = (
+            "accuracy", 
+            "classifier_accuracy", 
+            "clf_accuracy", 
+            "discriminator_accuracy"
+        )
+
+        for name in preferred:
+            if name in evaluations:
+                return float(evaluations[name])
+
+        for name, value in evaluations.items():
+            if "accuracy" in name.lower() and np.isscalar(value):
+                return float(value)
+
+        for value in evaluations.values():
+            accuracy = reported_accuracy(value)
+            if accuracy is not None:
+                return accuracy
+
+        return None
+
+
+    def copy_classifier_prefix(source_model, target_model):
+        """Copy shared weights and the target-width classifier head prefix."""
+
+        if len(source_model.layers) != len(target_model.layers):
+            raise ValueError(
+                "Initial and continual classifiers must have matching layers."
+            )
+
+        for source_layer, target_layer in zip(
+            source_model.layers[:-1], 
+            target_model.layers[:-1]
+        ):
+            target_layer.set_weights(
+                source_layer.get_weights()
+            )
+
+        source_kernel, source_bias = source_model.layers[-1].get_weights()
+        target_kernel, target_bias = target_model.layers[-1].get_weights()
+        target_width = target_bias.shape[0]
+
+        if source_bias.shape[0] < target_width:
+            raise ValueError(
+                "Initial classifier output is narrower than a continual task."
+            )
+
+        target_kernel[...] = source_kernel[..., :target_width]
+        target_bias[...] = source_bias[:target_width]
+        target_model.layers[-1].set_weights([target_kernel, target_bias])
+
+
+    def phase_callbacks(
+        default_monitor, 
+        default_mode="max", 
+        legacy_patience=0
+    ):
+        """Build phase-specific early stopping plus caller callbacks."""
+
+        patience = legacy_patience if callback_patience is None else callback_patience
+        selected = []
+
+        if patience > 0:
+            selected = get_callbacks(
+                monitor=callback_monitor or default_monitor, 
+                mode=callback_monitor_mode or default_mode, 
+                patience=patience, 
+                verbose=verbose
+            )
+
+        if callbacks_list is not None:
+            selected += list(callbacks_list)
+
+        return selected
 
 
     load_dataset_fn_kwargs_default = {
-        "preprocess": "", 
-        "onehot_labels": False, 
+        "preprocess": None, 
+        "onehot_labels": False
     }
-    load_dataset_fn_kwargs = {**load_dataset_fn_kwargs_default, **load_dataset_fn_kwargs}
+    load_dataset_fn_kwargs = {
+        **load_dataset_fn_kwargs_default, 
+        **(load_dataset_fn_kwargs or {})
+    }
+
+    compile_args = dict(compile_args or {})
+    generative_model_compile_args = {
+        "optimizer": "adam", 
+        "loss": "mse", 
+        **(generative_model_compile_args or {})
+    }
 
     buffer_kwargs_default = {
         "maxlen": 10_000, 
-        "sample_num": 1_000,
-        "insert_num": 1_000,
-        "seed": None,
+        "sample_num": 1_000, 
+        "insert_num": 1_000, 
+        "seed": None
     }
-    buffer_kwargs = {**buffer_kwargs_default, **buffer_kwargs}
+    buffer_kwargs = {
+        **buffer_kwargs_default, 
+        **(buffer_kwargs or {})
+    }
 
-    vae_kwargs_default = {
-        "train_num": 1_000,
+    generative_model_kwargs_default = {
+        "train_num": 1_000, 
         "samples_per_class": 1_000
     }
-    vae_kwargs = {**vae_kwargs_default, **vae_kwargs}
+    generative_model_kwargs = {
+        **generative_model_kwargs_default, 
+        **(generative_model_kwargs or {})
+    }
 
-    return_features = True if "dnn" in tuned_model_path else False
+    return_features = True if return_features is None and \
+                    "dnn" in tuned_model_path else False
 
-    if use_buffer:
-        buffer = ReplayBuffer(maxlen=buffer_kwargs["maxlen"], seed=buffer_kwargs["seed"])
+    if pad and return_features:
+        raise ValueError("pad is not supported for saved feature inputs.")
 
-    if use_vae:
-        vae = VariationalAutoencoder(conditioned=True, class_num=class_num, **vae_init_kwargs)
+    if use_buffer:  # Create fixed-capacity replay storage when requested.
+        buffer = ReplayBuffer(
+            maxlen=buffer_kwargs["maxlen"], 
+            seed=buffer_kwargs["seed"]
+        )
 
-    prev_model = get_model(
-        1, 
-        model_type="hp-tuned", 
-        model_path=tuned_model_path, 
-        compile_args=compile_args, 
-        use_loaded_opt=use_loaded_opt, 
-        verbose=0
+    if isinstance(generative_model, (
+        DiTClassifier, 
+        DiTEncoderDecoderClassifier, 
+        UNetClassifier
+    )): # Wrap raw diffusion classifiers for joint replay training.
+        generative_model = DiffusionClassifier(
+            network=generative_model, 
+            mask_by_nulls=generative_model.use_cfg, 
+            test_steps=min(50, generative_model.timesteps)
+        )
+        generative_model.compile(
+            **generative_model_compile_args
+        )
+    elif isinstance(generative_model, (
+        DiTDecoder, 
+        DiTEncoderDecoder, 
+        DiffusionTransformer, 
+        UNet
+    )): # Wrap raw generator-only diffusion networks.
+        generative_model = DiffusionModel(
+            network=generative_model, 
+            test_steps=min(50, generative_model.timesteps)
+        )
+        generative_model.compile(**generative_model_compile_args)
+    elif generative_model is not None and not isinstance(
+        generative_model, 
+        (VariationalAutoencoder, DiffusionModel)
+    ):  # Reject objects that cannot provide supported generative replay.
+        raise TypeError(
+            "generative_model must be a supported VAE, "
+            "diffusion network, or diffusion wrapper."
+        )
+
+    use_diffusion_classifier = use_generative_model_classifier and isinstance(
+        generative_model, DiffusionClassifier
     )
+    if use_diffusion_classifier: # Diffusion classifiers require images rather than saved features.
+        return_features = False
 
-    acc_list = []
-    for i in range(class_num-1):
-        if verbose:
-            print(75*'-'+" Classes:", list(range(i+2)))
+    if isinstance(generative_model, VariationalAutoencoder): # Validate conditional VAE replay inputs.
+        if not generative_model.conditioned: # Replay generation needs class conditioning.
+            raise ValueError("A replay VAE must be conditioned.")
+        if not load_dataset_fn_kwargs["onehot_labels"]:  # Conditional VAEs consume one-hot labels.
+            raise ValueError("VAE replay requires one-hot labels.")
+    elif isinstance(generative_model, DiffusionModel):  # Validate image input for diffusion replay.
+        if return_features:  # Diffusion networks do not consume saved flat features here.
+            raise ValueError("Diffusion replay requires image data.")
 
-        new_model = get_model(
-            i+2, model_type="hp-tuned", 
+    if use_generative_model_classifier and not isinstance(
+        generative_model, 
+        (VAEClassifer, DiffusionClassifier)
+    ): # Validate requests to reuse a generator-attached classifier.
+        raise ValueError(
+            "use_generative_model_classifier requires "
+            "a VAEClassifer or DiffusionClassifier."
+        )
+
+    if use_diffusion_classifier: # Select and validate a diffusion classifier head.
+        if isinstance(generative_model, DiffusionClassifierV2) \
+        and not train_classifier_separately:  # V2 trains discriminator variables separately.
+            raise ValueError(
+                "train_classifier_separately must "
+                "be True for DiffusionClassifierV2."
+            )
+        if not isinstance(generative_model, DiffusionClassifierV2) \
+        and train_classifier_separately:  # Standard wrappers train both parts jointly.
+            raise ValueError(
+                "train_classifier_separately must "
+                "be False for DiffusionClassifier."
+            )
+
+        prev_model = generative_model.network.classifier
+    elif use_generative_model_classifier: # Select and validate a VAE classifier head.
+        if not isinstance(generative_model.classifier, tf.keras.Model): # Separate fitting requires a Keras model.
+            raise TypeError(
+                "The VAEClassifer classifier must be a Keras model."
+            )
+        if train_classifier_separately and getattr(
+            generative_model.classifier, 
+            "optimizer", None
+        ) is None:  # A separate classifier fit requires prior compilation.
+            raise ValueError(
+                "The VAEClassifer classifier must be compiled "
+                "before its separate training step."
+            )
+
+        prev_model = generative_model.classifier
+    else:  # Build the initial standalone continual classifier.
+        prev_model = get_model(
+            1, 
+            model_type="hp-tuned", 
             model_path=tuned_model_path, 
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 
             verbose=0
         )
 
-        if keep_same_model:
-            copy_model(prev_model, new_model)
+    acc_list = []
+    histories = []
+    generative_histories = []
+    classifier_evaluations_list = []
+    generative_evaluations_list = []
+    dataset_arrays = None
+    for i in range(class_num-1):
+        if verbose: # Print the task's currently visible classes.
+            print(75*'-'+" Classes:", list(range(i+2)))
 
-        if remove_prev_classes:
-            *_, x_val, y_val, x_test, y_test = load_dataset_fn(
-                indices=list(range(0, i+2)), 
+        if use_diffusion_classifier: # Reuse the diffusion wrapper's classifier.
+            new_model = generative_model.network.classifier
+        elif use_generative_model_classifier: # Reuse the VAE's classifier.
+            new_model = generative_model.classifier
+        else: # Build a classifier head sized for all classes seen in this task.
+            new_model = get_model(
+                i+2, model_type="hp-tuned", 
+                model_path=tuned_model_path, 
+                compile_args=compile_args, 
+                use_loaded_opt=use_loaded_opt, 
+                verbose=0
+            )
+
+            if initial_classifier is not None and (
+                i == 0 or not keep_same_model
+            ):
+                copy_classifier_prefix(initial_classifier, new_model)
+
+            elif keep_same_model: # Carry learned shared weights and old head columns forward.
+                copy_model(prev_model, new_model)
+
+        if dataset_arrays is None: # Fit one shared preprocessing space for all continual tasks.
+            dataset_arrays = load_dataset_fn(
+                indices=list(range(class_num)), 
                 return_features=return_features, 
                 **load_dataset_fn_kwargs, 
-                verbose=0,
+                verbose=0
             )
-            if i == 0:
-                x_train, y_train, *_ = load_dataset_fn(
-                    indices=[i, i+1], 
-                    return_features=return_features, 
-                    **load_dataset_fn_kwargs,
-                    verbose=0,
+            (all_x_train, all_y_train, all_x_val, 
+            all_y_val, all_x_test, all_y_test) = dataset_arrays
+
+            rng = np.random.default_rng(dataset_seed)
+            all_x_train, all_y_train = _limit_samples(
+                all_x_train, 
+                all_y_train, 
+                max_train_samples, 
+                rng
+            )
+            if all_x_val is not None:
+                all_x_val, all_y_val = _limit_samples(
+                    all_x_val, 
+                    all_y_val, 
+                    max_val_samples, 
+                    rng
                 )
             else:
-                x_train, y_train, *_ = load_dataset_fn(
-                    indices=[i+1], 
-                    return_features=return_features, 
-                    **load_dataset_fn_kwargs, 
-                    verbose=0,
+                all_x_test, all_y_test = _limit_samples(
+                    all_x_test, 
+                    all_y_test, 
+                    max_val_samples, 
+                    rng
                 )
-        else:
-            x_train, y_train, x_val, y_val, x_test, y_test = load_dataset_fn(
-                indices=list(range(0, i+2)), 
-                return_features=return_features, 
-                **load_dataset_fn_kwargs,
-                verbose=0,
+
+            if load_dataset_fn_kwargs["onehot_labels"]:
+                all_y_train = all_y_train[..., :class_num]
+                all_y_val = all_y_val[..., :class_num] \
+                            if all_y_val is not None else None
+                all_y_test = all_y_test[..., :class_num]
+
+            dataset_arrays = (
+                all_x_train, all_y_train, all_x_val, all_y_val, 
+                all_x_test, all_y_test
             )
 
-        if use_buffer:
-            x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(buffer_kwargs["sample_num"])
-            # buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_kwargs["insert_num"])
+        (all_x_train, all_y_train, all_x_val, 
+        all_y_val, all_x_test, all_y_test) = dataset_arrays
+        seen_classes = list(range(i + 2))
 
-            if len(x_buffer) > 0:
+        if remove_prev_classes and i > 0: # Train later tasks on only their newly introduced class.
+            train_classes = [i + 1]
+        else: # Train the first task, or every cumulative task, on all seen classes.
+            train_classes = seen_classes
+
+        x_train, y_train = select_classes(
+            all_x_train, 
+            all_y_train, 
+            train_classes
+        )
+        x_test, y_test = select_classes(
+            all_x_test, 
+            all_y_test, 
+            seen_classes
+        )
+        if all_x_val is not None and all_y_val is not None: # Select seen validation rows in the shared space.
+            x_val, y_val = select_classes(
+                all_x_val, 
+                all_y_val, 
+                seen_classes
+            )
+        else: # Record that the loader did not create a validation split.
+            x_val, y_val = None, None
+
+        if not use_valset: # Respect explicit validation disabling.
+            x_val, y_val = None, None
+        elif x_val is None: # Match get_datasets by using test data when validation is enabled but absent.
+            x_val, y_val = x_test, y_test
+
+        if isinstance(generative_model, VariationalAutoencoder) \
+        and not return_features: # Match configured dense VAE input shapes.
+            x_train = x_train.reshape((len(x_train), -1))
+            x_test = x_test.reshape((len(x_test), -1))
+            if x_val is not None:
+                x_val = x_val.reshape((len(x_val), -1))
+
+        diffusion_data_min = float(np.min(all_x_train))
+        diffusion_data_range = float(
+            np.max(all_x_train) - diffusion_data_min
+        )
+        if diffusion_data_range == 0.:  # Keep constant-valued tasks numerically valid.
+            diffusion_data_range = 1.
+
+        if use_buffer:  # Add fixed-buffer samples from earlier tasks.
+            x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(
+                buffer_kwargs["sample_num"]
+            )
+            # buffer.sample_dataset_and_extend_buffer(
+            #     (x_train, y_train), 
+            #     buffer_kwargs["insert_num"]
+            # )
+
+            if len(x_buffer) > 0:  # Append replay only when the buffer is nonempty.
                 x_train = np.concatenate([x_train, x_buffer], axis=0)
                 y_train = np.concatenate([y_train, y_buffer], axis=0)
 
-        if use_vae:
-            x_buffer, y_buffer = vae.generate(
-                samples_per_class=vae_kwargs["samples_per_class"], 
-                onehot_y_output=load_dataset_fn_kwargs["onehot_labels"], 
-            )
+        if generative_model is not None and i > 0: # Generate replay after the first task.
+            classes = list(range(i + 1))
+            if isinstance(generative_model, VariationalAutoencoder): # Generate VAE replay in loader label format.
+                x_buffer, y_buffer = generative_model.generate(
+                    classes=classes, 
+                    samples_per_class=generative_model_kwargs[
+                        "samples_per_class"
+                    ], 
+                    onehot_y_output=load_dataset_fn_kwargs["onehot_labels"]
+                )
+            else: # Generate conditional diffusion replay for prior classes.
+                y_buffer = np.repeat(
+                    classes, 
+                    generative_model_kwargs["samples_per_class"]
+                )
+                x_buffer = generative_model.sample(
+                    network_name=generative_model.test_network_name, 
+                    labels=y_buffer + int(generative_model.use_cfg)
+                ).numpy() if len(y_buffer) != 0 else []
 
-            if len(x_buffer) > 0:
+                if len(x_buffer) > 0 and not return_features: # Restore generated images to classifier preprocessing space.
+                    x_buffer = (
+                        x_buffer * diffusion_data_range + diffusion_data_min
+                    )
+                    x_buffer = x_buffer.astype(x_train.dtype)
+
+                if load_dataset_fn_kwargs["onehot_labels"]: # Match one-hot loader labels.
+                    y_buffer = np.eye(
+                        class_num, 
+                        dtype=y_train.dtype
+                    )[y_buffer]
+                elif y_train.ndim > 1: # Match column-shaped sparse labels.
+                    y_buffer = y_buffer[:, None]
+
+                y_buffer = y_buffer.astype(y_train.dtype)
+
+            if len(x_buffer) > 0: # Append nonempty generated replay to real data.
                 x_train = np.concatenate([x_train, x_buffer], axis=0)
                 y_train = np.concatenate([y_train, y_buffer], axis=0)
 
-        history = new_model.fit(
-            x_train, y_train, 
-            batch_size=batch_size,
-            epochs=epochs,
-            validation_data=(x_val, y_val), 
-            callbacks=get_callbacks(verbose=verbose),
-            verbose=verbose,
-        ).history
+        classifier_x_train = x_train
+        classifier_x_val = x_val
+        classifier_x_test = x_test
+        classifier_input_shape = getattr(new_model, "input_shape", None)
+
+        if not use_diffusion_classifier and isinstance(
+            classifier_input_shape, tuple
+        ) and len(classifier_input_shape) == 2:
+            classifier_x_train = x_train.reshape((len(x_train), -1))
+            classifier_x_test = x_test.reshape((len(x_test), -1))
+            classifier_x_val = x_val.reshape((len(x_val), -1)) if x_val is not None else None
+
+        classifier_y_train = y_train
+        classifier_y_val = y_val
+        classifier_y_test = y_test
+        if load_dataset_fn_kwargs["onehot_labels"]: # Adapt full-width one-hot labels to the classifier loss/head.
+            loss = getattr(
+                new_model, 
+                "loss", 
+                compile_args.get(
+                    "loss", 
+                    "sparse_categorical_crossentropy"
+                )
+            )
+            loss_name = getattr(
+                loss, 
+                "name", 
+                getattr(loss, "__name__", str(loss))
+            ).lower()
+
+            if "sparse" in loss_name: # Sparse losses require integer class IDs.
+                classifier_y_train = np.argmax(y_train, axis=-1)
+                classifier_y_val = np.argmax(y_val, axis=-1) if y_val is not None else None
+                classifier_y_test = np.argmax(y_test, axis=-1)
+            elif not use_generative_model_classifier: # New heads need only currently visible one-hot columns.
+                classifier_y_train = y_train[..., :i + 2]
+                classifier_y_val = y_val[..., :i + 2] if y_val is not None else None
+                classifier_y_test = y_test[..., :i + 2]
+
+        task_shuffle_buffer = len(x_train) if shuffle_buffer is None else shuffle_buffer
+        trainset = get_dataset(
+            classifier_x_train, 
+            classifier_y_train, 
+            shuffle_buffer=task_shuffle_buffer, 
+            batch_size=batch_size, 
+            drop_remainder=False, 
+            seed=dataset_seed
+        )
+        valset = get_dataset(
+            classifier_x_val, 
+            classifier_y_val, 
+            shuffle_buffer=0, 
+            batch_size=batch_size, 
+            drop_remainder=False
+        ) if x_val is not None else None
+        testset = get_dataset(
+            classifier_x_test, 
+            classifier_y_test, 
+            shuffle_buffer=0, 
+            batch_size=batch_size, 
+            drop_remainder=False
+        )
+
+        history = {}
+        if not use_generative_model_classifier or (
+            train_classifier_separately and 
+            not use_diffusion_classifier
+        ): # Run the standalone or separately trained classifier phase.
+            task_callbacks = phase_callbacks(
+                "val_accuracy" if valset is not None else "accuracy", 
+                legacy_patience=5,
+            )
+
+            history = train_task_model(
+                new_model, 
+                trainset, 
+                valset, 
+                task_callbacks=task_callbacks
+            )
+
         prev_model = new_model
 
-        if verbose:
-            plot_history(history, indices=[1])
-
-        if use_buffer:
-            buffer.sample_dataset_and_extend_buffer((x_train, y_train), buffer_kwargs["insert_num"])
-
-        if use_vae:
-            vae.train(
-                x_train, y_train, 
-                vae_kwargs["train_num"], 
-                clf=new_model,
-                verbose=verbose
+        if use_buffer:  # Retain examples from the completed task for later replay.
+            buffer.sample_dataset_and_extend_buffer(
+                (x_train, y_train), 
+                buffer_kwargs["insert_num"]
             )
 
-        if load_dataset_fn_kwargs["onehot_labels"]:
-            y_test = np.argmax(y_test, axis=-1)
+        generative_trainset = None
+        generative_testset = None
+        if isinstance(generative_model, VAEClassifer): # Train the joint VAE/classifier through the shared API.
+            generative_history = train_task_model(
+                generative_model, 
+                x_train, 
+                (x_val, y_val) if x_val is not None else None, 
+                task_callbacks=phase_callbacks(
+                    "val_clf_accuracy" if x_val is not None \
+                        else "clf_accuracy"
+                ), 
+                fit_method="train", 
+                fit_kwargs={
+                    "y": y_train, 
+                    "train_num": generative_model_kwargs["train_num"], 
+                    "batch_size": batch_size, 
+                    "shuffle_buffer": task_shuffle_buffer, 
+                    "seed": dataset_seed
+                }
+            )
+            generative_trainset = get_dataset(
+                x_train, y_train, 
+                shuffle_buffer=task_shuffle_buffer, 
+                batch_size=batch_size, 
+                drop_remainder=False, 
+                seed=dataset_seed
+            )
+            generative_testset = get_dataset(
+                x_test, y_test, 
+                shuffle_buffer=0, 
+                batch_size=batch_size, 
+                drop_remainder=False
+            )
+        elif isinstance(generative_model, VariationalAutoencoder): # Train a conditional replay VAE through the shared API.
+            generative_history = train_task_model(
+                generative_model, 
+                x_train, 
+                (x_val, y_val) if x_val is not None else None, 
+                task_callbacks=phase_callbacks(
+                    "val_loss" if x_val is not None else "loss", 
+                    default_mode="min", 
+                ), 
+                fit_method="train", 
+                fit_kwargs={
+                    "y": y_train, 
+                    "train_num": generative_model_kwargs["train_num"], 
+                    "batch_size": batch_size, 
+                    "clf": new_model, 
+                    "shuffle_buffer": task_shuffle_buffer, 
+                    "seed": dataset_seed
+                }
+            )
+            generative_trainset = get_dataset(
+                x_train, y_train, 
+                shuffle_buffer=task_shuffle_buffer, 
+                batch_size=batch_size, 
+                drop_remainder=False, 
+                seed=dataset_seed
+            )
+            generative_testset = get_dataset(
+                x_test, y_test, 
+                shuffle_buffer=0, 
+                batch_size=batch_size, 
+                drop_remainder=False
+            )
+        elif isinstance(generative_model, DiffusionModel): # Train diffusion replay from fresh task datasets.
+            generative_x = prepare_diffusion_x(
+                x_train, 
+                diffusion_data_min, 
+                diffusion_data_range
+            )
+            generative_y = np.argmax(y_train, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
+                        else np.asarray(y_train).reshape(-1)
 
-        preds = new_model.predict(x_test, verbose=verbose)
-        preds = np.argmax(preds, axis=-1)
+            diffusion_classifier_x = generative_x
+            diffusion_classifier_y = generative_y
 
-        acc = accuracy_score(y_test, preds)
+            train_num = generative_model_kwargs["train_num"]
+            if train_num != -1: # Preserve configured with-replacement replay-model resampling.
+                train_num = max(train_num, len(generative_x))
+                indices = np.random.randint(
+                    0, 
+                    len(generative_x), 
+                    (train_num,)
+                )
+                generative_x = generative_x[indices]
+                generative_y = generative_y[indices]
+
+            generative_trainset = get_dataset(
+                generative_x, 
+                generative_y, 
+                shuffle_buffer=len(generative_x) if shuffle_buffer is None else shuffle_buffer,
+                batch_size=batch_size, 
+                drop_remainder=False, 
+                seed=dataset_seed
+            )
+            generative_y_val = np.argmax(y_val, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
+                            and y_val is not None else np.asarray(y_val).reshape(-1) \
+                            if y_val is not None else None
+            generative_valset = get_dataset(
+                prepare_diffusion_x(
+                    x_val, 
+                    diffusion_data_min, 
+                    diffusion_data_range
+                ), 
+                generative_y_val, 
+                shuffle_buffer=0, 
+                batch_size=batch_size,  
+                drop_remainder=False
+            ) if x_val is not None else None
+            generative_y_test = np.argmax(y_test, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
+                                else np.asarray(y_test).reshape(-1)
+
+            generative_testset = get_dataset(
+                prepare_diffusion_x(
+                    x_test, 
+                    diffusion_data_min, 
+                    diffusion_data_range
+                ), 
+                generative_y_test, 
+                shuffle_buffer=0, 
+                batch_size=batch_size, 
+                drop_remainder=False
+            )
+
+            fit_method = "fit_generator" if isinstance(
+                generative_model, DiffusionClassifierV2
+            ) else "fit"
+            generative_history = train_task_model(
+                generative_model, 
+                generative_trainset, 
+                generative_valset, 
+                task_callbacks=phase_callbacks(
+                    "val_loss" if generative_valset is not None else "loss", 
+                    default_mode="min"
+                ), 
+                fit_method=fit_method
+            )
+
+            if use_diffusion_classifier and isinstance(
+                generative_model, DiffusionClassifierV2
+            ): # Train V2 classifier variables in their required separate phase.
+                task_callbacks = phase_callbacks(
+                    "val_classifier_accuracy" if generative_valset is not None 
+                    else "classifier_accuracy",
+                    legacy_patience=5
+                )
+
+                diffusion_classifier_trainset = get_dataset(
+                    diffusion_classifier_x, 
+                    diffusion_classifier_y, 
+                    shuffle_buffer=len(diffusion_classifier_x) if shuffle_buffer is None else shuffle_buffer, 
+                    batch_size=batch_size, 
+                    drop_remainder=False, 
+                    seed=dataset_seed
+                )
+                history = train_task_model(
+                    generative_model, 
+                    diffusion_classifier_trainset, 
+                    generative_valset, 
+                    task_callbacks=task_callbacks, 
+                    fit_method="fit_discriminator"
+                )
+        else:  # Record that this task has no generative replay phase.
+            generative_history = None
+
+        generative_evaluations = {}
+        if generative_history is not None:
+            generative_evaluations = report_task_model(
+                generative_history, 
+                generative_model, 
+                generative_trainset, 
+                generative_testset
+            )
+
+        classifier_evaluations = {}
+        classifier_report_history = history or generative_history
+        if not use_diffusion_classifier and classifier_report_history:
+            classifier_evaluations = report_task_model(
+                classifier_report_history, 
+                new_model, 
+                trainset, 
+                testset
+            )
+
+        accuracy_source = generative_evaluations if use_diffusion_classifier \
+                        else classifier_evaluations
+        acc = reported_accuracy(accuracy_source)
+
+        y_test_ids = np.argmax(y_test, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
+                    else np.asarray(y_test).reshape(-1)
+
+        if acc is None: # Preserve a prediction fallback for custom reports.
+            if use_diffusion_classifier:
+                preds = predict_diffusion_classes(
+                    generative_model, 
+                    x_test, 
+                    y_test_ids, 
+                    diffusion_data_min, 
+                    diffusion_data_range
+                )
+            else:
+                preds = new_model.predict(
+                    classifier_x_test, 
+                    verbose=verbose
+                )
+
+            preds = np.argmax(preds, axis=-1)
+            acc = accuracy_score(y_test_ids, preds)
+
+        histories.append(history)
+        generative_histories.append(generative_history)
+        classifier_evaluations_list.append(classifier_evaluations)
+        generative_evaluations_list.append(generative_evaluations)
         acc_list.append(acc)
 
         if verbose:
-            print(classification_report(y_test, preds, digits=4))
-            ConfusionMatrixDisplay.from_predictions(y_test, preds)
-            plt.show()
-
+            print(f"Task test accuracy: {acc:.4f}")
             print(75*'-'+'\n')
 
-    if plot_results:
+    if plot_results:  # Plot accuracy across all completed continual tasks.
         CL_plot(class_num, [(acc_list, " ")])
 
+    if return_details:  # Return histories and final objects for orchestration callers.
+        return {
+            "accuracies": acc_list, 
+            "histories": histories, 
+            "generative_histories": generative_histories, 
+            "classifier_evaluations": classifier_evaluations_list, 
+            "generative_evaluations": generative_evaluations_list, 
+            "model": prev_model, 
+            "generative_model": generative_model
+        }
     return acc_list
+
+
+def continually_learn(
+    config: Config | dict[str, object] | None = None, 
+    **kwargs: object
+) -> list[float] | dict[str, object]:
+    """Run class-incremental learning from a config or direct keyword inputs.
+
+    Exactly one input style is used. With ``config=None``, every setting comes
+    from ``kwargs`` and ``class_num`` plus ``load_dataset_fn`` are required.
+    With a :class:`common.config.Config` (or a compatible root mapping), direct
+    keywords are ignored: :func:`common.dataloader.get_datasets` creates the
+    loader, :func:`common.model.get_model` creates the classifier/replay-model
+    bundle, and :func:`common.train.train_model` plus
+    :func:`common.train.report` run the configured training and reporting.
+    Config mode requires ``config.training.task == "continual"``.
+
+    Args:
+        config (Config | dict[str, object] | None): Optional complete project
+            configuration. A mapping is normalized with ``Config(**config)``.
+        **kwargs (object): Direct-mode inputs, used only when ``config`` is
+            ``None``. The possible keys are:
+
+            - ``class_num`` (int, required): Total class count. Tasks introduce
+              classes two through ``class_num``.
+            - ``load_dataset_fn`` (Callable, required): Loader returning
+              ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
+            - ``load_dataset_fn_kwargs`` (dict | None): Loader overrides.
+              Built-in keys are ``preprocess``, ``onehot_labels``,
+              ``features_path``, ``validation_ratio``, and ``seed``; do not
+              supply ``indices``, ``return_features``, or ``verbose``.
+            - ``remove_prev_classes`` (bool, default ``True``): Later tasks
+              train only on the new class instead of all seen classes.
+            - ``keep_same_model`` (bool, default ``True``): Copy learned
+              classifier weights into each expanded head.
+            - ``tuned_model_path`` (str, default ``""``): Saved Keras
+              classifier template. Paths containing ``"dnn"`` select saved
+              features; other paths select image input.
+            - ``compile_args`` (dict | None): Classifier ``Model.compile``
+              overrides.
+            - ``use_loaded_opt`` (bool, default ``False``): Reuse the optimizer
+              stored in ``tuned_model_path``.
+            - ``batch_size`` (int, default ``128``): Per-task batch size.
+            - ``epochs`` (int, default ``100``): Maximum epochs per task and
+              per enabled replay-model phase.
+            - ``use_buffer`` (bool, default ``False``): Enable bounded sample
+              replay; it is mutually exclusive with ``generative_model``.
+            - ``buffer_kwargs`` (dict | None): ``maxlen``, ``sample_num``,
+              ``insert_num``, and ``seed``; defaults are ``10000``, ``1000``,
+              ``1000``, and ``None`` respectively.
+            - ``plot_results`` (bool, default ``True``): Plot task accuracy.
+            - ``verbose`` (bool | int, default ``True``): Training/reporting
+              verbosity.
+            - ``generative_model`` (tf.keras.Model | None): Conditional VAE,
+              raw diffusion network, or diffusion wrapper used for replay.
+            - ``generative_model_compile_args`` (dict | None): Compile
+              overrides used only when a raw diffusion network is wrapped;
+              defaults to Adam and MSE.
+            - ``generative_model_kwargs`` (dict | None): ``train_num`` and
+              ``samples_per_class``, both defaulting to ``1000``;
+              ``train_num=-1`` disables replay-model resampling.
+            - ``use_generative_model_classifier`` (bool, default ``False``):
+              Use a classifier attached to the replay model.
+            - ``train_classifier_separately`` (bool, default ``False``): Add a
+              classifier phase for ``VAEClassifer``; it must be true for
+              ``DiffusionClassifierV2`` and false for ``DiffusionClassifier``.
+            - ``callbacks_list`` (Sequence[Callback] | None): Extra callbacks
+              forwarded through :func:`common.train.train_model`.
+            - ``return_details`` (bool, default ``False``): Return task
+              histories and final model objects in addition to accuracies.
+            - ``use_valset`` (bool, default ``True``): Use validation data,
+              falling back to seen test rows when a loader has no split.
+
+    Returns:
+        list[float] | dict[str, object]: Test accuracy for each task. With
+        ``return_details=True`` (or its configured equivalent), the mapping
+        also contains classifier/generative histories, their per-task report
+        outputs, and final models; configured details additionally contain
+        aggregate evaluations.
+
+    Raises:
+        TypeError: If direct mode omits a required key, includes an unknown
+            key, or config is not a ``Config``/mapping.
+        ValueError: If configured mode is not a continual task or a requested
+            model/dataset/replay combination is invalid.
+        AssertionError: If fixed-buffer and generative replay are both enabled.
+    """
+
+    if config is None:
+        options = dict(kwargs)
+        defaults = {
+            "load_dataset_fn_kwargs": None, 
+            "remove_prev_classes": True, 
+            "keep_same_model": True, 
+            "tuned_model_path": "", 
+            "compile_args": None, 
+            "use_loaded_opt": False, 
+            "batch_size": 128, 
+            "epochs": 100, 
+            "use_buffer": False, 
+            "buffer_kwargs": None, 
+            "plot_results": True, 
+            "verbose": True, 
+            "generative_model": None, 
+            "generative_model_compile_args": None, 
+            "generative_model_kwargs": None, 
+            "use_generative_model_classifier": False, 
+            "train_classifier_separately": False, 
+            "callbacks_list": None, 
+            "return_details": False, 
+            "use_valset": True
+        }
+        allowed = {"class_num", "load_dataset_fn", *defaults}
+
+        unknown = sorted(set(options) - allowed)
+        if unknown:
+            raise TypeError(
+                "Unsupported continually_learn options: " + str(unknown)
+            )
+
+        missing = [
+            name for name in ("class_num", "load_dataset_fn")
+            if name not in options
+        ]
+        if missing:
+            raise TypeError(
+                "Missing required continually_learn options: " + str(missing)
+            )
+
+        return _continually_learn(**{**defaults, **options})
+
+    if isinstance(config, dict):
+        config = Config(**config)
+
+    if not isinstance(config, Config):
+        raise TypeError("config must be a Config, mapping, or None.")
+
+    if config.training.task.lower() != "continual":
+        raise ValueError(
+            "continually_learn(config) requires training.task='continual'."
+        )
+
+
+    from common.dataloader import get_datasets
+    from common.model import get_model
+    from common.train import train_model, report
+
+
+    if config.training.seed is not None:
+        tf.keras.utils.set_random_seed(config.training.seed)
+
+    trainset, valset = get_datasets(config)
+    model = get_model(config)
+
+    if not callable(trainset) or not isinstance(model, dict):
+        raise TypeError(
+            "A continual config must create a dataset loader and model bundle."
+        )
+
+    history = train_model(
+        config, 
+        model, 
+        trainset, 
+        valset=valset
+    )
+    evaluations = report(
+        config, 
+        history, 
+        model, 
+        trainset, 
+        valset=valset
+    )
+
+    details = model.get("continual_details")
+    if details is None:
+        details = {
+            "accuracies": list(history.get("continual_accuracy", [])), 
+            "histories": [], 
+            "generative_histories": [], 
+            "classifier_evaluations": [], 
+            "generative_evaluations": [], 
+            "model": model.get("classifier"), 
+            "generative_model": model.get("generative_model")
+        }
+    details["evaluations"] = evaluations
+
+    if config.continually_learn.return_details:
+        return details
+    return details["accuracies"]

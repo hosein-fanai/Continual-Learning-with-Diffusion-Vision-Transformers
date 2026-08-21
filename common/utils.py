@@ -34,7 +34,8 @@ def init():
             print("Could not limit gpu memory.")
 
 
-def extract_features(dataset_list, batch_size=128, 
+def extract_features(dataset_list, 
+                    batch_size=128, 
                     file_name=None):
     """Extract 2,048-wide Xception features for multiple sample arrays.
 
@@ -51,15 +52,13 @@ def extract_features(dataset_list, batch_size=128,
         list[numpy.ndarray]: One floating feature array per input dataset,
         normally shaped ``[samples, 2048]``.
 
-    Raises:
-        NameError: In the current module unless ``get_model`` has been injected
-            into its globals; the function references that factory without
-            importing it.  Importing ``common.model.get_model`` into the caller
-            namespace alone does not resolve this module-global name.
     """
+
     from tensorflow.keras import models
 
     import numpy as np
+
+    from common.model import get_model
 
 
     conv_base = models.Sequential(
@@ -97,6 +96,7 @@ def CL_plot(class_num, pairs):
     Raises:
         ValueError: If an accuracy series length differs from the x-axis length.
     """
+
     from matplotlib import pyplot as plt
 
 
@@ -163,6 +163,10 @@ def plot_history(
         AttributeError: For a one-cell subplot layout, because the current code
             expects Matplotlib's axes object to provide ``flatten``.
     """
+
+    import matplotlib
+    if not show_plots:
+        matplotlib.use("Agg", force=True)
     from matplotlib import pyplot as plt
 
     import numpy as np
@@ -204,8 +208,11 @@ def plot_history(
         min_ = min(values)
         max_ = max(values)
 
-        ax.plot(epochs, values, 
-            label="Training" if not metric.startswith("val_") else "Validation")
+        ax.plot(
+            epochs, 
+            values, 
+            label="Training" if not metric.startswith("val_") else "Validation"
+        )
 
         if values:=history.get("val_"+metric, None):
             min_ = min([min_]+values)
@@ -234,7 +241,7 @@ def plot_history(
     if plot_path:
         fig.savefig(
             plot_path, 
-            dpi=1_000, 
+            dpi=200,
             bbox_inches="tight"
         )
 
@@ -264,8 +271,8 @@ def create_gif(
             suffix; parent directories must exist.
         images1 (Iterable[numpy.ndarray]): Nonempty frame sequence.  Each frame
             is shaped ``[samples, height, width, channels]`` with display values
-            expected in ``[0, 1]``; only channel 0 is used and sample images are
-            tiled horizontally.
+            expected in ``[0, 1]``; grayscale and RGB samples are tiled
+            horizontally.
         images2 (Iterable[numpy.ndarray] | None): Optional second trajectory.
             Paired frames (using truncating ``zip``) are stacked vertically per
             sample with a 10-pixel white separator before horizontal tiling.
@@ -281,6 +288,7 @@ def create_gif(
         ValueError: If paired frame shapes cannot be concatenated.
         OSError: If Pillow cannot write the destination.
     """
+
     import numpy as np
     
     from PIL import Image
@@ -294,29 +302,37 @@ def create_gif(
             images.append(
                 np.concatenate([
                     image1, 
-                    np.ones((image1.shape[0], 10, image1.shape[2], image1.shape[3])), 
+                    np.ones((
+                        image1.shape[0], 
+                        10, 
+                        image1.shape[2], 
+                        image1.shape[3]
+                    )), 
                     image2
                 ], axis=1)
             )
 
     frames = []
     for image in images:
-        img = (image*255).astype("uint8")[..., 0]
-        img = np.concatenate(img, axis=1)
-        img = Image.fromarray(img)
+        if image.shape[-1] == 1:
+            image = image[..., 0]
 
-        frames.append(img.convert("RGBA"))
+        image = (image*255).astype("uint8")
+        image = np.concatenate(image, axis=1)
+        image = Image.fromarray(image)
+
+        frames.append(image.convert("RGBA"))
 
     frames[0].save(
-        output_path,
-        save_all=True,
-        append_images=frames[1:],
-        duration=duration,
+        output_path, 
+        save_all=True, 
+        append_images=frames[1:], 
+        duration=duration, 
         loop=loop
     )
 
     if verbose:
-        print(f"GIF saved to {output_path}")
+        print(f"GIF saved to '{output_path}'.")
 
 
 def show_img(x, y=None):
@@ -335,6 +351,7 @@ def show_img(x, y=None):
     Raises:
         TypeError: If ``y`` is ``None`` or otherwise not indexable.
     """
+
     from matplotlib import pyplot as plt
 
 
@@ -378,6 +395,10 @@ def plot_images(
         Titles are ``i - 1``: the first image is labeled ``-1`` (the CFG null
         slot), followed by labels 0, 1, and so on.
     """
+
+    import matplotlib
+    if not show_images:
+        matplotlib.use("Agg", force=True)
     from matplotlib import pyplot as plt
 
 
@@ -389,7 +410,8 @@ def plot_images(
     axes = axes.flatten()
 
     for i in range(len(imgs)):
-        axes[i].imshow(imgs[i, :, :, 0], cmap="gray")
+        image = imgs[i, :, :, 0] if imgs.shape[-1] == 1 else imgs[i]
+        axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None)
         axes[i].set_title(f"{i-1}") 
         axes[i].axis("off")
 
@@ -401,7 +423,7 @@ def plot_images(
     if save_path:
         fig.savefig(
             save_path, 
-            dpi=1_000, 
+            dpi=200,
             bbox_inches="tight", 
         )
 
@@ -425,6 +447,7 @@ def save_samples(arr, path, type_):
     Returns:
         None.
     """
+
     import numpy as np
 
 
@@ -454,6 +477,7 @@ def load_samples(path, type_):
         UnboundLocalError: If ``type_ == ".csv"`` because no array is assigned.
         OSError: If the NPY path cannot be opened.
     """
+
     import numpy as np
 
 
@@ -491,6 +515,7 @@ def save_logs(model_name, i, search_space=[],
         OSError: If file output is selected and the fixed log directory does
             not exist or is not writable.
     """
+
     txt = ""
 
     if search_space and names:
