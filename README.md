@@ -1,4 +1,4 @@
-# Continual learning and diffusion models
+# Continual learning with Diffusion Vision Transformers
 
 This TensorFlow 2.10 research codebase combines two related workflows:
 
