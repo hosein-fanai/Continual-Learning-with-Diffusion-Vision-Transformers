@@ -227,6 +227,12 @@ with `t <= int(mask_t_percentage / 100 * timesteps)`. Set either switch false to
 remove that selection criterion. `clf_train_type="uncond"` requires a numeric
 `train_cfg_scale` because it needs the explicit unconditional pass.
 
+Use `model.evaluate_ensemble_accuracy(dataset, weighted=True)` to
+average classifier predictions across diffusion timesteps. It defaults to the
+configured test network, accepts the `EnsembleAccuracy` options, and is also
+inherited by `DiffusionClassifierV2`; pass `netwrok_name="raw"` or `"ema"` to
+select a network explicitly.
+
 Classifier progressive depth can target both branches:
 
 ```python

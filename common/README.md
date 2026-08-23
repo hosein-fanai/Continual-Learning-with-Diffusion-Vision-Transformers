@@ -65,6 +65,12 @@ including `None` and defaults. It does not filter, validate, or rename keys.
 class-incremental and replay policy separate from shared dataset, model,
 optimizer, fit, and reporting settings.
 
+Set `reporting.evaluate_ensemble_accuracy=True` for a `DiffusionClassifier` or
+`DiffusionClassifierV2` to add `ensemble_accuracy` beside the normal metrics in
+every enabled raw/EMA train/validation evaluation. Pass metric options such as
+`weighted`, `max_t`, `t_chunk_size`, or `seed` through
+`reporting.ensemble_accuracy_kwargs`.
+
 Depth numbering also belongs to the raw network API. Depth 0 is the embedding
 stem that patchifies images and constructs/merges timestep and label
 conditioning. `depth=N` then creates repeated processing depths 1 through N.
@@ -194,8 +200,9 @@ plus `load_dataset_fn_kwargs`, `remove_prev_classes`, `keep_same_model`,
 `use_buffer`, `buffer_kwargs`, `plot_results`, `verbose`, `generative_model`,
 `generative_model_compile_args`, `generative_model_kwargs`,
 `use_generative_model_classifier`, `train_classifier_separately`,
-`callbacks_list`, `return_details`, and `use_valset`. Their types, defaults, and
-nested dictionary keys are listed by `help(continually_learn)`.
+`evaluate_ensemble_accuracy`, `ensemble_accuracy_kwargs`, `callbacks_list`,
+`return_details`, and `use_valset`. Their types, defaults, and nested dictionary
+keys are listed by `help(continually_learn)`.
 
 The loader mapping may contain `preprocess`, `onehot_labels`, `validation_ratio`,
 `seed`, and, for built-in loaders, `features_path`; do not repeat `indices`,
@@ -232,6 +239,11 @@ The same classifier-selection flag supports `DiffusionClassifier` and
 trains generation and classification jointly. For V2 it must be true; the
 learner uses `fit_generator` followed by the existing `fit_discriminator` API.
 Evaluation uses the selected raw/EMA network's `predict_class` path.
+Set `continually_learn.evaluate_ensemble_accuracy=True` to evaluate the same
+task test data with timestep ensembling. Normal task scores remain in
+`accuracies`; with `return_details=True`, ensemble scores are returned in
+`ensemble_accuracies` and are also saved as `continual_ensemble_accuracy`.
+Options are forwarded through `continually_learn.ensemble_accuracy_kwargs`.
 
 Set `return_details=True` when an orchestration layer needs the final models,
 per-task histories, and classifier/generative evaluation mappings in addition
@@ -260,7 +272,12 @@ Successful trials contain the resolved config, final weights, metric CSV files,
 history/sample plots, a GIF, and TensorBoard events. The study directory also
 contains persistent SQLite state and `trials.csv`. Joint generation and
 classification studies are multi-objective; all other studies use one scalar
-objective. See [`../notebooks/hpo/README.md`](../notebooks/hpo/README.md).
+objective. `run_hpo(..., use_ensemble_accuracy=True)` replaces the accuracy
+feedback with post-training ensemble accuracy for joint or continual diffusion
+classifier studies while retaining ordinary accuracy in their reports. Each
+resolved config records the selection in `hpo.use_ensemble_accuracy` and
+enables the matching reporting or continual evaluation option. See
+[`../notebooks/hpo/README.md`](../notebooks/hpo/README.md).
 
 ## Supporting APIs
 

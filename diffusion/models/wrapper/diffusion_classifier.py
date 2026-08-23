@@ -171,68 +171,6 @@ class DiffusionClassifier(DiffusionModel):
             len(self.network.clf_cls_token_regularizer_ids) > 0
         ) if getattr(self.network, "clf_cls_token_regularizer_ids", None) is not None else None
 
-    def fit_progressively(self,**kwargs: object) -> callbacks.History:
-        """Train a classifier diffusion model with three progressive tasks.
-
-        This override delegates stage execution, timestep changes, resolution
-        changes, EMA growth and optimizer registration to
-        ``DiffusionModel.fit_progressively``. It only extends the depth syntax
-        and history for a ``DiTClassifier``. An unscoped depth specification
-        grows the diffusion transformer. To grow either or both branches, use
-        ``{"network": network_spec, "classifier": classifier_spec}``.
-
-        A classifier string adds one classifier depth containing that layer, a
-        list adds several depths, and a set or dictionary combines layers in
-        one depth. Exact classifier layer names are ``feature_aggregator``,
-        ``feature_connector``, ``cross_attention_aggregator``,
-        ``cross_attention_connector``, ``vision_transformer_block``,
-        ``local_mixer``, ``downsampler``, ``upsampler``, ``reshaper`` and
-        ``cls_token_regularizer``. For example::
-
-            depths = [{
-                "network": "vision_transformer_block",
-                "classifier": [
-                    {
-                        "feature_connector": {"ids": [-1]},
-                        "vision_transformer_block": True,
-                    }
-                ],
-            }]
-
-        Timestep and resolution updates happen before a stage. Depth growth
-        happens after a successful stage and first trains in the next listed
-        stage, or in ``final_epochs`` when it follows the last listed stage.
-
-        Args:
-            **kwargs (object): Arguments forwarded to
-                ``DiffusionModel.fit_progressively``. They include ordered
-                stage descriptions, optional generated-stage counts, timestep
-                boundaries, resolutions, depth specifications, pacing and
-                early-stopping controls, plus standard Keras fit inputs,
-                validation data, callbacks, and step options. Epoch indices are
-                managed by the base method.
-
-        Returns:
-            tf.keras.callbacks.History: Merged history from the base
-            implementation. Every
-            ``progressive_stages`` item additionally records the classifier
-            depth before its stage and, when depth growth was requested, the
-            classifier depth after that growth.
-        """
-
-        classifier_depth = self.network.clf_depth
-        history = super().fit_progressively(**kwargs)
-
-        for stage in history.progressive_stages:
-            stage["classifier_depth"] = classifier_depth
-            growth = stage.get("depth_growth", {}).get("classifier")
-            # Record and carry forward classifier depth after structural growth.
-            if growth is not None:
-                stage["post_classifier_depth"] = growth["after"]
-                classifier_depth = growth["after"]
-
-        return history
-
     @property
     def metrics(self) -> list[metrics.Metric]:
         """Return diffusion and classifier metric trackers.
@@ -367,7 +305,6 @@ class DiffusionClassifier(DiffusionModel):
 
         return results
 
-
     def test_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
                 ) -> dict[str, tf.Tensor]:
         """Evaluate diffusion plus unconditional clean-image classification.
@@ -451,6 +388,111 @@ class DiffusionClassifier(DiffusionModel):
 
         return results
 
+    def fit_progressively(self,**kwargs: object) -> callbacks.History:
+        """Train a classifier diffusion model with three progressive tasks.
+
+        This override delegates stage execution, timestep changes, resolution
+        changes, EMA growth and optimizer registration to
+        ``DiffusionModel.fit_progressively``. It only extends the depth syntax
+        and history for a ``DiTClassifier``. An unscoped depth specification
+        grows the diffusion transformer. To grow either or both branches, use
+        ``{"network": network_spec, "classifier": classifier_spec}``.
+
+        A classifier string adds one classifier depth containing that layer, a
+        list adds several depths, and a set or dictionary combines layers in
+        one depth. Exact classifier layer names are ``feature_aggregator``,
+        ``feature_connector``, ``cross_attention_aggregator``,
+        ``cross_attention_connector``, ``vision_transformer_block``,
+        ``local_mixer``, ``downsampler``, ``upsampler``, ``reshaper`` and
+        ``cls_token_regularizer``. For example::
+
+            depths = [{
+                "network": "vision_transformer_block",
+                "classifier": [
+                    {
+                        "feature_connector": {"ids": [-1]},
+                        "vision_transformer_block": True,
+                    }
+                ],
+            }]
+
+        Timestep and resolution updates happen before a stage. Depth growth
+        happens after a successful stage and first trains in the next listed
+        stage, or in ``final_epochs`` when it follows the last listed stage.
+
+        Args:
+            **kwargs (object): Arguments forwarded to
+                ``DiffusionModel.fit_progressively``. They include ordered
+                stage descriptions, optional generated-stage counts, timestep
+                boundaries, resolutions, depth specifications, pacing and
+                early-stopping controls, plus standard Keras fit inputs,
+                validation data, callbacks, and step options. Epoch indices are
+                managed by the base method.
+
+        Returns:
+            tf.keras.callbacks.History: Merged history from the base
+            implementation. Every
+            ``progressive_stages`` item additionally records the classifier
+            depth before its stage and, when depth growth was requested, the
+            classifier depth after that growth.
+        """
+
+        classifier_depth = self.network.clf_depth
+        history = super().fit_progressively(**kwargs)
+
+        for stage in history.progressive_stages:
+            stage["classifier_depth"] = classifier_depth
+            growth = stage.get("depth_growth", {}).get("classifier")
+            # Record and carry forward classifier depth after structural growth.
+            if growth is not None:
+                stage["post_classifier_depth"] = growth["after"]
+                classifier_depth = growth["after"]
+
+        return history
+
+    def evaluate_ensemble_accuracy(
+        self, 
+        dataset: tf.data.Dataset, 
+        verbose: bool = True, 
+        **kwargs: object
+    ) -> float:
+        """Evaluate timestep-ensembled classifier accuracy on a dataset.
+
+        The default evaluates the first ``min(128, timesteps)`` steps using
+        the configured test network.
+
+        Args:
+            dataset (tf.data.Dataset): Finite batched ``(images, labels)``
+                evaluation dataset.
+            verbose (bool): Print batch progress when true.
+            **kwargs (object): Options forwarded to :class:`EnsembleAccuracy`,
+                including ``netwrok_name``, ``compute_type``, ``weighted``,
+                ``max_t``, ``t_chunk_size``, and ``seed``.
+
+        Returns:
+            float: Sparse categorical accuracy across the full dataset.
+        """
+
+        # Default to the configured test network, or raw when EMA is disabled.
+        kwargs.setdefault(
+            "netwrok_name", 
+            self.test_network_name
+        )
+        kwargs.setdefault(
+            "max_t", 
+            min(128, self.timesteps)
+        )
+
+        ensemble_accuracy = EnsembleAccuracy(
+            self, 
+            **kwargs
+        )
+        accuracy_value = ensemble_accuracy.evaluate(
+            dataset, verbose=verbose
+        )
+
+        return float(accuracy_value)
+
     def call_network(
         self, 
         x_t: tf.Tensor, 
@@ -461,18 +503,18 @@ class DiffusionClassifier(DiffusionModel):
         network_name: NetworkName = "raw", 
         training: bool = False
     ) -> tuple[
-        tuple[tf.Tensor, tf.Tensor | None],
-        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None],
+        tuple[tf.Tensor, tf.Tensor | None], 
+        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None], 
         tuple[
             tuple[tf.Tensor | None, tf.Tensor | None],
             tuple[tf.Tensor | None, tf.Tensor | None] | None,
-        ],
-        tuple[tf.Tensor, tf.Tensor | None],
-        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None],
+        ], 
+        tuple[tf.Tensor, tf.Tensor | None], 
+        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None], 
         tuple[
             tuple[tf.Tensor | None, tf.Tensor | None],
             tuple[tf.Tensor | None, tf.Tensor | None] | None,
-        ],
+        ]
     ]:
         """Run conditional and optional unconditional ``DiTClassifier`` passes.
 

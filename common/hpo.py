@@ -34,6 +34,10 @@ _DIFFUSION_MODELS = {
     "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
     "unet", "unet_classifier"
 }
+_DIFFUSION_CLASSIFIER_MODELS = {
+    "dit_classifier", "dit_encoder_decoder_classifier", 
+    "unet_classifier"
+}
 
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
@@ -100,7 +104,7 @@ _PRETRAINED = {
 _JOINT_NOTE = {
     "classifier_loss_coefficient": "log-uniform 1e-3 to 1e-1", 
     "masking_recipe": "CFG-null, timestep, or both", 
-    "objective": "Pareto minimize generative loss / maximize accuracy"
+    "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
 _DIT_CLASSIFIER_NOTE = {
     "classifier_depth": "1, 2, or 3", 
@@ -109,7 +113,7 @@ _DIT_CLASSIFIER_NOTE = {
 _CONTINUAL_NOTE = {
     "replay_samples_per_class": "100, 500, or 1000", 
     "generator_train_samples": "current data, 1000, or 5000", 
-    "objective": "maximize mean class-incremental accuracy"
+    "objective": "maximize selected mean class-incremental accuracy"
 }
 
 
@@ -619,7 +623,9 @@ def _build_trial_config(
     dataset_name: str, 
     epochs: int, 
     seed: int, 
-    results_path: str | Path
+    results_path: str | Path,
+    use_ensemble_accuracy: bool = False,
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -631,6 +637,10 @@ def _build_trial_config(
         epochs (int): Maximum epochs per phase.
         seed (int): Trial-specific random seed.
         results_path (str | pathlib.Path): HPO artifact root.
+        use_ensemble_accuracy (bool): Use post-training ensemble accuracy as
+            the classification objective for diffusion-classifier studies.
+        ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
+            to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
 
     Returns:
         Config: Fully typed trial configuration.
@@ -647,6 +657,17 @@ def _build_trial_config(
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
     if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
         raise ValueError("The Xception classifier requires three-channel CIFAR data.")
+    # Restrict ensemble feedback to studies backed by classifier diffusion wrappers.
+    if use_ensemble_accuracy and not (
+        task in ("joint", "continual")
+        and model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "use_ensemble_accuracy requires a joint or continual diffusion "
+            "classifier study."
+        )
+
+    ensemble_accuracy_kwargs = dict(ensemble_accuracy_kwargs or {})
 
     _, image_shape, _ = get_dataset_spec(dataset_name)
     image_size = image_shape[0]
@@ -728,6 +749,13 @@ def _build_trial_config(
             }
         }
 
+        # Enable per-task diffusion ensemble reports when they are the HPO signal.
+        if use_ensemble_accuracy:
+            continual_kwargs.update({
+                "evaluate_ensemble_accuracy": True,
+                "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs
+            })
+
         # Select and configure a dense classifier for VAE replay.
         if model_name in ("vae", "vae_classifier"):
             classifier_name = "dnn"
@@ -788,9 +816,15 @@ def _build_trial_config(
     ]
     project_tag = f"t{trial.number:04d}"
     trial_root = Path(results_path) / task / model_name / dataset_name
+    # Match the separate study storage used for ensemble-feedback trials.
+    if use_ensemble_accuracy:
+        trial_root /= "ensemble_accuracy"
     tensorboard_root = Path(results_path) / "_tb" / (
         task_tag + _MODEL_TAGS[model_name] + dataset_tag
     )
+    # Avoid TensorBoard event-name collisions with ordinary-accuracy trials.
+    if use_ensemble_accuracy:
+        tensorboard_root /= "ensemble_accuracy"
     config = Config(
         dataset={
             "name": dataset_name, 
@@ -839,6 +873,10 @@ def _build_trial_config(
             "plot_without_20percent": False, 
             "run_trainset_eval": False, 
             "run_valset_eval": task != "continual", 
+            "evaluate_ensemble_accuracy": (
+                use_ensemble_accuracy and task == "joint"
+            ),
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs,
             "save_csv": True
         }, 
         hpo={
@@ -846,7 +884,9 @@ def _build_trial_config(
             "study_model": model_name, 
             "trial_number": trial.number, 
             "params": dict(trial.params), 
-            "tensorboard_name": tensorboard_name
+            "tensorboard_name": tensorboard_name,
+            "use_ensemble_accuracy": use_ensemble_accuracy,
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs
         }
     )
 
@@ -887,13 +927,43 @@ def _history_value(
 
             return float(values[-1])
 
-    raise KeyError("None of the objective metrics were logged: " + ", ".join(names))
+    raise KeyError(
+        "None of the objective metrics were logged: " + ", ".join(names)
+    )
+
+
+def _ensemble_accuracy_value(
+    evaluations: Mapping[str, object]
+) -> float:
+    """Read validation ensemble accuracy, preferring EMA over raw weights.
+
+    Args:
+        evaluations (Mapping[str, object]): Final report evaluations containing
+            raw and optional EMA validation dictionaries.
+
+    Returns:
+        float: Selected validation ensemble accuracy.
+
+    Raises:
+        KeyError: If no validation ensemble result was reported.
+    """
+
+    for name in ("valset_ema_eval", "valset_network_eval"):
+        network_results = evaluations.get(name)
+        # Return the first exact ensemble result in network preference order.
+        if isinstance(network_results, Mapping) \
+        and "ensemble_accuracy" in network_results:
+            return float(network_results["ensemble_accuracy"])
+
+    raise KeyError("No validation ensemble_accuracy was reported.")
 
 
 def _objective_values(
-    task: str, 
-    model_name: str, 
-    history: Mapping[str, Sequence[float]]
+    task: str,  
+    model_name: str,  
+    history: Mapping[str, Sequence[float]], 
+    evaluations: Mapping[str, object] | None = None, 
+    use_ensemble_accuracy: bool = False
 ) -> float | tuple[float, float]:
     """Convert training history to the study's objective value or pair.
 
@@ -901,11 +971,25 @@ def _objective_values(
         task (str): Study task.
         model_name (str): Selected model family.
         history (Mapping[str, Sequence[float]]): Training metric history.
+        evaluations (Mapping[str, object] | None): Final report evaluations,
+            required for joint ensemble-accuracy feedback.
+        use_ensemble_accuracy (bool): Select ensemble instead of ordinary
+            classification accuracy.
 
     Returns:
         float | tuple[float, float]: Scalar objective, or generation-loss and
         classification-accuracy pair for joint studies.
     """
+
+    # Reject ensemble feedback for models without a diffusion classifier wrapper.
+    if use_ensemble_accuracy and not (
+        task in ("joint", "continual") and 
+        model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "use_ensemble_accuracy requires a joint "
+            "or continual diffusion classifier study."
+        )
 
     # Return the single generation objective for generation studies.
     if task == "generation":
@@ -925,10 +1009,15 @@ def _objective_values(
             "val_noise_loss", "val_recon_loss", 
             "noise_loss", "recon_loss"
         ])
-        classification = _history_value(history, [
-            "val_classifier_accuracy", "val_clf_accuracy", 
-            "classifier_accuracy", "clf_accuracy"
-        ])
+        # Read the post-training report when ensemble feedback is requested.
+        if use_ensemble_accuracy:
+            classification = _ensemble_accuracy_value(evaluations or {})
+        # Preserve the legacy training-history objective otherwise.
+        else:
+            classification = _history_value(history, [
+                "val_classifier_accuracy", "val_clf_accuracy", 
+                "classifier_accuracy", "clf_accuracy"
+            ])
 
         return generation, classification
 
@@ -940,7 +1029,10 @@ def _objective_values(
             best="max"
         )
 
-    return float(pd.Series(history["continual_accuracy"]).mean())
+    continual_metric = "continual_ensemble_accuracy" if use_ensemble_accuracy \
+                    else "continual_accuracy"
+
+    return float(pd.Series(history[continual_metric]).mean())
 
 
 def run_hpo(
@@ -952,7 +1044,9 @@ def run_hpo(
     epochs: int = 30, 
     seed: int = 42, 
     results_path: str = "results/hpo", 
-    timeout: float | None = None
+    timeout: float | None = None,
+    use_ensemble_accuracy: bool = False,
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -974,6 +1068,10 @@ def run_hpo(
         results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``.
         timeout (float | None): Optional study wall-time limit in seconds.
+        use_ensemble_accuracy (bool): Use post-training ensemble accuracy as
+            HPO feedback for joint or continual diffusion-classifier studies.
+        ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
+            to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
 
     Returns:
         optuna.study.Study: Resumable completed/partial study. Joint studies
@@ -988,7 +1086,8 @@ def run_hpo(
         import optuna
     except ImportError as error:
         raise ImportError(
-            "Optuna is required for HPO. Install the project requirements."
+            "Optuna is required for HPO. "
+            "Install the project requirements."
         ) from error
 
 
@@ -998,21 +1097,36 @@ def run_hpo(
     # Require a supported task/model search-space pairing.
     if task not in SEARCH_SPACES or model_name not in SEARCH_SPACES[task]:
         raise ValueError(f"Unsupported task/model pair: {task}/{model_name}")
+    # Restrict ensemble feedback to supported diffusion-classifier studies.
+    if use_ensemble_accuracy and not (
+        task in ("joint", "continual")
+        and model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "use_ensemble_accuracy requires a joint "
+            "or continual diffusion classifier study."
+        )
     # Require positive trial and epoch budgets.
     if n_trials <= 0 or epochs <= 0:
         raise ValueError("n_trials and epochs must be positive.")
 
     root = Path(results_path)
     study_root = root / task / model_name / dataset_name.lower()
+    # Keep ensemble-feedback trials separate from legacy accuracy studies.
+    if use_ensemble_accuracy:
+        study_root /= "ensemble_accuracy"
+
     configs_path = study_root / "configs"
     configs_path.mkdir(parents=True, exist_ok=True)
     storage_path = (study_root / "study.db").resolve().as_posix()
-    study_name = f"{task}-{model_name}-{dataset_name.lower()}"
+    study_name = f"{task}-{model_name}-{dataset_name.lower()}" + (
+        "-ensemble-accuracy" if use_ensemble_accuracy else ""
+    )
     create_kwargs = {
         "study_name": study_name, 
         "storage": "sqlite:///" + storage_path, 
         "sampler": optuna.samplers.TPESampler(seed=seed), 
-        "load_if_exists": True, 
+        "load_if_exists": True
     }
 
     # Configure two optimization directions for joint studies.
@@ -1046,7 +1160,9 @@ def run_hpo(
             dataset_name, 
             epochs, 
             seed + trial.number, 
-            root
+            results_path=root, 
+            use_ensemble_accuracy=use_ensemble_accuracy, 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
 
         input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
@@ -1057,7 +1173,9 @@ def run_hpo(
         values = _objective_values(
             task, 
             model_name, 
-            result["history"]
+            result["history"], 
+            evaluations=result["evaluations"], 
+            use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"]
         )
         values_list = list(values) if isinstance(values, tuple) else [values]
         config.hpo["objectives"] = values_list
@@ -1065,10 +1183,13 @@ def run_hpo(
         resolved_path = Path(result["results_path"]) / "config.yaml"
         save_config(config, resolved_path)
         pd.DataFrame([{
-            "name": "generation_loss" if task == "joint" else "objective", 
+            "name": "generation_loss" if task == "joint" else (
+                    "ensemble_accuracy" if use_ensemble_accuracy else "objective"
+            ),
             "value": values_list[0], 
         }, *([{
-            "name": "classification_accuracy", 
+            "name": "ensemble_accuracy" if use_ensemble_accuracy \
+                    else "classification_accuracy",
             "value": values_list[1], 
         }] if task == "joint" else [])]).to_csv(
             Path(result["results_path"]) / "objectives.csv", 

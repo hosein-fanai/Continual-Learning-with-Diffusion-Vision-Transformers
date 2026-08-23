@@ -33,6 +33,7 @@ from common.learner import _continually_learn
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
+from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
 
@@ -78,7 +79,8 @@ def train_model(
     Returns:
         dict[str, list[float]]: The Keras ``History.history`` mapping with one
         value per completed epoch for each reported metric. Continual bundles
-        return ``continual_accuracy`` and ``task_val_accuracy``.
+        return ``continual_accuracy`` and ``task_val_accuracy``, plus
+        ``continual_ensemble_accuracy`` when enabled.
 
     Side Effects:
         Sets ``config.training.results_path`` from
@@ -349,6 +351,11 @@ def train_model(
         model["generative_model"] = details["generative_model"]
         model["continual_details"] = details
         history = {"continual_accuracy": details["accuracies"]}
+        # Preserve optional ensemble scores beside ordinary continual accuracy.
+        if details["ensemble_accuracies"]:
+            history["continual_ensemble_accuracy"] = details[
+                "ensemble_accuracies"
+            ]
         final_val_accuracy = [
             task_history.get(
                 "val_accuracy", 
@@ -476,13 +483,16 @@ def report(
             is ``None``: ``results_path``, ``show_history_plot``,
             ``save_history_plot``, ``plot_without_20percent``, ``save_csv``,
             ``run_trainset_eval``, ``run_valset_eval``, ``verbose``,
+            ``evaluate_ensemble_accuracy``, ``ensemble_accuracy_kwargs``,
             ``dataset_name``, ``show_final_images``, ``save_final_images``,
             ``save_final_gifs``, ``final_images_steps``, and
             ``final_images_cfg_scale``.
 
     Returns:
-        dict: Evaluation metrics. Requested artifacts are displayed and/or
-        written beneath the result path.
+        dict: Evaluation metrics. Enabled diffusion-classifier evaluations
+        contain normal metrics plus ``ensemble_accuracy`` for each raw/EMA
+        network. Requested artifacts are displayed and/or written beneath the
+        result path.
 
     Raises:
         TypeError: If history, model, or trainset is omitted, or a saving
@@ -505,6 +515,12 @@ def report(
         run_trainset_eval = kwargs.get("run_trainset_eval", True)
         verbose = kwargs.get("verbose", kwargs.get("training_verbose", True))
         run_valset_eval = kwargs.get("run_valset_eval", True)
+        evaluate_ensemble_accuracy = kwargs.get(
+            "evaluate_ensemble_accuracy", False
+        )
+        ensemble_accuracy_kwargs = dict(
+            kwargs.get("ensemble_accuracy_kwargs") or {}
+        )
         dataset_name = kwargs.get("dataset_name", "mnist")
         save_final_images = kwargs.get("save_final_images", False)
         show_final_images = kwargs.get("show_final_images", True)
@@ -521,12 +537,27 @@ def report(
         run_trainset_eval = config.reporting.run_trainset_eval
         verbose = config.training.verbose
         run_valset_eval = config.reporting.run_valset_eval
+        evaluate_ensemble_accuracy = (
+            config.reporting.evaluate_ensemble_accuracy
+        )
+        ensemble_accuracy_kwargs = dict(
+            config.reporting.ensemble_accuracy_kwargs or {}
+        )
         dataset_name = config.dataset.name
         save_final_images = config.reporting.save_final_images
         show_final_images = config.reporting.show_final_images
         final_images_steps = config.reporting.final_images_steps
         final_images_cfg_scale = config.reporting.final_images_cfg_scale
         save_final_gifs = config.reporting.save_final_gifs
+
+    # Restrict ensemble evaluation to wrappers that expose the classifier API.
+    if evaluate_ensemble_accuracy and not isinstance(
+        model, (dict, DiffusionClassifier)
+    ):
+        raise ValueError(
+            "evaluate_ensemble_accuracy requires "
+            "DiffusionClassifier or DiffusionClassifierV2."
+        )
 
     # Prepare history-plot output paths when saving is enabled.
     if save_history_plot:
@@ -583,6 +614,18 @@ def report(
             )), 
             "final_accuracy": float(history["continual_accuracy"][-1])
         }
+
+        # Add ensemble summaries when the continual learner produced them.
+        if "continual_ensemble_accuracy" in history \
+        and len(history["continual_ensemble_accuracy"]) > 0:
+            eval_results.update({
+                "average_ensemble_accuracy": float(np.nanmean(
+                    history["continual_ensemble_accuracy"]
+                )), 
+                "final_ensemble_accuracy": float(
+                    history["continual_ensemble_accuracy"][-1]
+                )
+            })
 
         # Persist continual summary metrics when requested.
         if save_csv:
@@ -669,20 +712,36 @@ def report(
         Returns:
             dict[str, object]: Wrapper-specific evaluation metrics.
         """
+
         # Ask V2 wrappers to evaluate generator and classifier together.
         if isinstance(model, DiffusionClassifierV2):
-            return model.evaluate(
+            results = model.evaluate(
                 eval_both=True, 
                 x=dataset, 
                 network_name=network_name, 
                 verbose=verbose
             )
-        return model.evaluate(
-            dataset, 
-            network_name=network_name, 
-            return_dict=True, 
-            verbose=verbose
-        )
+        # Use the standard wrapper evaluation path for every other diffusion model.
+        else:
+            results = model.evaluate(
+                dataset,
+                network_name=network_name,
+                return_dict=True,
+                verbose=verbose
+            )
+
+        # Add ensemble accuracy without replacing the ordinary evaluation metrics.
+        if evaluate_ensemble_accuracy and isinstance(
+            model, DiffusionClassifier
+        ):
+            selected_kwargs = dict(ensemble_accuracy_kwargs)
+            selected_kwargs["netwrok_name"] = network_name
+            selected_kwargs.setdefault("verbose", bool(verbose))
+            results["ensemble_accuracy"] = model.evaluate_ensemble_accuracy(
+                dataset, **selected_kwargs
+            )
+
+        return results
 
 
     eval_results = {}

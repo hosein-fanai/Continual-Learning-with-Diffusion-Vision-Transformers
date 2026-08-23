@@ -60,6 +60,8 @@ def _continually_learn(
     generative_model_kwargs: dict[str, int] | None = None, 
     use_generative_model_classifier: bool = False, 
     train_classifier_separately: bool = False, 
+    evaluate_ensemble_accuracy: bool = False, 
+    ensemble_accuracy_kwargs: dict[str, object] | None = None, 
     callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
     return_details: bool = False, 
     use_valset: bool = True, 
@@ -171,6 +173,12 @@ def _continually_learn(
             ``DiffusionClassifierV2`` because V2 separates its generator and
             classifier variables. It has no effect when
             ``use_generative_model_classifier`` is false.
+        evaluate_ensemble_accuracy (bool): Also evaluate the attached
+            diffusion classifier by ensembling predictions across timesteps
+            after every task. Ordinary task accuracy is still retained.
+        ensemble_accuracy_kwargs (dict[str, object] | None): Options forwarded
+            to ``DiffusionClassifier.evaluate_ensemble_accuracy``. The report
+            selects raw and EMA networks itself.
         callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Extra
             callbacks appended to each enabled incremental classifier fit and
             passed to generative-model fits. This is primarily useful for
@@ -205,8 +213,8 @@ def _continually_learn(
     Returns:
         list[float] | dict[str, object]: Test accuracy for each
         two-through-``class_num`` task. When ``return_details=True``, returns
-        those accuracies plus task histories, report evaluations, and final
-        model objects.
+        those accuracies plus optional ensemble accuracies, task histories,
+        report evaluations, and final model objects.
 
     Raises:
         ValueError: If buffer and generative replay are both enabled.
@@ -221,7 +229,6 @@ def _continually_learn(
         raise ValueError(
             "The replay buffer and a generative model cannot be used together."
         )
-
 
     # Import lazily to avoid the train -> learner -> train module cycle.
     from common.train import report, train_model
@@ -333,7 +340,7 @@ def _continually_learn(
     def train_task_model(
         model: tf.keras.Model, 
         trainset: object, 
-        valset: object | None = None,
+        valset: object | None = None, 
         task_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None, 
         fit_method: str = "fit", 
         fit_kwargs: dict[str, object] | None = None, 
@@ -407,15 +414,25 @@ def _continually_learn(
             save_final_images=False, 
             show_final_images=False, 
             save_final_gifs=False, 
+            evaluate_ensemble_accuracy=(
+                evaluate_ensemble_accuracy and 
+                isinstance(model, DiffusionClassifier)
+            ), 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
             verbose=verbose
         )
 
 
-    def reported_accuracy(evaluations: object) -> float | None:
+    def reported_accuracy(
+        evaluations: object, 
+        ensemble: bool = False
+    ) -> float | None:
         """Find a classifier accuracy value in nested report output.
 
         Args:
             evaluations (object): Possibly nested report result.
+            ensemble (bool): Search only for the exact
+                ``"ensemble_accuracy"`` key when true.
 
         Returns:
             float | None: First recognized scalar accuracy, if present.
@@ -425,7 +442,7 @@ def _continually_learn(
         if not isinstance(evaluations, dict):
             return None
 
-        preferred = (
+        preferred = ("ensemble_accuracy",) if ensemble else (
             "accuracy", 
             "classifier_accuracy", 
             "clf_accuracy", 
@@ -437,13 +454,15 @@ def _continually_learn(
             if name in evaluations:
                 return float(evaluations[name])
 
-        for name, value in evaluations.items():
-            # Fall back to any scalar metric whose name denotes accuracy.
-            if "accuracy" in name.lower() and np.isscalar(value):
-                return float(value)
+        # Preserve the broad legacy fallback only for ordinary accuracy.
+        if not ensemble:
+            for name, value in evaluations.items():
+                # Fall back to any scalar metric whose name denotes accuracy.
+                if "accuracy" in name.lower() and np.isscalar(value):
+                    return float(value)
 
         for value in evaluations.values():
-            accuracy = reported_accuracy(value)
+            accuracy = reported_accuracy(value, ensemble=ensemble)
             # Return the first usable nested accuracy value.
             if accuracy is not None:
                 return accuracy
@@ -539,6 +558,7 @@ def _continually_learn(
     }
 
     compile_args = dict(compile_args or {})
+    ensemble_accuracy_kwargs = dict(ensemble_accuracy_kwargs or {})
     generative_model_compile_args = {
         "optimizer": "adam", 
         "loss": "mse", 
@@ -583,7 +603,6 @@ def _continually_learn(
             seed=buffer_kwargs["seed"]
         )
 
-    # Wrap raw diffusion classifier networks for joint training and replay.
     if isinstance(generative_model, (
         DiTClassifier, 
         DiTEncoderDecoderClassifier, 
@@ -617,6 +636,15 @@ def _continually_learn(
         raise TypeError(
             "generative_model must be a supported VAE, "
             "diffusion network, or diffusion wrapper."
+        )
+
+    # Require the classifier wrapper that owns ensemble evaluation when enabled.
+    if evaluate_ensemble_accuracy and not isinstance(
+        generative_model, DiffusionClassifier
+    ):
+        raise ValueError(
+            "evaluate_ensemble_accuracy requires a DiffusionClassifier "
+            "or DiffusionClassifierV2 generative_model."
         )
 
     use_diffusion_classifier = use_generative_model_classifier and isinstance(
@@ -698,6 +726,7 @@ def _continually_learn(
         )
 
     acc_list = []
+    ensemble_acc_list = []
     histories = []
     generative_histories = []
     classifier_evaluations_list = []
@@ -1200,6 +1229,18 @@ def _continually_learn(
         accuracy_source = generative_evaluations if use_generative_accuracy \
                         else classifier_evaluations
         acc = reported_accuracy(accuracy_source)
+        ensemble_acc = None
+        # Read only the explicit ensemble metric from diffusion reports.
+        if evaluate_ensemble_accuracy:
+            ensemble_acc = reported_accuracy(
+                generative_evaluations, 
+                ensemble=True
+            )
+            # Fail clearly instead of silently substituting ordinary accuracy.
+            if ensemble_acc is None:
+                raise KeyError(
+                    "ensemble_accuracy was not returned by the task report."
+                )
 
         y_test_ids = np.argmax(y_test, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
                     else np.asarray(y_test).reshape(-1)
@@ -1242,10 +1283,16 @@ def _continually_learn(
         classifier_evaluations_list.append(classifier_evaluations)
         generative_evaluations_list.append(generative_evaluations)
         acc_list.append(acc)
+        # Retain ensemble scores beside the backward-compatible normal scores.
+        if ensemble_acc is not None:
+            ensemble_acc_list.append(ensemble_acc)
 
         # Print the completed task's accuracy when requested.
         if verbose:
             print(f"Task test accuracy: {acc:.4f}")
+            # Print the optional ensemble result on the same task summary.
+            if ensemble_acc is not None:
+                print(f"Task ensemble accuracy: {ensemble_acc:.4f}")
             print(75*'-'+'\n')
 
     # Plot accuracy across completed continual tasks when requested.
@@ -1256,6 +1303,7 @@ def _continually_learn(
     if return_details:
         return {
             "accuracies": acc_list, 
+            "ensemble_accuracies": ensemble_acc_list,
             "histories": histories, 
             "generative_histories": generative_histories, 
             "classifier_evaluations": classifier_evaluations_list, 
@@ -1330,6 +1378,11 @@ def continually_learn(
             - ``train_classifier_separately`` (bool, default ``False``): Add a
               classifier phase for ``VAEClassifier``; it must be true for
               ``DiffusionClassifierV2`` and false for ``DiffusionClassifier``.
+            - ``evaluate_ensemble_accuracy`` (bool, default ``False``): Also
+              evaluate timestep-ensembled accuracy for a diffusion-classifier
+              replay model after every task.
+            - ``ensemble_accuracy_kwargs`` (dict | None): Options forwarded to
+              ``DiffusionClassifier.evaluate_ensemble_accuracy``.
             - ``callbacks_list`` (Sequence[Callback] | None): Extra callbacks
               forwarded through :func:`common.train.train_model`.
             - ``return_details`` (bool, default ``False``): Return task
@@ -1340,9 +1393,9 @@ def continually_learn(
     Returns:
         list[float] | dict[str, object]: Test accuracy for each task. With
         ``return_details=True`` (or its configured equivalent), the mapping
-        also contains classifier/generative histories, their per-task report
-        outputs, and final models; configured details additionally contain
-        aggregate evaluations.
+        also contains ``ensemble_accuracies``, classifier/generative histories,
+        their per-task report outputs, and final models; configured details
+        additionally contain aggregate evaluations.
 
     Raises:
         TypeError: If direct mode omits a required key, includes an unknown
@@ -1372,6 +1425,8 @@ def continually_learn(
             "generative_model_kwargs": None, 
             "use_generative_model_classifier": False, 
             "train_classifier_separately": False, 
+            "evaluate_ensemble_accuracy": False, 
+            "ensemble_accuracy_kwargs": None, 
             "callbacks_list": None, 
             "return_details": False, 
             "use_valset": True
@@ -1449,6 +1504,9 @@ def continually_learn(
     if details is None:
         details = {
             "accuracies": list(history.get("continual_accuracy", [])), 
+            "ensemble_accuracies": list(history.get(
+                "continual_ensemble_accuracy", []
+            )), 
             "histories": [], 
             "generative_histories": [], 
             "classifier_evaluations": [], 

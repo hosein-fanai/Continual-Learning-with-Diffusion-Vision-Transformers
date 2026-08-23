@@ -46,7 +46,7 @@ class EnsembleAccuracy(metrics.Metric):
             wrapper's total ``timesteps``. Timestep ``max_t`` itself is excluded.
         t_chunk_size: Positive number of timesteps per call in chunked mode.
             Values larger than ``max_t`` simply produce one chunk.
-        random_seed: Optional seed passed to the wrapper's Gaussian noising
+        seed: Optional seed passed to the wrapper's Gaussian noising
             operation, or ``None`` for its configured/default randomness.
         name: Keras metric name.
         **kwargs: Standard ``tf.keras.metrics.Metric`` options, notably
@@ -70,7 +70,7 @@ class EnsembleAccuracy(metrics.Metric):
         weighted: bool = False, 
         max_t: int = 128, 
         t_chunk_size: int = 16, 
-        random_seed: int | None = None, 
+        seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
         **kwargs: Any
     ) -> None:
@@ -84,7 +84,7 @@ class EnsembleAccuracy(metrics.Metric):
             weighted (bool): Whether timesteps use normalized SNR weights.
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
-            random_seed (int | None): Optional noising seed.
+            seed (int | None): Optional noising seed.
             name (str | None): Keras metric name.
             **kwargs (Any): Standard Keras metric options.
 
@@ -145,8 +145,7 @@ class EnsembleAccuracy(metrics.Metric):
             raise ValueError("compute_type can either be chunked or batched.")
 
         self.diffusion_clf = diffusion_clf
-        self.network = self.diffusion_clf.ema_network if netwrok_name == "ema" \
-                    else self.diffusion_clf.network
+        self.network = self.diffusion_clf.get_network(netwrok_name)
         # Require the selected network's class-prediction interface.
         if self.network is None or not callable(
             getattr(self.network, "predict_class", None)
@@ -160,7 +159,7 @@ class EnsembleAccuracy(metrics.Metric):
         self.weighted = weighted
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
-        self.random_seed = random_seed
+        self.seed = seed
 
         self.tracker = metrics.SparseCategoricalAccuracy(
             name="tracker",
@@ -202,6 +201,49 @@ class EnsembleAccuracy(metrics.Metric):
 
         return tf.cast(tf.nn.softmax(log_snr), self.dtype)
 
+    def reset_state(self) -> None:
+        """Reset correct-example and example-count accumulators to zero.
+
+        Returns:
+            ``None``.
+        """
+
+        self.tracker.reset_state()
+
+    def update_state(
+        self, 
+        y_true: tf.Tensor, 
+        y_pred: tf.Tensor, 
+        sample_weight: tf.Tensor | None = None
+    ) -> None:
+        """Accumulate sparse categorical accuracy statistics.
+
+        Args:
+            y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
+                ``[batch, 1]``.
+            y_pred (tf.Tensor): Floating scores shaped ``[batch, num_classes]``. Scores may
+                be logits or probabilities because accuracy uses ``argmax``.
+            sample_weight (tf.Tensor | None): Optional per-example weights.
+
+        Returns:
+            ``None``. Internal correct and total counts are updated in place.
+        """
+
+        self.tracker.update_state(
+            y_true, y_pred, 
+            sample_weight=sample_weight
+        )
+
+    def result(self) -> tf.Tensor:
+        """Return cumulative accuracy.
+
+        Returns:
+            tf.Tensor: Scalar floating value from the internal sparse categorical
+            accuracy tracker.
+        """
+
+        return self.tracker.result()
+
     def ensemble_predict_batched(
         self, 
         x: tf.Tensor, 
@@ -225,12 +267,15 @@ class EnsembleAccuracy(metrics.Metric):
 
         x_rep = tf.repeat(x, repeats=self.max_t, axis=0)
         t_rep = tf.tile(ts, multiples=[batch_size])
-        uncond_labels = tf.zeros((batch_size * self.max_t,), dtype=tf.uint8)
+        uncond_labels = tf.zeros(
+            (batch_size * self.max_t,), 
+            dtype=tf.uint8
+        )
 
         x_rep, *_ = self.diffusion_clf.noisify(
             x_rep, 
             t_rep, 
-            seed=self.random_seed
+            seed=self.seed
         )
 
         cls_pred = self.network.predict_class(
@@ -288,7 +333,7 @@ class EnsembleAccuracy(metrics.Metric):
             x_rep, *_ = self.diffusion_clf.noisify(
                 x_rep, 
                 t_rep, 
-                seed=self.random_seed
+                seed=self.seed
             )
 
             cls_pred = self.network.predict_class(
@@ -340,7 +385,11 @@ class EnsembleAccuracy(metrics.Metric):
 
         return self.result()
 
-    def evaluate(self, dataset: Any) -> np.generic:
+    def evaluate(
+        self, 
+        dataset: Any, 
+        verbose: bool = True
+    ) -> np.generic:
         """Evaluate a finite iterable of ``(images, labels)`` batches.
 
         This convenience loop prints progress and does not reset existing
@@ -351,6 +400,7 @@ class EnsembleAccuracy(metrics.Metric):
             dataset (Any): Sized iterable yielding ``(images, labels)`` or
                 ``(images, labels, sample_weight)`` batches. ``len(dataset)``
                 must work.
+            verbose (bool): Print batch progress when true.
 
         Returns:
             np.generic: NumPy scalar containing cumulative sparse categorical
@@ -361,7 +411,13 @@ class EnsembleAccuracy(metrics.Metric):
         acc = 0.
 
         for i, batch in enumerate(dataset):
-            print(f"\rStep ({i+1}/{dataset_len}) --- Ensemble Accuracy: {acc:.4f}", end='')
+            # Print the current cumulative value when progress is enabled.
+            if verbose:
+                print(
+                    f"\rStep ({i+1}/{dataset_len}) --- "
+                    f"Ensemble Accuracy: {acc:.4f}", 
+                    end=''
+                )
 
             # Treat two-item batches as unweighted examples and labels.
             if len(batch) == 2:
@@ -372,51 +428,20 @@ class EnsembleAccuracy(metrics.Metric):
                 x, y, sample_weight = batch
             # Reject dataset batches outside the supported Keras tuple forms.
             else:
-                raise ValueError("dataset batches must contain two or three values.")
+                raise ValueError(
+                    "dataset batches must contain two or three values."
+                )
 
-            acc = self.test_step(y, x, sample_weight=sample_weight)
+            acc = self.test_step(
+                y, x, 
+                sample_weight=sample_weight
+            )
+
+        # Finish the in-place progress line when one was printed.
+        if verbose:
+            print()
 
         return self.result().numpy()
-
-    def update_state(
-        self, 
-        y_true: tf.Tensor, 
-        y_pred: tf.Tensor, 
-        sample_weight: tf.Tensor | None = None
-    ) -> None:
-        """Accumulate sparse categorical accuracy statistics.
-
-        Args:
-            y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
-                ``[batch, 1]``.
-            y_pred (tf.Tensor): Floating scores shaped ``[batch, num_classes]``. Scores may
-                be logits or probabilities because accuracy uses ``argmax``.
-            sample_weight (tf.Tensor | None): Optional per-example weights.
-
-        Returns:
-            ``None``. Internal correct and total counts are updated in place.
-        """
-
-        self.tracker.update_state(y_true, y_pred, sample_weight=sample_weight)
-
-    def result(self) -> tf.Tensor:
-        """Return cumulative accuracy.
-
-        Returns:
-            tf.Tensor: Scalar floating value from the internal sparse categorical
-            accuracy tracker.
-        """
-
-        return self.tracker.result()
-
-    def reset_state(self) -> None:
-        """Reset correct-example and example-count accumulators to zero.
-
-        Returns:
-            ``None``.
-        """
-
-        self.tracker.reset_state()
 
 
 def run_self_tests() -> dict[str, str]:
@@ -558,7 +583,7 @@ def run_self_tests() -> dict[str, str]:
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
-            random_seed=17, 
+            seed=17, 
         )
         batched_prediction = batched.ensemble_predict(images, training=True)
         assert batched.network is ema_network
@@ -584,7 +609,7 @@ def run_self_tests() -> dict[str, str]:
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
-            random_seed=17, 
+            seed=17, 
         )
         chunked_prediction = chunked.ensemble_predict(images, training=False)
         assert chunked.network is raw_network

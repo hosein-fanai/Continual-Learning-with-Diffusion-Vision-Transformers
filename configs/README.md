@@ -22,11 +22,12 @@ The top-level sections are:
 - `training`: task, epoch/validation settings, result directory, early
   stopping, TensorBoard, verbosity, and weight persistence.
 - `continually_learn`: optional class count, cumulative/new-class behavior,
-  fixed-buffer or generative replay controls, classifier reuse, and result
-  detail/accuracy plotting switches.
+  fixed-buffer or generative replay controls, classifier reuse, optional
+  diffusion ensemble evaluation, and result detail/accuracy plotting switches.
 - `reporting`: history plots/CSV, final sample controls, and train/validation
-  evaluation switches.
-- `hpo`: resolved trial metadata, normally written by `common.hpo`.
+  evaluation switches, including optional raw/EMA ensemble accuracy.
+- `hpo`: resolved trial metadata and selected accuracy feedback signal,
+  normally written by `common.hpo`.
 
 ```python
 from common.config import Config, load_config, save_config

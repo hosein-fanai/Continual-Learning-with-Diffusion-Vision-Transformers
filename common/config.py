@@ -642,6 +642,10 @@ class ContinuallyLearnConfig(KwargsMixin):
         train_classifier_separately (bool): Add the separate classifier phase
             required by ``DiffusionClassifierV2`` and optionally used by a
             ``VAEClassifier``.
+        evaluate_ensemble_accuracy (bool): Also evaluate diffusion-classifier
+            ensemble accuracy after each continual task.
+        ensemble_accuracy_kwargs (dict): Options forwarded to
+            ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         return_details (bool): Return task histories and final models together
             with accuracies from a direct configured call.
     """
@@ -660,6 +664,8 @@ class ContinuallyLearnConfig(KwargsMixin):
     )
     use_generative_model_classifier: bool = False
     train_classifier_separately: bool = False
+    evaluate_ensemble_accuracy: bool = False
+    ensemble_accuracy_kwargs: dict[str, object] = field(default_factory=dict)
     return_details: bool = False
 
 
@@ -732,6 +738,11 @@ class ReportingConfig:
         run_trainset_eval (bool): Evaluate EMA and raw networks on training data.
         run_valset_eval (bool): Evaluate EMA and raw networks on validation
             data; requires a non-``None`` validation dataset.
+        evaluate_ensemble_accuracy (bool): Also evaluate ensemble accuracy for
+            ``DiffusionClassifier`` and ``DiffusionClassifierV2`` models.
+        ensemble_accuracy_kwargs (dict): Options forwarded to
+            ``DiffusionClassifier.evaluate_ensemble_accuracy``. Reporting
+            selects the raw or EMA network for each evaluation.
         save_csv (bool): Save epoch metrics and enabled evaluations as CSV.
     """
 
@@ -745,6 +756,8 @@ class ReportingConfig:
     plot_without_20percent: bool = True
     run_trainset_eval: bool = True
     run_valset_eval: bool = True
+    evaluate_ensemble_accuracy: bool = False
+    ensemble_accuracy_kwargs: dict[str, object] = field(default_factory=dict)
     save_csv: bool = True
 
 
@@ -760,7 +773,8 @@ class Config:
         continually_learn (ContinuallyLearnConfig): Class-incremental loop and
             replay settings.
         reporting (ReportingConfig): Post-training reporting settings.
-        hpo (dict): Resolved study/trial metadata and sampled values.
+        hpo (dict): Resolved study/trial metadata, sampled values, and selected
+            accuracy feedback signal.
 
     All fields accept either their declared dataclass instance or a mapping in
     ``Config(...)``/YAML input.  Missing top-level or nested fields use
@@ -1168,14 +1182,20 @@ def run_self_tests() -> dict[str, str]:
         buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
         plot_results=False,
         generative_model_kwargs={"train_num": -1, "samples_per_class": 2},
+        evaluate_ensemble_accuracy=True,
+        ensemble_accuracy_kwargs={"weighted": True, "max_t": 2},
         return_details=True,
     )
     assert continually_learn_defaults.class_num is None
     assert continually_learn_defaults.buffer_kwargs["maxlen"] == 10_000
     assert continually_learn_custom.class_num == 3
     assert continually_learn_custom.use_buffer is True
+    assert continually_learn_defaults.evaluate_ensemble_accuracy is False
+    assert continually_learn_custom.ensemble_accuracy_kwargs["max_t"] == 2
     continually_learn_defaults.buffer_kwargs["maxlen"] = 1
+    continually_learn_defaults.ensemble_accuracy_kwargs["max_t"] = 1
     assert ContinuallyLearnConfig().buffer_kwargs["maxlen"] == 10_000
+    assert ContinuallyLearnConfig().ensemble_accuracy_kwargs == {}
 
     training_defaults = TrainingConfig()
     training_custom = TrainingConfig(
@@ -1202,10 +1222,16 @@ def run_self_tests() -> dict[str, str]:
         plot_without_20percent=False, 
         run_trainset_eval=False, 
         run_valset_eval=False, 
+        evaluate_ensemble_accuracy=True,
+        ensemble_accuracy_kwargs={"weighted": True, "max_t": 2},
         save_csv=False,
     )
     assert reporting_defaults.save_history_plot is True
     assert reporting_custom.show_history_plot is True
+    assert reporting_defaults.evaluate_ensemble_accuracy is False
+    assert reporting_custom.ensemble_accuracy_kwargs["max_t"] == 2
+    reporting_defaults.ensemble_accuracy_kwargs["max_t"] = 1
+    assert ReportingConfig().ensemble_accuracy_kwargs == {}
     assert not any((
         reporting_custom.save_history_plot, 
         reporting_custom.save_final_images, 
@@ -1235,15 +1261,25 @@ def run_self_tests() -> dict[str, str]:
         model={"with_classifier": False, "diffusion_transformer": {"depth": 0}}, 
         optimizer={"initial_learning_rate": 1e-4, "decay_steps": 3}, 
         training={"epochs": 1, "save_weights": False}, 
-        continually_learn={"class_num": 4, "plot_results": False},
-        reporting={"run_trainset_eval": False, "run_valset_eval": False}, 
+        continually_learn={
+            "class_num": 4,
+            "plot_results": False,
+            "evaluate_ensemble_accuracy": True
+        },
+        reporting={
+            "run_trainset_eval": False,
+            "run_valset_eval": False,
+            "ensemble_accuracy_kwargs": {"max_t": 4}
+        },
     )
     assert mapped_config.dataset.batch_size == 2
     assert mapped_config.model.diffusion_transformer.depth == 0
     assert mapped_config.optimizer.decay_steps == 3
     assert mapped_config.training.epochs == 1
     assert mapped_config.continually_learn.class_num == 4
+    assert mapped_config.continually_learn.evaluate_ensemble_accuracy is True
     assert mapped_config.reporting.run_trainset_eval is False
+    assert mapped_config.reporting.ensemble_accuracy_kwargs["max_t"] == 4
     assert _section(mapped_config.dataset, DatasetConfig) is mapped_config.dataset
     assert _section({"batch_size": 4}, DatasetConfig).batch_size == 4
     for invalid_value in (None, 1, "dataset"):

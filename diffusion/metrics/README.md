@@ -31,7 +31,7 @@ metric = EnsembleAccuracy(
     weighted=True, 
     max_t=128, 
     t_chunk_size=16, 
-    random_seed=42, 
+    seed=42,
     name="ensemble_accuracy", 
     dtype="float32", 
 )
