@@ -1,11 +1,14 @@
 """Functional flatten/unflatten models with an optional variational latent."""
 
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers
+from keras.engine.functional import Functional
 
 import math
 
 from typing import Any
+
+from common.argument_saver import ArgumentSaverModel
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -38,7 +41,7 @@ def _batch_size(value: tf.Tensor) -> tf.Tensor:
 
 
 @tf.keras.utils.register_keras_serializable(package="continual_learning")
-class VariationalReshaper(models.Model):
+class VariationalReshaper(ArgumentSaverModel, Functional):
     """Flatten or restore one static image-feature shape.
 
     The model always returns ``(x, mean, log_variance)``. A KL-enabled flatten
@@ -149,14 +152,18 @@ class VariationalReshaper(models.Model):
             outputs=(x, z_mean, z_log_var), 
             **kwargs
         )
-        self.reshape_type = reshape_type
+        self._save_init_args({
+            "reshape_type": reshape_type, 
+            "source_shape": source_shape, 
+            "add_kl": add_kl, 
+            "latent_dim_ratio": latent_dim_ratio
+        })
+        self._init_config.update(layers.Layer.get_config(self))
         self.source_shape_ = source_shape
-        self.add_kl = add_kl
-        self.latent_dim_ratio = latent_dim_ratio
         self.flattened_dim = flattened_dim
         self.latent_dim = latent_dim
         self.output_dim = flattened_dim if reshape_type == "flatten" \
-            else source_shape[-1]
+                        else source_shape[-1]
 
     @staticmethod
     def _check_arguments(
@@ -201,7 +208,7 @@ class VariationalReshaper(models.Model):
             raise ValueError("latent_dim_ratio creates an empty latent vector.")
 
     def get_config(self) -> dict[str, Any]:
-        """Return only constructor state, not the generated functional graph.
+        """Return ArgumentSaver state without the generated functional graph.
 
         Args:
             None.
@@ -210,28 +217,13 @@ class VariationalReshaper(models.Model):
             dict[str, Any]: JSON-compatible constructor configuration.
         """
 
-        config = layers.Layer.get_config(self)
-        config.update({
-            "reshape_type": self.reshape_type, 
-            "source_shape": list(self.source_shape_), 
-            "add_kl": self.add_kl, 
-            "latent_dim_ratio": self.latent_dim_ratio, 
-        })
+        config = super().get_config()
+        # Exclude the Functional graph so inherited from_config receives only
+        # VariationalReshaper constructor arguments under TensorFlow 2.10.
+        for key in ("layers", "input_layers", "output_layers"):
+            config.pop(key, None)
 
         return config
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "VariationalReshaper":
-        """Rebuild the functional graph from the compact constructor config.
-
-        Args:
-            config (dict[str, Any]): Serialized constructor configuration.
-
-        Returns:
-            VariationalReshaper: Reconstructed functional model.
-        """
-
-        return cls(**dict(config))
 
 
 def run_self_tests() -> dict[str, str]:

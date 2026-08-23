@@ -921,6 +921,10 @@ class UNetClassifier(UNet):
         }
 
 
+# TensorFlow 2.10 writes the plain root name for subclassed model JSON.
+tf.keras.utils.get_custom_objects()["UNetClassifier"] = UNetClassifier
+
+
 def run_self_tests() -> dict[str, str]:
     """Run compact call, KL, gradient, and serialization checks.
 

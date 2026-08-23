@@ -6,9 +6,11 @@ from tensorflow.keras import layers
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+from common.argument_saver import ArgumentSaverLayer
+
 
 @tf.keras.utils.register_keras_serializable(package="continual_learning")
-class LayerDict(layers.Layer):
+class LayerDict(ArgumentSaverLayer):
     """Store named child layers with mapping access and Keras variable tracking.
 
     ``LayerDict`` intentionally leaves execution to its owning model. It exists
@@ -40,9 +42,14 @@ class LayerDict(layers.Layer):
         # Require every layer key to be a non-empty string.
         if any(not isinstance(key, str) or not key for key in source):
             raise ValueError("LayerDict keys must be non-empty strings.")
-        # Require every stored value to be a Keras layer.
-        if any(not isinstance(value, layers.Layer) for value in source.values()):
-            raise TypeError("LayerDict values must be Keras layers or models.")
+
+        for key, value in source.items():
+            # Recreate layers supplied by the inherited from_config method.
+            if isinstance(value, Mapping):
+                source[key] = tf.keras.layers.deserialize(dict(value))
+            # Require every remaining stored value to be a Keras layer.
+            elif not isinstance(value, layers.Layer):
+                raise TypeError("LayerDict values must be Keras layers or models.")
 
         order = list(source) if execution_order is None else list(execution_order)
         # Require the execution order to contain each key exactly once.
@@ -54,6 +61,28 @@ class LayerDict(layers.Layer):
         self._tracked_attribute_names = {}
         for key in order:
             self[key] = source[key]
+        self._save_serialization_config()
+
+    def _save_serialization_config(self) -> None:
+        """Save the current child-layer mapping through ArgumentSaver.
+
+        Returns:
+            None: The inherited constructor configuration is updated in place.
+        """
+
+        self._save_init_args(
+            {
+                "layers_dict": {
+                    key: tf.keras.layers.serialize(self._layers_dict[key])
+                    for key in self._execution_order
+                },
+                "execution_order": list(self._execution_order),
+            }, 
+            rename={
+                "layers_dict": "_config_layers_dict",
+                "execution_order": "_config_execution_order",
+            },
+        )
 
     @property
     def execution_order(self) -> tuple[str, ...]:
@@ -97,6 +126,10 @@ class LayerDict(layers.Layer):
 
         setattr(self, attribute_name, value)
         self._layers_dict[key] = value
+
+        # Keep constructor config current for layers added after initialization.
+        if hasattr(self, "_init_config"):
+            self._save_serialization_config()
 
     def update(self, values: Mapping[str, layers.Layer]) -> None:
         """Add or replace the supplied components in mapping order.
@@ -207,47 +240,6 @@ class LayerDict(layers.Layer):
         """
 
         return self._layers_dict.get(key, default)
-
-    def get_config(self) -> dict[str, Any]:
-        """Serialize the stable order and every contained Keras layer.
-
-        Args:
-            None.
-
-        Returns:
-            dict[str, Any]: JSON-compatible Keras constructor configuration.
-        """
-
-        config = super().get_config()
-        config.update({
-            "layers_dict": {
-                key: tf.keras.layers.serialize(self._layers_dict[key])
-                for key in self._execution_order
-            }, 
-            "execution_order": list(self._execution_order)
-        })
-
-        return config
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "LayerDict":
-        """Deserialize child layers before reconstructing the container.
-
-        Args:
-            config (dict[str, Any]): Serialized :class:`LayerDict` config.
-
-        Returns:
-            LayerDict: Reconstructed tracked mapping.
-        """
-
-        config = dict(config)
-        serialized_layers = config.pop("layers_dict")
-        config["layers_dict"] = {
-            key: tf.keras.layers.deserialize(value)
-            for key, value in serialized_layers.items()
-        }
-
-        return cls(**config)
 
 
 def run_self_tests() -> dict[str, str]:

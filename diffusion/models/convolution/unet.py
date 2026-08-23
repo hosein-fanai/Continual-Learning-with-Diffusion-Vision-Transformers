@@ -1176,6 +1176,10 @@ class UNet(ArgumentSaverModel):
         return [variable.name for variable in vars]
 
 
+# TensorFlow 2.10 writes the plain root name for subclassed model JSON.
+tf.keras.utils.get_custom_objects()["UNet"] = UNet
+
+
 def run_self_tests() -> dict[str, str]:
     """Run direct, wrapper, VAE, progressive, and serialization checks.
 

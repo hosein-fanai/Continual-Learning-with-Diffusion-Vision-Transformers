@@ -512,6 +512,7 @@ def run_self_tests() -> dict[str, str]:
 
     raw_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
     ema_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
+    network_by_name = {"raw": raw_network, "ema": ema_network}
     alpha_bar_values = np.array(
         [0.8, 0.5, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625],
         dtype=np.float32,
@@ -570,6 +571,7 @@ def run_self_tests() -> dict[str, str]:
         ema_network=ema_network, 
         noisify=noisify, 
         get_noise_and_signal_rates=get_noise_and_signal_rates,
+        get_network=network_by_name.__getitem__,
     )
     images = tf.ones((2, 2, 2, 1), dtype=tf.float32)
 
@@ -739,6 +741,7 @@ def run_self_tests() -> dict[str, str]:
         ema_network=ema_network,
         noisify=noisify,
         get_noise_and_signal_rates=get_zero_noise_rates,
+        get_network=network_by_name.__getitem__,
     )
     zero_noise_metric = EnsembleAccuracy(
         zero_noise_wrapper,
