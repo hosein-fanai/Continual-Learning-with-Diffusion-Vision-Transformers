@@ -42,22 +42,31 @@ _DIFFUSION_CLASSIFIER_MODELS = {
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
     "learning_rate": "log-uniform; model-family-specific bounds", 
-    "optimizer": "Adam or AdamW", 
-    "weight_decay": "log-uniform when AdamW is selected"
+    "learning_rate_schedule": "cosine decay or constant", 
+    "optimizer": "SGD, RMSprop, Adam, AdamW, or Nadam", 
+    "weight_decay": "log-uniform 1e-6 to 1e-3 for every optimizer"
 }
 _DIT = {
     **_OPTIMIZATION, 
     "patch_size": "valid image-size divisor", 
-    "capacity": "coupled embedding width and attention-head count", 
-    "depth": "2, 4, or 6 transformer blocks", 
-    "mlp_ratio": "2 or 4", 
-    "drop_path": "0, 0.05, or 0.1", 
-    "cnn_patchify": "boolean", 
+    "capacity": (
+        "32x2, 64x4, 96x4, 128x8, 32x4, 64x2, 96x2, 128x4, "
+        "32x6, 64x6, 96x6, or 128x6"
+    ), 
+    "depth": "2, 3, 4, 5, or 6 transformer blocks", 
+    "mlp_ratio": "1, 2, 4, or 6", 
+    "drop_prob": "0, 0.05, 0.1, or 0.2", 
+    "patchify_with_cnn": "boolean", 
+    "use_refiner_cnn": "boolean (applied to the decoder when present)", 
     "timesteps": "250, 500, or 1000", 
     "noise_schedule": "linear, scaled-linear, cosine, or clipped-cosine", 
-    "p_uncond": "0.05, 0.1, or 0.2", 
+    "modify_first_t": "boolean", 
+    "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
     "ema_decay": "0.99, 0.995, or 0.999", 
-    "image_loss_coefficient": "0, 0.05, or 0.1"
+    "image_loss_coefficient": "0, 0.01, 0.05, or 0.1", 
+    "test_steps": "10, 20, 50, 100, 250, 500, or 1000 up to timesteps", 
+    "test_cfg_scale": "uniform 1.1 to 7", 
+    "test_eta": "uniform 0 to 1"
 }
 _UNET = {
     **_OPTIMIZATION,
@@ -69,8 +78,15 @@ _UNET = {
     "normalization": "batch normalization on/off", 
     "dropout": "0, 0.05, or 0.1", 
     "resampling": "average/interpolation or learned convolutional pair", 
-    "timesteps/schedule/CFG/EMA": "same compact diffusion space as DiT", 
-    "image_loss_coefficient": "0, 0.05, or 0.1"
+    "timesteps": "250, 500, or 1000", 
+    "noise_schedule": "linear, scaled-linear, cosine, or clipped-cosine", 
+    "modify_first_t": "boolean", 
+    "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
+    "ema_decay": "0.99, 0.995, or 0.999", 
+    "image_loss_coefficient": "0, 0.01, 0.05, or 0.1", 
+    "test_steps": "10, 20, 50, 100, 250, 500, or 1000 up to timesteps", 
+    "test_cfg_scale": "uniform 1.1 to 7", 
+    "test_eta": "uniform 0 to 1"
 }
 _VAE = {
     **_OPTIMIZATION, 
@@ -102,17 +118,28 @@ _PRETRAINED = {
     "dropout": "0 to 0.5"
 }
 _JOINT_NOTE = {
-    "classifier_loss_coefficient": "log-uniform 1e-3 to 1e-1", 
-    "masking_recipe": "CFG-null, timestep, or both", 
+    "classifier_loss_coefficient": "log-uniform 1e-4 to 1e-1", 
+    "masking_recipe": "CFG-null, timestep, both, or neither", 
+    "mask_t_percentage": "35, 50, 70, or 90 when timestep masking is used", 
     "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
 _DIT_CLASSIFIER_NOTE = {
-    "classifier_depth": "1, 2, or 3", 
-    "classifier_dropout": "0, 0.1, or 0.2"
+    "feature_aggregation": "last denoiser feature or all features", 
+    "classifier_only_cls_token": "boolean", 
+    "classifier_cls_token_type": (
+        "new weight, time-label, or label when a separate token is used"
+    ), 
+    "classifier_depth": "1, 2, 3, 4, or 5", 
+    "classifier_layer_norm_adaptation": "enabled or disabled", 
+    "classifier_block_dropout": "0, 0.1, 0.2, or 0.25", 
+    "classifier_mlp_ratio": "None, 1, or 2", 
+    "classifier_head_dropout": "0, 0.1, 0.2, 0.25, or 0.5"
 }
 _CONTINUAL_NOTE = {
-    "replay_samples_per_class": "100, 500, or 1000", 
-    "generator_train_samples": "current data, 1000, or 5000", 
+    "replay_samples_per_class": "100, 500, 1000, 2500, or 5000", 
+    "generator_train_samples": (
+        "current data, 1000, 2500, 5000, 7500, or 10000"
+    ), 
     "objective": "maximize selected mean class-incremental accuracy"
 }
 
@@ -123,7 +150,7 @@ SEARCH_SPACES = {
         "dit_decoder": {
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
             "decoder_depth": "1, 2, or 4"
-        },
+        }, 
         "dit_encoder_decoder": {
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
             "encoder_depth": "2, 4, or 6", 
@@ -225,10 +252,14 @@ def _value_tag(value: object) -> str:
     """
 
     short_values = {
-        "adam": "a", "adamw": "aw", "linear": "l", 
+        "sgd": "s", "rmsprop": "r", "adam": "a", "adamw": "aw", 
+        "nadam": "n", "cosine": "c", "constant": "k", 
+        "linear": "l", 
         "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
         "clipped_cosine": "cc", "convolution": "c", "pool": "p", 
-        "timestep": "t", "both": "b", "null": "n", 
+        "timestep": "t", "both": "b", "null": "n", "neither": "x", 
+        "last": "l", "all": "a", "new_weight": "nw", 
+        "time_label": "tl", "label": "y", 
         "relu": "r", "elu": "e", "selu": "s", "max": "x", 
         "avg": "a"
     }
@@ -268,7 +299,10 @@ def _tensorboard_name(trial: Any) -> str:
     return "-".join(parts)
 
 
-def _suggest_optimizer(trial: Any, family: str) -> dict[str, object]:
+def _suggest_optimizer(
+    trial: Any, 
+    family: str
+) -> dict[str, object]:
     """Suggest optimizer and batch settings for a model family.
 
     Args:
@@ -297,21 +331,28 @@ def _suggest_optimizer(trial: Any, family: str) -> dict[str, object]:
         batch_choices = [32, 64, 128]
     # Use the transformer learning-rate range for remaining families.
     else:
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
+        learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
         batch_choices = [32, 64, 128]
 
-    optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+    batch_size = trial.suggest_categorical("batch_size", batch_choices)
+    optimizer = trial.suggest_categorical("optimizer", [
+        "sgd", "rmsprop", "adam", 
+        "adamw", "nadam"
+    ])
     weight_decay = trial.suggest_float(
         "weight_decay", 1e-6, 1e-3, log=True
-    ) if optimizer == "adamw" else 0.
+    )
+    schedule = trial.suggest_categorical(
+        "learning_rate_schedule", ["cosine", "constant"]
+    )
 
     return {
-        "batch_size": trial.suggest_categorical("batch_size", batch_choices), 
+        "batch_size": batch_size, 
         "optimizer": {
             "name": optimizer, 
             "initial_learning_rate": learning_rate, 
             "weight_decay": weight_decay, 
-            "schedule": "cosine"
+            "schedule": schedule
         }
     }
 
@@ -329,7 +370,16 @@ def _suggest_diffusion_wrapper(
         keyword mapping.
     """
 
-    timesteps = trial.suggest_categorical("timesteps", [250, 500, 1000])
+    timesteps = trial.suggest_categorical(
+        "timesteps", [250, 500, 1000]
+    )
+    test_step_choices = [
+        value for value in (10, 20, 50, 100, 250, 500, 1_000)
+        if value <= timesteps
+    ]
+    test_steps_index = trial.suggest_int(
+        "test_steps_index", 0, len(test_step_choices) - 1
+    )
 
     return timesteps, {
         "use_ema": True, 
@@ -337,15 +387,27 @@ def _suggest_diffusion_wrapper(
             "ema_decay", [0.99, 0.995, 0.999]
         ), 
         "scheduler_name": trial.suggest_categorical(
-            "schedule", 
-            ["linear", "scaled_linear", "squaredcos_cap_v2", "clipped_cosine"], 
+            "schedule", [
+                "linear", "scaled_linear", 
+                "squaredcos_cap_v2", "clipped_cosine"
+            ]
         ), 
-        "p_uncond": trial.suggest_categorical("p_uncond", [0.05, 0.1, 0.2]), 
+        "modify_first_t": trial.suggest_categorical(
+            "modify_first_t", [True, False]
+        ), 
+        "p_uncond": trial.suggest_categorical(
+            "p_uncond", [0.05, 0.1, 0.2, 0.25]
+        ), 
         "image_loss_coef": trial.suggest_categorical(
-            "image_loss_coef", [0., 0.05, 0.1]
+            "image_loss_coef", [0., 0.01, 0.05, 0.1]
         ), 
-        "test_steps": min(50, timesteps), 
-        "test_cfg_scale": 3.
+        "test_steps": test_step_choices[test_steps_index], 
+        "test_cfg_scale": trial.suggest_float(
+            "test_cfg_scale", 1.1, 7.
+        ), 
+        "test_eta": trial.suggest_float(
+            "test_eta", 0., 1.
+        )
     }
 
 
@@ -366,30 +428,42 @@ def _suggest_dit(
     """
 
     capacity = trial.suggest_categorical(
-        "capacity", ["32x2", "64x4", "96x4", "128x8"]
+        "capacity", [
+            "32x2", "64x4", "96x4", "128x8", 
+            "32x4", "64x2", "96x2", "128x4", 
+            "32x6", "64x6", "96x6", "128x6", 
+        ]
     )
     dim, heads = (int(value) for value in capacity.split("x"))
     patch_choices = [value for value in (2, 4, 7, 8) if image_size % value == 0]
     kwargs = {
+        "patchify_with_cnn": trial.suggest_categorical(
+            "patchify_with_cnn", [False, True]
+        ), 
         "patch_size": trial.suggest_categorical("patch_size", patch_choices), 
         "dim": dim, 
         "mha_num_heads": heads, 
-        "vit_block_mlp_ratio": trial.suggest_categorical("mlp_ratio", [2., 4.]), 
-        "drop_prob": trial.suggest_categorical("drop_prob", [0., 0.05, 0.1]), 
-        "patchify_with_cnn": trial.suggest_categorical(
-            "cnn_patchify", 
-            [False, True]
+        "vit_block_mlp_ratio": trial.suggest_categorical(
+            "mlp_ratio", [1., 2., 4., 6.]
+        ), 
+        "drop_prob": trial.suggest_categorical(
+            "drop_prob", [0., 0.05, 0.1, 0.2]
+        ), 
+        "use_refiner_cnn": trial.suggest_categorical(
+            "use_refiner_cnn", [False, True]
         )
     }
 
     # Tune encoder and decoder depths independently for joint DiT models.
     if model_name in ("dit_encoder_decoder", "dit_encoder_decoder_classifier"):
         kwargs["depth"] = trial.suggest_categorical("encoder_depth", [2, 4, 6])
+        use_refiner_cnn = kwargs.pop("use_refiner_cnn")
         kwargs["decoder_kwargs"] = {
             "depth": trial.suggest_categorical("decoder_depth", [1, 2, 4]), 
             "mha_num_heads": heads, 
             "vit_block_mlp_ratio": kwargs["vit_block_mlp_ratio"], 
-            "shift_inputs": False
+            "shift_inputs": False, 
+            "use_refiner_cnn": use_refiner_cnn
         }
     # Tune decoder depth for a standalone DiT decoder.
     elif model_name == "dit_decoder":
@@ -401,7 +475,9 @@ def _suggest_dit(
         })
     # Tune a single shared depth for the remaining transformer families.
     else:
-        kwargs["depth"] = trial.suggest_categorical("depth", [2, 4, 6])
+        kwargs["depth"] = trial.suggest_categorical(
+            "depth", [2, 3, 4, 5, 6]
+        )
 
     return kwargs
 
@@ -519,20 +595,50 @@ def _suggest_joint(
 
     # Add DiT-specific decoder and conditioning choices.
     if model_name.startswith("dit"):
+        classifier_only_cls_token = trial.suggest_categorical(
+            "classifier_only_cls_token", [True, False]
+        )
+        feature_aggregation = trial.suggest_categorical(
+            "feature_aggregation", ["last", "all"]
+        )
         kwargs.update({
-            "clf_depth": trial.suggest_categorical("clf_depth", [1, 2, 3]), 
+            "feature_aggregation_ids_dict": {
+                1: [-1] if feature_aggregation == "last" else [None]
+            }, 
+            "classifier_only_cls_token": classifier_only_cls_token, 
+            "clf_depth": trial.suggest_categorical(
+                "clf_depth", [1, 2, 3, 4, 5]
+            ), 
+            "clf_ln_no_adaptation": trial.suggest_categorical(
+                "clf_ln_no_adaptation", [True, False]
+            ), 
             "clf_drop_prob": trial.suggest_categorical(
-                "clf_dropout", [0., 0.1, 0.2]
+                "clf_drop_prob", [0., 0.1, 0.2, 0.25]
+            ), 
+            "classifier_mlp_ratio": trial.suggest_categorical(
+                "classifier_mlp_ratio", [None, 1, 2]
+            ), 
+            "dropout_rate": trial.suggest_categorical(
+                "dropout_rate", [0., 0.1, 0.2, 0.25, 0.5]
             )
         })
+        # Project concatenated all-depth features back to the classifier width.
+        if feature_aggregation == "all":
+            kwargs.update({"clf_dim": kwargs["dim"], "clf_dim_forced": True})
+
+        # Tune a dedicated classifier token only when the branch uses one.
+        if classifier_only_cls_token:
+            kwargs["clf_cls_token_type"] = trial.suggest_categorical(
+                "clf_cls_token_type", ["new_weight", "time_label", "label"]
+            )
 
     masking = trial.suggest_categorical(
-        "masking", ["null", "timestep", "both"]
+        "masking", ["null", "timestep", "both", "neither"]
     )
     wrapper_kwargs.update({
         "clf_loss_coef": trial.suggest_float(
             "clf_loss_coef", 
-            1e-3, 1e-1, 
+            1e-4, 1e-1, 
             log=True
         ), 
         "mask_by_nulls": masking in ("null", "both"), 
@@ -542,7 +648,7 @@ def _suggest_joint(
     # Tune timestep masking only for modes that use it.
     if masking in ("timestep", "both"):
         wrapper_kwargs["mask_t_percentage"] = trial.suggest_categorical(
-            "mask_t", [50, 70, 90]
+            "mask_t", [35, 50, 70, 90]
         )
 
 
@@ -663,8 +769,8 @@ def _build_trial_config(
         and model_name in _DIFFUSION_CLASSIFIER_MODELS
     ):
         raise ValueError(
-            "use_ensemble_accuracy requires a joint or continual diffusion "
-            "classifier study."
+            "use_ensemble_accuracy requires a joint or "
+            "continual diffusion classifier study."
         )
 
     ensemble_accuracy_kwargs = dict(ensemble_accuracy_kwargs or {})
@@ -736,9 +842,11 @@ def _build_trial_config(
     # Tune replay policy only for continual-learning studies.
     if task == "continual":
         replay_samples = trial.suggest_categorical(
-            "replay_samples", [100, 500, 1000]
+            "replay_samples", [100, 500, 1_000, 2_500, 5_000]
         )
-        train_num = trial.suggest_categorical("train_num", [-1, 1000, 5000])
+        train_num = trial.suggest_categorical(
+            "train_num", [-1, 1_000, 2_500, 5_000, 7_500, 10_000]
+        )
         continual_kwargs = {
             "remove_prev_classes": True, 
             "keep_same_model": True, 
@@ -752,7 +860,7 @@ def _build_trial_config(
         # Enable per-task diffusion ensemble reports when they are the HPO signal.
         if use_ensemble_accuracy:
             continual_kwargs.update({
-                "evaluate_ensemble_accuracy": True,
+                "evaluate_ensemble_accuracy": True, 
                 "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs
             })
 
@@ -807,30 +915,35 @@ def _build_trial_config(
         monitor, monitor_mode = "val_noise_loss", "min"
 
     tensorboard_name = _tensorboard_name(trial)
-    task_tag = {"generation": "g", "joint": "j", "classification": "c", "continual": "l"}[task]
+    task_tag = {
+        "generation": "g", 
+        "joint": "j", 
+        "classification": "c", 
+        "continual": "l"
+    }[task]
     dataset_tag = {
         "mnist": "m", "fmnist": "fm",
         "cifar10": "c10", "cifar100": "c100"
-    }[
-        dataset_name
-    ]
+    }[dataset_name]
     project_tag = f"t{trial.number:04d}"
     trial_root = Path(results_path) / task / model_name / dataset_name
     # Match the separate study storage used for ensemble-feedback trials.
     if use_ensemble_accuracy:
         trial_root /= "ensemble_accuracy"
+
     tensorboard_root = Path(results_path) / "_tb" / (
         task_tag + _MODEL_TAGS[model_name] + dataset_tag
     )
     # Avoid TensorBoard event-name collisions with ordinary-accuracy trials.
     if use_ensemble_accuracy:
         tensorboard_root /= "ensemble_accuracy"
+
     config = Config(
         dataset={
             "name": dataset_name, 
             "batch_size": optimization["batch_size"], 
             "preprocess": preprocess, 
-            "features_path": features_path,
+            "features_path": features_path, 
             "return_features": return_features, 
             "onehot_labels": onehot_labels
         }, 
@@ -1036,7 +1149,6 @@ def _objective_values(
 
 
 def run_hpo(
-    *, 
     task: str, 
     model_name: str, 
     dataset_name: str = "CIFAR10", 

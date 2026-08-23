@@ -167,10 +167,10 @@ path; leave it `null` to retain the original DiT/DiT-classifier behavior.
 
 ```python
 from common.config import load_config
-from common.train import run_experiment
+from common.train import main
 
 config = load_config("configs/my-run.yaml")
-result = run_experiment(config)
+result = main(config)
 print(result["results_path"])
 ```
 

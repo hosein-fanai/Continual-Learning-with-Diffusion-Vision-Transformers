@@ -27,7 +27,7 @@ history = train_model(config, model, trainset, valset)
 report(config, history, model, trainset, valset)
 ```
 
-`run_experiment(config)` is the equivalent one-call entry point. The original
+`main(config)` is the equivalent one-call entry point. The original
 compact DiT fields remain available when `model.name` is `None`; generic runs
 select a family with `model.name`, `model.kwargs`, and `model.wrapper_kwargs`.
 
@@ -264,7 +264,7 @@ count. Configured patience/monitor settings are rebuilt for each enabled phase.
 ## Hyperparameter optimization
 
 `common.hpo.run_hpo` creates a resolved `Config` for every Optuna trial, writes
-it to YAML, reloads it through `load_config`, and calls `run_experiment`. Search
+it to YAML, reloads it through `load_config`, and calls `main`. Search
 spaces live in `SEARCH_SPACES[task][model]`; architecture-dependent choices are
 conditional so invalid tensor shapes and wrapper combinations are not sampled.
 

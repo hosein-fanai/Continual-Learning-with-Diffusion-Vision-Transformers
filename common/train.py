@@ -921,25 +921,6 @@ def main(
     }
 
 
-def run_experiment(
-    config: Config | None = None, 
-    **kwargs: object
-) -> dict[str, object]:
-    """Run the complete experiment pipeline through :func:`main`.
-
-    Args:
-        config (Config | None): Optional typed project configuration.
-        **kwargs (object): Direct-mode dataset, model, training, and reporting
-            settings accepted by :func:`main`.
-
-    Returns:
-        dict[str, object]: Model, history, evaluations, and result path returned
-        by :func:`main`.
-    """
-
-    return main(config, **kwargs)
-
-
 # Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     config = load_config()
