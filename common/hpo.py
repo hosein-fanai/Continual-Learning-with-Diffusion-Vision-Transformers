@@ -140,8 +140,9 @@ _DIT_CLASSIFIER_NOTE = {
 _DIT_CLASSIFIER_WRAPPER_NOTE = {
     "wrapper_name": "diffusion_classifier (V1) or diffusion_classifier_v2 (V2)", 
     "clf_train_noisified_max_timesteps": (
-        "V2 only: None (no cap), 0 (clean only), 64, 128, 256, or 512; "
-        "bounded by timesteps"
+        "V2 only: None (clean input at timestep 0), 64, 128, 256, 512, "
+        "or timesteps (full [0, timesteps) range); numeric caps are bounded "
+        "by timesteps"
     )
 }
 _CONTINUAL_NOTE = {
@@ -280,6 +281,7 @@ def _value_tag(value: object) -> str:
         "time_label": "tl", "label": "y", 
         "diffusion_classifier": "v1", 
         "diffusion_classifier_v2": "v2", 
+        "timesteps": "ts", 
         "relu": "r", "elu": "e", "selu": "s", "max": "x", 
         "avg": "a"
     }
@@ -879,11 +881,11 @@ def _build_trial_config(
         and wrapper_name == "diffusion_classifier_v2":
             clf_max_timesteps = trial.suggest_categorical(
                 "clf_train_noisified_max_timesteps", 
-                [None, 0, 64, 128, 256, 512]
+                [None, 64, 128, 256, 512, "timesteps"]
             )
             wrapper_kwargs["clf_train_noisified_max_timesteps"] = (
-                timesteps if clf_max_timesteps is None 
-                else None if clf_max_timesteps == 0 
+                None if clf_max_timesteps is None 
+                else timesteps if clf_max_timesteps == "timesteps" 
                 else min(clf_max_timesteps, timesteps)
             )
 

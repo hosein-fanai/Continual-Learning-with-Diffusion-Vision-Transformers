@@ -816,8 +816,8 @@ def get_model(
 
 
     def build_classifier(
-        name: str,
-        options: Mapping[str, object],
+        name: str, 
+        options: Mapping[str, object]
     ) -> Any:
         """Build one configured standalone classifier.
 
@@ -828,6 +828,7 @@ def get_model(
         Returns:
             tf.keras.Model: Built and compiled classifier.
         """
+
         options = deepcopy(options)
         options.pop("class_num", None)
         model_path = options.pop("model_path", "")
@@ -900,6 +901,7 @@ def get_model(
         Returns:
             tf.keras.Model: Built and compiled selected model.
         """
+
         selected_kwargs = deepcopy(model_kwargs)
         # Delegate standalone classifier families to their shared builder.
         if name in _CLASSIFIER_MODELS:
@@ -921,6 +923,7 @@ def get_model(
                 # Respect direct explicit input by rejecting incompatible mode.
                 else:
                     raise ValueError("Continual VAE replay requires conditioned=True.")
+
             selected_kwargs.pop("class_num", None)
             selected_kwargs.pop("compile", None)
             vae_compile_args = deepcopy(
@@ -994,6 +997,7 @@ def get_model(
             "image_size": image_shape[0], 
             "channels": image_shape[-1]
         }
+
         # Make dataset-derived diffusion dimensions authoritative in typed mode.
         if using_typed_model_config:
             selected_kwargs.update(dataset_dimensions)

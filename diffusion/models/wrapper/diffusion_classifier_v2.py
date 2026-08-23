@@ -462,7 +462,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 x0, 
                 max_timesteps=noisified_max_timesteps
             )
-        # Use clean inputs at timestep zero when no cap was configured.
+        # Use clean inputs at timestep zero when None selects clean-only mode.
         else:
             x_t = x0
             t = tf.zeros_like(labels, dtype=tf.int32)
