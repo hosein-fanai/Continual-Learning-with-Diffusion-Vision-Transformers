@@ -51,6 +51,9 @@ intentionally empty in version control.
        epochs=EPOCHS,
        seed=SEED,
        results_path=RESULTS_PATH,
+       # Diffusion-classifier joint/continual studies only:
+       use_ensemble_accuracy=False,
+       ensemble_accuracy_kwargs={"weighted": True, "max_t": 128},
    )
    ```
 
@@ -65,6 +68,13 @@ name order; the complete name-to-value mapping is also stored in the trial
 config and TensorBoard text summary. Compact logs live below
 `results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
 gives a study-level table.
+
+For joint or continual `dit_classifier`,
+`dit_encoder_decoder_classifier`, and `unet_classifier` studies, set
+`use_ensemble_accuracy=True` to use validation/task ensemble accuracy as the
+Optuna feedback signal. Ordinary accuracy is still reported. These trials use
+an `ensemble_accuracy` subdirectory so they cannot mix with an existing normal
+accuracy study.
 
 For fair comparisons, keep the dataset, seed, trial count, epoch budget, and
 continual replay-budget candidate set fixed across competing model families. Diffusion and
