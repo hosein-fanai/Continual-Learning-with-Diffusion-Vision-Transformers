@@ -126,7 +126,7 @@ def train_model(
         use_valset = kwargs.get("use_valset", True)
         seed = kwargs.get("seed")
         training_verbose = kwargs.get("verbose", 1)
-        epochs = kwargs.get("epochs", 10)
+        epochs = kwargs.get("epochs", 20)
         batch_size = kwargs.get("batch_size", 128)
         continual_return_features = kwargs.get("return_features")
         continual_max_train_samples = kwargs.get("max_train_samples")

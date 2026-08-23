@@ -63,6 +63,7 @@ _DIT = {
     "modify_first_t": "boolean", 
     "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
     "ema_decay": "0.99, 0.995, or 0.999", 
+    "loss_function": "mse or mae", 
     "image_loss_coefficient": "0, 0.01, 0.05, or 0.1", 
     "test_steps": "10, 20, 50, 100, 250, 500, or 1000 up to timesteps", 
     "test_cfg_scale": "uniform 1.1 to 7", 
@@ -83,6 +84,7 @@ _UNET = {
     "modify_first_t": "boolean", 
     "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
     "ema_decay": "0.99, 0.995, or 0.999", 
+    "loss_function": "mse or mae", 
     "image_loss_coefficient": "0, 0.01, 0.05, or 0.1", 
     "test_steps": "10, 20, 50, 100, 250, 500, or 1000 up to timesteps", 
     "test_cfg_scale": "uniform 1.1 to 7", 
@@ -93,6 +95,7 @@ _VAE = {
     "latent_dim": "8, 16, 32, 64, or 128", 
     "hidden_template": "validated descending dense-width template", 
     "beta": "log-uniform 0.01 to 2.0", 
+    "loss_function": "mse or mae", 
     "activation": "ReLU or SELU", 
     "batch_normalization": "boolean (disabled for SELU)"
 }
@@ -819,6 +822,14 @@ def _build_trial_config(
     return_features = False
     features_path = None
     onehot_labels = model_name in ("vae", "vae_classifier")
+    loss_function = "mse"
+
+    # Tune the shared generative loss only for diffusion and VAE families.
+    if model_name in _DIFFUSION_MODELS \
+    or model_name in ("vae", "vae_classifier"):
+        loss_function = trial.suggest_categorical(
+            "loss_function", ["mse", "mae"]
+        )
 
     # Tune transformer diffusion schedules and wrapper behavior.
     if model_name.startswith("dit") or model_name == "diffusion_transformer":
@@ -1014,6 +1025,7 @@ def _build_trial_config(
             "wrapper_kwargs": wrapper_kwargs, 
             "classifier_name": classifier_name, 
             "classifier_kwargs": classifier_kwargs, 
+            "loss_function": loss_function, 
             "show_network_summary": False
         }, 
         optimizer=optimization["optimizer"], 

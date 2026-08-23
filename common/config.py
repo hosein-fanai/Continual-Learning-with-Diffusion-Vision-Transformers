@@ -478,6 +478,8 @@ class ModelConfig:
         wrapper_kwargs (dict): Generic diffusion-wrapper arguments.
         classifier_name (str | None): Target classifier for continual runs.
         classifier_kwargs (dict): Target-classifier architecture arguments.
+        loss_function (str): Generative reconstruction/noise loss passed to
+            Keras compilation; ``"mse"`` by default.
         with_classifier (bool): Build ``DiTClassifier`` inside
             ``DiffusionClassifier`` when true; otherwise build
             ``DiffusionTransformer`` inside ``DiffusionModel``.
@@ -503,6 +505,7 @@ class ModelConfig:
     with_classifier: bool = True
     show_network_summary: bool = True
     weights_path: str | None = None
+    loss_function: str = "mse"
 
     # Generic selections used by config-driven experiments and HPO. ``None``
     # keeps the original DiT/DiT-classifier path above fully backward compatible.
@@ -1108,6 +1111,7 @@ def run_self_tests() -> dict[str, str]:
         with_classifier=False, 
         show_network_summary=False, 
         weights_path="weights.h5", 
+        loss_function="mae", 
         diffusion_transformer=transformer_instance, 
         dit_classifier=classifier_custom, 
         dit_decoder=decoder_custom,
@@ -1123,6 +1127,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert model_from_instances.diffusion_transformer is transformer_instance
     assert model_from_instances.dit_classifier is classifier_custom
+    assert model_from_instances.loss_function == "mae"
     model_from_mappings = ModelConfig(
         diffusion_transformer={"dim": 11, "use_cfg": False}, 
         dit_classifier={"dropout_rate": 0.25}, 
@@ -1246,6 +1251,7 @@ def run_self_tests() -> dict[str, str]:
     default_config_b = Config()
     assert isinstance(default_config_a.dataset, DatasetConfig)
     assert isinstance(default_config_a.model, ModelConfig)
+    assert default_config_a.model.loss_function == "mse"
     assert isinstance(default_config_a.optimizer, OptimizerConfig)
     assert isinstance(default_config_a.training, TrainingConfig)
     assert isinstance(
@@ -1258,7 +1264,11 @@ def run_self_tests() -> dict[str, str]:
         default_config_b.continually_learn
     mapped_config = Config(
         dataset={"batch_size": 2, "shuffle_buffer": 0}, 
-        model={"with_classifier": False, "diffusion_transformer": {"depth": 0}}, 
+        model={
+            "with_classifier": False, 
+            "loss_function": "mae", 
+            "diffusion_transformer": {"depth": 0}
+        }, 
         optimizer={"initial_learning_rate": 1e-4, "decay_steps": 3}, 
         training={"epochs": 1, "save_weights": False}, 
         continually_learn={
@@ -1273,6 +1283,7 @@ def run_self_tests() -> dict[str, str]:
         },
     )
     assert mapped_config.dataset.batch_size == 2
+    assert mapped_config.model.loss_function == "mae"
     assert mapped_config.model.diffusion_transformer.depth == 0
     assert mapped_config.optimizer.decay_steps == 3
     assert mapped_config.training.epochs == 1

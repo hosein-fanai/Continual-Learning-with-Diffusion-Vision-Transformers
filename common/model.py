@@ -584,9 +584,9 @@ def get_model(
             ``model_kwargs``, ``wrapper_name``, ``wrapper_kwargs``,
             ``classifier_name``, ``classifier_kwargs``, dataset shape/count
             values (including raw-image ``pad``), optimizer values, ``task``,
-            summary/weight settings, and the documented legacy classifier
-            options. Typed configured VAE/diffusion sections inherit dataset
-            dimensions and class count.
+            ``loss_function``, summary/weight settings, and the documented
+            legacy classifier options. Typed configured VAE/diffusion sections
+            inherit dataset dimensions and class count.
 
     Returns:
         tf.keras.Model | dict[str, object]: A built and compiled classifier,
@@ -685,6 +685,7 @@ def get_model(
         trainset_len = kwargs.get("trainset_len")
         onehot_labels = kwargs.get("onehot_labels", False)
         task = kwargs.get("task", "legacy")
+        loss_function = kwargs.get("loss_function", "mse")
         show_network_summary = kwargs.get("show_network_summary", False)
         weights_path = kwargs.get("weights_path")
 
@@ -707,6 +708,7 @@ def get_model(
         trainset_len = config.dataset.trainset_len
         onehot_labels = config.dataset.onehot_labels
         task = config.training.task
+        loss_function = config.model.loss_function
         # Restrict continual output width to the requested leading classes.
         if task.lower() == "continual" \
         and config.continually_learn.class_num is not None:
@@ -945,7 +947,7 @@ def get_model(
             )
             model.compile(**{
                 "optimizer": optimizer, 
-                "loss": "mse", 
+                "loss": loss_function, 
                 **vae_compile_args
             })
 
@@ -969,7 +971,7 @@ def get_model(
             )
             vae_compile_args = {
                 "optimizer": optimizer, 
-                "loss": "mse", 
+                "loss": loss_function, 
                 **vae_compile_args
             }
             selected_classifier_name = classifier_name or "dnn"
@@ -1129,7 +1131,7 @@ def get_model(
 
         model.compile(**{
             "optimizer": optimizer, 
-            "loss": "mse", 
+            "loss": loss_function, 
             **diffusion_compile_args
         })
 
@@ -1206,10 +1208,12 @@ def get_model(
             raise ValueError(
                 "pad is not supported for pretrained/hp-tuned classifiers."
             )
+
         use_buffer = config.continually_learn.use_buffer \
-            if config is not None else kwargs.get("use_buffer", False)
+                    if config is not None else kwargs.get("use_buffer", False)
         classifier = build_classifier(
-            selected_classifier_name, classifier_kwargs
+            selected_classifier_name, 
+            classifier_kwargs
         )
         generative_model = None if use_buffer else build_selected(model_name)
         # Apply configured weights to the classifier in buffer-only mode.
