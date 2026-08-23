@@ -2,6 +2,8 @@
 
 from tensorflow.keras import layers, models
 
+from typing import Any
+
 from common.argument_saver import ArgumentSaverLayer
 
 from diffusion.layers.adaptive_layer_normalization_zero import AdaLNZero
@@ -51,16 +53,26 @@ class BaseLayer(ArgumentSaverLayer):
         self, 
         use_layer_norm: bool = False, 
         ln_dim: int | None = None, 
-        ln_mlp_ratio: int | None = None, 
+        ln_mlp_ratio: float | None = None,
         ln_no_adaptation: bool = False, 
         mlp_ratio: float | None = None, 
         mlp_activation_func: str = "swish", 
         mlp_output_dim: int | None = None, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Store shared layer configuration and validate normalization use.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            use_layer_norm (bool): Whether normalization factories create
+                :class:`AdaLNZero` layers.
+            ln_dim (int | None): Default normalized feature width.
+            ln_mlp_ratio (float | None): Optional conditioning-MLP width ratio.
+            ln_no_adaptation (bool): Whether created normalizers ignore their
+                condition input.
+            mlp_ratio (float | None): Optional feed-forward hidden-width ratio.
+            mlp_activation_func (str): Keras hidden-layer activation name.
+            mlp_output_dim (int | None): Optional feed-forward output width.
+            **kwargs (Any): Standard Keras layer options.
 
         Returns:
             ``None``.
@@ -70,11 +82,12 @@ class BaseLayer(ArgumentSaverLayer):
         self._check_assertions(locals())
         self._save_init_args(locals())
 
-    def _check_assertions(self, local_vars):
+    def _check_assertions(self, local_vars: dict[str, Any]) -> None:
         """Validate base constructor arguments.
 
         Args:
-            local_vars: Constructor-local mapping containing at least
+            local_vars (dict[str, Any]): Constructor-local mapping containing
+                at least
                 ``use_layer_norm``, ``ln_no_adaptation``, and ``ln_dim``.
 
         Returns:
@@ -82,10 +95,14 @@ class BaseLayer(ArgumentSaverLayer):
             normalization is requested without a feature width.
         """
 
+        # Adaptive normalization requires an explicitly known feature width.
         if local_vars["use_layer_norm"] and \
         not local_vars["ln_no_adaptation"]:
-            assert local_vars["ln_dim"] is not None, \
-                "ln_dim cannot be None when use_layer_norm is true."
+            # Reject the missing width before constructing adaptive layers.
+            if local_vars["ln_dim"] is None:
+                raise ValueError(
+                    "ln_dim cannot be None when use_layer_norm is true."
+                )
 
     def _create_layer_norm(
         self, 
@@ -96,20 +113,21 @@ class BaseLayer(ArgumentSaverLayer):
         no_adaptation: bool | None = None, 
         use_layer_norm: bool | None = None, 
         name: str | None = None, 
-    ):
+    ) -> AdaLNZero | None:
         """Create a configured adaptive normalizer or return ``None``.
 
         Args:
-            dim: Normalized channel width. ``None`` uses ``self.ln_dim``.
-            gate_dim: Gate width. ``None`` uses ``self.ln_dim``; callers that
+            dim (int | None): Normalized channel width. ``None`` uses
+                ``self.ln_dim``.
+            gate_dim (int | None): Gate width. ``None`` uses ``self.ln_dim``; callers that
                 override ``dim`` and need a matching gate should pass it too.
-            mlp_ratio: Conditioning hidden-width ratio. ``None`` uses
+            mlp_ratio (float | None): Conditioning hidden-width ratio. ``None`` uses
                 ``self.ln_mlp_ratio``.
-            return_gate: Whether the normalizer also returns a residual gate.
-            no_adaptation: Override the instance default. ``True`` ignores the
+            return_gate (bool): Whether the normalizer also returns a residual gate.
+            no_adaptation (bool | None): Override the instance default. ``True`` ignores the
                 condition and makes the gate the scalar ``1.0``.
-            use_layer_norm: Override whether a layer is created at all.
-            name: Optional Keras name; ``None`` derives one from this layer.
+            use_layer_norm (bool | None): Override whether a layer is created.
+            name (str | None): Optional Keras name; ``None`` derives one from this layer.
 
         Returns:
             ``AdaLNZero | None``. The layer consumes ``(features, condition)``;
@@ -130,27 +148,29 @@ class BaseLayer(ArgumentSaverLayer):
             mlp_ratio=mlp_ratio, 
             return_gate=return_gate, 
             no_adaptation=no_adaptation, 
-            name=name
+            name=name,
+            dtype=self.dtype_policy,
         ) if use_layer_norm else None
 
         return layer_norm
 
     def _create_mlp(
         self, 
-        prev_output_dim: int, 
+        prev_output_dim: int | None,
         mlp_ratio: float | None = None, 
         mlp_activation_func: str | None = None, 
         mlp_output_dim: int | None = None, 
-    ):
+    ) -> models.Sequential | None:
         """Create an optional dense projection network.
 
         Args:
-            prev_output_dim: Positive integer size of the input's last axis.
-            mlp_ratio: Hidden-width ratio overriding ``self.mlp_ratio``. When
+            prev_output_dim (int | None): Positive input width. ``None`` is
+                permitted only when no output projection is configured.
+            mlp_ratio (float | None): Hidden-width ratio overriding ``self.mlp_ratio``. When
                 non-``None``, the first dense layer has
                 ``int(prev_output_dim * mlp_ratio)`` units.
-            mlp_activation_func: Keras activation for the hidden dense layer.
-            mlp_output_dim: Final width overriding ``self.mlp_output_dim``.
+            mlp_activation_func (str | None): Keras activation for the hidden dense layer.
+            mlp_output_dim (int | None): Final width overriding ``self.mlp_output_dim``.
                 ``None`` disables the MLP entirely.
 
         Returns:
@@ -166,21 +186,41 @@ class BaseLayer(ArgumentSaverLayer):
                             else mlp_activation_func
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
 
-        self.prev_output_dim = int(prev_output_dim)
+        # Treat a missing input width as valid only for a disabled MLP.
+        if prev_output_dim is None:
+            # A requested projection cannot be built without its input width.
+            if mlp_output_dim is not None:
+                raise ValueError(
+                    "prev_output_dim is required when mlp_output_dim is set."
+                )
+            self.prev_output_dim = None
+            self.output_dim = None
+            return None
+        # Require a positive integer width for any concrete MLP input.
+        if not isinstance(prev_output_dim, int) or isinstance(prev_output_dim, bool) \
+        or prev_output_dim < 1:
+            raise ValueError("prev_output_dim must be a positive integer or None.")
+
+        self.prev_output_dim = prev_output_dim
+        # Build the requested output projection when an output width is set.
         if mlp_output_dim is not None:
             self.output_dim = mlp_output_dim
             mlp = models.Sequential(name=f"{self.name}/mlp")
+            # Add a hidden dense layer when a hidden-width ratio is configured.
             if mlp_ratio is not None:
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{mlp.name}/first_layer"
+                    name=f"{mlp.name}/first_layer",
+                    dtype=self.dtype_policy,
                 ))
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
-                name=f"{mlp.name}/final_layer"
+                name=f"{mlp.name}/final_layer",
+                dtype=self.dtype_policy,
             ))
+        # Otherwise expose an identity transformation with unchanged width.
         else:
             self.output_dim = prev_output_dim
             mlp = None
@@ -195,7 +235,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        ``{"BaseLayer": "passed"}`` after factory, override, config, shape,
+        dict[str, str]: ``{"BaseLayer": "passed"}`` after factory, override, config, shape,
         and expected abstract-call checks pass.
     """
 
@@ -204,7 +244,7 @@ def run_self_tests() -> dict[str, str]:
 
     try:
         BaseLayer(use_layer_norm=True)
-    except AssertionError:
+    except ValueError:
         pass
     else:
         raise AssertionError("Adaptive normalization requires ln_dim.")
@@ -269,11 +309,11 @@ def run_self_tests() -> dict[str, str]:
     dtype_projection = dtype_layer._create_mlp(4)
     dtype_output = dtype_projection(tf.ones((1, 4), dtype=tf.float64))
     assert dtype_layer.compute_dtype == "float64"
-    # Factory-created nested Dense layers retain the global float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     return {"BaseLayer": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

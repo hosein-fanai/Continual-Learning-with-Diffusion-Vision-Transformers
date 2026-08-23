@@ -140,7 +140,7 @@ NOTEBOOKS = {
         ), 
         "vae_classifier": (
             20, 
-            "Tune a conditional VAEClassifer replay buffer over feature vectors. The "
+            "Tune a conditional VAEClassifier replay buffer over feature vectors. The "
             "space balances reconstruction, KL regularization, and auxiliary classification "
             "for stable replay across experiences."
         )
@@ -149,6 +149,17 @@ NOTEBOOKS = {
 
 
 def markdown_cell(task: str, model: str, rationale: str) -> dict:
+    """Build one notebook overview cell.
+
+    Args:
+        task (str): HPO task key such as ``"generation"`` or ``"joint"``.
+        model (str): Model-family key used in headings.
+        rationale (str): Human-readable experiment motivation.
+
+    Returns:
+        dict: Notebook-format markdown cell mapping.
+    """
+
     title = model.replace("_", " ").title()
     task_title = "Generation + Classification" \
                 if task == "joint" else task.title()
@@ -166,6 +177,16 @@ def markdown_cell(task: str, model: str, rationale: str) -> dict:
 
 
 def code_cell(source: str, cell_id: str) -> dict:
+    """Build one executable notebook cell.
+
+    Args:
+        source (str): Python source stored in the cell.
+        cell_id (str): Stable notebook cell identifier.
+
+    Returns:
+        dict: Notebook-format code cell mapping.
+    """
+
     return {
         "cell_type": "code", 
         "execution_count": None, 
@@ -176,7 +197,20 @@ def code_cell(source: str, cell_id: str) -> dict:
     }
 
 
-def make_notebook(task: str, model: str, epochs: int, rationale: str) -> dict:
+def make_notebook(task: str, model: str, 
+                epochs: int, rationale: str) -> dict:
+    """Build a complete HPO notebook document.
+
+    Args:
+        task (str): Supported HPO task key.
+        model (str): Model-family key accepted for that task.
+        epochs (int): Positive training epochs per Optuna trial.
+        rationale (str): Markdown explanation for the generated notebook.
+
+    Returns:
+        dict: Notebook-format document with five cells and kernel metadata.
+    """
+
     setup = f'''from common.hpo import SEARCH_SPACES, run_hpo
 
 TASK = "{task}"
@@ -234,6 +268,15 @@ trials, best, RESULTS_PATH
 
 
 def main() -> None:
+    """Generate every declared HPO notebook beneath its task directory.
+
+    Args:
+        None.
+
+    Returns:
+        None: Notebook files are written in place.
+    """
+
     count = 0
     for task, models in NOTEBOOKS.items():
         task_dir = ROOT / task
@@ -247,9 +290,11 @@ def main() -> None:
             )
             count += 1
 
+    # Detect missing or duplicate experiment combinations in the generated matrix.
     if count != 21:
         raise RuntimeError(f"Expected 21 notebooks, generated {count}.")
 
 
+# Generate the notebook matrix when this helper is invoked directly.
 if __name__ == "__main__":
     main()

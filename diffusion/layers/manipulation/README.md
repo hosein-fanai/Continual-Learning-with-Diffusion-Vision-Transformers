@@ -113,7 +113,6 @@ accept positional options, `ln_mlp_ratio`, `ln_no_adaptation`, `mlp_ratio`,
 `trainable`. Each manipulation layer supplies `use_layer_norm` and `ln_dim`
 internally, so do not repeat those names in `**kwargs`.
 
-The inherited argument saver nevertheless records `ln_dim` in `get_config()`.
-Before manually reconstructing `Downsample`, `Upsample`, or `LocalMixer` with
-`from_config`, copy the config and remove `ln_dim`; the constructor restores it
-from `dim`.
+The inherited argument saver records `ln_dim` in `get_config()`, but the base
+embedding constructor safely discards that serialized duplicate and restores
+it from `dim`. Direct `Class.from_config(layer.get_config())` round trips work.

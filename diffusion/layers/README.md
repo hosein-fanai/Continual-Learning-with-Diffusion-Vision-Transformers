@@ -73,14 +73,11 @@ Layers based on `BaseLayer` additionally accept shared factory arguments:
 itself; its class docstring states which keys must not be repeated.
 
 Constructor arguments are saved by `ArgumentSaverLayer`, so `get_config()`
-includes Keras configuration and constructor settings. Direct round trips work
-for `AdaLNZero`, `DropPath`, and `FeatureHandler`. Several composed layers also
-save keys that their constructor supplies internally: all `BaseEmbedding`
-derivatives duplicate `ln_dim`, `VisionTransformerBlock` duplicates
-`use_layer_norm` and `ln_dim`, and `DiTDecoderBlock` additionally duplicates
-`gate_query_flag`. Remove those exact keys from a copied config before calling
-the corresponding `from_config`. Runtime weights always require normal Keras
-weight/model saving.
+includes Keras configuration and constructor settings. All public layers
+support direct `Class.from_config(layer.get_config())` reconstruction.
+Constructors that fix inherited settings discard those duplicate serialized
+keys and recompute them from their public arguments. Runtime weights still
+require normal Keras weight/model saving.
 
 ## Conditioning and zero gates
 
@@ -127,11 +124,10 @@ explicit ID list.
 merged = handler(features, second_list=[skip], ids=[-1], cond=condition)
 ```
 
-The current constructor requires a non-`None` `ln_dim` even when normalization
-and the MLP are disabled, because it records that width in its MLP factory.
-When adaptive normalization is enabled, `ln_dim` must equal the merged channel
-width and `cond [B,C]` is required. `mlp_output_dim` optionally projects the
-merged result to a new final width.
+`ln_dim` may be omitted when both normalization and the output MLP are
+disabled. When adaptive normalization or `mlp_output_dim` is enabled, provide
+the merged channel width as `ln_dim`; adaptive normalization also requires
+`cond [B,C]`. `mlp_output_dim` projects the merged result to a new final width.
 
 ## Training behavior
 

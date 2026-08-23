@@ -21,8 +21,8 @@ model.fit(dataset, callbacks=[stopper])
 ```
 
 An improvement is strictly `current < best - min_delta`. Missing monitor keys
-are ignored. The stop condition is `wait > patience`, so `patience=200` stops
-after 201 consecutive non-improving batches. `fit_progressively` creates a new
+are ignored. The stop condition is `wait >= patience`, so `patience=200` stops
+after 200 consecutive non-improving batches. `fit_progressively` creates a new
 callback for each stage, giving each stage independent `best=inf` and `wait=0`
 state.
 
@@ -56,9 +56,9 @@ The saving constructor immediately creates
 `sample` for both noisy-state and predicted-clean frame sequences. Filenames
 record the one-based epoch, sampling steps, guidance scale, and eta.
 
-`results_path` with `save_gifs=False` is rejected by the current API; saving
-PNGs alone is not an accepted configuration. If `results_path=None`,
-`show_images` must be true.
+Supplying `results_path` saves PNGs whether or not GIF output is enabled. If
+`results_path=None`, `show_images` must be true; `save_gifs=True` always
+requires a result path.
 
 ## `RawNetworkValidationCallback`
 
@@ -83,6 +83,5 @@ The bound model must implement
 For each returned key such as `noise_loss`, the callback writes
 `val_raw_noise_loss` into the Keras `logs` mapping. `val_x` may instead be an
 array/tensor with separate `val_y`, following that wrapper's normal evaluation
-contract. Keras normally supplies a nonempty logs mapping. If a caller manually
-passes `{}`, the callback's `logs or {}` expression creates a replacement and
-the original empty dictionary is not mutated.
+contract. Both populated and empty mappings supplied by Keras or a caller are
+updated in place.

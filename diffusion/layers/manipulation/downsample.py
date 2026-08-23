@@ -3,7 +3,7 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
@@ -62,9 +62,8 @@ class Downsample(BaseEmbedding):
         doubles the pre-MLP width; ``mlp_output_dim`` can replace it.
 
     Serialization:
-        ``get_config()`` includes inherited ``ln_dim`` even though
-        :class:`BaseEmbedding` supplies it from ``dim``. Remove ``ln_dim`` from
-        a copied config before calling ``Downsample.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
     """
 
     def __init__(
@@ -77,11 +76,20 @@ class Downsample(BaseEmbedding):
         cnn_kernel_size: int = 3, 
         cnn_activation_func: str = "linear", 
         circumvent_cls_token: bool = False, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the selected scaler, positional table, and projections.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            use_layer_norm (bool): Whether to normalize before scaling.
+            scaling_method (ScalingMethod): Pooling or strided-convolution mode.
+            strides (int): Positive spatial stride.
+            padding (str): Keras ``"same"`` or ``"valid"`` padding.
+            cnn_dim_ratio (int): Positive convolutional channel multiplier.
+            cnn_kernel_size (int): Positive convolution kernel size.
+            cnn_activation_func (str): Keras convolution activation.
+            circumvent_cls_token (bool): Whether to preserve token zero.
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
@@ -93,8 +101,17 @@ class Downsample(BaseEmbedding):
         )
         self._save_init_args(locals())
 
-        assert self.grid_size >= 2, \
-            "grid_size must be at least 2 for downsampling."
+        # Require a spatial grid large enough to reduce.
+        if self.grid_size is None or self.grid_size < 2:
+            raise ValueError("grid_size must be at least 2 for downsampling.")
+        for name in ("strides", "cnn_dim_ratio", "cnn_kernel_size"):
+            value = getattr(self, name)
+            # Require positive integer stride and convolution dimensions.
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
+        # Restrict padding to Keras's supported spatial modes.
+        if self.padding not in ("same", "valid"):
+            raise ValueError("padding must be 'same' or 'valid'.")
 
 
         self.output_grid_size = (
@@ -107,20 +124,25 @@ class Downsample(BaseEmbedding):
         )
 
         name = f"{self.name}/scaling_layer"
+        # Preserve channels while reducing with average pooling.
         if self.scaling_method == "avg_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.AveragePooling2D(
                 strides=self.strides, 
                 padding=self.padding, 
-                name=name
+                name=name,
+                dtype=self.dtype_policy,
             )
+        # Preserve channels while reducing with max pooling.
         elif self.scaling_method == "max_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.MaxPooling2D(
                 strides=self.strides, 
                 padding=self.padding, 
-                name=name
+                name=name,
+                dtype=self.dtype_policy,
             )
+        # Learn both spatial reduction and the configured channel expansion.
         elif self.scaling_method == "cnn_stride":
             self.output_dim = self.dim * self.cnn_dim_ratio
             self.scaling_layer = layers.Conv2D(
@@ -129,8 +151,10 @@ class Downsample(BaseEmbedding):
                 strides=self.strides, 
                 padding=self.padding, 
                 activation=self.cnn_activation_func, 
-                name=name
+                name=name,
+                dtype=self.dtype_policy,
             )
+        # Reject any scaling strategy outside the implemented modes.
         else:
             raise ValueError(f"pooling method can only be one of {ScalingMethod}.")
 
@@ -144,18 +168,24 @@ class Downsample(BaseEmbedding):
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/token_projector"
+            name=f"{self.name}/token_projector",
+            dtype=self.dtype_policy,
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
 
-    def call(self, inputs, training=None):
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor | None], 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Downsample a token grid.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class input contract.
-            training: Optional Keras training flag forwarded to normalization,
+            inputs (tuple[tf.Tensor, tf.Tensor | None]): Pair ``(x, cond)``
+                following the class input contract.
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to normalization,
                 convolution, positional projection, and MLP layers.
 
         Returns:
@@ -229,7 +259,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after pooling/convolution, padding, stride,
+        dict[str, str]: A one-entry mapping after pooling/convolution, padding, stride,
         normalization, class-token, position, projection, dtype, gradient,
         validation, shape-error, and serialization checks pass.
     """
@@ -324,7 +354,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_grid in (0, 1):
         try:
             Downsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Downsampling requires grid_size >= 2.")
@@ -360,23 +390,15 @@ def run_self_tests() -> dict[str, str]:
     )
     dtype_output = dtype_layer((tf.ones((1, 4, 2), tf.float64), None))
     assert dtype_layer.compute_dtype == "float64"
-    # TensorFlow 2.10's nested pooling layer retains its default float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     config = malformed.get_config()
-    try:
-        Downsample.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = Downsample.from_config(filtered_config)
+    restored = Downsample.from_config(config)
     assert restored.scaling_method == "avg_pooling" and restored.strides == 2
 
     return {"Downsample": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

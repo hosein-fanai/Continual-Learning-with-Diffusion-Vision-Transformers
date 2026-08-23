@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import initializers
 
+from typing import Any
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -35,27 +37,28 @@ class SingleTokenLayer(BaseEmbedding):
         ``None`` otherwise.
 
     Outputs:
-        Floating token tensor shaped ``[batch, 1, output_dim]`` when using an
-        input token or a positional embedding. With a trainable token and
-        ``with_pos_embed=False``, the current implementation leaves its batch
-        dimension at ``1``; callers concatenating it to a larger batch must
-        explicitly account for that shape.
+        Floating token tensor shaped ``[batch, 1, output_dim]``. A learned token
+        is broadcast to the runtime batch before positional merging.
 
     Serialization:
-        The saved config contains an inherited ``ln_dim`` key that duplicates
-        the value supplied internally by :class:`BaseEmbedding`. Remove that
-        key from a copied config before calling ``SingleTokenLayer.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
     """
 
     def __init__(
         self, 
         with_pos_embed: bool = True, 
         input_as_token: bool = False, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the trainable token, positional vector, and projections.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            with_pos_embed (bool): Whether to add or concatenate a learned
+                positional token.
+            input_as_token (bool): Whether the second call input supplies the
+                token instead of a trainable weight.
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
@@ -88,12 +91,17 @@ class SingleTokenLayer(BaseEmbedding):
             self.embed_dim
         ) if self.pos_embed is not None else None
 
-    def call(self, inputs, training=None):
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor | None], 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Resolve and return the configured single token.
 
         Args:
-            inputs: Pair ``(images, token)`` described by the class contract.
-            training: Optional Keras training flag forwarded to token and
+            inputs (tuple[tf.Tensor, tf.Tensor | None]): Pair ``(images, token)``
+                described by the class contract.
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to token and
                 positional projection MLPs.
 
         Returns:
@@ -104,7 +112,11 @@ class SingleTokenLayer(BaseEmbedding):
 
         images, token = inputs
 
-        x = token[:, None, :] if self.input_as_token else self.token
+        x = token[:, None, :] if self.input_as_token else tf.repeat(
+            self.token,
+            tf.shape(images)[0],
+            axis=0,
+        )
         x = self.token_mlp(
             x, 
             training=training
@@ -125,7 +137,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after positional, merge, projection, shape,
+        dict[str, str]: A one-entry mapping after positional, merge, projection, shape,
         gradient, invalid-mode, and documented serialization checks pass.
     """
 
@@ -144,7 +156,7 @@ def run_self_tests() -> dict[str, str]:
 
     learned_without_position = SingleTokenLayer(dim=4, with_pos_embed=False)
     unbatched = learned_without_position((images, None), training=True)
-    assert unbatched.shape == (1, 1, 4)
+    assert unbatched.shape == (3, 1, 4)
     assert learned_without_position.pos_embed is None
 
     supplied = tf.reshape(tf.range(12, dtype=tf.float32), (3, 4))
@@ -207,21 +219,13 @@ def run_self_tests() -> dict[str, str]:
 
     try:
         SingleTokenLayer(dim=4, pos_merger_type="invalid")
-    except AssertionError:
+    except ValueError:
         pass
     else:
         raise AssertionError("Invalid positional merge modes must fail.")
 
     config = learned_with_position.get_config()
-    try:
-        SingleTokenLayer.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = SingleTokenLayer.from_config(filtered_config)
+    restored = SingleTokenLayer.from_config(config)
     assert restored.dim == 4 and restored.with_pos_embed
 
     dtype_layer = SingleTokenLayer(
@@ -240,5 +244,6 @@ def run_self_tests() -> dict[str, str]:
     return {"SingleTokenLayer": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

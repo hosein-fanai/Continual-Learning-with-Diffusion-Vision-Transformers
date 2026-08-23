@@ -17,6 +17,19 @@ from . import CondType, TokenType, IdsType, IdsDictType
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
 
+def _select_first_token(x: tf.Tensor) -> tf.Tensor:
+    """Select the class token from a token sequence.
+
+    Args:
+        x (tf.Tensor): Float token tensor of shape ``[B, tokens, features]``.
+
+    Returns:
+        tf.Tensor: First-token features of shape ``[B, features]``.
+    """
+
+    return x[:, 0, :]
+
+
 class DiTClassifier(DiffusionTransformer):
     """Attach a configurable classifier pipeline to a diffusion transformer.
 
@@ -112,8 +125,8 @@ class DiTClassifier(DiffusionTransformer):
         classifier_mlp_activation_func: str = "tanh", 
         dropout_rate: float = 0., 
         build: bool = True, 
-        **kwargs
-    ):
+        **kwargs: object
+    ) -> None:
         """Initialize the joint noise-prediction and classifier network.
 
         Args:
@@ -226,12 +239,12 @@ class DiTClassifier(DiffusionTransformer):
                 activation, default ``"tanh"``.
             dropout_rate (float): Classifier dropout rate; 0 omits dropout.
             build (bool): Build symbolic inputs and variables immediately.
-            **kwargs: All ``DiffusionTransformer`` constructor options plus
+            **kwargs (object): All ``DiffusionTransformer`` constructor options plus
                 standard Keras model options.  Main-branch ``cls_token_type``
                 is intercepted according to ``classifier_only_cls_token``.
 
         Returns:
-            None.  Both branches and the classifier head are initialized.
+            None: Both branches and the classifier head are initialized.
         """
 
         temp_val = kwargs.pop("cls_token_type", None)
@@ -276,6 +289,7 @@ class DiTClassifier(DiffusionTransformer):
         ) if self.classifier_only_cls_token else self.cls_token
         self._create_clf_layers()
 
+        # Pool all tokens when requested or when no usable class token exists.
         if self.force_global_avg_pooling or not (
         (not self.classifier_only_cls_token and \
         self.cls_token_type is not None) or \
@@ -284,15 +298,17 @@ class DiTClassifier(DiffusionTransformer):
             self.classifier_feature_extractor = layers.GlobalAveragePooling1D(
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
+        # Otherwise classify from the first class-token position.
         else:
             self.classifier_feature_extractor = layers.Lambda(
-                lambda x: x[:, 0, :], 
+                _select_first_token,
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
         self.classifier = models.Sequential( # TODO: build it as a functional model
             name=f"{self.name_prefix}classes"
         )
+        # Add the optional hidden classifier projection.
         if self.classifier_mlp_ratio is not None:
             self.classifier.add(layers.Dense(
                 self._get_unforced_total_dim(
@@ -303,6 +319,7 @@ class DiTClassifier(DiffusionTransformer):
                 activation=self.classifier_mlp_activation_func, 
                 name=f"{self.classifier.name}/first_layer"
             ))
+        # Add classifier dropout only for a nonzero rate.
         if self.dropout_rate > 0.:
             self.classifier.add(layers.Dropout(
                 self.dropout_rate, 
@@ -314,10 +331,11 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.classifier.name}/final_layer"
         ))
 
+        # Materialize classifier and denoiser variables when requested.
         if self.build_:
             self.build()
 
-    def _check_clf_assertions(self, local_vars: dict):
+    def _check_clf_assertions(self, local_vars: dict) -> None:
         """Validate classifier-specific branch configuration.
 
         Args:
@@ -325,7 +343,7 @@ class DiTClassifier(DiffusionTransformer):
                 transformer has been initialized.
 
         Returns:
-            None.  Invalid CFG requirements, missing mandatory aggregator or
+            None: Invalid CFG requirements, missing mandatory aggregator or
             terminal IDs, out-of-range depths, unsupported kwargs keys, and
             invalid attention plug types raise ``AssertionError``.
         """
@@ -335,6 +353,7 @@ class DiTClassifier(DiffusionTransformer):
         assert self.use_cfg, \
             "use_cfg must be True for classification to work."
 
+        # Noise aggregation requires image-shaped denoiser output.
         if local_vars["aggregate_from_noises"]:
             assert self.use_unpatchify, \
                 "aggregate_from_noises requires use_unpatchify to be True."
@@ -515,7 +534,7 @@ class DiTClassifier(DiffusionTransformer):
                         "clf_upsample_ids", "clf_cls_token_type", 
                         "clf_mha_key_dim", "clf_mha_value_dim", 
                         "clf_ln_mlp_ratio", "clf_reshaper_ids_dict", 
-                        "clf_cls_token_regularizer_ids"]):
+                        "clf_cls_token_regularizer_ids"]) -> None:
         """Resolve inheritable ``clf_*`` values from main-branch attributes.
 
         Args:
@@ -526,7 +545,7 @@ class DiTClassifier(DiffusionTransformer):
                 modes, key/value dimensions, and reshaper/regularizer IDs.
 
         Returns:
-            None.  For each non-excluded ``clf_name``, a None value becomes the
+            None: For each non-excluded ``clf_name``, a None value becomes the
             current ``self.name`` value; non-None values are retained.
 
         Raises:
@@ -534,6 +553,7 @@ class DiTClassifier(DiffusionTransformer):
         """
 
         for name, clf_part_value in local_vars.items():
+            # Validate only classifier-specific constructor fields not explicitly excluded.
             if not name.startswith("clf_") or name in exclude:
                 continue
 
@@ -543,11 +563,12 @@ class DiTClassifier(DiffusionTransformer):
 
             setattr(self, name, clf_part_value)
 
+        # A forced classifier width requires an explicit target width.
         if self.clf_dim_forced:
             assert self.clf_dim is not None, \
                 "When clf_dim_forced is true, clf_dim cannot be None."
 
-    def _handle_all_clf_ids(self):
+    def _handle_all_clf_ids(self) -> None:
         """Normalize every classifier and main-feature aggregation ID set.
 
         Classifier component selections expand over depths 1..``clf_depth``;
@@ -556,7 +577,7 @@ class DiTClassifier(DiffusionTransformer):
         connectors resolve them against ``clf_depth``.
 
         Returns:
-            None.  ID attributes are normalized in place.
+            None: ID attributes are normalized in place.
         """
 
         self.clf_vit_block_ids = self._handle_ids(
@@ -617,7 +638,7 @@ class DiTClassifier(DiffusionTransformer):
         )
 
     def _get_layers_dict_last_output_dim(self, layers_dict: dict, 
-                                        skip_reshaper: bool):
+                                        skip_reshaper: bool) -> int | None:
         """Return the final feature width from a classifier/main stage mapping.
 
         Args:
@@ -631,6 +652,7 @@ class DiTClassifier(DiffusionTransformer):
 
         last_output_dim = None
 
+        # Account for the classifier feature aggregator's output width.
         if (key:=self.FA) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
 
@@ -642,7 +664,7 @@ class DiTClassifier(DiffusionTransformer):
 
         return last_output_dim
 
-    def _create_clf_embedders(self):
+    def _create_clf_embedders(self) -> None:
         """Create or reuse condition layers needed by the classifier branch.
 
         With ``classifier_only_cls_token=True``, unused main token-conditioning
@@ -652,7 +674,7 @@ class DiTClassifier(DiffusionTransformer):
         created when requested.
 
         Returns:
-            None.  Embedder, merger, and ``clf_labels_embed_reg`` attributes are
+            None: Embedder, merger, and ``clf_labels_embed_reg`` attributes are
             assigned in place.
         """
 
@@ -664,11 +686,15 @@ class DiTClassifier(DiffusionTransformer):
         clf_conds_merger_flag = ("time" in self._clf_cls_token_type and "label" in self._clf_cls_token_type
                                 ) or ("time" in self._clf_cond_type and "label" in self._clf_cond_type)
 
+        # Remove main-branch token dependencies used exclusively by the classifier.
         if self.classifier_only_cls_token:
+            # Drop an otherwise unused main time embedder.
             if flag1:=("time" in self._cls_token_type) and not clf_embed_times_flag:
                 self.time_embedder = None
+            # Drop an otherwise unused main label embedder.
             if flag2:=("label" in self._cls_token_type) and not clf_embed_labels_flag:
                 self.label_embedder = None
+            # Drop the main condition merger when both component embedders were removed.
             if flag1 and flag2 and not clf_conds_merger_flag:
                 self.conds_merger = None
             self.cls_token_type = None
@@ -691,7 +717,11 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
 
-    def _create_clf_layer_dict(self, i: int, layers_dicts: list[dict]):
+    def _create_clf_layer_dict(
+        self, 
+        i: int, 
+        layers_dicts: list[dict]
+    ) -> dict[str, layers.Layer]:
         """Construct one classifier stage or its terminal connector.
 
         Args:
@@ -709,6 +739,7 @@ class DiTClassifier(DiffusionTransformer):
         layers_dict = {}
         key = i+1
 
+        # Build the classifier's main-feature aggregator, bypassing it for noise input.
         if key in self.feature_aggregation_ids_dict:
             bypass_aggregator = self.aggregate_from_noises and key == 1
             layers_dict[self.FA] = self._create_feature_handler(
@@ -732,6 +763,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.FA[2:]}"
             )
 
+        # Build this classifier depth's residual feature connector.
         if key in self.clf_connection_ids_dict:
             layers_dict[self.FC] = self._create_feature_handler(
                 ids_set=self.clf_connection_ids_dict[key], 
@@ -752,6 +784,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.FC[2:]}"
             )
 
+        # Build the classifier's cross-attention feature aggregator.
         if key in self.cross_attention_aggregation_ids_dict:
             layers_dict[self.CAA] = self._create_feature_handler(
                 ids_set=self.cross_attention_aggregation_ids_dict[key], 
@@ -766,6 +799,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.CAA[2:]}"
             )
 
+        # Build this classifier depth's residual cross-attention connector.
         if key in self.clf_cross_attention_ids_dict:
             layers_dict[self.CAC] = self._create_feature_handler(
                 ids_set=self.clf_cross_attention_ids_dict[key], 
@@ -785,6 +819,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.CAC[2:]}"
             )
 
+        # Build a classifier transformer block with the preceding handler width.
         if key in self.clf_vit_block_ids:
             mha_query_dim = layers_dict[self.CAA].output_dim if \
                             key in self.cross_attention_aggregation_ids_dict and \
@@ -812,6 +847,7 @@ class DiTClassifier(DiffusionTransformer):
                 name_prefix=f"{self.name_prefix}clf_depth_{key}_"
             )
 
+        # Build this classifier depth's local mixer.
         if key in self.clf_local_mixer_ids:
             layers_dict[self.LM] = self._create_local_mixer(
                 i=i, 
@@ -830,6 +866,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
             )
 
+        # Build this classifier depth's downsampler.
         if key in self.clf_downsample_ids:
             layers_dict[self.DS] = self._create_scaler(
                 scaler_type="downsample", 
@@ -849,6 +886,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
             )
 
+        # Build this classifier depth's upsampler.
         if key in self.clf_upsample_ids:
             layers_dict[self.US] = self._create_scaler(
                 scaler_type="upsample", 
@@ -868,6 +906,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
             )
 
+        # Build this classifier depth's flatten or unflatten reshaper.
         if key in self.clf_reshaper_ids_dict:
             layers_dict[self.R] = self._create_reshaper(
                 reshape_type=self.clf_reshaper_ids_dict[key], 
@@ -882,6 +921,7 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
             )
 
+        # Build this classifier depth's auxiliary token head.
         if key in self.clf_cls_token_regularizer_ids:
             layers_dict[self.CTR] = self._create_token_regularizer(
                 name=f"{self.name_prefix}clf_depth_{key}_{self.CTR[2:]}"
@@ -889,11 +929,11 @@ class DiTClassifier(DiffusionTransformer):
 
         return layers_dict
 
-    def _create_clf_layers(self):
+    def _create_clf_layers(self) -> None:
         """Create classifier processing stages and the terminal extraction stage.
 
         Returns:
-            None.  ``clf_layers_dicts`` receives ``clf_depth + 1`` dictionaries;
+            None: ``clf_layers_dicts`` receives ``clf_depth + 1`` dictionaries;
             the final dictionary normally contains the mandatory connector
             moved from constructor key ``-1``.
         """
@@ -943,6 +983,7 @@ class DiTClassifier(DiffusionTransformer):
             "noises": noises, 
         }
 
+        # Include intermediate classifier metadata only for full returns.
         if full_return:
             output_dict["cond"] = cond
             output_dict["features_list"] = features_list
@@ -953,12 +994,13 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["clf_features_list"] = outputs[2]
             output_dict["clf_regs_list"] = outputs[3]
             output_dict["clf_z_vals"] = outputs[4]
+        # Otherwise expose the classifier probabilities as the primary result.
         else:
             output_dict["classes"] = outputs[0]
 
         return output_dict
 
-    def set_max_encoder_num(self, max_encoder_num: int | None = None):
+    def set_max_encoder_num(self, max_encoder_num: int | None = None) -> None:
         """Set how many main transformer stages classification must execute.
 
         Args:
@@ -968,7 +1010,7 @@ class DiTClassifier(DiffusionTransformer):
                 when ``aggregate_from_noises=True``.
 
         Returns:
-            None.  ``self.max_encoder_num`` is assigned.
+            None: ``self.max_encoder_num`` is assigned.
         """
 
         aggregation_ids = []
@@ -977,6 +1019,7 @@ class DiTClassifier(DiffusionTransformer):
         [aggregation_ids.extend(value) for value in \
             self.cross_attention_aggregation_ids_dict.values()]
 
+        # Include the denoiser output as a classifier source when configured.
         if self.aggregate_from_noises:
             aggregation_ids.append(self.depth)
 
@@ -989,7 +1032,10 @@ class DiTClassifier(DiffusionTransformer):
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         training: bool | None = None
-    ):
+    ) -> tf.Tensor | tuple[
+        tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor],
+        tuple[tf.Tensor, tf.Tensor]
+    ]:
         """Run only the inherited diffusion noise-prediction branch.
 
         Args:
@@ -1061,8 +1107,11 @@ class DiTClassifier(DiffusionTransformer):
                 cond=clf_cond, 
                 training=training
             ) if self.FA in layers_dict else x
+        # Initialize the classifier branch at its first depth.
             if i == 0:
+            # Start from the denoiser's predicted image/noise when configured.
                 if self.aggregate_from_noises:
+                # Embed noise patches without main conditions for a classifier-only token.
                     if self.classifier_only_cls_token:
                         x = self.patch_embedder(
                             noises, 
@@ -1071,6 +1120,7 @@ class DiTClassifier(DiffusionTransformer):
                                             else None, 
                             training=training
                         )
+                # Otherwise embed noise with the shared main condition components.
                     else:
                         x, (_, main_time_embeds, main_label_embeds) = self.embed_inputs(
                             (noises, times, labels), 
@@ -1214,6 +1264,7 @@ class DiTClassifier(DiffusionTransformer):
             training=training
         )
 
+        # Return classifier features and auxiliary values only when requested.
         if full_return:
             return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
         return x
@@ -1265,7 +1316,9 @@ class DiTClassifier(DiffusionTransformer):
             name in depth_spec 
             for name in ("network", "classifier")
         )
+        # Split targeted growth into denoiser and classifier specifications.
         if targeted:
+            # Reject targeted keys outside the two model branches.
             if not all(
                 name in ("network", "classifier") for name in depth_spec
             ):
@@ -1275,6 +1328,7 @@ class DiTClassifier(DiffusionTransformer):
 
             network_spec = depth_spec.get("network", [])
             classifier_specs = depth_spec.get("classifier", [])
+        # Treat an unscoped specification as denoiser-only growth.
         else:
             network_spec = depth_spec
             classifier_specs = []
@@ -1286,9 +1340,11 @@ class DiTClassifier(DiffusionTransformer):
         ]
 
         old_clf_depth = self.clf_depth
+        # Delegate directly when no classifier depths were requested.
         if len(classifier_specs) == 0:
             growth = super().add_depths(network_spec)
 
+            # Refresh the encoder limit after denoiser growth used by noise aggregation.
             if self.aggregate_from_noises:
                 self.set_max_encoder_num()
 
@@ -1299,6 +1355,7 @@ class DiTClassifier(DiffusionTransformer):
                 "cross_attention_aggregation_ids_dict"
             ] = deepcopy(self.cross_attention_aggregation_ids_dict)
 
+            # Preserve the base growth result for unscoped requests.
             if not targeted:
                 return growth
 
@@ -1327,6 +1384,7 @@ class DiTClassifier(DiffusionTransformer):
         old_terminal_key = old_clf_depth + 1
         terminal_layers = dict(self.clf_layers_dicts[-1])
 
+        # Preserve the classifier head as a connector-only terminal depth.
         if set(terminal_layers) != {self.FC}:
             raise ValueError(
                 "The terminal classifier depth must contain only its connector."
@@ -1347,16 +1405,20 @@ class DiTClassifier(DiffusionTransformer):
                 if key != old_terminal_key
             }
             for layer_spec in classifier_specs:
+                # Interpret a string as one enabled classifier layer.
                 if isinstance(layer_spec, str):
                     layer_spec = {layer_spec: True}
+                # Interpret a collection as several enabled layers in one depth.
                 elif isinstance(layer_spec, (tuple, set, frozenset)):
                     layer_spec = dict.fromkeys(layer_spec, True)
 
                 key = len(planned_layers) + 1
                 for layer_name, options in layer_spec.items():
+                    # Ignore explicitly disabled classifier layers.
                     if options is False:
                         continue
                     
+                    # Register source routes for classifier feature handlers.
                     if layer_name in (
                         self.FA[2:], self.FC[2:], 
                         self.CAA[2:], self.CAC[2:]
@@ -1365,15 +1427,19 @@ class DiTClassifier(DiffusionTransformer):
                         ids = [-1] if ids is None or ids is True else ids
                         ids = [ids] if isinstance(ids, int) else list(ids)
 
+                        # Route main-network features into the classifier aggregator.
                         if layer_name == self.FA[2:]:
                             dict_name = "feature_aggregation_ids_dict"
                             source_depth = self.depth
+                        # Route main-network features into cross-attention aggregation.
                         elif layer_name == self.CAA[2:]:
                             dict_name = "cross_attention_aggregation_ids_dict"
                             source_depth = self.depth
+                        # Route earlier classifier features into a residual connector.
                         elif layer_name == self.FC[2:]:
                             dict_name = "clf_connection_ids_dict"
                             source_depth = key-1
+                        # Route earlier classifier features into cross-attention.
                         else:
                             dict_name = "clf_cross_attention_ids_dict"
                             source_depth = key-1
@@ -1399,6 +1465,7 @@ class DiTClassifier(DiffusionTransformer):
                             **getattr(self, dict_name), 
                             key: ids
                         })
+                    # Register classifier transformer-block mode and width options.
                     elif layer_name == self.VTB[2:]:
                         block_options = options if isinstance(options, dict) else {}
 
@@ -1412,27 +1479,33 @@ class DiTClassifier(DiffusionTransformer):
                             **self.clf_vit_block_mlp_output_dims, 
                             key: block_options["mlp_output_dim"]
                         } if block_options.get("mlp_output_dim") is not None else self.clf_vit_block_mlp_output_dims
+                    # Register a classifier local mixer at the new depth.
                     elif layer_name == self.LM[2:]:
                         self.clf_local_mixer_ids = [
                             *self.clf_local_mixer_ids, key
                         ]
+                    # Register a classifier downsampler at the new depth.
                     elif layer_name == self.DS[2:]:
                         self.clf_downsample_ids = [
                             *self.clf_downsample_ids, key
                         ]
+                    # Register a classifier upsampler at the new depth.
                     elif layer_name == self.US[2:]:
                         self.clf_upsample_ids = [
                             *self.clf_upsample_ids, key
                         ]
+                    # Register the classifier depth's reshape direction.
                     elif layer_name == self.R[2:]:
                         reshape_type = options.get("reshape_type")
                         self.clf_reshaper_ids_dict = {
                             **self.clf_reshaper_ids_dict, key: reshape_type
                         }
+                    # Register an auxiliary classifier token head at the new depth.
                     elif layer_name == self.CTR[2:]:
                         self.clf_cls_token_regularizer_ids = [
                             *self.clf_cls_token_regularizer_ids, key
                         ]
+                    # Reject progressive layer names unsupported by the classifier branch.
                     else:
                         raise ValueError(
                             f"Unknown progressive classifier layer: {layer_name}."
@@ -1444,6 +1517,7 @@ class DiTClassifier(DiffusionTransformer):
                 planned_layers.append(layers_dict)
 
             new_clf_depth = old_clf_depth + len(classifier_specs)
+            # Retarget the terminal connector when it referenced the old last depth.
             if terminal_ids == [old_clf_depth]:
                 terminal_ids = [new_clf_depth]
 
@@ -1452,6 +1526,7 @@ class DiTClassifier(DiffusionTransformer):
                 new_clf_depth+1: terminal_ids, 
             }
 
+            # Keep classifier growth compatible with the existing classification head.
             if self._get_last_output_dim(
                 len(planned_layers), 
                 planned_layers + [terminal_layers], 
@@ -1559,11 +1634,9 @@ def run_self_tests() -> dict[str, str]:
 
         return DiTClassifier(**config)
 
-    # Exercise the public mutable defaults without passing replacements.  The
-    # first construction mutates both dictionaries in place and consumes the
-    # mandatory ``-1`` terminal key, so a second construction currently fails.
-    # Restore the actual signature-owned objects so this regression check is
-    # isolated and the runner remains idempotent.
+    # Reproduce aggregate-suite ordering by constructing multiple models from
+    # the same public defaults in one process.  Each instance must normalize
+    # its own copies without changing the signature-owned dictionaries.
     import inspect
 
 
@@ -1572,28 +1645,28 @@ def run_self_tests() -> dict[str, str]:
         "feature_aggregation_ids_dict"
     ].default
     public_connection_default = public_parameters["clf_connection_ids_dict"].default
-    public_aggregation_default.clear()
-    public_aggregation_default.update({1: (-1,)})
-    public_connection_default.clear()
-    public_connection_default.update({-1: (-1,)})
-    try:
-        public_default_first = DiTClassifier(**base)
-        assert public_default_first.feature_aggregation_ids_dict == {1: [1]}
-        assert public_default_first.clf_connection_ids_dict == {2: [1]}
-        assert -1 not in public_connection_default
-        try:
-            DiTClassifier(**base)
-        except AssertionError as error:
-            assert "extract from the classifier" in str(error)
-        else:
-            raise AssertionError(
-                "Repeated use of the currently mutable public default must fail"
-            )
-    finally:
-        public_aggregation_default.clear()
-        public_aggregation_default.update({1: (-1,)})
-        public_connection_default.clear()
-        public_connection_default.update({-1: (-1,)})
+    assert public_aggregation_default == {1: (-1,)}
+    assert public_connection_default == {-1: (-1,)}
+    public_default_first = DiTClassifier(**base)
+    public_default_second = DiTClassifier(**base)
+    assert public_default_first.feature_aggregation_ids_dict == {1: [1]}
+    assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
+    assert public_default_first.clf_connection_ids_dict == {2: [1]}
+    assert public_default_second.clf_connection_ids_dict == {2: [1]}
+    assert (
+        public_default_first.feature_aggregation_ids_dict
+        is not public_default_second.feature_aggregation_ids_dict
+    )
+    assert (
+        public_default_first.clf_connection_ids_dict
+        is not public_default_second.clf_connection_ids_dict
+    )
+    public_default_first.feature_aggregation_ids_dict[1].append(0)
+    public_default_first.clf_connection_ids_dict[2].append(0)
+    assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
+    assert public_default_second.clf_connection_ids_dict == {2: [1]}
+    assert public_aggregation_default == {1: (-1,)}
+    assert public_connection_default == {-1: (-1,)}
 
     model = make_model()
     outputs = model(inputs, full_return=True, training=False)
@@ -2135,5 +2208,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiTClassifier": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

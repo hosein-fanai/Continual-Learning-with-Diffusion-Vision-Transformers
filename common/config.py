@@ -9,15 +9,107 @@ class-incremental runs while the other sections remain reusable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from typing import Any
+from typing import Any, TypeVar
+from collections.abc import Mapping
+
+import os
 
 import yaml
+
+
+SectionT = TypeVar("SectionT")
+
+
+def _all_depth_ids() -> list[int | None]:
+    """Return the default marker selecting every eligible network depth.
+
+    Returns:
+        list[int | None]: A new ``[None]`` list for one dataclass instance.
+    """
+
+    return [None]
+
+
+def _default_regularizer_range() -> dict[str, int]:
+    """Return the default normalized regularizer interval.
+
+    Returns:
+        dict[str, int]: A new ``{"start": 0, "end": 1}`` mapping.
+    """
+
+    return {"start": 0, "end": 1}
+
+
+def _default_feature_aggregation() -> dict[int, list[int]]:
+    """Return the default final-depth feature route.
+
+    Returns:
+        dict[int, list[int]]: A new mapping from classifier depth 1 to the
+        source model's final depth.
+    """
+
+    return {1: [-1]}
+
+
+def _default_classifier_connection() -> dict[int, list[int]]:
+    """Return the default route from the final source classifier depth.
+
+    Returns:
+        dict[int, list[int]]: A new ``{-1: [-1]}`` mapping.
+    """
+
+    return {-1: [-1]}
+
+
+def _default_vae_hiddens() -> list[int]:
+    """Return the default single dense VAE hidden width.
+
+    Returns:
+        list[int]: A new ``[16]`` list.
+    """
+
+    return [16]
+
+
+def _default_unet_widths() -> list[int]:
+    """Return the standard three-stage U-Net widths.
+
+    Returns:
+        list[int]: A new ``[32, 64, 96]`` list.
+    """
+
+    return [32, 64, 96]
+
+
+def _default_buffer_kwargs() -> dict[str, object]:
+    """Return default fixed replay-buffer controls.
+
+    Returns:
+        dict[str, object]: New capacity, sampling, insertion, and seed values.
+    """
+
+    return {
+        "maxlen": 10_000, 
+        "sample_num": 1_000, 
+        "insert_num": 1_000, 
+        "seed": None
+    }
+
+
+def _default_generative_replay_kwargs() -> dict[str, int]:
+    """Return default generative-replay sample counts.
+
+    Returns:
+        dict[str, int]: New training and per-class generation counts.
+    """
+
+    return {"train_num": 1_000, "samples_per_class": 1_000}
 
 
 class KwargsMixin:
     """Convert a configuration dataclass into constructor keyword arguments."""
 
-    def kwargs(self) -> dict[str, Any]:
+    def kwargs(self: KwargsMixin) -> dict[str, Any]:
         """Return a recursively copied dictionary of all dataclass fields.
 
         Returns:
@@ -67,7 +159,7 @@ class DiffusionTransformerConfig(KwargsMixin):
     cross_attention_ids_dict: dict = field(default_factory=dict)
     cross_attention_kwargs: dict = field(default_factory=dict)
     cross_attention_plug_type: str = "values"
-    vit_block_ids: list[int | None] = field(default_factory=lambda: [None])
+    vit_block_ids: list[int | None] = field(default_factory=_all_depth_ids)
     use_decoder_ids: list[int | None] = field(default_factory=list)
     mha_key_dim: int | None = None
     mha_value_dim: int | None = None
@@ -88,7 +180,7 @@ class DiffusionTransformerConfig(KwargsMixin):
     reshaper_kwargs: dict = field(default_factory=dict)
     cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
     cls_token_regularizer_kwargs: dict = field(
-        default_factory=lambda: {"start": 0, "end": 1}
+        default_factory=_default_regularizer_range
     )
     final_ffn_activation_func: str = "linear"
     use_refiner_cnn: bool = False
@@ -106,7 +198,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
 
     aggregate_from_noises: bool = False
     feature_aggregation_ids_dict: dict = field(
-        default_factory=lambda: {1: [-1]}
+        default_factory=_default_feature_aggregation
     )
     feature_aggregation_kwargs: dict = field(default_factory=dict)
     cross_attention_aggregation_ids_dict: dict = field(default_factory=dict)
@@ -118,13 +210,13 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     clf_cls_token_type: str | None = "new_weight"
     clf_depth: int = 1
     clf_connection_ids_dict: dict = field(
-        default_factory=lambda: {-1: [-1]}
+        default_factory=_default_classifier_connection
     )
     clf_connection_kwargs: dict | None = None
     clf_cross_attention_ids_dict: dict = field(default_factory=dict)
     clf_cross_attention_kwargs: dict | None = None
     clf_cross_attention_plug_type: str | None = None
-    clf_vit_block_ids: list[int | None] = field(default_factory=lambda: [None])
+    clf_vit_block_ids: list[int | None] = field(default_factory=_all_depth_ids)
     clf_use_decoder_ids: list[int | None] = field(default_factory=list)
     clf_mha_key_dim: int | None = None
     clf_mha_value_dim: int | None = None
@@ -160,7 +252,7 @@ class DiTDecoderConfig(DiffusionTransformerConfig):
     encoder_feature_grid_sizes: list[int | None] | None = None
     encoder_feature_dims: list[int] | None = None
     shift_inputs: bool = True
-    use_decoder_ids: list[int | None] = field(default_factory=lambda: [None])
+    use_decoder_ids: list[int | None] = field(default_factory=_all_depth_ids)
     decoder_separate_cond: bool = False
     use_causal_mask: bool = True
     feature_aggregation_ids_dict: dict = field(default_factory=dict)
@@ -194,7 +286,7 @@ class UNetConfig(KwargsMixin):
     timesteps: int = 1_000
     image_size: int = 32
     channels: int = 1
-    widths: list[int] = field(default_factory=lambda: [32, 64, 96])
+    widths: list[int] = field(default_factory=_default_unet_widths)
     block_depth: int = 2
     bottleneck_width: int = 128
     bottleneck_depth: int = 2
@@ -213,7 +305,7 @@ class UNetConfig(KwargsMixin):
     reshaper_kwargs: dict = field(default_factory=dict)
     cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
     cls_token_regularizer_kwargs: dict = field(
-        default_factory=lambda: {"start": 0, "end": 1}
+        default_factory=_default_regularizer_range
     )
     extra_depth_specs: list[object] = field(default_factory=list)
     name_prefix: str = ""
@@ -226,7 +318,7 @@ class UNetClassifierConfig(UNetConfig):
 
     aggregate_from_noises: bool = False
     feature_aggregation_ids_dict: dict = field(
-        default_factory=lambda: {1: [-1]}
+        default_factory=_default_feature_aggregation
     )
     classifier_only_cls_token: bool = False
     clf_dim: int | None = None
@@ -298,7 +390,7 @@ class VariationalAutoencoderConfig(KwargsMixin):
 
     data_dim: int = 2_048
     latent_dim: int = 8
-    hiddens_dims: list[int] = field(default_factory=lambda: [16])
+    hiddens_dims: list[int] = field(default_factory=_default_vae_hiddens)
     hiddens_kwargs: dict = field(default_factory=dict)
     last_activation: str | None = "tanh"
     beta: float = 0.25
@@ -309,12 +401,12 @@ class VariationalAutoencoderConfig(KwargsMixin):
 
 
 @dataclass
-class VAEClassiferConfig(KwargsMixin):
-    """Arguments forwarded to ``VAEClassifer`` except its classifier inputs."""
+class VAEClassifierConfig(KwargsMixin):
+    """Arguments forwarded to ``VAEClassifier`` except classifier inputs."""
 
     data_dim: int = 2_048
     latent_dim: int = 8
-    hiddens_dims: list[int] = field(default_factory=lambda: [16])
+    hiddens_dims: list[int] = field(default_factory=_default_vae_hiddens)
     hiddens_kwargs: dict = field(default_factory=dict)
     last_activation: str | None = "tanh"
     beta: float = 0.25
@@ -441,8 +533,8 @@ class ModelConfig:
     variational_autoencoder: VariationalAutoencoderConfig = field(
         default_factory=VariationalAutoencoderConfig
     )
-    vae_classifier: VAEClassiferConfig = field(
-        default_factory=VAEClassiferConfig
+    vae_classifier: VAEClassifierConfig = field(
+        default_factory=VAEClassifierConfig
     )
     diffusion_model: DiffusionModelConfig = field(
         default_factory=DiffusionModelConfig
@@ -454,7 +546,7 @@ class ModelConfig:
         default_factory=DiffusionClassifierV2Config
     )
 
-    def __post_init__(self):
+    def __post_init__(self: ModelConfig) -> None:
         """Convert nested model-section mappings to typed dataclass instances.
 
         Returns:
@@ -481,7 +573,7 @@ class ModelConfig:
             self.variational_autoencoder, VariationalAutoencoderConfig
         )
         self.vae_classifier = _section(
-            self.vae_classifier, VAEClassiferConfig
+            self.vae_classifier, VAEClassifierConfig
         )
         self.diffusion_model = _section(self.diffusion_model, DiffusionModelConfig)
         self.diffusion_classifier = _section(self.diffusion_classifier, DiffusionClassifierConfig)
@@ -549,7 +641,7 @@ class ContinuallyLearnConfig(KwargsMixin):
             a VAE or diffusion replay model instead of the standalone model.
         train_classifier_separately (bool): Add the separate classifier phase
             required by ``DiffusionClassifierV2`` and optionally used by a
-            ``VAEClassifer``.
+            ``VAEClassifier``.
         return_details (bool): Return task histories and final models together
             with accuracies from a direct configured call.
     """
@@ -559,17 +651,13 @@ class ContinuallyLearnConfig(KwargsMixin):
     keep_same_model: bool = True
     use_loaded_opt: bool = True
     use_buffer: bool = False
-    buffer_kwargs: dict[str, object] = field(default_factory=lambda: {
-        "maxlen": 10_000, 
-        "sample_num": 1_000, 
-        "insert_num": 1_000, 
-        "seed": None
-    })
+    buffer_kwargs: dict[str, object] = field(
+        default_factory=_default_buffer_kwargs
+    )
     plot_results: bool = True
-    generative_model_kwargs: dict[str, int] = field(default_factory=lambda: {
-        "train_num": 1_000, 
-        "samples_per_class": 1_000
-    })
+    generative_model_kwargs: dict[str, int] = field(
+        default_factory=_default_generative_replay_kwargs
+    )
     use_generative_model_classifier: bool = False
     train_classifier_separately: bool = False
     return_details: bool = False
@@ -689,7 +777,7 @@ class Config:
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
     hpo: dict = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self: Config) -> None:
         """Convert every supplied top-level mapping to its section dataclass.
 
         Returns:
@@ -707,7 +795,10 @@ class Config:
         self.reporting = _section(self.reporting, ReportingConfig)
 
 
-def _section(value, section_type):
+def _section(
+    value: SectionT | Mapping[str, object], 
+    section_type: type[SectionT]
+) -> SectionT:
     """Return an existing config section or construct one from a mapping.
 
     Args:
@@ -724,13 +815,16 @@ def _section(value, section_type):
         TypeError: If ``value`` is not a compatible mapping or has unknown keys.
     """
 
+    # Reuse an already constructed typed section unchanged.
     if isinstance(value, section_type):
         return value
 
     return section_type(**value)
 
 
-def load_config(path: str | None = None) -> Config:
+def load_config(
+    path: str | os.PathLike[str] | None = None
+) -> Config:
     """Load a complete config tree from YAML or dataclass defaults.
 
     Args:
@@ -750,16 +844,24 @@ def load_config(path: str | None = None) -> Config:
             unknown dataclass field.
     """
 
+    # Return pure dataclass defaults when no YAML path is supplied.
     if path is None:
         return Config()
 
     with open(path, "r", encoding="utf-8") as stream:
         data = yaml.safe_load(stream)
     
+    # Require a mapping at the YAML document root.
+    if not isinstance(data, Mapping):
+        raise TypeError("The YAML document root must be a mapping.")
+
     return Config(**data)
 
 
-def save_config(config: Config, config_path: str):
+def save_config(
+    config: Config, 
+    config_path: str | os.PathLike[str]
+) -> None:
     """Serialize a config dataclass tree to sorted YAML.
 
     Args:
@@ -776,7 +878,7 @@ def save_config(config: Config, config_path: str):
         OSError: If the destination cannot be opened or written.
     """
 
-    with open(config_path, "w") as file:
+    with open(config_path, "w", encoding="utf-8") as file:
         yaml.safe_dump(asdict(config), file, sort_keys=True)
 
 
@@ -802,9 +904,9 @@ def run_self_tests() -> dict[str, str]:
 
 
     mixin_probe_type = make_dataclass(
-        "KwargsMixinProbe",
-        [("values", list[int]), ("options", dict[str, object])],
-        bases=(KwargsMixin,),
+        "KwargsMixinProbe", 
+        [("values", list[int]), ("options", dict[str, object])], 
+        bases=(KwargsMixin,)
     )
     original_values = [1, 2]
     mixin_probe = mixin_probe_type(original_values, {"nested": [3]})
@@ -971,8 +1073,8 @@ def run_self_tests() -> dict[str, str]:
     assert vae_defaults.hiddens_dims == [16]
     assert vae_custom.kwargs()["class_num"] == 2
 
-    vae_classifier_defaults = VAEClassiferConfig()
-    vae_classifier_custom = VAEClassiferConfig(
+    vae_classifier_defaults = VAEClassifierConfig()
+    vae_classifier_custom = VAEClassifierConfig(
         data_dim=4,
         hiddens_dims=[],
         alpha=0.0,
@@ -1035,7 +1137,7 @@ def run_self_tests() -> dict[str, str]:
         model_from_mappings.variational_autoencoder,
         VariationalAutoencoderConfig,
     )
-    assert isinstance(model_from_mappings.vae_classifier, VAEClassiferConfig)
+    assert isinstance(model_from_mappings.vae_classifier, VAEClassifierConfig)
     assert isinstance(model_from_mappings.diffusion_model, DiffusionModelConfig)
     assert isinstance(model_from_mappings.diffusion_classifier, DiffusionClassifierConfig)
     assert isinstance(
@@ -1228,7 +1330,7 @@ def run_self_tests() -> dict[str, str]:
         "DiffusionClassifierConfig": "passed", 
         "DiffusionClassifierV2Config": "passed",
         "VariationalAutoencoderConfig": "passed",
-        "VAEClassiferConfig": "passed",
+        "VAEClassifierConfig": "passed",
         "DatasetConfig": "passed", 
         "ModelConfig": "passed", 
         "OptimizerConfig": "passed", 
@@ -1239,5 +1341,6 @@ def run_self_tests() -> dict[str, str]:
     }
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

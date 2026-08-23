@@ -2,6 +2,8 @@
 
 import tensorflow as tf
 
+from typing import Any
+
 from common.argument_saver import ArgumentSaverLayer
 
 
@@ -35,11 +37,16 @@ class DropPath(ArgumentSaverLayer):
         drop_prob: float = 0., 
         scale_by_keep: bool = True, 
         per_sample: bool = True, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Initialize stochastic-depth probability and mask semantics.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            drop_prob (float): Path-drop probability in ``[0, 1)``.
+            scale_by_keep (bool): Whether retained paths are divided by their
+                keep probability.
+            per_sample (bool): Whether examples receive independent masks.
+            **kwargs (Any): Standard Keras layer options.
 
         Returns:
             ``None``.
@@ -48,16 +55,17 @@ class DropPath(ArgumentSaverLayer):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
-        assert 0. <= self.drop_prob < 1., \
-            "drop_prob must satisfy 0.0 <= drop_prob < 1.0 ."
+        # Keep the path-drop probability within its valid half-open interval.
+        if not 0. <= self.drop_prob < 1.:
+            raise ValueError("drop_prob must satisfy 0.0 <= drop_prob < 1.0.")
 
-    def call(self, x, training=None):
+    def call(self, x: tf.Tensor, training: bool | None = None) -> tf.Tensor:
         """Apply a training-only path mask.
 
         Args:
-            x: Floating ``tf.Tensor`` of shape ``[batch, ...]``. Its dtype is
+            x (tf.Tensor): Floating tensor of shape ``[batch, ...]``. Its dtype is
                 also used to generate the random mask.
-            training: Optional boolean training flag. ``None`` is treated as
+            training (bool | None): Optional boolean training flag. ``None`` is treated as
                 false; false returns ``x`` unchanged.
 
         Returns:
@@ -68,6 +76,7 @@ class DropPath(ArgumentSaverLayer):
 
         training = False if training is None else training
 
+        # Skip stochastic masking during evaluation or when dropping is disabled.
         if not training or self.drop_prob == 0.:
             return x
 
@@ -80,12 +89,14 @@ class DropPath(ArgumentSaverLayer):
         x_shape = tf.shape(x)
         rank = tf.rank(x)
 
+        # Draw one broadcastable path decision per example when requested.
         if self.per_sample:
             # Shape: [B, 1, 1, ..., 1]
             mask_shape = tf.concat(
                 [x_shape[:1], tf.ones((rank - 1,), dtype=tf.int32)],
                 axis=0
             )
+        # Otherwise share one path decision across the entire batch.
         else:
             # Shape: [1, 1, 1, ..., 1], one decision for whole batch.
             mask_shape = tf.ones((rank,), dtype=tf.int32)
@@ -98,6 +109,7 @@ class DropPath(ArgumentSaverLayer):
         )
         binary_mask = tf.floor(random_tensor)
 
+        # Rescale retained paths to preserve their expected magnitude.
         if self.scale_by_keep:
             binary_mask = binary_mask / keep_prob
 
@@ -111,7 +123,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry success mapping after probability boundaries, rank/dtype,
+        dict[str, str]: A one-entry success mapping after probability boundaries, rank/dtype,
         train/evaluation, scaling, mask-sharing, and config checks pass.
     """
 
@@ -121,7 +133,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_probability in (-0.01, 1.0, 2.0):
         try:
             DropPath(drop_prob=invalid_probability)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Invalid drop probabilities must be rejected.")
@@ -185,5 +197,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DropPath": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

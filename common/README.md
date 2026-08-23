@@ -37,6 +37,10 @@ length to resolve a missing cosine-decay length. `train_model` then records the
 actual result directory in `config.training.results_path` and, when enabled,
 the saved weights path in `config.model.weights_path`.
 
+Direct `get_model(...)` calls default to a constant learning rate because no
+dataset length is necessarily available. Requesting cosine decay directly
+requires either `decay_steps` or `trainset_len`.
+
 ## Configuration API
 
 `load_config(None)` returns pure dataclass defaults. It does **not** merge
@@ -81,10 +85,14 @@ optional one-hot labels, and these preprocessing values:
 
 - `"min-max"`: one scalar minimum and maximum from the final training split;
 - `"normalize"`: elementwise mean and standard deviation over training axis 0;
-- `"standardize"` or `"diffusion"`: min-max scaling followed by mapping to
-  `[-1, 1]`;
+- `"standardize"` or `"diffusion"`: min-max scaling followed by mapping the
+  training extrema to `[-1, 1]`;
 - `None`, `""`, or another value: no scaling (raw train/test images are cast to
   `uint8`).
+
+Validation and test arrays reuse training statistics without clipping, so
+held-out values outside the observed training range can exceed the nominal
+min-max/standardized interval.
 
 ```python
 from common.dataloader import load_cifar10, get_dataset
@@ -193,7 +201,7 @@ The loader mapping may contain `preprocess`, `onehot_labels`, `validation_ratio`
 `seed`, and, for built-in loaders, `features_path`; do not repeat `indices`,
 `return_features`, or `verbose`. Buffer keys are exactly the four shown above.
 Pass an already-created
-`VariationalAutoencoder` or `VAEClassifer` through `generative_model`; VAE
+`VariationalAutoencoder` or `VAEClassifier` through `generative_model`; VAE
 replay requires one-hot labels. `generative_model_kwargs` controls `train_num`
 and `samples_per_class`. See [`../autoencoder/README.md`](../autoencoder/README.md)
 for VAE construction and resampling behavior.
@@ -209,12 +217,14 @@ diffusion network is passed directly, `generative_model_compile_args` overrides
 the default Adam/MSE compilation. An already-wrapped model remains compiled as
 provided.
 
-For `VAEClassifer`, set `use_generative_model_classifier=True` to use its
+For `VAEClassifier`, set `use_generative_model_classifier=True` to use its
 attached classifier as the continually learned model. By default that classifier
-is updated only by the joint generative-model step; set
+is updated only by the joint generative-model step, and task accuracy is the
+VAE's reconstruction-based `clf_accuracy`; set
 `train_classifier_separately=True` to run the ordinary classifier fit as an
-additional step for every task. The attached classifier must be a Keras model
-and must already be compiled for the separate step.
+additional step for every task and report its direct-input accuracy. The
+attached classifier must be a Keras model and must already be compiled for the
+separate step.
 
 The same classifier-selection flag supports `DiffusionClassifier` and
 `DiffusionClassifierV2`. For the standard wrapper,
@@ -256,19 +266,20 @@ objective. See [`../notebooks/hpo/README.md`](../notebooks/hpo/README.md).
 
 - `ReplayBuffer(maxlen, seed)` stores `(x, y)` pairs in a bounded deque.
   `sample_buffer_and_prepare_dataset` returns `float32` samples and `uint8`
-  labels. Sampling does not remove entries.
+  labels. Sampling uses a private seeded generator and does not remove entries.
 - `ArgumentSaverLayer` and `ArgumentSaverModel` combine Keras bases with
   constructor-config persistence. Subclasses call
   `self._save_init_args(locals())`; mutable list/set/dict config values are
   copied.
-- `MaskedLoss("mae" | "mse")` compares predictions with the first matching
-  target columns.
+- `MaskedLoss("mae" | "mse")` compares predictions with the matching target
+  prefix, returns one loss per batch row, and supports Keras sample weighting
+  and serialization.
 - `LrLoggerCallback` adds the effective optimizer learning rate to epoch logs.
 - `common.model` supplies the legacy CNN/DNN/Xception factories, early stopping,
   and one-class output-head expansion.
-- `common.utils` supplies history/sample plotting, GIF creation, NPY persistence,
-  and search logging. Each function docstring states its expected array shape
-  and its display/file side effects.
+- `common.utils` supplies history/sample plotting, GIF creation, CSV/NPY
+  persistence, and search logging. Each function docstring states its expected
+  array shape and its display/file side effects.
 
 All public callables have detailed docstrings; use `help(object)` for exact
 types, return forms, accepted dictionary keys, state mutations, and edge-case

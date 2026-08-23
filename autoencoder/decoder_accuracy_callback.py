@@ -1,7 +1,12 @@
 """Epoch callback for measuring the class fidelity of VAE generations."""
 
+from __future__ import annotations
+
 import tensorflow as tf
 from tensorflow.keras import callbacks
+
+from collections.abc import Callable
+from numbers import Integral
 
 
 class DecoderAccuracyCallback(callbacks.Callback):
@@ -20,35 +25,56 @@ class DecoderAccuracyCallback(callbacks.Callback):
     """
 
     def __init__(
-        self, 
-        classifier, 
-        samples_per_class=500, 
-    ):
+        self: DecoderAccuracyCallback, 
+        classifier: tf.keras.Model | Callable[..., tf.Tensor], 
+        samples_per_class: int = 500
+    ) -> None:
         """Initialize generation count and evaluation classifier.
 
         Args:
             classifier (tf.keras.Model | Callable): Callable accepting
                 ``(x_gen, training=False)`` and returning scores shaped
                 ``[samples, classes]``.
-            samples_per_class (int): Nonnegative generations requested for each
-                class previously seen by the attached conditional VAE.
+            samples_per_class (int): Non-boolean positive number of generations
+                requested for each class previously seen by the attached VAE.
 
         Returns:
             None.
+
+        Raises:
+            TypeError: If the classifier is not callable or the sample count is
+                not a non-boolean integer.
+            ValueError: If the sample count is not positive.
         """
 
         super().__init__()
-        self.samples_per_class = samples_per_class
+
+        # Require a callable classifier for generated-sample evaluation.
+        if not callable(classifier):
+            raise TypeError("classifier must be callable.")
+        # Reject booleans and non-integral generation counts.
+        if isinstance(samples_per_class, bool) \
+        or not isinstance(samples_per_class, Integral):
+            raise TypeError("samples_per_class must be a non-boolean integer.")
+        # Require at least one generated sample per class.
+        if samples_per_class <= 0:
+            raise ValueError("samples_per_class must be positive.")
+
+        self.samples_per_class = int(samples_per_class)
         self.classifier = classifier
 
-    def on_epoch_end(self, epoch, logs=None):
+    def on_epoch_end(
+        self: DecoderAccuracyCallback, 
+        epoch: int, 
+        logs: dict[str, object] | None = None
+    ) -> None:
         """Generate examples, classify them, and log exact-match accuracy.
 
         Args:
             epoch (int): Zero-based completed epoch index; unused otherwise.
-            logs (dict[str, object] | None): Epoch log mapping.  A nonempty
-                supplied dictionary receives ``"decoder_accuracy"`` as a NumPy
-                scalar; ``None`` (or an empty dictionary) is replaced locally.
+            logs (dict[str, object] | None): Epoch log mapping. Any supplied
+                dictionary receives ``"decoder_accuracy"`` as a NumPy scalar;
+                ``None`` is replaced locally.
 
         Returns:
             None.
@@ -58,17 +84,31 @@ class DecoderAccuracyCallback(callbacks.Callback):
                 or generated/classifier shapes are incompatible.
         """
 
-        logs = logs or {}
+        # Create a log mapping when Keras supplies no mapping.
+        if logs is None:
+            logs = {}
 
         x_gen, y_true = self.model.generate(
             samples_per_class=self.samples_per_class, 
             onehot_y_output=False
         )
 
+        # Avoid reporting an undefined accuracy for an empty generation.
+        if len(y_true) == 0:
+            raise ValueError(
+                "Decoder accuracy requires at least one generated sample."
+            )
+
         y_pred = self.classifier(x_gen, training=False)
         y_pred = tf.argmax(y_pred, axis=1)
+        y_true = tf.convert_to_tensor(y_true, dtype=y_pred.dtype)
+        tf.debugging.assert_equal(
+            tf.shape(y_pred), 
+            tf.shape(y_true), 
+            message="Generated labels and classifier predictions must align."
+        )
 
-        corrects = tf.cast(y_pred == y_true, dtype=tf.float16)
+        corrects = tf.cast(y_pred == y_true, dtype=tf.float32)
         acc = tf.reduce_mean(corrects)
 
         logs["decoder_accuracy"] = acc.numpy()
@@ -98,7 +138,7 @@ def run_self_tests() -> dict[str, str]:
 
     def generate(
         samples_per_class: int, 
-        onehot_y_output: bool, 
+        onehot_y_output: bool
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return deterministic class-coded samples for callback testing.
 
@@ -123,7 +163,7 @@ def run_self_tests() -> dict[str, str]:
 
     def perfect_classifier(
         inputs: tf.Tensor, 
-        training: bool = False, 
+        training: bool = False
     ) -> tf.Tensor:
         """Classify a class ID stored in the first input column.
 
@@ -161,7 +201,7 @@ def run_self_tests() -> dict[str, str]:
 
     def half_correct_classifier(
         inputs: tf.Tensor, 
-        training: bool = False, 
+        training: bool = False
     ) -> tf.Tensor:
         """Return predictions that are correct for only class zero.
 
@@ -189,44 +229,59 @@ def run_self_tests() -> dict[str, str]:
 
     empty_logs = {}
     callback.on_epoch_end(4, empty_logs)
-    assert empty_logs == {}, (
-        "The current `logs or {}` implementation replaces an empty mapping "
-        "instead of mutating it."
-    )
+    assert float(empty_logs["decoder_accuracy"]) == 1.0
     assert callback.on_epoch_end(5, None) is None
 
 
     def generate_empty(
         samples_per_class: int, 
-        onehot_y_output: bool, 
+        onehot_y_output: bool
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return a correctly shaped empty generated batch.
 
         Args:
-            samples_per_class (int): Requested count; expected to be zero.
+            samples_per_class (int): Requested positive count; unused.
             onehot_y_output (bool): Requested label encoding flag.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Empty features and labels.
         """
 
-        assert samples_per_class == 0 and onehot_y_output is False
+        assert samples_per_class == 1 and onehot_y_output is False
 
 
         return (tf.zeros((0, 1), tf.float32), 
             tf.zeros((0,), tf.int64))
 
 
-    zero_callback = DecoderAccuracyCallback(perfect_classifier, 0)
-    zero_callback.set_model(SimpleNamespace(generate=generate_empty))
-    zero_logs = {"sentinel": True}
-    zero_callback.on_epoch_end(0, zero_logs)
-    assert bool(tf.math.is_nan(zero_logs["decoder_accuracy"]))
+    try:
+        DecoderAccuracyCallback(perfect_classifier, 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("A zero generation count must fail at construction.")
+
+    empty_callback = DecoderAccuracyCallback(perfect_classifier, 1)
+    empty_callback.set_model(SimpleNamespace(generate=generate_empty))
+    try:
+        empty_callback.on_epoch_end(0, {"sentinel": True})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An empty generated batch must fail clearly.")
+
+    for invalid_count in (True, 1.5):
+        try:
+            DecoderAccuracyCallback(perfect_classifier, invalid_count)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("Callback sample counts must be integers.")
 
 
     def generate_bad_labels(
-        samples_per_class: int,
-        onehot_y_output: bool,
+        samples_per_class: int, 
+        onehot_y_output: bool
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return intentionally incompatible prediction and label lengths.
 
@@ -254,11 +309,7 @@ def run_self_tests() -> dict[str, str]:
             "A shape failure must occur before the callback mutates logs."
         )
     else:
-        assert float(incompatible_logs["decoder_accuracy"]) == 0.0, (
-            "Depending on TensorFlow's device execution path, incompatible "
-            "one-dimensional lengths either raise InvalidArgumentError or "
-            "collapse tensor equality to scalar false."
-        )
+        raise AssertionError("Incompatible label and prediction shapes must fail.")
 
     unattached = DecoderAccuracyCallback(perfect_classifier, 1)
     try:
@@ -271,5 +322,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DecoderAccuracyCallback": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

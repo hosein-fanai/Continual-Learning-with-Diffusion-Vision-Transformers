@@ -1,11 +1,14 @@
 """Dense variational autoencoder with optional class conditioning and replay."""
 
+from __future__ import annotations
+
 import tensorflow as tf
 from tensorflow.keras import metrics, layers, models, optimizers
 
 import numpy as np
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from numbers import Integral, Real
 
 from common.dataloader import get_dataset
 from common.model import get_callbacks
@@ -45,19 +48,19 @@ class VariationalAutoencoder(models.Model):
     """
 
     def __init__(
-        self, 
-        data_dim=2048, 
-        latent_dim=8, 
-        hiddens_dims=(16,), 
-        hiddens_kwargs={}, 
-        last_activation="tanh", 
-        beta=0.25, 
-        conditioned=False, 
-        class_num=None, 
-        compile=True, 
-        compile_args={}, 
-        **kwargs
-    ):
+        self: VariationalAutoencoder, 
+        data_dim: int = 2048, 
+        latent_dim: int = 8, 
+        hiddens_dims: Sequence[int] = (16,), 
+        hiddens_kwargs: Mapping[str, object] | None = None, 
+        last_activation: str | Callable | None = "tanh", 
+        beta: float = 0.25, 
+        conditioned: bool = False, 
+        class_num: int | None = None, 
+        compile: bool = True, 
+        compile_args: Mapping[str, object] | None = None, 
+        **kwargs: object
+    ) -> None:
         """Build the encoder, decoder, metric state, and optional optimizer.
 
         Args:
@@ -101,17 +104,61 @@ class VariationalAutoencoder(models.Model):
             None.
 
         Raises:
-            AssertionError: If ``conditioned`` and ``class_num`` are
-                inconsistent.
+            ValueError: If conditioning/dimension settings are inconsistent,
+                an integer size is nonpositive, or ``beta`` is negative.
             TypeError: If either keyword mapping contains unsupported keys.
         """
 
         super().__init__(**kwargs)
 
-        assert (conditioned and class_num is not None) \
-        or (not conditioned and class_num is None), \
-            "When conditioned is True, class_num cannot be None, " \
-            "and when conditioned is False, class_num needs to be None."
+        # Require an explicit boolean conditioning mode.
+        if not isinstance(conditioned, (bool, np.bool_)):
+            raise TypeError("conditioned must be boolean.")
+        conditioned = bool(conditioned)
+        # Require an explicit boolean compilation switch.
+        if not isinstance(compile, (bool, np.bool_)):
+            raise TypeError("compile must be boolean.")
+        compile = bool(compile)
+        # Keep class metadata consistent with the conditioning mode.
+        if (conditioned and class_num is None) \
+        or (not conditioned and class_num is not None):
+            raise ValueError(
+                "When conditioned is True, class_num cannot be None, and when "
+                "conditioned is False, class_num needs to be None."
+            )
+        for name, value in (("data_dim", data_dim), ("latent_dim", latent_dim)):
+            # Require positive integral data and latent dimensions.
+            if isinstance(value, (bool, np.bool_)) \
+            or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer.")
+        # Require every hidden-layer width to be a positive integer.
+        if any(
+            isinstance(hidden_dim, (bool, np.bool_))
+            or not isinstance(hidden_dim, Integral)
+            or hidden_dim <= 0
+            for hidden_dim in hiddens_dims
+        ):
+            raise ValueError("Every hidden dimension must be a positive integer.")
+        # Require a positive class count for conditional models.
+        if conditioned and (
+            isinstance(class_num, (bool, np.bool_))
+            or not isinstance(class_num, Integral)
+            or class_num <= 0
+        ):
+            raise ValueError("class_num must be a positive integer in conditional mode.")
+        # Reject booleans and nonnumeric KL-loss weights.
+        if isinstance(beta, (bool, np.bool_)) or not isinstance(beta, Real):
+            raise TypeError("beta must be a real number.")
+        # Keep the KL-loss coefficient nonnegative.
+        if beta < 0.:
+            raise ValueError("beta must be nonnegative.")
+
+        data_dim = int(data_dim)
+        latent_dim = int(latent_dim)
+        hiddens_dims = tuple(int(hidden_dim) for hidden_dim in hiddens_dims)
+        class_num = int(class_num) if class_num is not None else None
+
+        hiddens_kwargs = dict(hiddens_kwargs or {})
 
 
         self.latent_dim = latent_dim
@@ -134,14 +181,19 @@ class VariationalAutoencoder(models.Model):
             "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
             "loss": "mean_squared_error",
         }
-        compile_args = {**compile_args_default, **compile_args}
+        compile_args = {**compile_args_default, **(compile_args or {})}
 
+        # Compile immediately when requested by the caller.
         if compile:
             self.compile(**compile_args)
 
-    def _dense_layer(self, units, actv="selu", 
-                    use_batch_norm=True, 
-                    kernel_init="he_normal"):
+    def _dense_layer(
+        self: VariationalAutoencoder, 
+        units: int, 
+        actv: str | Callable = "selu", 
+        use_batch_norm: bool = True, 
+        kernel_init: object = "he_normal"
+    ) -> tf.keras.Sequential:
         """Create one dense activation/normalization block.
 
         Args:
@@ -163,17 +215,32 @@ class VariationalAutoencoder(models.Model):
 
         dlayer = models.Sequential()
 
-        dlayer.add(layers.Dense(units, activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
-                                kernel_initializer=kernel_init, use_bias=not use_batch_norm))
-        dlayer.add(layers.Activation(actv)) if (use_batch_norm and actv != "prelu") else None
-        dlayer.add(layers.PReLU()) if actv == "prelu" else None
-        dlayer.add(layers.BatchNormalization()) if use_batch_norm else None
+        dlayer.add(layers.Dense(
+            units, 
+            activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
+            kernel_initializer=kernel_init, 
+            use_bias=not use_batch_norm
+        ))
+        dlayer.add(
+            layers.Activation(actv)
+        ) if (use_batch_norm and actv != "prelu") else None
+        dlayer.add(
+            layers.PReLU()
+        ) if actv == "prelu" else None
+        dlayer.add(
+            layers.BatchNormalization()
+        ) if use_batch_norm else None
 
         return dlayer
 
-    def _build_encoder(self, input_dim, latent_dim, 
-                    hiddens_dims, hiddens_kwargs={}, 
-                    class_num=None):
+    def _build_encoder(
+        self: VariationalAutoencoder, 
+        input_dim: int, 
+        latent_dim: int, 
+        hiddens_dims: Sequence[int], 
+        hiddens_kwargs: Mapping[str, object] | None = None, 
+        class_num: int | None = None
+    ) -> tf.keras.Model:
         """Build the functional Gaussian encoder.
 
         Args:
@@ -193,12 +260,15 @@ class VariationalAutoencoder(models.Model):
             ``[batch, latent_dim]``: mean, log variance, and sampled latent.
         """
 
+        hiddens_kwargs = dict(hiddens_kwargs or {})
         x_inputs = layers.Input(shape=(input_dim,), name="x_input")
 
+        # Concatenate one-hot labels into a conditional encoder input.
         if self.conditioned:
             y_inputs = layers.Input(shape=(class_num,), name="y_input")
             x = layers.Concatenate()([x_inputs, y_inputs])
             inputs = [x_inputs, y_inputs]
+        # Use only data features for an unconditional encoder.
         else:
             x = x_inputs
             inputs = x_inputs
@@ -218,9 +288,15 @@ class VariationalAutoencoder(models.Model):
 
         return encoder
 
-    def _build_decoder(self, output_dim, latent_dim, 
-                    hiddens_dims, hiddens_kwargs, 
-                    class_num, last_activation):
+    def _build_decoder(
+        self: VariationalAutoencoder, 
+        output_dim: int, 
+        latent_dim: int, 
+        hiddens_dims: Sequence[int], 
+        hiddens_kwargs: Mapping[str, object], 
+        class_num: int | None, 
+        last_activation: str | Callable | None
+    ) -> tf.keras.Model:
         """Build the functional reconstruction decoder.
 
         Args:
@@ -241,10 +317,12 @@ class VariationalAutoencoder(models.Model):
 
         z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
 
+        # Concatenate one-hot labels into a conditional decoder input.
         if self.conditioned:
             y_inputs = layers.Input(shape=(class_num,), name="y_input")
             z = layers.Concatenate()([z_inputs, y_inputs])
             inputs = [z_inputs, y_inputs]
+        # Decode directly from latent samples in unconditional mode.
         else:
             z = z_inputs
             inputs = z_inputs
@@ -266,29 +344,37 @@ class VariationalAutoencoder(models.Model):
         return decoder
 
     @staticmethod
-    def compute_z(z_mean, z_log_var):
+    def compute_z(
+        z_mean: tf.Tensor, 
+        z_log_var: tf.Tensor
+    ) -> tf.Tensor:
         """Sample a latent vector with the reparameterization trick.
 
         Args:
-            z_mean (tf.Tensor): ``float32`` Gaussian means shaped
+            z_mean (tf.Tensor): Floating Gaussian means shaped
                 ``[batch, latent_dim]``.
-            z_log_var (tf.Tensor): Matching ``float32`` elementwise log
-                variances.
+            z_log_var (tf.Tensor): Matching floating elementwise log variances.
 
         Returns:
-            tf.Tensor: ``float32`` values computed as
+            tf.Tensor: Values with ``z_mean``'s dtype, computed as
             ``z_mean + exp(0.5*z_log_var) * epsilon`` with the same shape;
             ``epsilon`` is newly drawn from a standard normal distribution on
             every call.
         """
 
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        epsilon = tf.random.normal(
+            shape=tf.shape(z_mean),
+            dtype=z_mean.dtype
+        )
         z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
         return z
 
     @staticmethod
-    def compute_kl(z_mean, z_log_var):
+    def compute_kl(
+        z_mean: tf.Tensor, 
+        z_log_var: tf.Tensor
+    ) -> tf.Tensor:
         """Compute mean KL divergence from the unit Gaussian prior.
 
         Args:
@@ -297,18 +383,20 @@ class VariationalAutoencoder(models.Model):
 
         Returns:
             tf.Tensor: Scalar floating tensor.  Divergence is summed over
-            latent axis 1 and averaged across the batch.
+            the last latent axis and averaged across the batch.
         """
 
         return -0.5 * tf.reduce_mean(
             tf.reduce_sum(
                 1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                axis=1
+                axis=-1
             )
         )
 
     @property
-    def metrics(self):
+    def metrics(
+        self: VariationalAutoencoder
+    ) -> list[tf.keras.metrics.Metric]:
         """Expose loss trackers that Keras resets between epochs/evaluations.
 
         Returns:
@@ -319,10 +407,14 @@ class VariationalAutoencoder(models.Model):
         return [
             self.total_loss_tracker, 
             self.kl_loss_tracker, 
-            self.recon_loss_tracker, 
+            self.recon_loss_tracker
         ]
 
-    def call(self, inputs, training=False):
+    def call(
+        self: VariationalAutoencoder, 
+        inputs: tf.Tensor | tuple[tf.Tensor, tf.Tensor], 
+        training: bool | tf.Tensor = False, 
+    ) -> tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor]:
         """Encode, sample, and reconstruct a batch.
 
         Args:
@@ -342,16 +434,21 @@ class VariationalAutoencoder(models.Model):
 
         z_mean, z_log_var, z = self.encoder(inputs, training=training)
 
+        # Reattach labels to latent samples for conditional decoding.
         if self.conditioned:
             _, y = inputs
             decoder_inputs = (z, y)
+        # Decode only the latent sample in unconditional mode.
         else:
             decoder_inputs = z
 
         return ((z_mean, z_log_var, z), 
                 self.decoder(decoder_inputs, training=training))
 
-    def train_step(self, data):
+    def train_step(
+        self: VariationalAutoencoder, 
+        data: tf.Tensor | tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Run one optimizer step for reconstruction plus beta-weighted KL.
 
         Args:
@@ -364,8 +461,10 @@ class VariationalAutoencoder(models.Model):
             ``kl_loss``, and ``recon_loss``.
         """
 
+        # Extract reconstruction targets from conditional training pairs.
         if self.conditioned:
             x, _ = data
+        # Use the input batch itself as the unconditional target.
         else:
             x = data
 
@@ -373,29 +472,41 @@ class VariationalAutoencoder(models.Model):
             (z_mean, z_log_var, _), x_recon = self(data, training=True)
 
             recon_loss = self.compiled_loss(
-                x,
-                x_recon,
-                regularization_losses=self.losses,
+                x, 
+                x_recon, 
+                regularization_losses=self.losses
             )
-
-            kl_loss = VariationalAutoencoder.compute_kl(z_mean, z_log_var)
+            kl_loss = VariationalAutoencoder.compute_kl(
+                z_mean, 
+                z_log_var
+            )
 
             total_loss = recon_loss + self.beta * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-        self.total_loss_tracker.update_state(total_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
-        self.kl_loss_tracker.update_state(kl_loss)
+        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        self.total_loss_tracker.update_state(
+            total_loss, sample_weight=batch_weight
+        )
+        self.recon_loss_tracker.update_state(
+            recon_loss, sample_weight=batch_weight
+        )
+        self.kl_loss_tracker.update_state(
+            kl_loss, sample_weight=batch_weight
+        )
 
         return {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
-            "recon_loss": self.recon_loss_tracker.result(),
+            "recon_loss": self.recon_loss_tracker.result()
         }
 
-    def test_step(self, data):
+    def test_step(
+        self: VariationalAutoencoder, 
+        data: tf.Tensor | tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Evaluate reconstruction and KL losses without updating weights.
 
         Args:
@@ -407,45 +518,57 @@ class VariationalAutoencoder(models.Model):
             ``kl_loss``, and ``recon_loss``.
         """
 
+        # Extract reconstruction targets from conditional evaluation pairs.
         if self.conditioned:
             x, _ = data
+        # Use the input batch itself as the unconditional target.
         else:
             x = data
 
         (z_mean, z_log_var, _), x_recon = self(data, training=False)
 
         recon_loss = self.compiled_loss(
-            x,
-            x_recon,
-            regularization_losses=self.losses,
+            x, 
+            x_recon, 
+            regularization_losses=self.losses
         )
-
-        kl_loss = VariationalAutoencoder.compute_kl(z_mean, z_log_var)
+        kl_loss = VariationalAutoencoder.compute_kl(
+            z_mean, 
+            z_log_var
+        )
 
         total_loss = self.beta * kl_loss + recon_loss
 
-        self.total_loss_tracker.update_state(total_loss)
-        self.kl_loss_tracker.update_state(kl_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
+        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
+        self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
+        self.recon_loss_tracker.update_state(
+            recon_loss, sample_weight=batch_weight
+        )
 
         return {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
-            "recon_loss": self.recon_loss_tracker.result(),
+            "recon_loss": self.recon_loss_tracker.result()
         }
 
-    def generate(self, classes=None, 
-                samples_per_class=500, 
-                onehot_y_output=False):
+    def generate(
+        self: VariationalAutoencoder, 
+        classes: Sequence[int] | None = None, 
+        samples_per_class: int = 500, 
+        onehot_y_output: bool = False
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | tuple[list, list]:
         """Decode random normal latents into synthetic replay samples.
 
         Args:
-            classes (Sequence[int] | None): Conditional class IDs.  ``None``
+            classes (Sequence[int] | None): Integral, non-boolean conditional
+                class IDs. ``None``
                 uses ``seen_classes``; ``[]`` returns ``([], [])`` immediately.
                 IDs should lie in ``[0, class_num)``.  In unconditional mode
                 this argument is ignored.
-            samples_per_class (int): Nonnegative number of examples per class
-                in conditional mode, or total examples in unconditional mode.
+            samples_per_class (int): Non-boolean, nonnegative integer number of
+                examples per class in conditional mode, or total examples in
+                unconditional mode.
             onehot_y_output (bool): In conditional mode, return labels as
                 ``float32`` one-hot rows when true or NumPy integer IDs when
                 false.  Ignored in unconditional mode.
@@ -457,17 +580,50 @@ class VariationalAutoencoder(models.Model):
             ``(x, y)`` with ``len(classes) * samples_per_class`` rows, ordered
             in contiguous class groups.  With no conditional classes, both
             outputs are empty Python lists rather than arrays.
+
+        Raises:
+            ValueError: If ``samples_per_class`` is negative or a class ID is
+                outside ``[0, class_num)``.
+            TypeError: If ``samples_per_class`` or a class ID is not a
+                non-boolean integer.
         """
 
+        # Reject booleans and non-integral generation counts.
+        if isinstance(samples_per_class, (bool, np.bool_)) \
+        or not isinstance(samples_per_class, Integral):
+            raise TypeError("samples_per_class must be a non-boolean integer.")
+        # Permit empty generation while rejecting negative counts.
+        if samples_per_class < 0:
+            raise ValueError("samples_per_class must be nonnegative.")
+        samples_per_class = int(samples_per_class)
+
+        # Generate and label each requested class in conditional mode.
         if self.conditioned:
+            # Default to classes observed during training.
             if classes is None:
                 classes = self.seen_classes
 
+            # Return an empty result when no class is available to generate.
             if len(classes) == 0:
                 return [], []
 
+            # Require non-boolean integral class identifiers.
+            if any(
+                isinstance(class_id, (bool, np.bool_))
+                or not isinstance(class_id, Integral)
+                for class_id in classes
+            ):
+                raise TypeError("Every class ID must be a non-boolean integer.")
+            classes = [int(class_id) for class_id in classes]
+            # Keep class identifiers within the configured output range.
+            if any(
+                class_id < 0 or class_id >= int(self.class_num)
+                for class_id in classes
+            ):
+                raise ValueError("Every class ID must lie in [0, class_num).")
+
             z = tf.random.normal(shape=(samples_per_class*len(classes), self.latent_dim))
-            y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.uint8), 
+            y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.int32),
                                     depth=self.class_num) for i in classes], 
                                 axis=0)
             x = self.decoder((z, y), training=False)
@@ -475,6 +631,7 @@ class VariationalAutoencoder(models.Model):
             x = x.numpy()
             y = y.numpy()
 
+            # Convert generated labels to sparse IDs when requested.
             if not onehot_y_output:
                 y = np.argmax(y, axis=-1)
 
@@ -490,7 +647,7 @@ class VariationalAutoencoder(models.Model):
         return x
 
     def train(
-        self, 
+        self: VariationalAutoencoder, 
         x: np.ndarray | tf.Tensor, 
         y: np.ndarray | tf.Tensor | None = None, 
         train_num: int = 10_000, 
@@ -518,16 +675,18 @@ class VariationalAutoencoder(models.Model):
             y (numpy.ndarray | tf.Tensor | None): Required only in conditional
                 mode; one-hot labels shaped ``[samples, class_num]``.  Observed
                 argmax class IDs are added to ``seen_classes``.
-            train_num (int): ``-1`` uses the input once without resampling.
-                Any other value samples indices *with replacement*.  The actual
-                sample count is ``max(train_num, len(x))``: values smaller than
-                the input length therefore resample ``len(x)`` rows rather than
-                creating a smaller subset, while larger values oversample to
-                the requested size.
-            epochs (int): Positive maximum number of Keras training epochs.
-            batch_size (int): Positive examples per ``tf.data.Dataset`` batch.
-            shuffle_buffer (int): Training shuffle capacity passed to
-                :func:`common.dataloader.get_dataset`; ``0`` disables shuffling.
+            train_num (int): Non-boolean integer. ``-1`` uses the input once
+                without resampling.
+                Any positive value samples exactly that many indices with
+                replacement, so smaller values downsample and larger values
+                oversample the supplied rows.
+            epochs (int): Non-boolean positive maximum number of Keras training
+                epochs.
+            batch_size (int): Non-boolean positive examples per
+                ``tf.data.Dataset`` batch.
+            shuffle_buffer (int): Non-boolean, nonnegative training shuffle
+                capacity passed to :func:`common.dataloader.get_dataset`; ``0``
+                disables shuffling.
             seed (int | None): Optional training-dataset shuffle seed.
             validation_data (tf.data.Dataset | numpy.ndarray | tf.Tensor |
                 tuple[numpy.ndarray | tf.Tensor, numpy.ndarray | tf.Tensor] |
@@ -554,40 +713,80 @@ class VariationalAutoencoder(models.Model):
             metrics depending on the supplied data and callbacks.
 
         Raises:
-            AssertionError: If label presence does not match conditional mode.
+            ValueError: If label presence does not match conditional mode, the
+                input is empty, ``x``/``y`` lengths differ, or a numeric
+                training control is outside its documented range.
+            TypeError: If a numeric training control is not a non-boolean
+                integer.
         """
 
-        assert (self.conditioned and (y is not None)) \
-        or (not self.conditioned and (y is None)) 
+        controls = {
+            "train_num": train_num, 
+            "epochs": epochs, 
+            "batch_size": batch_size, 
+            "shuffle_buffer": shuffle_buffer
+        }
+        for name, value in controls.items():
+            # Require non-boolean integers for every training control.
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+                raise TypeError(f"{name} must be a non-boolean integer.")
 
+        train_num = int(train_num)
+        epochs = int(epochs)
+        batch_size = int(batch_size)
+        shuffle_buffer = int(shuffle_buffer)
+        # Keep label presence consistent with the conditioning mode.
+        if (self.conditioned and y is None) \
+        or (not self.conditioned and y is not None):
+            raise ValueError("Label presence must match the VAE conditioning mode.")
+        # Reject an empty training population before sampling or fitting.
+        if len(x) == 0:
+            raise ValueError("Training input must contain at least one sample.")
+        # Reserve -1 for full data and otherwise require a positive sample count.
+        if train_num != -1 and train_num <= 0:
+            raise ValueError("train_num must be -1 or a positive integer.")
+        # Require at least one training epoch.
+        if epochs <= 0:
+            raise ValueError("epochs must be positive.")
+        # Require a positive training batch size.
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
+        # Permit disabled shuffling while rejecting negative buffer sizes.
+        if shuffle_buffer < 0:
+            raise ValueError("shuffle_buffer must be nonnegative.")
+        # Keep conditional labels aligned with their input samples.
+        if y is not None and len(x) != len(y):
+            raise ValueError("x and y must contain the same number of samples.")
 
         callbacks_list = list(callbacks_list) if callbacks_list is not None else None
 
-        if train_num != -1: # Resample to the requested minimum training size.
+        # Resample to the requested training size.
+        if train_num != -1:
             input_size = len(x)
-            train_num = max(train_num, input_size)
-
-            indices = np.random.randint(
-                0, 
-                input_size, 
-                (train_num,)
-            )
+            rng = np.random.default_rng(seed)
+            indices = rng.integers(0, input_size, size=train_num)
             x = tf.gather(
                 x, 
                 indices
             ) if isinstance(x, tf.Tensor) else x[indices]
-            y = tf.gather(# Keep conditional labels aligned with samples.
-                y, 
-                indices
-            ) if isinstance(y, tf.Tensor) and y is not None else y[indices]
+            # Apply the same sampled indices to conditional labels.
+            if y is not None:
+                y = tf.gather(
+                    y,
+                    indices
+                ) if isinstance(y, tf.Tensor) else y[indices]
 
-        if y is not None: # Record classes available for conditional generation.
+        # Record classes available for conditional generation.
+        if y is not None:
             new_classes = np.unique(np.argmax(y, axis=-1))
-            self.seen_classes.extend(new_classes)
-            self.seen_classes = list(set(self.seen_classes))
+            self.seen_classes = sorted(set(
+                [*self.seen_classes, *new_classes.tolist()]
+            ))
 
-        if clf is not None and callbacks_list is None: # Build classifier-aware defaults.
-            if callbacks_monitor == "": # Select the decoder metric by default.
+        # Build classifier-aware defaults.
+        if clf is not None and callbacks_list is None:
+            # Select the decoder metric by default.
+            if callbacks_monitor == "":
                 callbacks_monitor = "decoder_accuracy"
 
             callbacks_list = [
@@ -597,12 +796,18 @@ class VariationalAutoencoder(models.Model):
                     verbose=verbose
                 )
             ]
-        elif clf is not None and callbacks_list is not None: # Add decoder evaluation to user callbacks.
+        # Add decoder evaluation to user callbacks.
+        elif clf is not None and callbacks_list is not None:
             callbacks_list = [
                 DecoderAccuracyCallback(classifier=clf), 
                 *callbacks_list
             ]
-        elif clf is None and callbacks_list is None: # Build ordinary VAE callbacks.
+        # Build ordinary VAE callbacks.
+        elif clf is None and callbacks_list is None:
+            # Select a validation-aware reconstruction monitor by default.
+            if callbacks_monitor == "":
+                callbacks_monitor = "val_loss" if validation_data is not None \
+                    else "loss"
             callbacks_list = get_callbacks(
                 monitor=callbacks_monitor, 
                 verbose=verbose
@@ -615,9 +820,16 @@ class VariationalAutoencoder(models.Model):
             drop_remainder=False, 
             seed=seed
         )
-        if isinstance(validation_data, tf.data.Dataset): # Preserve prepared validation pipelines.
+        # Preserve prepared validation pipelines.
+        if isinstance(validation_data, tf.data.Dataset):
             valset = validation_data
-        elif isinstance(validation_data, tuple): # Convert paired validation arrays.
+        # Convert paired validation arrays.
+        elif isinstance(validation_data, tuple):
+            # Accept paired validation arrays only for conditional models.
+            if not self.conditioned:
+                raise ValueError(
+                    "Tuple validation_data is only valid in conditional mode."
+                )
             valset = get_dataset(
                 validation_data[0], 
                 validation_data[1], 
@@ -625,14 +837,16 @@ class VariationalAutoencoder(models.Model):
                 batch_size=batch_size, 
                 drop_remainder=False
             )
-        elif validation_data is not None: # Convert unconditional validation inputs.
+        # Convert unconditional validation inputs.
+        elif validation_data is not None:
             valset = get_dataset(
                 validation_data, 
                 shuffle_buffer=0, 
                 batch_size=batch_size, 
                 drop_remainder=False
             )
-        else: # Train without validation when no input was supplied.
+        # Train without validation when no input was supplied.
+        else:
             valset = None
 
         history = self.fit(
@@ -686,7 +900,7 @@ def run_self_tests() -> dict[str, str]:
                 class_num=class_num, 
                 compile=False, 
             )
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Conditioning and class_num must agree.")
@@ -834,15 +1048,12 @@ def run_self_tests() -> dict[str, str]:
     tf.debugging.assert_near(sampled_a, sampled_b)
     assert sampled_a.shape == zero_latents.shape
     assert bool(tf.reduce_any(tf.not_equal(sampled_a, zero_latents)))
-    try:
-        VariationalAutoencoder.compute_z(
-            tf.zeros((1, 2), tf.float64), 
-            tf.zeros((1, 2), tf.float64)
-        )
-    except (tf.errors.InvalidArgumentError, TypeError):
-        pass
-    else:
-        raise AssertionError("compute_z currently requires float32 latent inputs.")
+    float64_sample = VariationalAutoencoder.compute_z(
+        tf.zeros((1, 2), tf.float64),
+        tf.zeros((1, 2), tf.float64)
+    )
+    assert float64_sample.dtype == tf.float64
+    assert float64_sample.shape == (1, 2)
 
     metric_names = [metric.name for metric in unconditioned.metrics]
     assert metric_names == ["total_loss", "kl_loss", "recon_loss"]
@@ -882,6 +1093,13 @@ def run_self_tests() -> dict[str, str]:
         pass
     else:
         raise AssertionError("A negative generation count must fail.")
+    for invalid_count in (True, 1.5, "2"):
+        try:
+            unconditioned.generate(samples_per_class=invalid_count)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("Generation counts must be non-boolean integers.")
 
     sigmoid_vae = VariationalAutoencoder(
         data_dim=3, 
@@ -950,13 +1168,23 @@ def run_self_tests() -> dict[str, str]:
         onehot_y_output=True
     )
     assert zero_cond_x.shape == (0, 4) and zero_cond_y.shape == (0, 3)
-    invalid_id_x, invalid_id_y = conditioned.generate(
-        classes=[3], 
-        samples_per_class=1, 
-        onehot_y_output=True
-    )
-    assert invalid_id_x.shape == (1, 4)
-    np.testing.assert_array_equal(invalid_id_y, np.zeros((1, 3), np.float32))
+    try:
+        conditioned.generate(
+            classes=[3],
+            samples_per_class=1,
+            onehot_y_output=True
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Out-of-range conditional class IDs must fail.")
+    for invalid_class in (True, 1.0, "1"):
+        try:
+            conditioned.generate(classes=[invalid_class], samples_per_class=1)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("Generation class IDs must be integral.")
 
     with TemporaryDirectory() as temp_dir:
         weights_path = Path(temp_dir) / "vae.weights.h5"
@@ -1054,15 +1282,16 @@ def run_self_tests() -> dict[str, str]:
         assert fit_mock.call_args.kwargs["callbacks"] == [explicit_callback]
         assert fit_mock.call_args.kwargs["validation_data"] is explicit_valset
 
-    deterministic_indices = np.array([1, 0, 1, 0, 1], dtype=np.int64)
+    deterministic_seed = 19
+    deterministic_indices = np.random.default_rng(deterministic_seed).integers(
+        0, 2, size=5
+    )
     conditioned.seen_classes = []
     with mock.patch.object(
         VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
     ) as fit_mock, mock.patch.object(
         module, "get_callbacks", return_value=[sentinel_callback]
-    ) as callbacks_mock, mock.patch.object(
-        np.random, "randint", return_value=deterministic_indices
-    ) as randint_mock:
+    ) as callbacks_mock:
         history = conditioned.train(
             x_numpy, 
             y_numpy, 
@@ -1070,10 +1299,10 @@ def run_self_tests() -> dict[str, str]:
             epochs=1, 
             batch_size=2, 
             clf=classifier, 
+            seed=deterministic_seed,
             verbose=0, 
         )
         assert history == {"loss": [1.0]}
-        randint_mock.assert_called_once_with(0, 2, (5,))
         callbacks_mock.assert_called_once_with(
             monitor="decoder_accuracy", verbose=0
         )
@@ -1095,22 +1324,22 @@ def run_self_tests() -> dict[str, str]:
         assert fit_kwargs["callbacks"][1] is sentinel_callback
         assert set(int(item) for item in conditioned.seen_classes) == {0, 2}
 
-    lower_count_indices = np.array([0, 1], dtype=np.int64)
+    lower_count_seed = 23
+    lower_count_indices = np.random.default_rng(lower_count_seed).integers(
+        0, 2, size=1
+    )
     with mock.patch.object(
         VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
-    ) as fit_mock, mock.patch.object(module, "get_callbacks") as callbacks_mock, \
-            mock.patch.object(
-                np.random, "randint", return_value=lower_count_indices
-            ) as randint_mock:
+    ) as fit_mock, mock.patch.object(module, "get_callbacks") as callbacks_mock:
         conditioned.train(
             x_numpy, 
             y_numpy, 
             train_num=1, 
+            seed=lower_count_seed,
             callbacks_list=[explicit_callback], 
             clf=classifier, 
             verbose=0, 
         )
-        randint_mock.assert_called_once_with(0, 2, (2,))
         callbacks_mock.assert_not_called()
         assert isinstance(fit_mock.call_args.args[1], tf.data.Dataset)
         fit_callbacks = fit_mock.call_args.kwargs["callbacks"]
@@ -1119,13 +1348,13 @@ def run_self_tests() -> dict[str, str]:
 
     try:
         unconditioned.train(x_numpy, y_numpy, train_num=-1, verbose=0)
-    except AssertionError:
+    except ValueError:
         pass
     else:
         raise AssertionError("Unconditional training must reject labels.")
     try:
         conditioned.train(x_numpy, None, train_num=-1, verbose=0)
-    except AssertionError:
+    except ValueError:
         pass
     else:
         raise AssertionError("Conditional training must require labels.")
@@ -1136,9 +1365,58 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Resampling an empty input must fail.")
 
+    invalid_controls = (
+        {"train_num": True},
+        {"train_num": 1.5},
+        {"train_num": 0},
+        {"train_num": -2},
+        {"epochs": True},
+        {"epochs": 0},
+        {"batch_size": 1.5},
+        {"batch_size": 0},
+        {"shuffle_buffer": True},
+        {"shuffle_buffer": -1},
+    )
+    for invalid_options in invalid_controls:
+        training_options = {
+            "train_num": -1,
+            "epochs": 1,
+            "batch_size": 1,
+            "shuffle_buffer": 0,
+            **invalid_options,
+        }
+        try:
+            unconditioned.train(
+                x_numpy,
+                callbacks_list=[],
+                verbose=0,
+                **training_options,
+            )
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("Invalid integer training controls must fail.")
+
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock:
+        unconditioned.train(
+            x_numpy,
+            train_num=3,
+            seed=31,
+            callbacks_list=[],
+            verbose=0,
+        )
+        unconditional_dataset = fit_mock.call_args.args[1]
+        unconditional_rows = np.concatenate(
+            list(unconditional_dataset.as_numpy_iterator()), axis=0
+        )
+        assert unconditional_rows.shape == (3, 4)
+
     tf.keras.backend.clear_session()
     return {"VariationalAutoencoder": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

@@ -130,6 +130,48 @@ and normalized `timesteps`. Supported names are `linear`, `scaled_linear`,
 `sub_vp`, and `logistic`. See `schedulers.py` for every valid keyword and the
 difference between native sigma-space and beta-equivalent outputs.
 
+### Schedule comparisons
+
+The figures below compare all supported schedules over 1,000 normalized
+timesteps. Each figure uses shared axes across its ten panels. Standalone beta
+and SNR use logarithmic y-axes, while native sigma uses a symmetric-log axis so
+that both zero and the large VE/Karras ranges remain visible. Click a plot to
+open it at full resolution.
+
+<table>
+<tr>
+<td width="50%" valign="top"><a href="sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar.png"><img src="sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar.png" alt="Signal and noise coefficients across diffusion schedules" width="100%"></a><br><sub>Forward-process coefficients: <code>sqrt_alpha_bar</code> (signal) and <code>sqrt_one_minus_alpha_bar</code> (noise).</sub></td>
+<td width="50%" valign="top"><a href="betas_with_one_minus_betas.png"><img src="betas_with_one_minus_betas.png" alt="Beta and one-minus-beta across diffusion schedules" width="100%"></a><br><sub>Per-step noise and retained-signal factors: <code>betas</code> and <code>one_minus_betas</code> (<code>alphas</code>).</sub></td>
+</tr>
+<tr>
+<td width="50%" valign="top"><a href="snr.png"><img src="snr.png" alt="Signal-to-noise ratio across diffusion schedules" width="100%"></a><br><sub>Signal-to-noise ratio derived from <code>alpha_bar</code>.</sub></td>
+<td width="50%" valign="top"><a href="betas.png"><img src="betas.png" alt="Per-step beta across diffusion schedules" width="100%"></a><br><sub>Per-step noise variance, <code>betas</code>.</sub></td>
+</tr>
+<tr>
+<td width="50%" valign="top"><a href="alpha_bar.png"><img src="alpha_bar.png" alt="Cumulative alpha across diffusion schedules" width="100%"></a><br><sub>Cumulative retained-signal power, <code>alpha_bar</code>.</sub></td>
+<td width="50%" valign="top"><a href="native_sigmas.png"><img src="native_sigmas.png" alt="Native sigma across diffusion schedules" width="100%"></a><br><sub>Native noise scale, including VE/Karras magnitudes.</sub></td>
+</tr>
+</table>
+
+Regenerate this focused set from the repository root with:
+
+```python
+from diffusion.schedulers import save_schedule_plots
+
+save_schedule_plots(
+    "diffusion",
+    dpi=120,
+    metrics=(
+        "sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar",
+        "betas_with_one_minus_betas",
+        "snr",
+        "betas",
+        "alpha_bar",
+        "native_sigmas",
+    ),
+)
+```
+
 ## Package map
 
 - `layers/`: patch/condition embeddings, DiT blocks, adaptive normalization,

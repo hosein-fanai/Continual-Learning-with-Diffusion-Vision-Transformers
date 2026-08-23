@@ -19,7 +19,7 @@ from diffusion.layers.convolution import LayerDict
 from diffusion.layers.convolution import ResidualConvStack
 from diffusion.layers.convolution import VariationalReshaper
 
-
+@tf.keras.utils.register_keras_serializable(package="continual_learning")
 class UNet(ArgumentSaverModel):
     """Build a hierarchical convolutional diffusion network.
 
@@ -75,7 +75,7 @@ class UNet(ArgumentSaverModel):
             :meth:`add_depths`; normally left empty at construction.
         name_prefix: Prefix for generated layer names.
         build: Build all variables immediately for EMA cloning.
-        **kwargs: Standard Keras model options.
+        **kwargs (object): Standard Keras model options.
     """
 
     FC = "0_feature_connector"
@@ -117,8 +117,50 @@ class UNet(ArgumentSaverModel):
         extra_depth_specs: Sequence[object] = (), 
         name_prefix: str = "", 
         build: bool = True, 
-        **kwargs
+        **kwargs: object
     ) -> None:
+        """Initialize a conditional convolutional diffusion U-Net.
+
+        Args:
+            num_classes (int): Positive number of real classes.
+            use_cfg (bool): Whether label ID 0 is reserved for CFG.
+            timesteps (int): Positive timestep-embedding vocabulary size.
+            image_size (int): Positive native square image side.
+            channels (int): Positive input/output channel count.
+            widths (Sequence[int]): Positive encoder widths from high to low
+                spatial resolution.
+            block_depth (int): Positive residual-stack depth per level.
+            bottleneck_width (int): Positive bottleneck channel width.
+            bottleneck_depth (int): Positive bottleneck residual depth.
+            image_embedding_dim (int): Positive image-projection width.
+            time_embedding_dim (int): Positive timestep-embedding width.
+            label_embedding_dim (int): Positive label-embedding width.
+            activation_func (str): Keras residual activation name.
+            final_activation_func (str): Keras output activation name.
+            use_batch_norm (bool): Enable residual batch normalization.
+            dropout_rate (float): Spatial dropout probability in ``[0,1)``.
+            downsampling_method (str): ImageDownsample method name.
+            upsampling_method (str): ImageUpsample method name.
+            upsampling_interpolation (str): TensorFlow resize method.
+            use_skip_connections (bool | None): Explicit skip behavior; None
+                disables skips only for a variational bottleneck.
+            reshaper_ids_dict (Mapping[int, str]): Optional exact consecutive
+                flatten/unflatten bottleneck mapping.
+            reshaper_kwargs (Mapping[str, object]): ``add_kl`` and positive
+                ``latent_dim_ratio`` options.
+            cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class
+                head depths; None expands across all depths.
+            cls_token_regularizer_kwargs (Mapping[str, int]): Compatibility
+                mapping containing integer ``start`` and ``end`` keys.
+            extra_depth_specs (Sequence[object]): Serialized progressive stages.
+            name_prefix (str): Prefix for generated Keras layer names.
+            build (bool): Build variables immediately when true.
+            **kwargs (object): Standard ``tf.keras.Model`` options.
+
+        Returns:
+            None: The model and optional symbolic graph are initialized in place.
+        """
+
         widths = tuple(widths)
         reshaper_ids_dict = {
             int(key) if isinstance(key, str) and key.lstrip("-").isdigit()
@@ -161,8 +203,10 @@ class UNet(ArgumentSaverModel):
         self.use_reshaper = bool(self.reshaper_ids_dict) or bool(
             self.reshaper_kwargs.get("add_kl", False)
         )
+        # Default to skip connections unless the resumable VAE path is active.
         if self.use_skip_connections is None:
             self.use_skip_connections = not self.use_reshaper
+        # Prevent skip routes from bypassing a resumable variational bottleneck.
         if self.use_reshaper and self.use_skip_connections:
             raise ValueError(
                 "use_skip_connections must be False for a resumable VAE "
@@ -175,6 +219,7 @@ class UNet(ArgumentSaverModel):
             flatten_depth: "flatten", 
             flatten_depth + 1: "unflatten", 
         } if self.use_reshaper else {}
+        # Restrict convolutional reshaping to the supported bottleneck pair.
         if self.reshaper_ids_dict and self.reshaper_ids_dict != expected_reshapers:
             raise ValueError(
                 "reshaper_ids_dict must be the bottleneck pair "
@@ -248,6 +293,7 @@ class UNet(ArgumentSaverModel):
             dtype=self.dtype_policy, 
         )
 
+        # Materialize symbolic inputs and variables when eager construction is requested.
         if self.build_:
             self.build()
 
@@ -267,8 +313,31 @@ class UNet(ArgumentSaverModel):
         dropout_rate: float, 
         use_skip_connections: bool | None, 
         reshaper_kwargs: dict, 
-        cls_token_regularizer_kwargs: dict, 
+        cls_token_regularizer_kwargs: dict
     ) -> None:
+        """Validate constructor dimensions and bottleneck options.
+
+        Args:
+            num_classes (int): Real class count.
+            timesteps (int): Discrete timestep count.
+            image_size (int): Native square image side.
+            channels (int): Image channel count.
+            widths (tuple[int, ...]): Encoder widths.
+            block_depth (int): Encoder/decoder residual depth.
+            bottleneck_width (int): Bottleneck width.
+            bottleneck_depth (int): Bottleneck residual depth.
+            image_embedding_dim (int): Image embedding width.
+            time_embedding_dim (int): Time embedding width.
+            label_embedding_dim (int): Label embedding width.
+            dropout_rate (float): Dropout probability.
+            use_skip_connections (bool | None): Requested skip behavior.
+            reshaper_kwargs (dict[str, object]): Variational reshaper options.
+            cls_token_regularizer_kwargs (dict[str, int]): Compatibility slice.
+
+        Returns:
+            None: Valid inputs return normally; invalid inputs raise ValueError.
+        """
+
         dimensions = {
             "num_classes": num_classes, 
             "timesteps": timesteps, 
@@ -282,18 +351,25 @@ class UNet(ArgumentSaverModel):
             "label_embedding_dim": label_embedding_dim, 
         }
         for name, value in dimensions.items():
+            # Require every scalar size parameter to be a positive integer.
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer.")
+        # Require at least two diffusion states for sampling.
+        if timesteps < 2:
+            raise ValueError("timesteps must be at least 2.")
 
+        # Require a nonempty sequence of positive integer channel widths.
         if not widths or any(
             not isinstance(width, int) or isinstance(width, bool) or width < 1
             for width in widths
         ):
             raise ValueError("widths must contain positive integers.")
+        # Require dropout probability to lie in the half-open unit interval.
         if not isinstance(dropout_rate, (int, float)) or isinstance(
             dropout_rate, bool
         ) or not 0.0 <= dropout_rate < 1.0:
             raise ValueError("dropout_rate must be in the range [0, 1).")
+        # Accept only a boolean or None for automatic skip-connection selection.
         if use_skip_connections is not None and not isinstance(
             use_skip_connections, bool
         ):
@@ -302,24 +378,34 @@ class UNet(ArgumentSaverModel):
             "add_kl", 
             "latent_dim_ratio", 
         }
+        # Reject reshaper options outside the documented VAE controls.
         if unknown_reshaper_keys:
             raise ValueError(
                 f"Unknown reshaper kwargs: {sorted(unknown_reshaper_keys)}."
             )
         add_kl = reshaper_kwargs.get("add_kl", False)
         ratio = reshaper_kwargs.get("latent_dim_ratio", 1.0)
+        # Require an explicit boolean for variational KL behavior.
         if not isinstance(add_kl, bool):
             raise ValueError("reshaper add_kl must be boolean.")
+        # Require a positive numeric latent-width ratio.
         if not isinstance(ratio, (int, float)) or isinstance(
             ratio, bool
         ) or ratio <= 0:
             raise ValueError("latent_dim_ratio must be positive.")
+        # Require both slice bounds and no unknown regularizer options.
         if set(cls_token_regularizer_kwargs) != {"start", "end"}:
             raise ValueError(
                 "cls_token_regularizer_kwargs must contain start and end."
             )
 
     def _compute_base_depth(self) -> int:
+        """Compute the fixed encoder, bottleneck, and decoder stage count.
+
+        Returns:
+            int: Number of non-progressive U-Net stages.
+        """
+
         encoder_depth = 2 * len(self.widths)
         bottleneck_depth = 1 + 2 * int(self.use_reshaper)
         decoder_depth = len(self.widths) * (
@@ -333,25 +419,41 @@ class UNet(ArgumentSaverModel):
         ids_dict: dict | Sequence[int | None], 
         depth: int | None, 
         min_id: int = 0, 
-        max_id: int | None = None, 
-    ):
-        """Normalize ``None`` and negative IDs like DiffusionTransformer."""
+        max_id: int | None = None
+    ) -> dict[int, list[int]] | list[int]:
+        """Normalize ``None`` and negative IDs like DiffusionTransformer.
+
+        Args:
+            ids_dict (dict | Sequence[int | None]): Mapping or shorthand IDs.
+            depth (int | None): Depth used to resolve negative IDs.
+            min_id (int): Smallest permitted/expanded ID.
+            max_id (int | None): Largest permitted/expanded ID.
+
+        Returns:
+            dict[int, list[int]] | list[int]: Normalized shape matching the
+            mapping-versus-sequence form of ``ids_dict``.
+        """
 
         is_dict = isinstance(ids_dict, dict)
         values_dict = ids_dict if is_dict else {1: list(ids_dict)}
         values_dict = {key: list(value) for key, value in values_dict.items()}
         for key, values in values_dict.items():
             upper = key if max_id is None else max_id
+            # Expand the None sentinel to every valid layer ID.
             if None in values:
                 values = list(range(min_id, upper + 1))
             fixed = []
             for value in values:
+                # Require each explicit layer ID to be an integer.
                 if not isinstance(value, int) or isinstance(value, bool):
                     raise ValueError("Layer IDs must be integers or None.")
+                # Resolve negative IDs relative to the final depth.
                 if value < 0:
+                    # Negative IDs need a known depth for normalization.
                     if depth is None:
                         raise ValueError("Negative IDs require a known depth.")
                     value += depth + 1
+                # Reject normalized IDs outside the allowed inclusive range.
                 if value < min_id or (max_id is not None and value > max_id):
                     raise ValueError(
                         f"Layer ID {value} is outside [{min_id}, {upper}]."
@@ -366,7 +468,18 @@ class UNet(ArgumentSaverModel):
         name: str, 
         spatial: bool, 
     ) -> models.Model:
+        """Create an auxiliary float32 class-probability head.
+
+        Args:
+            name (str): Keras model/layer name prefix.
+            spatial (bool): Pool rank-four feature maps before classification.
+
+        Returns:
+            tf.keras.Model: Optional global pool followed by class softmax.
+        """
+
         regularizer_layers = []
+        # Pool spatial feature maps before the regularizer classifier.
         if spatial:
             regularizer_layers.append(
                 layers.GlobalAveragePooling2D(name=f"{name}/pool")
@@ -388,9 +501,20 @@ class UNet(ArgumentSaverModel):
     def _append_stage(
         self, 
         layers_dict: dict[str, layers.Layer], 
-        kind: str, 
+        kind: str
     ) -> int:
+        """Track one ordered stage and attach its configured regularizer.
+
+        Args:
+            layers_dict (dict[str, tf.keras.layers.Layer]): Stage components.
+            kind (str): Internal representation/stage kind.
+
+        Returns:
+            int: One-based public depth assigned to the appended stage.
+        """
+
         key = len(self.layers_dicts) + 1
+        # Attach a requested regularizer unless this stage already owns one.
         if key in self.cls_token_regularizer_ids and self.CTR not in layers_dict:
             layers_dict[self.CTR] = self._create_regularizer(
                 f"{self.name_prefix}depth_{key}_{self.CTR[2:]}",
@@ -406,7 +530,23 @@ class UNet(ArgumentSaverModel):
 
         return key
 
-    def _residual_stack(self, filters: int, depth: int, name: str):
+    def _residual_stack(
+        self, 
+        filters: int, 
+        depth: int, 
+        name: str
+    ) -> ResidualConvStack:
+        """Create a condition-aware residual convolution stack.
+
+        Args:
+            filters (int): Positive output channel width.
+            depth (int): Positive number of residual blocks.
+            name (str): Keras layer name.
+
+        Returns:
+            ResidualConvStack: Configured residual stack.
+        """
+
         return ResidualConvStack(
             filters=filters, 
             depth=depth, 
@@ -419,11 +559,26 @@ class UNet(ArgumentSaverModel):
         )
 
     def _bottleneck_resolution(self, resolution: int) -> int:
+        """Compute the spatial side after every encoder downsample.
+
+        Args:
+            resolution (int): Positive input image side.
+
+        Returns:
+            int: Repeated ceiling-halved bottleneck side.
+        """
+
         for _ in self.widths:
             resolution = (resolution + 1) // 2
         return resolution
 
     def _create_layers(self) -> None:
+        """Construct encoder, bottleneck, decoder, and progressive stages.
+
+        Returns:
+            None: ``layers_dicts`` and routing metadata are populated in place.
+        """
+
         skip_depths = []
         for width in self.widths:
             block_key = len(self.layers_dicts) + 1
@@ -463,6 +618,7 @@ class UNet(ArgumentSaverModel):
             "convolution",
         )
 
+        # Build the output head from bottleneck geometry in resumable VAE mode.
         if self.use_reshaper:
             base_side = self._bottleneck_resolution(self.image_size)
             source_shape = (base_side, base_side, self.bottleneck_width)
@@ -514,6 +670,7 @@ class UNet(ArgumentSaverModel):
                 "upsample", 
             )
 
+            # Route the matching encoder feature into each decoder stage.
             if self.use_skip_connections:
                 connector_key = len(self.layers_dicts) + 1
                 self.connection_ids_dict[connector_key] = [skip_depth]
@@ -549,14 +706,30 @@ class UNet(ArgumentSaverModel):
         for spec in self.extra_depth_specs:
             self._append_extra_stage(spec)
 
+        # Guard against construction metadata and executable stages diverging.
         if len(self.layers_dicts) != self.depth:
             raise RuntimeError("Constructed U-Net depth does not match its config.")
 
     def _normalize_extra_spec(self, spec: object) -> dict[str, object]:
+        """Normalize one progressive stage specification.
+
+        Args:
+            spec (object): Layer name, collection of names, or option mapping.
+
+        Returns:
+            dict[str, object]: Canonical component-key mapping.
+
+        Raises:
+            ValueError: If no supported enabled component is specified.
+        """
+
+        # Interpret a string as one enabled progressive layer.
         if isinstance(spec, str):
             spec = {spec: True}
+        # Interpret a collection as several enabled layers in one depth.
         elif isinstance(spec, (tuple, set, frozenset)):
             spec = dict.fromkeys(spec, True)
+        # Require the normalized depth specification to be a mapping.
         if not isinstance(spec, Mapping):
             raise ValueError("A depth specification must be a string or mapping.")
         aliases = {
@@ -570,21 +743,34 @@ class UNet(ArgumentSaverModel):
 
         normalized = {}
         for name, options in spec.items():
+            # Reject progressive layer names unsupported by the U-Net factory.
             if name not in aliases:
                 raise ValueError(f"Unknown progressive U-Net layer: {name}.")
+            # Retain enabled layers under their internal stage keys.
             if options is not False:
                 normalized[aliases[name]] = options
 
+        # Reject a progressive stage with every layer disabled.
         if not normalized:
             raise ValueError("A progressive depth must contain a layer.")
 
         return normalized
 
     def _append_extra_stage(self, spec: object) -> int:
+        """Build and append one normalized progressive stage.
+
+        Args:
+            spec (object): Progressive stage specification.
+
+        Returns:
+            int: One-based depth assigned to the new stage.
+        """
+
         spec = self._normalize_extra_spec(spec)
         key = len(self.layers_dicts) + 1
         stage_layers = {}
 
+        # Add a convolutional residual block when requested.
         if self.CB in spec:
             stage_layers[self.CB] = self._residual_stack(
                 self.widths[0], 
@@ -592,6 +778,7 @@ class UNet(ArgumentSaverModel):
                 f"{self.name_prefix}depth_{key}_{self.CB[2:]}", 
             )
 
+        # Add an auxiliary classifier regularizer when requested.
         if self.CTR in spec:
             stage_layers[self.CTR] = self._create_regularizer(
                 f"{self.name_prefix}depth_{key}_{self.CTR[2:]}", 
@@ -603,8 +790,19 @@ class UNet(ArgumentSaverModel):
     def _broadcast_condition(
         self, 
         condition: tf.Tensor, 
-        images: tf.Tensor, 
+        images: tf.Tensor
     ) -> tf.Tensor:
+        """Broadcast rank-two conditions across an image grid.
+
+        Args:
+            condition (tf.Tensor): Float condition tensor ``[B, condition_dim]``.
+            images (tf.Tensor): Reference image tensor ``[B,H,W,C]``.
+
+        Returns:
+            tf.Tensor: Condition tensor ``[B,H,W,condition_dim]`` in the image
+            dtype.
+        """
+
         condition = tf.cast(condition, images.dtype)
         condition = condition[:, None, None, :]
         shape = tf.concat(
@@ -623,8 +821,21 @@ class UNet(ArgumentSaverModel):
         times: tf.Tensor, 
         labels: tf.Tensor, 
         full_return: bool = False, 
-        training: bool | None = None, 
-    ):
+        training: bool | None = None
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Embed and concatenate timestep and label conditions.
+
+        Args:
+            times (tf.Tensor): Integer timestep IDs of shape ``[B]``.
+            labels (tf.Tensor): Integer label IDs of shape ``[B]``.
+            full_return (bool): Include the two individual embeddings.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | tuple[tf.Tensor, tf.Tensor, tf.Tensor]: Concatenated
+            condition ``[B, condition_dim]``, optionally followed by individual
+            time and label embeddings.
+        """
         times = tf.convert_to_tensor(times)
         labels = tf.convert_to_tensor(labels)
         time_embeddings = self.time_embedder(times, training=training)
@@ -632,6 +843,7 @@ class UNet(ArgumentSaverModel):
         condition = tf.concat([time_embeddings, label_embeddings], axis=-1)
         condition = tf.cast(condition, self.compute_dtype)
 
+        # Expose separate embeddings only for callers requesting full metadata.
         if full_return:
             return condition, time_embeddings, label_embeddings
         return condition
@@ -641,7 +853,7 @@ class UNet(ArgumentSaverModel):
         inputs: UNetInputs, 
         max_depth: int = -1, 
         training: bool | None = None, 
-        min_depth: int = 0, 
+        min_depth: int = 0
     ) -> tuple[
         tf.Tensor, 
         tf.Tensor, 
@@ -649,8 +861,24 @@ class UNet(ArgumentSaverModel):
         list[tf.Tensor | None], 
         tuple[tf.Tensor | None, tf.Tensor | None], 
     ]:
-        """Run a contiguous range of convolutional depths."""
+        """Run a contiguous range of convolutional depths.
 
+        Args:
+            inputs (UNetInputs): Image/latent tensor, integer timesteps, and
+                integer labels.  At depth zero the first tensor is ``[B,H,W,C]``;
+                at a resumed depth it is that depth's representation.
+            max_depth (int): Exclusive zero-based stage stop; -1 runs all.
+            training (bool | None): Keras training mode.
+            min_depth (int): First stage to execute in ``[0, depth]``.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor, list[tf.Tensor | None],
+            list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]]:
+            Final representation, condition, depth features, auxiliary class
+            predictions, and most recent latent mean/log variance.
+        """
+
+        # Require resumed execution to start at a valid stage boundary.
         if not 0 <= min_depth <= self.depth:
             raise ValueError("min_depth must be in [0, depth].")
 
@@ -660,9 +888,11 @@ class UNet(ArgumentSaverModel):
             full_return=True, 
             training=training, 
         )
+        # Embed raw images and conditions when executing from the input stage.
         if min_depth == 0:
             x = self.image_embedder(inputs[0], training=training)
             x = tf.concat([x, self._broadcast_condition(condition, x)], axis=-1)
+        # Treat the supplied tensor as an already embedded intermediate feature.
         else:
             x = inputs[0]
 
@@ -676,11 +906,14 @@ class UNet(ArgumentSaverModel):
         z_vals: tuple[tf.Tensor | None, tf.Tensor | None] = (None, None)
 
         for index, stage in enumerate(self.layers_dicts):
+            # Stop before the exclusive maximum depth.
             if index == max_depth:
                 break
+            # Leave earlier stages untouched during resumed execution.
             if index < min_depth:
                 continue
 
+            # Merge the configured encoder skip feature into this decoder stage.
             if self.FC in stage:
                 source_id = self.connection_ids_dict[index + 1][0]
                 source = features_list[source_id]
@@ -692,27 +925,34 @@ class UNet(ArgumentSaverModel):
                     training=training, 
                 )
 
+            # Upsample decoder features at this stage.
             if self.US in stage:
                 x = stage[self.US]((x, condition), training=training)
 
+            # Apply this stage's convolutional residual stack.
             if self.CB in stage:
                 x = stage[self.CB]((x, condition), training=training)
 
+            # Downsample encoder features at this stage.
             if self.DS in stage:
                 x = stage[self.DS]((x, condition), training=training)
 
+            # Apply the configured flatten or unflatten bottleneck transform.
             if self.R in stage:
                 reshape_type = self.reshaper_ids_dict[index + 1]
+                # Resize to native bottleneck geometry before flattening.
                 if reshape_type == "flatten":
                     base_side = self._bottleneck_resolution(self.image_size)
                     x = tf.image.resize(x, (base_side, base_side))
 
                 x, x_mean, x_log_var = stage[self.R](x, training=training)
 
+                # Restore spatial bottleneck geometry before decoder stages.
                 if reshape_type == "unflatten":
                     side = self._bottleneck_resolution(self.current_resolution)
                     x = tf.image.resize(x, (side, side))
 
+                # Preserve mean and log variance from a variational flatten stage.
                 if reshape_type == "flatten" and bool(
                     self.reshaper_kwargs.get("add_kl", False)
                 ):
@@ -733,8 +973,21 @@ class UNet(ArgumentSaverModel):
         inputs: UNetInputs, 
         full_return: bool = False, 
         training: bool | None = None, 
-        min_depth: int = 0, 
+        min_depth: int = 0
     ) -> tf.Tensor | UNetFullOutput:
+        """Predict image-shaped noise and optionally return intermediates.
+
+        Args:
+            inputs (UNetInputs): Image/latent, timestep, and label tensors.
+            full_return (bool): Return the five-item wrapper contract when true.
+            training (bool | None): Keras training mode.
+            min_depth (int): Resume execution from this architectural depth.
+
+        Returns:
+            tf.Tensor | UNetFullOutput: Predicted noise ``[B,H,W,C]`` or the
+            prediction plus condition, features, regularizers, and latent stats.
+        """
+
         x, condition, features_list, regs_list, z_vals = self.encode(
             inputs,
             min_depth=min_depth,
@@ -748,6 +1001,7 @@ class UNet(ArgumentSaverModel):
         x = self.output_projection(x, training=training)
         predicted_noise = self.output_activation(x)
 
+        # Return intermediate features and auxiliary values only when requested.
         if full_return:
             return predicted_noise, condition, features_list, regs_list, z_vals
         return predicted_noise
@@ -756,8 +1010,19 @@ class UNet(ArgumentSaverModel):
         self, 
         inputs: UNetInputs, 
         full_return: bool = False, 
-        training: bool | None = None, 
-    ):
+        training: bool | None = None
+    ) -> tf.Tensor | UNetFullOutput:
+        """Run only the U-Net noise-prediction branch.
+
+        Args:
+            inputs (UNetInputs): Image, timestep, and label tensors.
+            full_return (bool): Include branch intermediates when true.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | UNetFullOutput: Same contract as :meth:`call`.
+        """
+
         return UNet.call(
             self, 
             inputs, 
@@ -767,14 +1032,32 @@ class UNet(ArgumentSaverModel):
 
     @property
     def current_resolution(self) -> int:
+        """Return the active square image side.
+
+        Returns:
+            int: Positive active resolution.
+        """
+
         return self._current_resolution
 
     def set_current_resolution(self, resolution: int | None = None) -> None:
+        """Set the active square resolution and invalidate Keras functions.
+
+        Args:
+            resolution (int | None): Positive image side; None restores native.
+
+        Returns:
+            None: Resolution and execution caches are updated in place.
+        """
+
         resolution = self.image_size if resolution is None else resolution
+        # Require an integer progressive resolution rather than a boolean.
         if not isinstance(resolution, int) or isinstance(resolution, bool):
             raise ValueError("resolution must be an integer.")
+        # Require a positive spatial resolution.
         if resolution < 1:
             raise ValueError("resolution must be positive.")
+        # Invalidate traced functions only when the active resolution changes.
         if getattr(self, "_current_resolution", None) != resolution:
             self._current_resolution = resolution
             self.train_function = None
@@ -784,13 +1067,33 @@ class UNet(ArgumentSaverModel):
     def build(
         self, 
         input_shape: tuple[tf.TensorShape, tf.TensorShape, tf.TensorShape]
-        | None = None, 
+        | None = None
     ) -> None:
+        """Build variables from model-configured symbolic shapes.
+
+        Args:
+            input_shape (tuple[tf.TensorShape, tf.TensorShape,
+                tf.TensorShape] | None): Accepted for Keras compatibility and
+                ignored in favor of configured shapes.
+
+        Returns:
+            None: Variables and the Keras built flag are initialized.
+        """
+
         del input_shape
         shapes = self.build_model()
         super().build(shapes)
 
     def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
+        """Create symbolic image, timestep, and label inputs.
+
+        Args:
+            call_model (bool): Populate symbolic outputs when true.
+
+        Returns:
+            list[tf.TensorShape]: Shapes of the three symbolic inputs.
+        """
+
         noisy_images = layers.Input(
             shape=(self.current_resolution, self.current_resolution, self.channels), 
             dtype=self.compute_dtype, 
@@ -804,11 +1107,19 @@ class UNet(ArgumentSaverModel):
         return [value.shape for value in self.inputs]
 
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
-        """Append shape-preserving convolution or regularizer stages."""
+        """Append shape-preserving convolution or regularizer stages.
+
+        Args:
+            depth_spec (object): One stage specification or a list of them.
+
+        Returns:
+            dict[str, dict[str, int]]: Before, added, and after depth counts.
+        """
 
         specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
         specs = [spec for spec in specs if spec is not None]
         before = self.depth
+        # Leave the architecture unchanged for an empty growth request.
         if not specs:
             return {"network": {"before": before, "added": 0, "after": before}}
 
@@ -816,12 +1127,15 @@ class UNet(ArgumentSaverModel):
         serializable_specs = []
         for spec in normalized:
             saved = {}
+            # Serialize requested convolution-block options.
             if self.CB in spec:
                 saved["convolution_block"] = spec[self.CB]
+            # Serialize requested regularizer options.
             if self.CTR in spec:
                 saved["cls_token_regularizer"] = spec[self.CTR]
             serializable_specs.append(saved)
             new_depth = self._append_extra_stage(saved)
+            # Register newly added regularizer depths in model metadata.
             if self.CTR in spec:
                 self.cls_token_regularizer_ids.append(new_depth)
 
@@ -845,26 +1159,29 @@ class UNet(ArgumentSaverModel):
 
     def get_variables_names(
         self, 
-        vars: list[tf.Variable] | None = None, 
+        vars: list[tf.Variable] | None = None
     ) -> list[str]:
-        """Return TensorFlow names for all or selected trainable variables."""
+        """Return TensorFlow names for all or selected trainable variables.
+
+        Args:
+            vars (list[tf.Variable] | None): Variables to inspect; None selects
+                every trainable variable.
+
+        Returns:
+            list[str]: Variable names in model/input order.
+        """
 
         vars = self.trainable_variables if vars is None else vars
 
         return [variable.name for variable in vars]
 
 
-if __name__ != "__main__":
-    tf.keras.utils.register_keras_serializable(
-        package="continual_learning",
-    )(UNet)
-    # TensorFlow 2.10 writes subclassed models to JSON with the bare class
-    # name even when a registered package name exists.
-    tf.keras.utils.get_custom_objects()["UNet"] = UNet
-
-
 def run_self_tests() -> dict[str, str]:
-    """Run direct, wrapper, VAE, progressive, and serialization checks."""
+    """Run direct, wrapper, VAE, progressive, and serialization checks.
+
+    Returns:
+        dict[str, str]: ``{"UNet": "passed"}`` after all checks.
+    """
 
     tf.keras.backend.clear_session()
     tf.random.set_seed(211)
@@ -949,5 +1266,6 @@ def run_self_tests() -> dict[str, str]:
     return {"UNet": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

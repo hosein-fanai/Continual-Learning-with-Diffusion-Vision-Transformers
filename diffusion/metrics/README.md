@@ -16,8 +16,8 @@ Pass a `DiffusionClassifier`-compatible wrapper, not a bare
 - inner-network `predict_class((images, timesteps, labels), training=...)` and
   `num_classes`.
 
-The constructor annotation retains a historical raw-network type, but the
-runtime API above is authoritative.
+The constructor uses `Any` because the wrapper protocol spans several model
+families; the runtime checks enforce the interface above.
 
 ## Usage
 
@@ -53,9 +53,9 @@ logits or probabilities because sparse categorical accuracy uses `argmax`.
 
 `compute_type="batched"` materializes `[B * max_t, H, W, C]` and calls the
 network once. It is simple and fast when memory permits. `"chunked"` materializes
-at most `[B * t_chunk_size, H, W, C]`, accumulates float32 score sums, and is the
-default. `t_chunk_size` must be positive; a value at least `max_t` gives one
-chunk.
+at most `[B * t_chunk_size, H, W, C]`, accumulates score sums in the metric's
+configured dtype, and is the default. `t_chunk_size` must be positive; a value
+at least `max_t` gives one chunk.
 
 ## Dataset convenience loop
 
@@ -65,10 +65,10 @@ value = metric.evaluate(validation_dataset)
 ```
 
 The dataset must be sized (`len(dataset)` must work) and yield `(images,
-labels)`. `evaluate` prints batch progress and returns a NumPy scalar. Metric
-state is cumulative: neither `evaluate` nor `test_step` resets prior results.
-The custom `update_state(y_true, y_pred)` does not accept `sample_weight`.
+labels)` or `(images, labels, sample_weight)`. `evaluate` prints batch progress
+and returns a NumPy scalar. Metric state is cumulative: neither `evaluate` nor
+`test_step` resets prior results. Both `test_step` and `update_state` accept
+per-example `sample_weight`.
 
 `netwrok_name` is intentionally documented with its existing misspelling.
-Use exactly `"ema"` or `"raw"`; the implementation selects EMA only for the
-former and otherwise falls back to the raw network.
+Use exactly `"ema"` or `"raw"`; any other value raises `ValueError`.

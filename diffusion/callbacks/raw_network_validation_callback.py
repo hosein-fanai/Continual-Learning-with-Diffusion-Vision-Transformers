@@ -2,6 +2,8 @@
 
 from tensorflow.keras import callbacks
 
+from typing import Any
+
 
 class RawNetworkValidationCallback(callbacks.Callback):
     """Add raw-network validation metrics to Keras epoch logs.
@@ -26,19 +28,23 @@ class RawNetworkValidationCallback(callbacks.Callback):
 
     Outputs:
         Callback hooks return ``None`` and add scalar ``val_raw_*`` entries to
-        a truthy epoch ``logs`` mapping. A passed empty mapping is replaced
-        locally by the current ``logs or {}`` expression and is not observably
-        mutated by its caller.
+        the supplied epoch ``logs`` mapping. Both populated and empty mappings
+        are mutated in place; when Keras supplies ``None``, results are computed
+        but no external mapping exists to observe them.
     """
 
     def __init__(
         self, 
-        val_x, 
-        val_y=None
-    ):
+        val_x: Any, 
+        val_y: Any | None = None
+    ) -> None:
         """Store validation data for reuse at every epoch boundary.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            val_x (Any): Validation inputs or a dataset accepted by the bound
+                model's ``evaluate`` method.
+            val_y (Any | None): Optional validation targets. Leave this as
+                ``None`` when ``val_x`` already yields input-target pairs.
 
         Returns:
             ``None``.
@@ -49,22 +55,27 @@ class RawNetworkValidationCallback(callbacks.Callback):
         self.val_x = val_x
         self.val_y = val_y
 
-    def on_epoch_end(self, epoch, logs=None):
+    def on_epoch_end(
+        self, 
+        epoch: int, 
+        logs: dict[str, Any] | None = None
+    ) -> None:
         """Evaluate raw weights and append the results to epoch logs.
 
         Args:
-            epoch: Zero-based integer epoch index supplied by Keras; unused by
+            epoch (int): Zero-based epoch index supplied by Keras; unused by
                 this callback.
-            logs: Optional mutable mapping of epoch metrics. Each raw evaluation
-                result named ``key`` is assigned as ``logs["val_raw_" + key]``.
-                If ``None`` or empty, a temporary mapping is created.
+            logs (dict[str, Any] | None): Optional mutable epoch-metric mapping.
+                Each raw result named ``key`` is stored under
+                ``"val_raw_" + key``. A passed mapping, including an empty one,
+                is mutated in place.
 
         Returns:
             ``None``. The bound model's ``evaluate`` call is executed with
             ``verbose=0`` and ``return_dict=True``.
         """
 
-        logs = logs or {}
+        logs = {} if logs is None else logs
 
         raw_results = self.model.evaluate(
             self.val_x, 
@@ -85,7 +96,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after tensor/dataset-style target storage,
+        dict[str, str]: A one-entry mapping after tensor/dataset-style target storage,
         evaluation arguments, metric prefixing, and empty-log behavior checks.
     """
 
@@ -128,10 +139,11 @@ def run_self_tests() -> dict[str, str]:
 
     empty_logs = {}
     dataset_callback.on_epoch_end(1, empty_logs)
-    assert empty_logs == {}
+    assert empty_logs == {"val_raw_noise_loss": 0.5}
 
     return {"RawNetworkValidationCallback": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

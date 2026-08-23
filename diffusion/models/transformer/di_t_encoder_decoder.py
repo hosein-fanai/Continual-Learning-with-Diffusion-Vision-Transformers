@@ -49,7 +49,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         decoder_kwargs: dict[str, object] | None = None, 
         build: bool = True, 
         **kwargs: object
-    ):
+    ) -> None:
         """Initialize the encoder state and attached decoder.
 
         Args:
@@ -89,7 +89,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 ``encoder_kwargs``.
 
         Returns:
-            None.  Encoder layers, decoder layers, serialization state, and
+            None: Encoder layers, decoder layers, serialization state, and
             optionally the symbolic graph are initialized.
 
         Raises:
@@ -127,6 +127,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         decoder_config.setdefault("shift_inputs", False)
         encoder_feature_dims, encoder_feature_grids = \
             self._get_encoder_feature_metadata()
+        # Require a spatial final encoder feature for decoder initialization.
         if encoder_feature_grids[-1] is None:
             raise ValueError(
                 "the encoder's final feature must be spatial for DiTDecoder."
@@ -143,6 +144,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 isinstance(supplied, (list, tuple))
                 and list(supplied) == value
             ) if isinstance(value, list) else supplied == value
+            # Reject decoder metadata that contradicts the encoder-derived value.
             if supplied is not None and not matches:
                 raise ValueError(
                     f"decoder {key} must match the encoder metadata."
@@ -159,6 +161,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
             "build": build, 
         })
 
+        # Materialize the combined encoder-decoder variables when requested.
         if self.build_:
             self.build()
 
@@ -204,7 +207,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         i: int, 
         layers_dicts: list[dict], 
         base_grid_size: int, 
-        skip_reshaper: bool = False, 
+        skip_reshaper: bool = False
     ) -> int | None:
         """Resolve spatial state without losing explicit flat representations.
 
@@ -219,18 +222,22 @@ class DiTEncoderDecoder(DiffusionTransformer):
             reshaper until a later unflatten/spatial layer restores a grid.
         """
 
+        # Return the patch grid before any encoder depth executes.
         if i == -1:
             return base_grid_size
 
         grid_size = None
         grid_was_set = False
+        # Inspect the requested encoder stage when it exists.
         if i < len(layers_dicts):
             stage = layers_dicts[i]
             for key in (self.LM, self.DS, self.US):
+                # Let spatial mixers and scalers update the encoder grid.
                 if key in stage:
                     grid_size = stage[key].output_grid_size
                     grid_was_set = True
 
+            # Derive spatial or flat metadata from a non-skipped reshaper.
             if self.R in stage and not skip_reshaper:
                 output_shape = stage[self.R].output_shape[0]
                 grid_size = isqrt(output_shape[1]) \
@@ -248,7 +255,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Validate the generic diffusion wrapper's image contract.
 
         Returns:
-            None. A compatible decoder is left unchanged.
+            None: A compatible decoder is left unchanged.
 
         Raises:
             ValueError: If the decoder emits tokens, has incompatible shared
@@ -262,31 +269,37 @@ class DiTEncoderDecoder(DiffusionTransformer):
             self.decoder.layers_dicts, 
             self.decoder.grid_size, 
         )
+        # Require the decoder to reconstruct image-shaped noise predictions.
         if not self.decoder.use_unpatchify:
             raise ValueError(
                 "DiTEncoderDecoder requires decoder use_unpatchify=True."
             )
+        # Keep encoder and decoder image geometry identical.
         if self.decoder.image_size != self.image_size or \
         self.decoder.channels != self.channels:
             raise ValueError(
                 "encoder and decoder image_size/channels must match."
             )
+        # Shared conditioning requires matching encoder and decoder widths.
         if not self.decoder.decoder_separate_cond and \
         self.cond_type is not None and self.decoder.cond_dim != self.cond_dim:
             raise ValueError(
                 "a decoder that reuses encoder conditioning must have the "
                 "same cond_dim."
             )
+        # Ensure a decoder-owned time embedding covers every encoder timestep.
         if self.decoder.time_embedder is not None and \
         self.decoder.timesteps < self.timesteps:
             raise ValueError(
                 "decoder timestep embeddings must cover encoder timesteps."
             )
+        # Ensure a decoder-owned label embedding covers every encoder label ID.
         if self.decoder.label_embedder is not None and \
         self.decoder.num_labels < self.num_labels:
             raise ValueError(
                 "decoder label embeddings must cover encoder labels."
             )
+        # Detect feature-width routes made unsafe by mismatched class-token presence.
         if bool(self.cls_token_type) != bool(self.decoder.cls_token_type):
             feature_routes_require_match = any(
                 self._handler_merges_feature_width(
@@ -312,22 +325,26 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 for depth in
                 self.decoder.cross_attention_aggregation_ids_dict
             )
+            # Reject routed encoder/decoder widths that cannot be merged safely.
             if feature_routes_require_match or query_routes_require_match or \
             cross_connector_requires_match:
                 raise ValueError(
                     "encoder and decoder class-token settings must match for "
                     "feature-width merges and cross-attention query routes."
                 )
+        # Require the decoder's terminal token grid to match the image head.
         if final_grid is None or \
         final_grid * self.decoder.patch_size != self.image_size:
             raise ValueError(
                 "the decoder's final token grid must reconstruct image_size."
             )
+        # Reject decoder KL outputs that the wrapper API cannot expose.
         if self.decoder.reshaper_kwargs.get("add_kl", False):
             raise ValueError(
                 "decoder KL bottlenecks are not exposed by DiffusionModel; "
                 "configure KL reshaping on the encoder."
             )
+        # Reject decoder token regularizers that the wrapper API cannot expose.
         if self.decoder.cls_token_regularizer_ids:
             raise ValueError(
                 "decoder token regularizers are not exposed by DiffusionModel; "
@@ -382,12 +399,15 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             DiTEncoderDecoder: Independent same-type network clone.
         """
+        # Reuse an existing clone to preserve deepcopy memo semantics.
         if id(self) in memo:
             return memo[id(self)]
 
         clone = type(self).from_config(self.get_config())
         memo[id(self)] = clone
+        # Copy learned weights only after the clone has compatible variables.
         if self.weights:
+            # Build a deferred clone before assigning weights.
             if not clone.weights:
                 clone.build()
             clone.set_weights(self.get_weights())
@@ -408,7 +428,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 symbolic shapes.
 
         Returns:
-            None.  Encoder/decoder variables are created and the outer model is
+            None: Encoder/decoder variables are created and the outer model is
             marked built.
         """
 
@@ -459,7 +479,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor] | tuple[
             tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor
         ], 
-        min_depth: int = 0, 
+        min_depth: int = 0
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Normalize wrapper-compatible and teacher-forcing inputs.
 
@@ -478,6 +498,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
             ValueError: If ``inputs`` has neither three nor four tensors.
         """
 
+        # Reuse encoder images as decoder inputs for the standard three-tensor call.
         if len(inputs) == 3:
             encoder_input, times, labels = inputs
             decoder_images = encoder_input if min_depth == 0 else tf.zeros(
@@ -489,8 +510,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 ), 
                 dtype=self.decoder.compute_dtype, 
             )
+        # Accept an explicit decoder image for asymmetric encoder-decoder calls.
         elif len(inputs) == 4:
             encoder_input, times, labels, decoder_images = inputs
+        # Reject input tuples outside the documented three- or four-tensor forms.
         else:
             raise ValueError(
                 "inputs must contain images, times, labels, and optionally "
@@ -516,7 +539,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 depths with ``None``.
 
         Returns:
-            None. Valid feature routes are left unchanged.
+            None: Valid feature routes are left unchanged.
 
         Raises:
             ValueError: If a configured decoder aggregator selects a skipped
@@ -528,6 +551,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
             "cross_attention_aggregation_ids_dict", 
         ):
             for ids in getattr(self.decoder, mapping_name).values():
+                # Ensure every decoder-routed encoder feature was actually computed.
                 if any(
                     index >= len(encoder_features)
                     or encoder_features[index] is None
@@ -599,6 +623,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         )
         noises = decoder_outputs["noises"]
 
+        # Return encoder intermediates and auxiliary outputs only when requested.
         if full_return:
             return noises, encoder_cond, encoder_features, encoder_regs, encoder_z
         return noises
@@ -667,13 +692,16 @@ class DiTEncoderDecoder(DiffusionTransformer):
         targeted = isinstance(depth_spec, dict) and any(
             key in depth_spec for key in ("network", "decoder")
         )
+        # Split targeted growth into encoder and decoder specifications.
         if targeted:
+            # Reject targeted keys outside the two architecture branches.
             if not all(key in ("network", "decoder") for key in depth_spec):
                 raise ValueError(
                     "targeted depth_spec keys must be 'network' or 'decoder'."
                 )
             network_spec = depth_spec.get("network", [])
             decoder_spec = depth_spec.get("decoder", [])
+        # Treat an unscoped specification as encoder-only growth.
         else:
             network_spec = depth_spec
             decoder_spec = []
@@ -734,11 +762,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 sizes.  ``None`` restores each branch's configured image size.
 
         Returns:
-            None.  Both branches are updated in place.
+            None: Both branches are updated in place.
         """
 
         encoder_resolution = self.image_size if resolution is None else resolution
         resolutions_and_patches = [(encoder_resolution, self.patch_size)]
+        # Validate the decoder's derived resolution after combined updates.
         if hasattr(self, "decoder"):
             decoder_resolution = self.decoder.image_size if resolution is None \
                 else resolution
@@ -754,6 +783,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 "resolution must be divisible by both patch sizes."
 
         DiffusionTransformer.set_current_resolution(self, resolution)
+        # Propagate active resolution changes to the attached decoder.
         if hasattr(self, "decoder"):
             self.decoder.set_current_resolution(resolution)
 
@@ -1030,5 +1060,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiTEncoderDecoder": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

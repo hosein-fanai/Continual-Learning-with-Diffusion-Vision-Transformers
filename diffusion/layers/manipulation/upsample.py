@@ -3,7 +3,7 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
@@ -56,9 +56,8 @@ class Upsample(BaseEmbedding):
         in count; positional concatenation and an MLP may alter channel width.
 
     Serialization:
-        ``get_config()`` includes inherited ``ln_dim`` even though
-        :class:`BaseEmbedding` supplies it from ``dim``. Remove ``ln_dim`` from
-        a copied config before calling ``Upsample.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
     """
 
     def __init__(
@@ -70,11 +69,19 @@ class Upsample(BaseEmbedding):
         cnn_kernel_size: int = 2, 
         cnn_activation_func: str = "linear", 
         circumvent_cls_token: bool = False, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the factor-two scaler, position table, and projections.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            use_layer_norm (bool): Whether to normalize before scaling.
+            scaling_method (ScalingMethod): Learned or interpolation resize mode.
+            scaling_interpolation_method (str): Keras interpolation method.
+            cnn_dim_ratio (int): Positive convolutional channel multiplier.
+            cnn_kernel_size (int): Positive convolution kernel size.
+            cnn_activation_func (str): Keras convolution activation.
+            circumvent_cls_token (bool): Whether to preserve token zero.
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
@@ -86,8 +93,14 @@ class Upsample(BaseEmbedding):
         )
         self._save_init_args(locals())
 
-        assert self.grid_size >= 1, \
-            "grid_size must be positive."
+        # Require a positive source grid for spatial enlargement.
+        if self.grid_size is None or self.grid_size < 1:
+            raise ValueError("grid_size must be positive.")
+        for name in ("cnn_dim_ratio", "cnn_kernel_size"):
+            value = getattr(self, name)
+            # Require positive integer convolution dimensions.
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
 
 
         self.output_grid_size = self.grid_size * 2
@@ -97,6 +110,7 @@ class Upsample(BaseEmbedding):
         )
 
         name = f"{self.name}/scaling_layer"
+        # Learn spatial and channel enlargement with transposed convolution.
         if self.scaling_method == "cnn_transpose":
             self.output_dim = self.dim * self.cnn_dim_ratio
             self.scaling_layer = layers.Conv2DTranspose(
@@ -105,31 +119,38 @@ class Upsample(BaseEmbedding):
                 strides=2, 
                 padding="same", 
                 activation=self.cnn_activation_func, 
-                name=name
+                name=name,
+                dtype=self.dtype_policy,
             )
+        # Preserve channels for parameter-free interpolation.
         elif self.scaling_method == "interpolate":
             self.output_dim = self.dim
             self.scaling_layer = layers.UpSampling2D(
                 size=(2, 2), 
                 interpolation=self.scaling_interpolation_method, 
-                name=name
+                name=name,
+                dtype=self.dtype_policy,
             )
+        # Refine interpolated features with a learned channel projection.
         elif self.scaling_method == "cnn_interpolate":
             self.output_dim = self.dim * self.cnn_dim_ratio
             self.scaling_layer = models.Sequential([
                 layers.UpSampling2D(
                     size=(2, 2), 
                     interpolation=self.scaling_interpolation_method, 
-                    name=f"{name}_interpolation"
+                    name=f"{name}_interpolation",
+                    dtype=self.dtype_policy,
                 ), 
                 layers.Conv2D(
                     filters=self.output_dim, 
                     kernel_size=self.cnn_kernel_size, 
                     padding="same", 
                     activation=self.cnn_activation_func, 
-                    name=f"{name}_convolution"
+                    name=f"{name}_convolution",
+                    dtype=self.dtype_policy,
                 )
             ], name=name)
+        # Reject any scaling strategy outside the implemented modes.
         else:
             raise ValueError(
                 f"scaling_method method can only be one of {ScalingMethod}."
@@ -145,22 +166,28 @@ class Upsample(BaseEmbedding):
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/token_projector"
+            name=f"{self.name}/token_projector",
+            dtype=self.dtype_policy,
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
 
-    def call(self, inputs, training=None):
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor | None], 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Upsample a token grid by a factor of two per spatial axis.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class input contract.
-            training: Optional Keras training flag forwarded to every nested
+            inputs (tuple[tf.Tensor, tf.Tensor | None]): Pair ``(x, cond)``
+                following the class input contract.
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to every nested
                 normalization, convolution, and dense layer.
 
         Returns:
-            Floating ``tf.Tensor`` shaped
+            tf.Tensor: Floating tokens shaped
             ``[batch, (2 * grid) ** 2, output_dim]``, plus one token when
             ``circumvent_cls_token=True``. ``grid`` is inferred dynamically
             from the input token count.
@@ -228,7 +255,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after all scaling modes, interpolation choices,
+        dict[str, str]: A one-entry mapping after all scaling modes, interpolation choices,
         normalization, class-token, position, projection, gradient,
         validation, malformed-shape, dtype, and config checks pass.
     """
@@ -311,7 +338,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_grid in (-1, 0):
         try:
             Upsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Upsampling requires a positive grid size.")
@@ -345,24 +372,16 @@ def run_self_tests() -> dict[str, str]:
     dtype_output = dtype_layer((tf.ones((1, 4, 2), tf.float64), None))
     assert dtype_output.shape == (1, 16, 2)
     assert dtype_layer.compute_dtype == "float64"
-    # The nested UpSampling2D layer retains its default float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     config = pure_interpolation.get_config()
-    try:
-        Upsample.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = Upsample.from_config(filtered_config)
+    restored = Upsample.from_config(config)
     assert restored.scaling_method == "interpolate"
     assert restored.scaling_interpolation_method == "nearest"
 
     return {"Upsample": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

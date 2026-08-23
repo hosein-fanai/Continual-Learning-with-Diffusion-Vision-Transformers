@@ -58,7 +58,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         decoder_kwargs: dict[str, object] | None = None, 
         build: bool = True, 
         **kwargs: object
-    ):
+    ) -> None:
         """Initialize the encoder/classifier state and attached decoder.
 
         Args:
@@ -102,7 +102,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 precedence over ``encoder_kwargs``.
 
         Returns:
-            None.  Encoder/classifier layers, the decoder, serialization state,
+            None: Encoder/classifier layers, the decoder, serialization state,
             and optionally the four-input symbolic graph are initialized.
 
         Raises:
@@ -151,6 +151,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         decoder_config.setdefault("shift_inputs", False)
         encoder_feature_dims, encoder_feature_grids = \
             DiTEncoderDecoder._get_encoder_feature_metadata(self)
+        # Require a spatial final encoder feature for decoder initialization.
         if encoder_feature_grids[-1] is None:
             raise ValueError(
                 "the encoder's final feature must be spatial for DiTDecoder."
@@ -167,6 +168,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 isinstance(supplied, (list, tuple))
                 and list(supplied) == value
             ) if isinstance(value, list) else supplied == value
+            # Reject decoder metadata that contradicts the encoder-derived value.
             if supplied is not None and not matches:
                 raise ValueError(
                     f"decoder {key} must match the encoder metadata."
@@ -183,6 +185,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             "build": build, 
         })
 
+        # Materialize encoder, decoder, and classifier variables when requested.
         if self.build_:
             self.build()
 
@@ -232,7 +235,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 resolution.  Three- and four-input eager calls remain valid.
 
         Returns:
-            None.  Encoder, classifier, decoder, and output-head variables are
+            None: Encoder, classifier, decoder, and output-head variables are
             created and the outer Keras model is marked built.
         """
 
@@ -344,6 +347,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             training=training, 
         )
         noises = decoder_outputs["noises"]
+        # Skip classifier recomputation for a resumed noise-only call.
         if min_depth > 0 and not full_return:
             return noises
         classes, clf_cond, clf_features, clf_regs, clf_z = self.compute_class(
@@ -358,6 +362,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             "noises": noises, 
             "classes": classes, 
         }
+        # Attach encoder, decoder, and classifier metadata only for full returns.
         if full_return:
             outputs.update({
                 "cond": encoder_cond, 
@@ -434,6 +439,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         )
         noises = decoder_outputs["noises"]
 
+        # Preserve the extended classifier output tuple only for full returns.
         if full_return:
             return (
                 noises, 
@@ -469,7 +475,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         targeted = isinstance(depth_spec, dict) and any(
             key in depth_spec for key in ("network", "classifier", "decoder")
         )
+        # Split targeted growth across encoder, classifier, and decoder branches.
         if targeted:
+            # Reject targeted keys outside the three architecture branches.
             if not all(
                 key in ("network", "classifier", "decoder")
                 for key in depth_spec
@@ -483,6 +491,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 "classifier": depth_spec.get("classifier", []),
             }
             decoder_spec = depth_spec.get("decoder", [])
+        # Treat an unscoped specification as classifier-only growth.
         else:
             classifier_spec = depth_spec
             decoder_spec = []
@@ -571,12 +580,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             ValueError: If ``inputs`` does not contain three or four tensors.
         """
 
+        # Require the documented three- or four-tensor input form.
         if len(inputs) not in (3, 4):
             raise ValueError(
                 "inputs must contain images, times, labels, and optionally "
                 "decoder_images."
             )
         base_inputs = inputs[:3]
+        # Reuse the ordinary classifier path when noise aggregation is disabled.
         if not self.aggregate_from_noises:
             return DiTClassifier.predict_class(
                 self, 
@@ -618,6 +629,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             labels=base_inputs[2], 
             training=training, 
         )
+        # Return the metadata mapping only when the caller requested it.
         if full_return:
             return outputs
         return outputs[0]
@@ -630,7 +642,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 sizes.  ``None`` restores each branch's configured image size.
 
         Returns:
-            None.  Encoder/classifier and decoder active resolutions are
+            None: Encoder/classifier and decoder active resolutions are
             updated in place.
         """
 
@@ -1385,5 +1397,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiTEncoderDecoderClassifier": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

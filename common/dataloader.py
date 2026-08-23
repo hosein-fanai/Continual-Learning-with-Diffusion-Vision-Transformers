@@ -1,4 +1,6 @@
-"""MNIST and CIFAR loading, class filtering, preprocessing, and ``tf.data`` helpers."""
+"""MNIST/CIFAR loading, preprocessing, limiting, and ``tf.data`` helpers."""
+
+from __future__ import annotations
 
 import tensorflow as tf
 from tensorflow.keras import models
@@ -6,6 +8,7 @@ from tensorflow.keras import models
 import numpy as np
 
 from collections.abc import Callable, Sequence
+from numbers import Integral, Real
 
 from .config import Config
 
@@ -21,14 +24,69 @@ DatasetArrays = tuple[
 DatasetLoader = Callable[..., DatasetArrays]
 
 
+def _pad_images(x: np.ndarray, pad: int) -> np.ndarray:
+    """Apply symmetric numeric-zero padding to a NumPy image batch.
+
+    Args:
+        x (numpy.ndarray): Images shaped ``[N, H, W]`` or ``[N, H, W, C]``.
+        pad (int): Non-boolean, nonnegative padding width.
+
+    Returns:
+        numpy.ndarray: Padded images with unchanged dtype and leading/channel
+        dimensions. ``pad=0`` returns ``x`` unchanged.
+
+    Raises:
+        TypeError: If ``pad`` is not a non-boolean integer.
+        ValueError: If ``pad`` is negative or ``x`` is not a rank-three/four
+            image batch.
+    """
+
+    # Reject booleans and non-integral padding widths.
+    if isinstance(pad, bool) or not isinstance(pad, Integral):
+        raise TypeError("pad must be a non-boolean integer.")
+    # Keep spatial padding nonnegative.
+    if pad < 0:
+        raise ValueError("pad must be nonnegative.")
+    # Accept only image batches with optional channel dimensions.
+    if x.ndim not in (3, 4):
+        raise ValueError("Padding requires [N, H, W] or [N, H, W, C] images.")
+    # Preserve the original array when padding is disabled.
+    if pad == 0:
+        return x
+
+    spatial_padding = ((0, 0), (int(pad), int(pad)), (int(pad), int(pad)))
+    channel_padding = ((0, 0),) if x.ndim == 4 else ()
+
+    return np.pad(x, spatial_padding + channel_padding)
+
+
 def _limit_samples(
     x: np.ndarray, 
     y: np.ndarray, 
     max_samples: int | None, 
     rng: np.random.Generator
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Limit rows while retaining at least one example of every present class."""
+    """Limit rows while retaining at least one example of every present class.
 
+    Args:
+        x (numpy.ndarray): Samples with leading row dimension.
+        y (numpy.ndarray): Sparse or one-hot labels aligned with ``x``.
+        max_samples (int | None): Positive retained-row limit, or ``None`` to
+            keep every row.
+        rng (numpy.random.Generator): Random generator used for selection.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: Aligned limited samples and labels.
+
+    Raises:
+        ValueError: If the limit is nonpositive or cannot retain every class.
+    """
+
+    # Require a positive limit whenever limiting is enabled.
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be positive when provided.")
+
+    # Preserve all rows when they already fit within the limit.
     if max_samples is None or len(x) <= max_samples:
         return x, y
 
@@ -37,6 +95,7 @@ def _limit_samples(
                 else labels.reshape(-1)
     classes = np.unique(label_ids)
 
+    # Retain capacity for at least one example of every represented class.
     if max_samples < len(classes):
         raise ValueError(
             "A sample limit must be at least the number of represented classes."
@@ -48,6 +107,7 @@ def _limit_samples(
     ]
 
     remaining = max_samples - len(selected)
+    # Fill unused capacity from rows not selected for class coverage.
     if remaining:
         available = np.setdiff1d(
             np.arange(len(x)), 
@@ -69,18 +129,32 @@ def _limit_samples(
 def get_dataset_spec(
     dataset_name: str, 
     return_features: bool = False
-):
-    """Return the class count, image shape, and flattened input size."""
+) -> tuple[int, tuple[int, int, int], int]:
+    """Return the class count, image shape, and flattened input size.
+
+    Args:
+        dataset_name (str): MNIST, Fashion-MNIST, CIFAR-10, or CIFAR-100 name.
+        return_features (bool): Return the fixed saved-feature width when true.
+
+    Returns:
+        tuple[int, tuple[int, int, int], int]: Class count, image shape, and
+        flattened image/feature width.
+    """
 
     dataset_name = dataset_name.lower()
+    # Select the MNIST shape and class count.
     if dataset_name == "mnist":
         class_num, image_shape = 10, (28, 28, 1)
+    # Select the Fashion-MNIST shape and class count.
     elif dataset_name == "fmnist":
         class_num, image_shape = 10, (28, 28, 1)
+    # Select the CIFAR-10 shape and class count.
     elif dataset_name == "cifar10":
         class_num, image_shape = 10, (32, 32, 3)
+    # Select the CIFAR-100 shape and class count.
     elif dataset_name == "cifar100":
         class_num, image_shape = 100, (32, 32, 3)
+    # Reject dataset names outside the four supported families.
     else:
         raise ValueError(
             "dataset_name must be 'mnist', "
@@ -94,7 +168,10 @@ def get_dataset_spec(
     return class_num, image_shape, flat_dim
 
 
-def sort_filter_labels(labels_list, indices):
+def sort_filter_labels(
+    labels_list: Sequence[np.ndarray], 
+    indices: Sequence[int]
+) -> list[list[int]]:
     """Find row indices whose labels match requested classes, class by class.
 
     Args:
@@ -163,9 +240,11 @@ def preprocess_dataset(
         preprocess (str | None): ``"min-max"`` applies one global training-set
             minimum and maximum; ``"normalize"`` applies elementwise mean and
             standard deviation over axis 0; and ``"standardize"`` or
-            ``"diffusion"`` scales values to ``[-1, 1]``. Any other value,
-            including ``None`` or ``""``, performs no scaling. In raw-image
-            mode the unscaled training and test arrays are cast to ``uint8``.
+            ``"diffusion"`` maps the training extrema to ``[-1, 1]``. Held-out
+            values are transformed with the same statistics and are not
+            clipped, so they can lie outside the nominal interval. Any other
+            value, including ``None`` or ``""``, performs no scaling. In
+            raw-image mode unscaled arrays are cast to ``uint8``.
         return_features (bool): If true, load pre-extracted arrays instead of
             returning images. ``features_path`` must identify MNIST,
             Fashion-MNIST, CIFAR-10, or CIFAR-100 and contain three arrays in
@@ -188,10 +267,11 @@ def preprocess_dataset(
         are ``None`` when ``validation_ratio`` is ``0.0``.
 
     Raises:
-        Exception: If feature mode cannot infer MNIST, Fashion-MNIST, CIFAR-10,
-            or CIFAR-100 from the path.
-        ValueError: If the requested classes cannot support the configured
-            stratified validation split, or if feature and label lengths differ.
+        TypeError: If ``validation_ratio`` is not a non-boolean real number.
+        ValueError: If feature mode cannot infer a supported dataset from its
+            path, the validation ratio is non-finite or outside ``[0, 1)``,
+            requested classes cannot support the stratified split, or
+            feature/label lengths differ.
     """
 
     from tensorflow.keras.utils import to_categorical
@@ -200,16 +280,31 @@ def preprocess_dataset(
 
     from common.utils import load_samples
 
-
-    if return_features: # Load saved feature vectors instead of raw images.
-        if ("cifar10_" in features_path or # Select ten-class feature archives.
-        "mnist_" in features_path or 
-        "fmnist_" in features_path):
+    # Require a non-boolean numeric validation ratio.
+    if isinstance(validation_ratio, (bool, np.bool_)) \
+    or not isinstance(validation_ratio, Real):
+        raise TypeError("validation_ratio must be a non-boolean real number.")
+    # Keep the validation fraction finite and within its valid interval.
+    if not np.isfinite(validation_ratio) or not 0. <= validation_ratio < 1.:
+        raise ValueError("validation_ratio must lie in [0, 1).")
+    validation_ratio = float(validation_ratio)
+    # Load saved feature vectors instead of raw images.
+    if return_features:
+        # Require an archive path whenever saved features are requested.
+        if not features_path:
+            raise ValueError("features_path is required when return_features=True.")
+        normalized_features_path = str(features_path).lower()
+        # Infer a ten-class label width from MNIST or CIFAR-10 archives.
+        if ("cifar10_" in normalized_features_path or
+        "mnist_" in normalized_features_path or
+        "fmnist_" in normalized_features_path):
             class_num = 10
-        elif "cifar100_" in features_path: # Select the 100-class archive.
+        # Infer the full CIFAR-100 label width from its archive name.
+        elif "cifar100_" in normalized_features_path:
             class_num = 100
-        else: # Reject feature paths whose dataset cannot be inferred.
-            raise Exception(
+        # Reject feature paths whose dataset cannot be inferred.
+        else:
+            raise ValueError(
                 "features_path has to identify mnist, "
                 "fmnist, cifar10, or cifar100 features."
             )
@@ -240,77 +335,102 @@ def preprocess_dataset(
     x_train, y_train = x_train[labels_set_list[0]], y_train[labels_set_list[0]]
     x_test, y_test = x_test[labels_set_list[1]], y_test[labels_set_list[1]]
 
-    if validation_ratio > 0.: # Reserve a stratified validation partition.
+    # Reserve a stratified validation partition when requested.
+    if validation_ratio > 0.:
         x_train, x_val, y_train, y_val = train_test_split(
             x_train, y_train, 
             test_size=validation_ratio, 
             stratify=y_train, 
             random_state=seed
         )
-    else: # Keep every training row when validation is disabled.
+    # Omit validation arrays when no split is requested.
+    else:
         x_val, y_val = None, None
 
-    if preprocess == "min-max": # Scale data to the [0, 1] interval.
+    # Scale data to the [0, 1] interval.
+    if preprocess == "min-max":
         min_ = x_train.min()
         max_ = x_train.max()
         value_range = max_ - min_
-        if value_range == 0.: # Avoid division by zero for constant inputs.
+        # Avoid division by zero for constant inputs.
+        if value_range == 0.:
             value_range = 1.
 
         x_train = (x_train.astype("float32") - min_) / value_range
+        # Apply the training extrema to validation inputs when present.
         if x_val is not None:
             x_val = (x_val.astype("float32") - min_) / value_range
         x_test = (x_test.astype("float32") - min_) / value_range
-    elif preprocess == "normalize": # Normalize each feature to zero mean/unit variance.
+    # Normalize each feature to zero mean/unit variance.
+    elif preprocess == "normalize":
         x_train = x_train.astype("float32")
         mean = x_train.mean(axis=0)
         std = x_train.std(axis=0)
         std = np.where(std == 0., 1., std)
 
         x_train = (x_train - mean) / std
+        # Apply training normalization statistics to validation inputs.
         if x_val is not None:
             x_val = (x_val.astype("float32") - mean) / std
         x_test = (x_test.astype("float32") - mean) / std
-    elif preprocess in ("standardize", "diffusion"): # Scale diffusion inputs to [-1, 1].
+    # Scale diffusion inputs to [-1, 1].
+    elif preprocess in ("standardize", "diffusion"):
         min_ = x_train.min()
         max_ = x_train.max()
         value_range = max_ - min_
-        if value_range == 0.: # Avoid division by zero for constant inputs.
+        # Avoid division by zero for constant inputs.
+        if value_range == 0.:
             value_range = 1.
 
         x_train = (x_train.astype("float32") - min_) / value_range
+        # Apply the training extrema to validation inputs when present.
         if x_val is not None:
             x_val = (x_val.astype("float32") - min_) / value_range
         x_test = (x_test.astype("float32") - min_) / value_range
 
         x_train = (x_train * 2.) - 1.
+        # Map validation inputs into diffusion space when present.
         if x_val is not None:
             x_val = (x_val * 2.) - 1.
         x_test = (x_test * 2.) - 1.
-    else: # Preserve values when no preprocessing is requested.
-        if not return_features: # Keep raw image storage compact.
+    # Preserve values when no preprocessing is requested.
+    else:
+        # Keep raw image storage compact.
+        if not return_features:
             x_train = x_train.astype("uint8")
+            # Preserve compact storage for raw validation images.
+            if x_val is not None:
+                x_val = x_val.astype("uint8")
             x_test = x_test.astype("uint8")
 
-    if onehot_labels: # Convert integer labels to full-width categorical rows.
+    # Convert integer labels to full-width categorical rows.
+    if onehot_labels:
         y_train = to_categorical(y_train, num_classes=class_num)
+        # Convert validation labels when a validation split exists.
         if y_val is not None:
             y_val = to_categorical(y_val, num_classes=class_num)
         y_test = to_categorical(y_test, num_classes=class_num)
 
-    if verbose: # Report prepared split shapes and label frequencies.
+    # Report prepared split shapes and label frequencies.
+    if verbose:
         print("Trainset:", x_train.shape, y_train.shape)
+        # Report validation shapes only when that split exists.
         if x_val is not None:
             print("Validation set:", x_val.shape, y_val.shape)
         print("Testset:", x_test.shape, y_test.shape)
 
         for set_id, dataset in enumerate((y_train, y_val, y_test)):
-            if dataset is None: # Skip an omitted validation-label array.
+            # Skip an omitted validation-label array.
+            if dataset is None:
                 continue
 
             print(f"---{set_id}")
-            for clss_id in np.unique(dataset):
-                print(clss_id, sum(dataset == clss_id) / len(dataset))
+            label_ids = np.argmax(dataset, axis=-1) \
+                if dataset.ndim > 1 and dataset.shape[-1] > 1 \
+                else dataset.reshape(-1)
+            class_ids, counts = np.unique(label_ids, return_counts=True)
+            for clss_id, count in zip(class_ids, counts):
+                print(clss_id, count / len(label_ids))
             
             print()
 
@@ -318,7 +438,7 @@ def preprocess_dataset(
 
 
 def load_mnist(
-    indices: Sequence[int] = list(range(10)), 
+    indices: Sequence[int] = tuple(range(10)), 
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
@@ -372,7 +492,7 @@ def load_mnist(
 
 
 def load_fmnist(
-    indices: Sequence[int] = list(range(10)), 
+    indices: Sequence[int] = tuple(range(10)), 
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
@@ -426,7 +546,7 @@ def load_fmnist(
 
 
 def load_cifar10(
-    indices: Sequence[int] = list(range(10)), 
+    indices: Sequence[int] = tuple(range(10)), 
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
@@ -480,7 +600,7 @@ def load_cifar10(
 
 
 def load_cifar100(
-    indices: Sequence[int] = list(range(100)), 
+    indices: Sequence[int] = tuple(range(100)), 
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
@@ -539,7 +659,7 @@ def get_dataset(
     conv_base: models.Model | None = None, 
     num_parallel_calls: int | None = None, 
     prefetch: bool = False, 
-    seed: int | None = None, 
+    seed: int | None = None
 ) -> tf.data.Dataset:
     """Create one batched ``tf.data`` pipeline from inputs or input-label pairs.
 
@@ -560,33 +680,55 @@ def get_dataset(
             inputs while labels, when present, remain unchanged.
         conv_base (tf.keras.Model | None): Optional feature extractor applied to
             each input batch with ``training=False``.
-        num_parallel_calls (int | None): Parallel mapping count and prefetch
-            buffer size. ``None`` uses TensorFlow's synchronous/default value.
+        num_parallel_calls (int | None): Parallel mapping count. ``None`` uses
+            ``AUTOTUNE`` mapping and prefetching.
         prefetch (bool): Whether to append a prefetch operation.
         seed (int | None): Optional deterministic seed for shuffling.
 
     Returns:
         tf.data.Dataset: Batched inputs when ``y`` is ``None``; otherwise
         batched ``(inputs, labels)`` pairs.
+
+    Raises:
+        TypeError: If ``pad`` is not a non-boolean integer.
+        ValueError: If ``pad`` is negative or ``batch_size`` is not positive.
     """
 
     from tensorflow.keras import layers
 
 
-    if len(x.shape) == 3: # Add the channel dimension expected by image models.
+    num_parallel_calls = tf.data.AUTOTUNE if num_parallel_calls is None \
+                        else num_parallel_calls
+
+    # Reject booleans and non-integral padding widths.
+    if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
+        raise TypeError("pad must be a non-boolean integer.")
+    # Keep spatial padding nonnegative.
+    if pad < 0:
+        raise ValueError("pad must be nonnegative.")
+    # Require a positive number of examples per batch.
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    # Add the channel dimension expected by image models.
+    if len(x.shape) == 3:
         x = x[..., None]
 
-    if y is None: # Build an input-only pipeline for unconditional models.
+    # Build an input-only pipeline for unconditional models.
+    if y is None:
         dataset = tf.data.Dataset.from_tensor_slices(x)
-    else: # Keep supervised or conditional inputs paired with their labels.
+    # Keep supervised or conditional inputs paired with their labels.
+    else:
         dataset = tf.data.Dataset.from_tensor_slices((x, y))
 
-    if cache is True: # Cache transformed elements in memory.
+    # Cache transformed elements in memory when explicitly requested.
+    if cache is True:
         dataset = dataset.cache()
-    elif cache: # Cache transformed elements in the requested file.
+    # Cache transformed elements at the requested filesystem path.
+    elif cache:
         dataset = dataset.cache(str(cache))
 
-    if shuffle_buffer > 0: # Randomize training element order.
+    # Randomize element order when shuffling is enabled.
+    if shuffle_buffer > 0:
         dataset = dataset.shuffle(
             shuffle_buffer, 
             seed=seed
@@ -597,44 +739,146 @@ def get_dataset(
         drop_remainder=drop_remainder
     )
 
-    if pad > 0: # Add spatial zero padding when requested.
+    # Add spatial zero padding when requested.
+    if pad > 0:
         padder = layers.ZeroPadding2D((pad, pad))
-        if y is None: # Transform input-only dataset elements.
+
+
+        def pad_inputs(inputs: tf.Tensor) -> tf.Tensor:
+            """Pad one input-only batch.
+
+            Args:
+                inputs (tf.Tensor): Batched images.
+
+            Returns:
+                tf.Tensor: Spatially padded images.
+            """
+
+            return padder(inputs)
+
+
+        def pad_pair(
+            inputs: tf.Tensor, 
+            labels: tf.Tensor
+        ) -> tuple[tf.Tensor, tf.Tensor]:
+            """Pad inputs while preserving paired labels.
+
+            Args:
+                inputs (tf.Tensor): Batched images.
+                labels (tf.Tensor): Aligned batched labels.
+
+            Returns:
+                tuple[tf.Tensor, tf.Tensor]: Padded inputs and unchanged labels.
+            """
+
+            return padder(inputs), labels
+
+
+        # Pad elements from an input-only pipeline.
+        if y is None:
             dataset = dataset.map(
-                lambda x: padder(x), 
+                pad_inputs, 
                 num_parallel_calls=num_parallel_calls
             )
-        else: # Preserve labels while padding paired inputs.
+        # Preserve labels while padding paired inputs.
+        else:
             dataset = dataset.map(
-                lambda x, y: (padder(x), y), 
+                pad_pair, 
                 num_parallel_calls=num_parallel_calls
             )
 
-    if augment_fn is not None: # Apply the configured input augmentation.
-        if y is None: # Transform input-only dataset elements.
+    # Apply the configured input augmentation.
+    if augment_fn is not None:
+        def augment_inputs(inputs: tf.Tensor) -> tf.Tensor:
+            """Apply augmentation to one input-only batch.
+
+            Args:
+                inputs (tf.Tensor): Batched inputs.
+
+            Returns:
+                tf.Tensor: Augmented inputs.
+            """
+
+            return augment_fn(inputs)
+
+
+        def augment_pair(
+            inputs: tf.Tensor, 
+            labels: tf.Tensor
+        ) -> tuple[tf.Tensor, tf.Tensor]:
+            """Augment inputs while preserving paired labels.
+
+            Args:
+                inputs (tf.Tensor): Batched inputs.
+                labels (tf.Tensor): Aligned batched labels.
+
+            Returns:
+                tuple[tf.Tensor, tf.Tensor]: Augmented inputs and labels.
+            """
+
+            return augment_fn(inputs), labels
+
+
+        # Augment elements from an input-only pipeline.
+        if y is None:
             dataset = dataset.map(
-                lambda x: augment_fn(x), 
+                augment_inputs, 
                 num_parallel_calls=num_parallel_calls
             )
-        else: # Preserve labels while augmenting paired inputs.
+        # Preserve labels while augmenting paired inputs.
+        else:
             dataset = dataset.map(
-                lambda x, y: (augment_fn(x), y), 
+                augment_pair, 
                 num_parallel_calls=num_parallel_calls
             )
 
-    if conv_base is not None: # Extract fixed features from every input batch.
-        if y is None: # Transform input-only dataset elements.
+    # Extract fixed features from every input batch.
+    if conv_base is not None:
+        def extract_inputs(inputs: tf.Tensor) -> tf.Tensor:
+            """Extract inference-mode features from an input-only batch.
+
+            Args:
+                inputs (tf.Tensor): Batched model inputs.
+
+            Returns:
+                tf.Tensor: Extracted features.
+            """
+
+            return conv_base(inputs, training=False)
+
+
+        def extract_pair(
+            inputs: tf.Tensor, 
+            labels: tf.Tensor
+        ) -> tuple[tf.Tensor, tf.Tensor]:
+            """Extract input features while preserving labels.
+
+            Args:
+                inputs (tf.Tensor): Batched model inputs.
+                labels (tf.Tensor): Aligned batched labels.
+
+            Returns:
+                tuple[tf.Tensor, tf.Tensor]: Extracted features and labels.
+            """
+
+            return conv_base(inputs, training=False), labels
+
+
+        # Extract features from an input-only pipeline.
+        if y is None:
             dataset = dataset.map(
-                lambda x: conv_base(x, training=False),
+                extract_inputs, 
                 num_parallel_calls=num_parallel_calls
             )
-        else: # Preserve labels while transforming paired inputs.
+        # Preserve labels while transforming paired inputs.
+        else:
             dataset = dataset.map(
-                lambda x, y: (conv_base(x, training=False), y), 
+                extract_pair, 
                 num_parallel_calls=num_parallel_calls
             )
 
-    if prefetch: # Overlap input preparation with model execution.
+    # Overlap input preparation with model execution when requested.
+    if prefetch:
         dataset = dataset.prefetch(num_parallel_calls)
 
     return dataset
@@ -676,9 +920,15 @@ def get_datasets(
         Config mode records ``dataset.trainset_len``. A missing preprocessing
         mode is also resolved to ``"standardize"`` for diffusion families so
         the returned continual loader receives the same effective setting.
+
+    Raises:
+        TypeError: If ``pad`` is not a non-boolean integer.
+        ValueError: If ``pad`` is negative or incompatible with saved features
+            or a pretrained image model.
     """
 
-    if config is None: # Resolve settings from direct keyword arguments.
+    # Resolve settings from direct keyword arguments.
+    if config is None:
         dataset_name = kwargs.get("dataset_name", "mnist")
         model_name = kwargs.get("model_name", "diffusion_transformer")
         preprocess = kwargs.get("preprocess", "standardize")
@@ -695,13 +945,17 @@ def get_datasets(
         use_valset = kwargs.get("use_valset", True)
         seed = kwargs.get("seed")
         task = kwargs.get("task", "legacy")
-    else: # Resolve settings from the typed configuration.
+    # Resolve settings from the typed configuration.
+    else:
         dataset_name = config.dataset.name
         model_name = config.model.name
-        if model_name is None: # Select the legacy diffusion model variant.
-            if config.model.with_classifier: # Select the classifier network.
+        # Derive the legacy diffusion family from its classifier switch.
+        if model_name is None:
+            # Select the classifier-capable legacy network.
+            if config.model.with_classifier:
                 model_name = "dit_classifier"
-            else: # Select the generator-only network.
+            # Select the generator-only legacy network.
+            else:
                 model_name = "diffusion_transformer"
         preprocess = config.dataset.preprocess
         indices = config.dataset.indices
@@ -718,14 +972,24 @@ def get_datasets(
         seed = config.training.seed
         task = config.training.task
 
+    # Reject booleans and non-integral padding widths before loading data.
+    if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
+        raise TypeError("pad must be a non-boolean integer.")
+    # Keep spatial padding nonnegative.
+    if pad < 0:
+        raise ValueError("pad must be nonnegative.")
+
     dataset_name = dataset_name.lower()
     model_name = model_name.lower()
     task = task.lower()
 
+    # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
         raise ValueError("pad is not supported for saved feature inputs.")
+    # Keep pretrained image geometry unchanged.
     if pad and model_name in {"pretrained", "hp-tuned"}:
         raise ValueError("pad is not supported for pretrained/hp-tuned models.")
+    # Keep continual pretrained classifiers on their required image geometry.
     if config is not None and pad and task == "continual" \
     and str(config.model.classifier_name).lower() in {
         "pretrained", "hp-tuned"
@@ -734,12 +998,14 @@ def get_datasets(
             "pad is not supported for pretrained/hp-tuned classifiers."
         )
 
+    # Supply diffusion-safe scaling when no preprocessing mode was chosen.
     if preprocess is None and model_name in { 
         "diffusion_transformer", "dit_classifier", "dit_decoder", 
         "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
         "unet", "unet_classifier"
     }: # Supply diffusion-safe scaling by default.
         preprocess = "standardize"
+        # Record the resolved preprocessing mode in typed configuration.
         if config is not None:
             config.dataset.preprocess = preprocess
 
@@ -747,11 +1013,14 @@ def get_datasets(
         dataset_name, 
         return_features
     )
-    if indices is None: # Include every dataset class by default.
+    # Include every dataset class by default.
+    if indices is None:
         indices = list(range(class_num))
+    # Restrict configured continual runs to their requested leading classes.
     if config is not None and task == "continual" \
     and config.continually_learn.class_num is not None:
         continual_class_num = config.continually_learn.class_num
+        # Keep the continual class count within dataset bounds.
         if not 2 <= continual_class_num <= class_num:
             raise ValueError(
                 "continually_learn.class_num must be between "
@@ -778,12 +1047,15 @@ def get_datasets(
         seed=seed, 
         verbose=0
     )
-    if x_val is not None: # Prefer the requested validation partition.
+    # Prefer the requested validation partition.
+    if x_val is not None:
         x_eval, y_eval = x_val, y_val
-    else: # Fall back to test data when validation is disabled.
+    # Fall back to test data when the loader omitted validation data.
+    else:
         x_eval, y_eval = x_test, y_test
 
-    if not onehot_labels: # Flatten sparse labels for Keras losses.
+    # Flatten sparse labels into the shape expected by Keras losses.
+    if not onehot_labels:
         y_train = np.asarray(y_train).reshape(-1)
         y_eval = np.asarray(y_eval).reshape(-1)
 
@@ -799,6 +1071,12 @@ def get_datasets(
         rng
     )
 
+    # Pad raw images before any dense-model flattening.
+    if pad > 0:
+        x_train = _pad_images(np.asarray(x_train), pad)
+        x_eval = _pad_images(np.asarray(x_eval), pad)
+
+    # Flatten inputs for dense classifiers and autoencoders.
     if model_name in (
         "vae", 
         "variational_autoencoder", 
@@ -811,23 +1089,25 @@ def get_datasets(
     trainset = get_dataset(
         x_train, 
         y_train, 
-        pad=pad, 
+        pad=0, 
         shuffle_buffer=shuffle_buffer, 
         batch_size=batch_size, 
         drop_remainder=task != "continual", 
         seed=seed
     )
 
-    if config is not None: # Record the built training pipeline length.
+    # Record the built training pipeline length.
+    if config is not None:
         config.dataset.trainset_len = len(trainset)
 
-    if task == "continual": # Defer per-task loading to the continual learner.
+    # Defer per-task loading to the continual learner.
+    if task == "continual":
         return loader, None
 
     valset = get_dataset(
         x_eval, 
         y_eval, 
-        pad=pad, 
+        pad=0, 
         shuffle_buffer=0, 
         batch_size=batch_size, 
         drop_remainder=False

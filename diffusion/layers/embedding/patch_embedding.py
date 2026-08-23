@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+from typing import Any
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 from diffusion.layers.single_token_layer import SingleTokenLayer
 
@@ -44,9 +46,8 @@ class PatchEmbedding(BaseEmbedding):
         or an explicit MLP output width.
 
     Serialization:
-        The saved config contains an inherited ``ln_dim`` key that duplicates
-        the value supplied internally by :class:`BaseEmbedding`. Remove that
-        key from a copied config before calling ``PatchEmbedding.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
 
     """
 
@@ -55,11 +56,16 @@ class PatchEmbedding(BaseEmbedding):
         patch_size: int = 2, 
         patchify_with_cnn: bool = False, 
         shift_right_token: bool = False, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the convolutional patch projector and positional table.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            patch_size (int): Positive patch-projection stride.
+            patchify_with_cnn (bool): Whether to use the two-convolution stem.
+            shift_right_token (bool): Whether to prepend a learned BOS token
+                and discard the final patch token.
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
@@ -67,6 +73,14 @@ class PatchEmbedding(BaseEmbedding):
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
+
+        # Require a positive integer patch stride.
+        if not isinstance(self.patch_size, int) or isinstance(self.patch_size, bool) \
+        or self.patch_size < 1:
+            raise ValueError("patch_size must be a positive integer.")
+        # Require the target patch-grid size for positional construction.
+        if self.grid_size is None:
+            raise ValueError("PatchEmbedding requires grid_size.")
 
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
@@ -76,6 +90,7 @@ class PatchEmbedding(BaseEmbedding):
         self.embed_dim = self.hidden_dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.output_grid_size = self.grid_size
 
+        # Use the two-convolution patch stem when requested.
         if self.patchify_with_cnn:
             self.patch_projector = models.Sequential([
                 layers.Conv2D(
@@ -84,27 +99,34 @@ class PatchEmbedding(BaseEmbedding):
                     strides=1, 
                     padding="same", 
                     activation="swish", 
+                    dtype=self.dtype_policy, 
                     name=f"{self.name}/patch_projector/conv_1"
+                    
                 ), 
                 layers.Conv2D(
                     self.hidden_dim, 
                     kernel_size=3, 
                     strides=self.patch_size, 
                     padding="same", 
+                    dtype=self.dtype_policy, 
                     name=f"{self.name}/patch_projector/conv_2"
+                    
                 )
             ], name="patch_projector")
+        # Otherwise use one non-overlapping patch projection convolution.
         else:
             self.patch_projector = layers.Conv2D(
                 self.hidden_dim, 
                 self.patch_size, 
                 strides=self.patch_size, 
+                dtype=self.dtype_policy,
                 name="patch_projector"
             )
 
         self.shift_right_token = SingleTokenLayer(
             dim=self.hidden_dim, 
             with_pos_embed=False, 
+            dtype=self.dtype_policy,
             name=f"{self.name}/bos_token"
         ) if self.shift_right_token else None
         self.pos_embed = self._create_embeddings(
@@ -114,19 +136,22 @@ class PatchEmbedding(BaseEmbedding):
             self.embed_dim
         )
 
-    def call(self, x: tf.Tensor, 
-            output_grid_size: int | None = None, 
-            training: bool | None = None):
+    def call(
+        self, 
+        x: tf.Tensor, 
+        output_grid_size: int | None = None, 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Project an image to patch tokens.
 
         Args:
-            x: Floating TensorFlow tensor shaped
+            x (tf.Tensor): Floating TensorFlow tensor shaped
                 ``[batch, height, width, channels]``.
-            output_grid_size: Optional positive target side for positional-table
+            output_grid_size (int | None): Optional positive target side for positional-table
                 resizing. It does not resize image patches and must equal the
                 projected spatial side for elementwise addition/concatenation.
                 ``None`` uses the configured/native positional behavior.
-            training: Optional Keras training flag forwarded to convolutions,
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to convolutions,
                 token handling, and positional projection layers.
 
         Returns:
@@ -149,13 +174,9 @@ class PatchEmbedding(BaseEmbedding):
             x_shape[3]
         ))
         x = tf.concat([
-            tf.repeat(
-                self.shift_right_token(
-                    (x, None),
-                    training=training
-                ),
-                tf.shape(x)[0],
-                axis=0,
+            self.shift_right_token(
+                (x, None),
+                training=training,
             ), 
             x[:, :-1, :]
         ], axis=1) if self.shift_right_token is not None else x
@@ -175,7 +196,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry success mapping after both projector stems, positional
+        dict[str, str]: A one-entry success mapping after both projector stems, positional
         merges, BOS shifting, projection, resize, dtype, gradient, invalid
         shape, and serialization checks pass.
     """
@@ -334,7 +355,7 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("A native position table must reject wrong token counts.")
     try:
         PatchEmbedding(dim=4, grid_size=2, pos_embed_type="invalid")
-    except AssertionError:
+    except ValueError:
         pass
     else:
         raise AssertionError("Invalid positional modes must fail.")
@@ -348,24 +369,16 @@ def run_self_tests() -> dict[str, str]:
     )
     dtype_output = dtype_layer(tf.ones((1, 8, 8, 1), dtype=tf.float64))
     assert dtype_layer.compute_dtype == "float64"
-    # The nested convolution keeps its default TensorFlow 2.10 float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     config = standard.get_config()
-    try:
-        PatchEmbedding.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = PatchEmbedding.from_config(filtered_config)
+    restored = PatchEmbedding.from_config(config)
     assert restored.patch_size == 2 and not restored.patchify_with_cnn
     assert restored(images[:1]).shape == (1, 16, 4)
 
     return {"PatchEmbedding": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

@@ -1,7 +1,7 @@
 """Alternating generator/discriminator optimization for diffusion classifiers."""
 
 import tensorflow as tf
-from tensorflow.keras import optimizers
+from tensorflow.keras import callbacks, optimizers
 
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
@@ -39,27 +39,26 @@ class DiffusionClassifierV2(DiffusionClassifier):
         select depths relative to the expanded network.
 
         Args:
-            clf_loss_coef: Multiplier applied to the classifier objective.
-            clf_vars_embedding_ids: Embedding groups trained by the classifier
+            clf_loss_coef (float): Multiplier applied to the classifier objective.
+            clf_vars_embedding_ids (list[int]): Embedding groups trained by the classifier
                 optimizer.  IDs are: 0 patch embedder, 1 time embedder, 2 label
                 embedder, 3 main depth-0 label regularizer, and 4 the shared main
                 class token when ``classifier_only_cls_token=False``.  ``None``
-                passes legacy expansion to IDs 1..5; ID 5 is reserved and has no
-                effect in the current selector.  Selected optional layers must
-                exist.  Default ``[]`` selects no shared embedding explicitly;
-                a classifier-only token is always included automatically.
-            clf_vars_noise_part_ids: Transformer depth IDs assigned to the
+                expands to IDs 0..4; optional absent layers are skipped.
+                Default ``[]`` selects no shared embedding explicitly; a
+                classifier-only token is always included automatically.
+            clf_vars_noise_part_ids (list[int]): Transformer depth IDs assigned to the
                 classifier optimizer.  For network depth N, explicit positives
-                are 1..N-1; negatives are ``-N..-1`` and normalize by
+                are 1..N; negatives are ``-N..-1`` and normalize by
                 ``id + N + 1`` (so ``-1`` selects final depth N).  Zero is
                 invalid.  Negative IDs are re-resolved after progressive growth.
-            clf_train_noisified_max_timesteps: Optional exclusive timestep cap
+            clf_train_noisified_max_timesteps (int | None): Optional exclusive timestep cap
                 used while fitting the classifier part.  ``None`` trains its
                 classifier on clean images at timestep 0.
-            clf_test_noisified_max_timesteps: Optional exclusive timestep cap
+            clf_test_noisified_max_timesteps (int | None): Optional exclusive timestep cap
                 used while evaluating the classifier part.  ``None`` evaluates
                 clean images at timestep 0.
-            **kwargs: Constructor arguments forwarded to
+            **kwargs (object): Constructor arguments forwarded to
                 ``DiffusionClassifier`` and ``DiffusionModel``.  These include
                 ``network=DiTClassifier(...)``, classifier mask/train settings,
                 EMA/schedule/CFG/loss/timestep/resize options, and Keras model
@@ -80,8 +79,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.clf_vars_embedding_ids = self.network._handle_ids(
             self.clf_vars_embedding_ids, 
             depth=None, 
-            min_id=1, 
-            max_id=5, 
+            min_id=0,
+            max_id=4,
         )
         self.clf_vars_noise_part_ids = self.network._handle_ids(
             self.clf_vars_noise_part_ids, 
@@ -106,7 +105,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             local_vars (dict[str, object]): V2 constructor namespace.
 
         Returns:
-            None.  Invalid embedding IDs or zero/out-of-range main depth IDs
+            None: Invalid embedding IDs or zero/out-of-range main depth IDs
             raise ``AssertionError`` (or ``TypeError`` for nonnumeric depth IDs).
         """
 
@@ -115,8 +114,22 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 "clf_vars_embedding_ids can only include (None, 0, 1, 2, 3, 4)."
 
         for id_ in local_vars["clf_vars_noise_part_ids"]:
-            assert -self.network.depth <= id_ < self.network.depth and id_ != 0, \
-                "clf_vars_noise_part_ids items can only be in [-depth, 0)+(0, depth] range."
+            assert -self.network.depth <= id_ <= self.network.depth and id_ != 0, \
+                "clf_vars_noise_part_ids items can only be in [-depth, 0) or [1, depth]."
+
+        for name in (
+            "clf_train_noisified_max_timesteps",
+            "clf_test_noisified_max_timesteps",
+        ):
+            value = local_vars[name]
+            assert value is None or (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 1 <= value <= self.timesteps
+            ), f"{name} must be None or an integer in [1, timesteps]."
+
+        assert self.use_cfg, \
+            "DiffusionClassifierV2 requires CFG for its null-label classifier phase."
 
     def _set_clf_variables(self) -> None:
         """Assemble variables owned by the classifier optimizer.
@@ -124,10 +137,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Selected shared embeddings and main-transformer stages are added first,
         followed by every existing classifier depth, classifier-specific
         regularizer/token, and classifier-head variable.  Variables are kept in
-        discovery order; the method does not deduplicate shared selections.
+        discovery order and deduplicated by object identity so overlapping
+        selectors cannot apply a gradient twice.
 
         Returns:
-            None.  ``clf_trainable_variables`` becomes ``list[tf.Variable]``.
+            None: ``clf_trainable_variables`` becomes ``list[tf.Variable]``.
 
         Raises:
             AttributeError: If an explicitly selected optional embedder or
@@ -136,24 +150,30 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         self.clf_trainable_variables = []
 
-        for id in self.clf_vars_embedding_ids:
-            if id == 0:
+        for embedding_id in self.clf_vars_embedding_ids:
+            # Assign patch-embedding variables to the classifier optimizer for ID 0.
+            if embedding_id == 0:
                 self.clf_trainable_variables.extend(
                     self.network.patch_embedder.trainable_variables
                 )
-            if id == 1:
+            # Assign an available time embedder for selector ID 1.
+            if embedding_id == 1 and self.network.time_embedder is not None:
                 self.clf_trainable_variables.extend(
                     self.network.time_embedder.trainable_variables
                 )
-            if id == 2:
+            # Assign an available label embedder for selector ID 2.
+            if embedding_id == 2 and self.network.label_embedder is not None:
                 self.clf_trainable_variables.extend(
                     self.network.label_embedder.trainable_variables
                 )
-            if id == 3:
+            # Assign the main label-regularizer head for selector ID 3.
+            if embedding_id == 3 and self.network.labels_embed_reg is not None:
                 self.clf_trainable_variables.extend(
                     self.network.labels_embed_reg.trainable_variables
                 )
-            if id == 4 and not self.network.classifier_only_cls_token:
+            # Assign the shared main class token for selector ID 4 when usable.
+            if embedding_id == 4 and not self.network.classifier_only_cls_token and \
+                    self.network.cls_token is not None:
                 self.clf_trainable_variables.extend(
                     self.network.cls_token.trainable_variables
                 )
@@ -163,11 +183,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 self.network.layers_dicts[layers_dict_id-1].trainable_variables 
             )
 
+        # Always train an available classifier-side label regularizer here.
         if self.network.clf_labels_embed_reg is not None:
             self.clf_trainable_variables.extend(
                 self.network.clf_labels_embed_reg.trainable_variables
             )
 
+        # Assign a classifier-only class token to the classifier optimizer.
         if self.network.classifier_only_cls_token:
             self.clf_trainable_variables.extend(
                 self.network.cls_token.trainable_variables
@@ -181,12 +203,20 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.clf_trainable_variables.extend(
             self.network.classifier.trainable_variables
         )
+        seen_variable_ids: set[int] = set()
+        unique_variables: list[tf.Variable] = []
+        for variable in self.clf_trainable_variables:
+            # Deduplicate shared Keras variables by object identity.
+            if id(variable) not in seen_variable_ids:
+                seen_variable_ids.add(id(variable))
+                unique_variables.append(variable)
+        self.clf_trainable_variables = unique_variables
 
     def _set_gen_variables(self) -> None:
         """Assign all remaining raw-network variables to the generator group.
 
         Returns:
-            None.  ``gen_trainable_variables`` contains every network trainable
+            None: ``gen_trainable_variables`` contains every network trainable
             variable whose object identity is absent from the classifier group.
 
         Raises:
@@ -200,6 +230,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         self.gen_trainable_variables = []
         for v in self.network.trainable_variables:
+            # Assign every variable not owned by the classifier to the generator.
             if id(v) not in clf_variable_ids:
                 self.gen_trainable_variables.append(v)
 
@@ -211,9 +242,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 ``"discriminator"``; validation occurs in :meth:`train_step`.
 
         Returns:
-            None.  Re-selecting the active name leaves the cache intact.
+            None: Re-selecting the active name leaves the cache intact.
         """
 
+        # Retrace training only when switching optimizer phases.
         if self._train_part != part_name:
             self._train_part = part_name
             self.train_function = None
@@ -226,9 +258,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 ``"discriminator"``.
 
         Returns:
-            None.
+            None: The active test phase is updated in place.
         """
 
+        # Retrace evaluation only when switching metric phases.
         if self._test_part != part_name:
             self._test_part = part_name
             self.test_function = None
@@ -237,7 +270,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self,
         dicts: tuple[dict | None, ...] | list[dict | None],
         names: tuple[str, ...] | list[str]
-    ) -> dict:
+    ) -> dict[str, object]:
         """Merge phase result dictionaries, prefixing colliding metric names.
 
         Args:
@@ -253,6 +286,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             unchanged.  All-None input returns an empty dictionary.
         """
 
+        # Remove absent phase results before merging dictionaries.
         if None in dicts:
             dicts = list(dicts)
             names = list(names)
@@ -266,9 +300,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
         same_keys = []
         for dict1 in dicts:
             for dict2 in dicts:
+                # Do not compare a result mapping with itself.
                 if dict1 is dict2:
                     continue
                 for key in dict1:
+                    # Track keys shared by more than one phase for prefixing.
                     if key in dict2:
                         same_keys.append(key)
 
@@ -283,7 +319,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         return merged_dict
 
     @property
-    def clf_vars_names(self):
+    def clf_vars_names(self) -> list[str]:
         """Return TensorFlow names assigned to classifier optimization.
 
         Returns:
@@ -291,13 +327,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             in ``clf_trainable_variables`` order.
         """
 
+        # Report an empty classifier group before variable partitioning.
         if self.clf_trainable_variables is None:
             return []
 
         return self.network.get_variables_names(self.clf_trainable_variables)
 
     @property
-    def gen_vars_names(self):
+    def gen_vars_names(self) -> list[str]:
         """Return TensorFlow names assigned to generator optimization.
 
         Returns:
@@ -305,16 +342,17 @@ class DiffusionClassifierV2(DiffusionClassifier):
             in ``gen_trainable_variables`` order.
         """
 
+        # Report an empty generator group before variable partitioning.
         if self.gen_trainable_variables is None:
             return []
 
         return self.network.get_variables_names(self.gen_trainable_variables)
 
-    def compile(self, **kwargs):
+    def compile(self, **kwargs: object) -> None:
         """Compile both phases and clone an independent classifier optimizer.
 
         Args:
-            **kwargs: Forwarded through ``DiffusionClassifier.compile`` to
+            **kwargs (object): Forwarded through ``DiffusionClassifier.compile`` to
                 ``DiffusionModel.compile``/``tf.keras.Model.compile``.  Useful
                 accepted keys are ``loss`` (default MSE), ``optimizer`` (an
                 optimizer instance or serializable name/config),
@@ -324,7 +362,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 serialize/deserialize for cloning.
 
         Returns:
-            None.  ``gen_optimizer`` references the compiled optimizer and
+            None: ``gen_optimizer`` references the compiled optimizer and
             ``clf_optimizer`` is a newly deserialized optimizer of the same
             configuration with independent iterations/slots.
         """
@@ -376,8 +414,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self.clf_trainable_variables
         )
 
-    def prep_clfv2_inputs(self, inputs, 
-                        noisified_max_timesteps):
+    def prep_clfv2_inputs(
+        self,
+        inputs: tuple[tf.Tensor, tf.Tensor],
+        noisified_max_timesteps: int | None,
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Prepare clean or bounded-noise inputs for a classifier-only phase.
 
         Args:
@@ -408,22 +449,24 @@ class DiffusionClassifierV2(DiffusionClassifier):
         labels = labels + int(self.use_cfg)
         uncond_labels = tf.zeros_like(labels, dtype=tf.uint8)
 
+        # Noisify classifier inputs within the configured timestep cap.
         if noisified_max_timesteps is not None:
             x_t, _, t = self.noisify(
                 x0, 
                 max_timesteps=noisified_max_timesteps
             )
+        # Use clean inputs at timestep zero when no cap was configured.
         else:
             x_t = x0
             t = tf.zeros_like(labels, dtype=tf.int32)
 
         return t, x_t, uncond_labels, classes
 
-    def fit_generator(self, **kwargs):
+    def fit_generator(self, **kwargs: object) -> callbacks.History:
         """Fit only the generator variable group with diffusion objectives.
 
         Args:
-            **kwargs: Forwarded to ``DiffusionModel.fit`` and ultimately Keras
+            **kwargs (object): Forwarded to ``DiffusionModel.fit`` and ultimately Keras
                 ``fit``.  Standard keys include ``x``, ``y``, ``batch_size``,
                 ``epochs``, ``verbose``, ``callbacks``, ``validation_data``,
                 ``shuffle``, ``steps_per_epoch``, and ``validation_steps``.
@@ -438,7 +481,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().fit(**kwargs)
 
-    def fit_generator_progressively(self, **kwargs):
+    def fit_generator_progressively(self, **kwargs: object) -> callbacks.History:
         """Progressively train only the generative diffusion objective.
 
         This mirrors ``fit_generator`` but dispatches to DiffusionModel's
@@ -446,7 +489,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         be trained normally afterwards with ``fit_discriminator``.
 
         Args:
-            **kwargs: Exact arguments accepted by ``fit_progressively``:
+            **kwargs (object): Exact arguments accepted by ``fit_progressively``:
                 ``stage_tasks``, optional ``stages_num``, ``stages_verbose``,
                 ``stage_epochs``, ``final_epochs``, ``timestep_boundaries``,
                 ``timestep_clustering_type``, ``resolutions``, ``depths``, pacing
@@ -463,11 +506,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().fit_progressively(**kwargs)
 
-    def fit_discriminator(self, **kwargs):
+    def fit_discriminator(self, **kwargs: object) -> callbacks.History:
         """Fit only classifier-owned variables with classifier objectives.
 
         Args:
-            **kwargs: Forwarded to Keras fit through ``DiffusionModel.fit``;
+            **kwargs (object): Forwarded to Keras fit through ``DiffusionModel.fit``;
                 accepted common keys are ``x``, ``y``, ``batch_size``, ``epochs``,
                 ``verbose``, ``callbacks``, ``validation_data``, ``shuffle``, and
                 train/validation step counts.
@@ -482,14 +525,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().fit(**kwargs)
 
-    def fit_discriminator_progressively(self, **kwargs):
+    def fit_discriminator_progressively(self, **kwargs: object) -> callbacks.History:
         """Progressively train only the discriminator diffusion objective.
 
         This mirrors ``fit_generator`` but dispatches to DiffusionModel's
         progressive curriculum trainer.
 
         Args:
-            **kwargs: Exact progressive and Keras fit keys described by
+            **kwargs (object): Exact progressive and Keras fit keys described by
                 :meth:`fit_generator_progressively`.
 
         Returns:
@@ -531,11 +574,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return merged_history
 
-    def evaluate_generator(self, **kwargs):
+    def evaluate_generator(
+        self, **kwargs: object
+    ) -> float | list[float] | dict[str, float]:
         """Evaluate only generator/diffusion metrics.
 
         Args:
-            **kwargs: Forwarded to ``DiffusionModel.evaluate``; accepted keys
+            **kwargs (object): Forwarded to ``DiffusionModel.evaluate``; accepted keys
                 include ``x``, ``y``, ``network_name`` (``"raw"``/``"ema"``),
                 ``batch_size``, ``verbose``, ``steps``, ``callbacks``, and
                 ``return_dict``.
@@ -549,11 +594,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().evaluate(**kwargs)
 
-    def evaluate_discriminator(self, **kwargs):
+    def evaluate_discriminator(
+        self, **kwargs: object
+    ) -> float | list[float] | dict[str, float]:
         """Evaluate only classifier/discriminator metrics.
 
         Args:
-            **kwargs: Same evaluation keys accepted by
+            **kwargs (object): Same evaluation keys accepted by
                 :meth:`evaluate_generator`.
 
         Returns:
@@ -565,8 +612,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return super().evaluate(**kwargs)
 
-    def evaluate(self, eval_both=False, 
-                test_part=None, **kwargs):
+    def evaluate(
+        self,
+        eval_both: bool = False,
+        test_part: str | None = None,
+        **kwargs: object,
+    ) -> dict[str, float]:
         """Evaluate one selected phase or both and merge result dictionaries.
 
         Args:
@@ -575,7 +626,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             test_part (str | None): ``"generator"`` or ``"discriminator"``;
                 None reuses the most recently selected test phase.  If no phase
                 has been selected and ``eval_both=False``, the result is empty.
-            **kwargs: Forwarded to both phase evaluators.  ``return_dict=True``
+            **kwargs (object): Forwarded to both phase evaluators.  ``return_dict=True``
                 is forced; other accepted keys include ``x``, ``y``,
                 ``network_name``, ``batch_size``, ``verbose``, ``steps``, and
                 ``callbacks``.
@@ -600,7 +651,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return merged_history
 
-    def generator_train_step(self, inputs):
+    def generator_train_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Perform one diffusion update on generator-owned variables.
 
         Args:
@@ -644,7 +698,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return results
 
-    def generator_test_step(self, inputs):
+    def generator_test_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Evaluate diffusion objectives without applying gradients.
 
         Args:
@@ -687,7 +744,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return results
 
-    def discriminator_train_step(self, inputs):
+    def discriminator_train_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Perform one classifier-only update on classifier-owned variables.
 
         Args:
@@ -737,7 +797,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return results
 
-    def discriminator_test_step(self, inputs):
+    def discriminator_test_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Evaluate classifier-only objectives with the selected test network.
 
         Args:
@@ -784,7 +847,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return results
 
-    def train_step(self, inputs):
+    def train_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Dispatch a Keras training batch to the active optimization phase.
 
         Args:
@@ -798,17 +864,22 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 method.  The active phase also selects its own optimizer.
         """
 
+        # Dispatch generator-phase training with its optimizer.
         if self._train_part == "generator":
             self.optimizer = self.gen_optimizer
             return self.generator_train_step(inputs)
 
+        # Dispatch classifier-phase training with its optimizer.
         if self._train_part == "discriminator":
             self.optimizer = self.clf_optimizer
             return self.discriminator_train_step(inputs)
 
         raise ValueError(f"Unknown training part: {self._train_part}")
 
-    def test_step(self, inputs):
+    def test_step(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         """Dispatch a Keras evaluation batch to the active phase.
 
         Args:
@@ -821,9 +892,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
             ValueError: If no known test phase is active.
         """
 
+        # Dispatch evaluation to generator metrics for that active phase.
         if self._test_part == "generator":
             return self.generator_test_step(inputs)
 
+        # Dispatch evaluation to classifier metrics for that active phase.
         if self._test_part == "discriminator":
             return self.discriminator_test_step(inputs)
 
@@ -929,6 +1002,12 @@ def run_self_tests() -> dict[str, str]:
     assert clf_ids.isdisjoint(gen_ids)
     assert clf_ids | gen_ids == {id(value) for value in wrapper.network.trainable_variables}
 
+    duplicate_selection = make_wrapper(clf_vars_noise_part_ids=[-1, 1])
+    duplicate_ids = [
+        id(value) for value in duplicate_selection.clf_trainable_variables
+    ]
+    assert len(duplicate_ids) == len(set(duplicate_ids))
+
     positive_depth = make_wrapper(
         network=make_network(depth=2), 
         clf_vars_noise_part_ids=[1], 
@@ -964,23 +1043,19 @@ def run_self_tests() -> dict[str, str]:
         test_network_name="raw", 
         test_steps=2, 
     )
-    assert expanded.clf_vars_embedding_ids == [1, 2, 3, 4, 5]
+    assert expanded.clf_vars_embedding_ids == [0, 1, 2, 3, 4]
     try:
         expanded._set_gen_variables()
     except AssertionError:
         pass
     else:
         raise AssertionError("Generator variables require classifier variables first")
-    try:
-        expanded.compile(
-            optimizer=tf.keras.optimizers.Adam(1e-3), 
-            loss="mse", 
-            run_eagerly=True, 
-        )
-    except AttributeError:
-        pass
-    else:
-        raise AssertionError("Expanded optional embedding IDs must expose missing layers")
+    expanded.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3),
+        loss="mse",
+        run_eagerly=True,
+    )
+    assert expanded.clf_trainable_variables
 
     regularized_network = make_network(clf_cls_token_regularizer_ids=[0])
     regularized_split = make_wrapper(network=regularized_network)
@@ -1171,7 +1246,14 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Invalid embedding variable IDs must fail")
-    for invalid_depth_ids in ([0], [1], [-2]):
+    valid_final_depth = DiffusionClassifierV2(
+        network=make_network(),
+        clf_vars_noise_part_ids=[1],
+        mask_by_nulls=False,
+        test_steps=2,
+    )
+    assert valid_final_depth.clf_vars_noise_part_ids == [1]
+    for invalid_depth_ids in ([0], [2], [-2]):
         try:
             DiffusionClassifierV2(
                 network=make_network(), 
@@ -1202,5 +1284,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiffusionClassifierV2": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

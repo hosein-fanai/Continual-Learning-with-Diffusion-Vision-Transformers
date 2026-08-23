@@ -1,6 +1,9 @@
 """Decoder block combining causal self-attention and cross-attention."""
 
+import tensorflow as tf
 from tensorflow.keras import layers
+
+from typing import Any
 
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.drop_path import DropPath
@@ -34,23 +37,29 @@ class DiTDecoderBlock(VisionTransformerBlock):
         ``[batch, target_tokens, mlp_output_dim]``.
 
     Serialization:
-        The saved config repeats three constructor-forced keys. Remove
-        ``gate_query_flag``, ``use_layer_norm``, and ``ln_dim`` from a copied
-        config before calling ``DiTDecoderBlock.from_config``.
+        ``from_config(get_config())`` is supported. The decoder discards the
+        serialized ``gate_query_flag`` because this branch always fixes it to
+        ``False``; its parent handles normalization keys similarly.
     """
 
     def __init__(
         self, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the inherited branches and a second attention branch.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            **kwargs (Any): Typed :class:`VisionTransformerBlock` and Keras
+                layer options documented by the class contract.
 
         Returns:
             ``None``.
         """
 
+        gate_query_flag = kwargs.pop("gate_query_flag", False)
+        # Preserve the decoder's fixed query-gating convention.
+        if gate_query_flag is not False:
+            raise ValueError("DiTDecoderBlock fixes gate_query_flag to False.")
         super().__init__(
             gate_query_flag=False, 
             **kwargs
@@ -64,39 +73,41 @@ class DiTDecoderBlock(VisionTransformerBlock):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
-            name="mha_2"
+            name="mha_2",
+            dtype=self.dtype_policy,
         )
         self.mha_drop_path2 = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
-            name=f"{self.name}/mha_drop_path_2"
+            name=f"{self.name}/mha_drop_path_2",
+            dtype=self.dtype_policy,
         )
 
     def _call_cross_attention(
         self, 
-        x, 
-        cond, 
-        queries, 
-        values, 
-        mask, 
-        training
-    ):
+        x: tf.Tensor, 
+        cond: tf.Tensor, 
+        queries: tf.Tensor | None, 
+        values: tf.Tensor | None, 
+        mask: tf.Tensor | None, 
+        training: bool | tf.Tensor | None
+    ) -> tf.Tensor:
         """Apply condition-gated cross-attention as a residual update.
 
         Args:
-            x: Decoder residual tensor ``[batch, target_tokens, dim]``.
-            cond: Per-example condition tensor ``[batch, condition_dim]``.
-            queries: Optional query tensor
+            x (tf.Tensor): Decoder residual tensor ``[batch, target_tokens, dim]``.
+            cond (tf.Tensor): Per-example condition tensor ``[batch, condition_dim]``.
+            queries (tf.Tensor | None): Optional query tensor
                 ``[batch, target_tokens, query_dim]``. ``None`` uses normalized
                 ``x``.
-            values: Optional source tensor
+            values (tf.Tensor | None): Optional source tensor
                 ``[batch, source_tokens, source_channels]``. ``None`` uses
                 normalized ``x``, reducing this branch to another self-attention
                 update.
-            mask: Optional Keras attention mask broadcastable to
+            mask (tf.Tensor | None): Optional Keras attention mask broadcastable to
                 ``[batch, target_tokens, source_tokens]``. The public
                 :meth:`call` currently passes ``None``.
-            training: Optional Keras training flag, including for DropPath.
+            training (bool | tf.Tensor | None): Optional Keras training flag.
 
         Returns:
             ``tf.Tensor`` with the residual shape, normally
@@ -113,6 +124,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             attention_mask=mask, 
             training=training
         )
+        h = tf.cast(h, x.dtype)
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -126,27 +138,28 @@ class DiTDecoderBlock(VisionTransformerBlock):
 
     def call(
         self, 
-        inputs, 
-        queries=None, 
-        values=None, 
-        causal_mask=None, 
-        training=None
-    ):
+        inputs: tuple[tf.Tensor, tf.Tensor], 
+        queries: tf.Tensor | None = None, 
+        values: tf.Tensor | None = None, 
+        causal_mask: tf.Tensor | None = None, 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Run causal self-attention, cross-attention, then the MLP.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class input contract.
-            queries: Optional replacement queries for only the second attention
+            inputs (tuple[tf.Tensor, tf.Tensor]): Pair ``(x, cond)`` following
+                the class input contract.
+            queries (tf.Tensor | None): Optional replacement queries for only the second attention
                 branch; token count must match the residual sequence.
-            values: Optional encoder/source values for the second attention
+            values (tf.Tensor | None): Optional encoder/source values for the second attention
                 branch. ``None`` uses the current decoder tokens.
-            causal_mask: Optional self-attention mask broadcastable to
+            causal_mask (tf.Tensor | None): Optional self-attention mask broadcastable to
                 ``[batch, target_tokens, target_tokens]``. A lower-triangular
                 boolean mask implements autoregressive attention.
-            training: Optional training flag forwarded to every nested layer.
+            training (bool | tf.Tensor | None): Optional training flag.
 
         Returns:
-            Floating ``tf.Tensor`` shaped
+            tf.Tensor: Floating decoder tokens shaped
             ``[batch, target_tokens, mlp_output_dim]``.
         """
 
@@ -180,7 +193,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry success mapping after causal-mask, external-source,
+        dict[str, str]: A one-entry success mapping after causal-mask, external-source,
         dimensions, normalization, stochastic-depth, gradient, constructor
         conflict, and serialization checks pass.
     """
@@ -252,7 +265,7 @@ def run_self_tests() -> dict[str, str]:
 
     try:
         DiTDecoderBlock(dim=4, gate_query_flag=True)
-    except TypeError:
+    except ValueError:
         pass
     else:
         raise AssertionError("gate_query_flag is constructor-controlled.")
@@ -267,16 +280,7 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("An incompatible causal mask must fail.")
 
     config = identity.get_config()
-    try:
-        DiTDecoderBlock.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate base keys changed.")
-    filtered_config = dict(config)
-    for key in ("gate_query_flag", "use_layer_norm", "ln_dim"):
-        filtered_config.pop(key)
-    restored = DiTDecoderBlock.from_config(filtered_config)
+    restored = DiTDecoderBlock.from_config(config)
     assert restored.dim == 4 and restored.num_heads == 2
 
     dtype_decoder = DiTDecoderBlock(
@@ -285,20 +289,15 @@ def run_self_tests() -> dict[str, str]:
         dtype="float64"
     )
     assert dtype_decoder.compute_dtype == "float64"
-    try:
-        dtype_decoder((
-            tf.ones((1, 3, 4), dtype=tf.float64), 
-            tf.ones((1, 2), dtype=tf.float64), 
-        ))
-    except (tf.errors.InvalidArgumentError, ValueError):
-        pass
-    else:
-        raise AssertionError(
-            "Nested float32 attention currently rejects a float64 outer policy."
-        )
+    dtype_output = dtype_decoder((
+        tf.ones((1, 3, 4), dtype=tf.float64),
+        tf.ones((1, 2), dtype=tf.float64),
+    ))
+    assert dtype_output.dtype == tf.float64
 
     return {"DiTDecoderBlock": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

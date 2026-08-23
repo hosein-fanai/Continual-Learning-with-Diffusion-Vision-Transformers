@@ -32,14 +32,26 @@ __all__ = (
 )
 
 
-def __getattr__(name: str):
-    """Load concrete convolutional models without creating import cycles."""
+def __getattr__(name: str) -> type:
+    """Load a concrete convolutional model without creating import cycles.
 
+    Args:
+        name (str): Public class name, ``"UNet"`` or ``"UNetClassifier"``.
+
+    Returns:
+        type: Requested model class.
+
+    Raises:
+        AttributeError: If ``name`` is not a lazily exported model.
+    """
+
+    # Import UNet only when callers request that public symbol.
     if name == "UNet":
         from .unet import UNet
 
         return UNet
 
+    # Import UNetClassifier only when callers request that public symbol.
     if name == "UNetClassifier":
         from .unet_classifier import UNetClassifier
 

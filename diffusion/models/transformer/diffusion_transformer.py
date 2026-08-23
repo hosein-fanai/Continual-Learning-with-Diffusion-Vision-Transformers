@@ -11,11 +11,11 @@ from tensorflow.keras import layers, models
 
 from typing import Literal
 
+from . import CondType, TokenType, IdsType, IdsDictType
+
 from common.argument_saver import ArgumentSaverModel
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
-
-from . import CondType, TokenType, IdsType, IdsDictType
 
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
@@ -146,8 +146,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
         build: bool = True, 
-        **kwargs
-    ):
+        **kwargs: object
+    ) -> None:
         """Initialize the transformer and optionally build all variables.
 
         Args:
@@ -317,11 +317,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 false return final tokens of shape ``[B, tokens, features]``.
             name_prefix (str): Prefix inserted in all generated layer names.
             build (bool): Build symbolic inputs and variables immediately.
-            **kwargs: Standard ``tf.keras.Model`` options, principally ``name``,
+            **kwargs (object): Standard ``tf.keras.Model`` options, principally ``name``,
                 ``trainable``, ``dtype``, and ``dynamic``.
 
         Returns:
-            None.  A configured ``tf.keras.Model`` is initialized in place.
+            None: A configured ``tf.keras.Model`` is initialized in place.
         """
 
         super().__init__(**kwargs)
@@ -349,6 +349,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._create_layers()
         self._create_unpatchifier()
 
+        # Materialize symbolic inputs and variables when eager construction is requested.
         if self.build_:
             self.build()
 
@@ -365,7 +366,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         id_less_than_key: bool = True, 
         allowed_values: tuple = (), 
         none_is_filler: bool = True, 
-    ):
+    ) -> None:
         """Validate a depth-indexed ID mapping or a shared options mapping.
 
         Args:
@@ -390,49 +391,58 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             none_is_filler (bool): Permit ``None`` as the expand-all sentinel.
 
         Returns:
-            None.  Invalid configuration raises ``AssertionError``.
+            None: Invalid configuration raises ``AssertionError``.
 
         Note:
             A non-dictionary ID sequence is treated as ``{1: sequence}`` for
             validation.  This helper validates but does not normalize IDs.
         """
 
+        # Limit routed entries to the number of available target depths.
         if check_items_num:
             assert local_vars[depth_name] == 0 or \
                 len(local_vars[dict_name]) <= local_vars[depth_name], \
                 f"Items (id sets) in {dict_name} cannot be more than {depth_name}."
 
+        # Normalize a flat ID sequence as a route for depth one.
         if not isinstance((dict_:=local_vars[dict_name]), dict):
             dict_ = {1: dict_}
 
         for key, value in dict_.items():
+            # Validate each route's target depth when requested.
             if check_keys:
+                # Use the full target-depth range when no explicit key set was given.
                 if len(allowed_keys) == 0:
                     assert local_vars[depth_name] == 0 or \
                         1 <= key <= local_vars[depth_name], \
                         f"Keys in {dict_name} need to be in [1, {local_vars[depth_name]}] range."
+                # Otherwise restrict targets to the caller's allowed key set.
                 else:
                     assert key in allowed_keys, \
                         f"Keys in {dict_name} need to be one of {allowed_keys}."
 
+            # Validate every routed source ID when requested.
             if check_values:
                 for id_ in value:
+                    # Prevent a connection from reading its own or a future depth.
                     if id_less_than_key:
                         assert (none_is_filler and id_ is None) or id_ < key, \
                             f"The ids in each set of {dict_name} can only be less than their key."
 
+                    # Use the full source-depth range when no explicit set was given.
                     if len(allowed_values) == 0:
                         assert local_vars[second_depth_name] == 0 or \
                             (none_is_filler and id_ is None) or \
                             -(local_vars[second_depth_name]+1) <= id_ <= local_vars[second_depth_name], \
                             f"The ids in each set of {dict_name} can only be None or in "\
                             f"[-{second_depth_name}-1, {second_depth_name}] range."
+                    # Otherwise restrict sources to the caller's allowed value set.
                     else:
                         assert local_vars[second_depth_name] == 0 or \
                         id_ in allowed_values, \
                         f"The ids in each set of {dict_name} can only be one of {allowed_values} ."
 
-    def _check_assertions(self, local_vars: dict):
+    def _check_assertions(self, local_vars: dict) -> None:
         """Validate constructor values and record each kwargs whitelist.
 
         Args:
@@ -440,18 +450,62 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ID mappings and layer-option dictionaries.
 
         Returns:
-            None.  Invalid dimensions, IDs, option keys, or enum-like values
+            None: Invalid dimensions, IDs, option keys, or enum-like values
             raise ``AssertionError``.  The allowed-key tuples are retained on
             the instance for classifier-branch validation.
         """
 
+        assert isinstance(local_vars["image_size"], int) and \
+            not isinstance(local_vars["image_size"], bool) and \
+            local_vars["image_size"] > 0, \
+            "image_size must be a positive integer."
+        assert isinstance(local_vars["patch_size"], int) and \
+            not isinstance(local_vars["patch_size"], bool) and \
+            local_vars["patch_size"] > 0, \
+            "patch_size must be a positive integer."
         assert local_vars["image_size"] % local_vars["patch_size"] == 0, \
             "image_size must be divisible by patch_size."
+        assert isinstance(local_vars["dim"], int) and \
+            not isinstance(local_vars["dim"], bool) and local_vars["dim"] > 0, \
+            "dim must be a positive integer."
+        assert isinstance(local_vars["depth"], int) and \
+            not isinstance(local_vars["depth"], bool) and local_vars["depth"] >= 0, \
+            "depth must be a nonnegative integer."
+        assert isinstance(local_vars["timesteps"], int) and \
+            not isinstance(local_vars["timesteps"], bool) and local_vars["timesteps"] >= 2, \
+            "timesteps must be an integer greater than or equal to 2."
+        assert isinstance(local_vars["num_classes"], int) and \
+            not isinstance(local_vars["num_classes"], bool) and local_vars["num_classes"] > 0, \
+            "num_classes must be a positive integer."
+        assert isinstance(local_vars["channels"], int) and \
+            not isinstance(local_vars["channels"], bool) and local_vars["channels"] > 0, \
+            "channels must be a positive integer."
+        assert isinstance(local_vars["mha_num_heads"], int) and \
+            not isinstance(local_vars["mha_num_heads"], bool) and \
+            local_vars["mha_num_heads"] > 0, \
+            "mha_num_heads must be a positive integer."
 
+        effective_cond_dim = (
+            local_vars["dim"]
+            if local_vars["cond_dim"] is None
+            else local_vars["cond_dim"]
+        )
+        assert isinstance(effective_cond_dim, int) and \
+            not isinstance(effective_cond_dim, bool) and effective_cond_dim > 0, \
+            "cond_dim must be None or a positive integer."
+
+        # Additive patch conditioning requires equal token and condition widths.
         if local_vars["patches_conds_merger_type"] == "add":
-            assert local_vars["dim"] == local_vars["cond_dim"], \
+            assert local_vars["dim"] == effective_cond_dim, \
                 "When patches_conds_merger_type is add, dim and cond_dim must be equal."
 
+        # Split concatenated time/label conditions into two equal-width halves.
+        if local_vars["conds_merger_type"] == "concat" and \
+                local_vars["cond_type"] == "time_label":
+            assert effective_cond_dim % 2 == 0, \
+                "cond_dim must be even when time and label embeddings are concatenated."
+
+        # Disable adaptive normalization when no condition tensor exists.
         if local_vars["cond_type"] is None:
             assert local_vars["ln_no_adaptation"], \
                 "When cond_type is None, layer_norm cannot use adaptation."
@@ -613,7 +667,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
     def _fill_none_ids(self, ids_dict: dict, 
                        min_id: int = 0, 
-                       max_id: int | None = None):
+                       max_id: int | None = None) -> dict[int, list[int]]:
         """Expand ID lists containing ``None`` to an inclusive integer range.
 
         Args:
@@ -635,7 +689,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         return ids_dict
 
     def _fix_negative_ids(self, ids_dict: dict, 
-                        depth: int):
+                        depth: int) -> dict[int, list[int]]:
         """Convert negative feature IDs to nonnegative absolute depth IDs.
 
         Args:
@@ -652,6 +706,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             value = list(value)
 
             for i, id_ in enumerate(value):
+                # Resolve negative IDs relative to the final model depth.
                 if id_ < 0:
                     value[i] = id_ + depth + 1
 
@@ -661,7 +716,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
     def _handle_ids(self, ids_dict: dict | list, 
                     depth: int, min_id: int = 0, 
-                    max_id: int | None = None):
+                    max_id: int | None = None) -> dict[int, list[int]] | list[int]:
         """Normalize a mapping or shorthand list of depth IDs.
 
         Args:
@@ -681,6 +736,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``[1, 2, 3, 4]``; ``[-1, -5]`` becomes ``[4, 0]``.
         """
 
+        # Normalize a flat ID sequence as the route for depth one.
         if not_dict:=(not isinstance(ids_dict, dict)):
             ids_dict = {1: ids_dict}
 
@@ -694,11 +750,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             depth=depth
         )
 
+        # Restore the caller's flat representation after normalization.
         if not_dict:
             return ids_dict[1]
         return ids_dict
 
-    def _handle_all_ids(self):
+    def _handle_all_ids(self) -> None:
         """Normalize every constructor ID collection in place.
 
         Stage-selection lists expand ``None`` over depths 1..N, class-token
@@ -707,7 +764,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         model's total depth.
 
         Returns:
-            None.  Corresponding instance attributes are replaced or mutated
+            None: Corresponding instance attributes are replaced or mutated
             with integer-only IDs.
         """
 
@@ -759,7 +816,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         )
 
     def _get_layers_dict_last_output_dim(self, layers_dict: dict, 
-                                        skip_reshaper: bool):
+                                        skip_reshaper: bool) -> int | None:
         """Return the final known feature width produced by one stage.
 
         Args:
@@ -773,16 +830,22 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         last_output_dim = None
 
+        # Account for a feature connector's output width.
         if (key:=self.FC) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
+        # Account for a transformer block's output width.
         if (key:=self.VTB) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
+        # Account for a local mixer's output width.
         if (key:=self.LM) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
+        # Account for a downsampler's output width.
         if (key:=self.DS) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
+        # Account for an upsampler's output width.
         if (key:=self.US) in layers_dict:
             last_output_dim = layers_dict[key].output_dim
+        # Use a reshaper's feature width unless the caller is routing around it.
         if (key:=self.R) in layers_dict and not skip_reshaper:
             last_output_dim = layers_dict[key].output_shape[0][-1]
 
@@ -791,7 +854,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def _get_last_output_dim(self, i: int, 
                             layers_dicts: list[dict], 
                             base_dim: int, 
-                            skip_reshaper: bool = False):
+                            skip_reshaper: bool = False) -> int:
         """Resolve the most recent feature width at or before stage index ``i``.
 
         Args:
@@ -805,6 +868,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             int: Resolved feature width, falling back to ``base_dim``.
         """
 
+        # Return the embedding width before any transformer depth executes.
         if i == -1:
             return base_dim
 
@@ -826,7 +890,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                                 layers_dicts: list[dict], 
                                 layers_dict: dict, 
                                 base_dim: int, 
-                                skip_reshaper: bool = False):
+                                skip_reshaper: bool = False) -> int:
         """Resolve width after the partially constructed current stage.
 
         Args:
@@ -854,7 +918,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                                 layers_dicts: list[dict], 
                                 base_dim: int, 
                                 skip_reshaper: bool = False, 
-                                kwargs: dict | None = None):
+                                kwargs: dict | None = None) -> int:
         """Infer the width produced by combining selected feature depths.
 
         Args:
@@ -877,8 +941,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         dims = []
 
         for i in ids_set:
+            # The depth-zero source uses the model's base feature width.
             if i == 0:
                 dims.append(base_dim)
+            # Later sources use the preceding depth's computed output width.
             else:
                 dims.append(self._get_last_output_dim(
                     i-1, 
@@ -887,9 +953,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     skip_reshaper=skip_reshaper
                 ))
 
+        # Report zero width when no source features were selected.
         if len(dims) == 0:
             return 0
 
+        # Concatenation combines source widths; additive routes retain one width.
         if kwargs is None or kwargs.get("connect_type", "concat") == "concat":
             return sum(dims)
 
@@ -903,7 +971,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def _get_last_grid_size(self, i: int, 
                             layers_dicts: list[dict], 
                             base_grid_size: int, 
-                            skip_reshaper: bool = False):
+                            skip_reshaper: bool = False) -> int | None:
         """Resolve the latest square token-grid side at or before stage ``i``.
 
         Args:
@@ -917,21 +985,27 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             is a flat vector with no spatial grid.
         """
 
+        # Return the patch grid before any transformer depth executes.
         if i == -1:
             return base_grid_size
 
         grid_size = None
+        # Inspect the requested stage when it exists.
         if i < len(layers_dicts):
+            # Read spatial size after a local mixer.
             if (key:=self.LM) in layers_dicts[i]:
                 grid_size = layers_dicts[i][key].output_grid_size
+            # Read spatial size after downsampling.
             if (key:=self.DS) in layers_dicts[i]:
                 grid_size = layers_dicts[i][key].output_grid_size
+            # Read spatial size after upsampling.
             if (key:=self.US) in layers_dicts[i]:
                 grid_size = layers_dicts[i][key].output_grid_size
+            # Infer the grid from a spatial reshaper, or mark flattened output nonspatial.
             if (key:=self.R) in layers_dicts[i] and not skip_reshaper:
-                grid_size = int(output_shape[1] ** 0.5) if \
-                            len(output_shape:=layers_dicts[i][key].output_shape[0]) == 3 \
-                            else None
+                output_shape = layers_dicts[i][key].output_shape[0]
+                return int(output_shape[1] ** 0.5) if len(output_shape) == 3 \
+                    else None
 
         grid_size = self._get_last_grid_size(
             i-1, 
@@ -946,7 +1020,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             layers_dicts: list[dict], 
                             layers_dict: dict, 
                             base_grid_size: int, 
-                            skip_reshaper: bool = False):
+                            skip_reshaper: bool = False) -> int | None:
         """Resolve grid size after components in the current partial stage.
 
         Args:
@@ -973,7 +1047,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def _get_ids_grid_size(self, ids_set: list[int], 
                         layers_dicts: list[dict], 
                         base_grid_size: int, 
-                        must_be_same: bool = False):
+                        must_be_same: bool = False) -> list[int | None] | int | None:
         """Resolve spatial grid sizes for selected absolute feature IDs.
 
         Args:
@@ -993,8 +1067,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         grid_sizes = []
 
         for i in ids_set:
+            # The depth-zero source uses the patch grid.
             if i == 0:
                 grid_sizes.append(base_grid_size)
+            # Later sources inherit the preceding depth's computed grid.
             else:
                 grid_sizes.append(self._get_last_grid_size(
                     i=i-1, 
@@ -1002,6 +1078,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     base_grid_size=base_grid_size
                 ))
 
+        # Return all source grids when equality is not required.
         if not must_be_same:
             return grid_sizes
 
@@ -1012,7 +1089,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return grid_sizes[0]
 
-    def _create_time_embedder(self, name_prefix: str = ""):
+    def _create_time_embedder(self, name_prefix: str = "") -> ConditionEmbedding:
         """Create the configured discrete timestep embedding layer.
 
         Args:
@@ -1036,7 +1113,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return time_embedder
 
-    def _create_label_embedder(self, name_prefix: str = ""):
+    def _create_label_embedder(self, name_prefix: str = "") -> ConditionEmbedding:
         """Create the configured class-label embedding layer.
 
         Args:
@@ -1060,7 +1137,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         return label_embedder
 
     def _create_merger(self, merger_type: MergeType, 
-                    name: str | None = None):
+                    name: str | None = None) -> layers.Layer:
         """Create a Keras layer that adds or concatenates tensors.
 
         Args:
@@ -1075,21 +1152,24 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ValueError: If ``merger_type`` is unsupported.
         """
 
+        # Concatenate condition components along their feature axis.
         if merger_type == "concat":
             merger_layer = layers.Concatenate(
                 axis=-1, 
                 name=name
             )
+        # Add condition components elementwise when their widths match.
         elif merger_type == "add":
             merger_layer = layers.Add(
                 name=name
             )
+        # Reject condition mergers outside the supported alternatives.
         else:
             raise ValueError("conds_merger_type can be either concat or add.")
 
         return merger_layer
 
-    def _create_embedders(self):
+    def _create_embedders(self) -> None:
         """Create all depth-0 patch, condition, and regularizer layers.
 
         Time and label embedders are instantiated only if requested by either
@@ -1098,7 +1178,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         regularizer is also created when regularizer ID 0 is selected.
 
         Returns:
-            None.  Embedder and merger attributes are assigned in place.
+            None: Embedder and merger attributes are assigned in place.
         """
 
         self._cond_type = self.cond_type if self.cond_type is not None and \
@@ -1107,7 +1187,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._cls_token_type = self.cls_token_type if self.cls_token_type is not None else []
 
         embed_times_flag = "time" in self._cls_token_type or "time" in self._cond_type
-        embed_labels_flag = "label" in self._cls_token_type or "label" in self._cond_type # or 0 in self.cls_token_regularizer_ids
+        embed_labels_flag = "label" in self._cls_token_type or \
+            "label" in self._cond_type or 0 in self.cls_token_regularizer_ids
         conds_merger_type_flag = ("time" in self._cls_token_type and "label" in self._cls_token_type) or (
                                 "time" in self._cond_type and "label" in self._cond_type)
 
@@ -1147,7 +1228,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         cls_token_freq_dim: int, 
                         cls_token_mlp_ratio: float, 
                         cls_token_type: TokenType, 
-                        name_prefix: str = ""):
+                        name_prefix: str = "") -> SingleTokenLayer | None:
         """Create an optional learned or condition-derived prefix token.
 
         Args:
@@ -1181,7 +1262,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                                 ln_mlp_ratio: float, ln_no_adaptation: bool, 
                                 kwargs: dict, zero_index_base_dim: int | None = None, 
                                 increased_dim: int = 0, output_dim_flag: bool = True, 
-                                name: str | None = None):
+                                name: str | None = None) -> FeatureHandler:
         """Create a feature selector/merger with an inferred projection width.
 
         Args:
@@ -1214,8 +1295,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     else zero_index_base_dim, 
             kwargs=kwargs
         )
+        # Sum connector width growth when features are concatenated.
         if kwargs.get("connect_type", "concat") == "concat":
             increased_dim_ += increased_dim
+        # Additive features must all contribute the same width.
         elif increased_dim != 0:
             assert increased_dim_ == increased_dim, \
                 "In connect_type == add, all of the feature dimensions must be equal."
@@ -1247,7 +1330,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         mlp_output_dim: int, ln_mlp_ratio: float, 
                         ln_no_adaptation: bool, drop_prob: float, 
                         drop_per_sample: bool, use_decoder: bool, 
-                        name_prefix: str, mha_query_dim: int | None = None):
+                        name_prefix: str, mha_query_dim: int | None = None
+                        ) -> VisionTransformerBlock | DiTDecoderBlock:
         """Create one encoder- or decoder-style transformer block.
 
         Args:
@@ -1294,9 +1378,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "name": name_prefix
         }
 
+        # Build a conditioned decoder block when cross-attention is requested.
         if use_decoder:
             block_kwargs["name"] += "decoder_block"
             block = DiTDecoderBlock(**block_kwargs)
+        # Otherwise build a standard vision-transformer block.
         else:
             block_kwargs["name"] += "encoder_block"
             block = VisionTransformerBlock(**block_kwargs)
@@ -1313,7 +1399,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             ln_no_adaptation: bool, 
                             circumvent_cls_token: bool, 
                             kwargs: dict = {}, 
-                            name: str | None = None):
+                            name: str | None = None) -> LocalMixer:
         """Create a depthwise-convolution local token mixer.
 
         The mixer reshapes square patch tokens to an image grid, performs a
@@ -1362,6 +1448,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         flag1 = kwargs.get("pos_merger_type", "add") == "concat" and kwargs.get("pos_embed_type", None)
         flag2 = kwargs.get("depth_multiplier", 1) > 1 and not kwargs.get("use_pointwise", True)
+        # Project mixer output back to the forced width after width-changing options.
         if dim_forced and (flag1 or flag2):
             local_mixer_kwargs["mlp_output_dim"] = local_mixer_kwargs["dim"]
 
@@ -1379,7 +1466,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                        ln_no_adaptation: bool, 
                        circumvent_cls_token: bool, 
                        kwargs: dict = {}, 
-                       name: str | None = None):
+                       name: str | None = None) -> Downsample | Upsample:
         """Create a token-grid downsampler or upsampler.
 
         Args:
@@ -1430,13 +1517,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         flag2 = kwargs.get("cnn_dim_ratio", 1) > 1 and \
                 (kwargs.get("scaling_method", "avg_pooling") in ("cnn_stride") or 
                 kwargs.get("scaling_method", "cnn_transpose") in ("cnn_transpose", "cnn_interpolate"))
+        # Project scaler output back to the forced width after width-changing options.
         if dim_forced and (flag1 or flag2):
             scaler_kwargs["mlp_output_dim"] = scaler_kwargs["dim"]
 
+        # Construct the requested downsampling layer.
         if scaler_type == "downsample":
             scaler = Downsample(**scaler_kwargs)
+        # Construct the requested upsampling layer.
         elif scaler_type == "upsample":
             scaler = Upsample(**scaler_kwargs)
+        # Reject scaler directions outside the supported pair.
         else:
             raise ValueError("scaler_type can either be downsample or upsample.")
 
@@ -1466,6 +1557,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             base image resolution the input tensor is returned unchanged.
         """
 
+        # Avoid an identity resize at the network's native resolution.
         if self._current_resolution == self.image_size:
             return x
 
@@ -1515,7 +1607,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         i: int, layers_dicts: list[dict], 
                         layers_dict: dict, base_dim: int, 
                         base_grid_size: int, grid_has_cls_token: bool, 
-                        kwargs: dict = {}, name: str | None = None):
+                        kwargs: dict = {}, name: str | None = None) -> models.Model:
         """Create a token/vector bottleneck model for one stage.
 
         Args:
@@ -1564,12 +1656,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             dim
         )
 
+        # Configure the spatial-to-token flattening direction.
         if reshape_type == "flatten":
             source_shape = shape2
             target_shape = shape1
+        # Configure the token-to-spatial unflattening direction.
         elif reshape_type == "unflatten":
             source_shape = shape1
             target_shape = shape2
+        # Reject reshaping directions outside flatten and unflatten.
         else:
             raise ValueError("reshape_type needs to be either flatten or unflatten.")
 
@@ -1581,30 +1676,56 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         inputs = layers.Input(
             shape=(None, dim) if reshape_type == "flatten" else source_shape
         )
-        x = layers.Lambda(
-            lambda x: self._resize_reshaper_tokens(
+
+        def resize_to_base(x: tf.Tensor) -> tf.Tensor:
+            """Resize an active-resolution token grid to the base grid.
+
+            Args:
+                x (tf.Tensor): Float token tensor ``[B, tokens, dim]``.
+
+            Returns:
+                tf.Tensor: Float tokens on the constructor-time base grid.
+            """
+
+            return self._resize_reshaper_tokens(
                 x, 
                 input_grid_size=None, 
                 output_grid_size=grid_size, 
                 dim=dim, 
-                grid_has_cls_token=grid_has_cls_token
-            ), 
-            name=name+"/resize_to_base"
-        )(inputs) if reshape_type == "flatten" else inputs
-        x = reshaper_layer(x)
-        x = layers.Lambda(
-            lambda x: self._resize_reshaper_tokens(
+                grid_has_cls_token=grid_has_cls_token,
+            )
+
+        def resize_from_base(x: tf.Tensor) -> tf.Tensor:
+            """Resize a base-grid token sequence to the active grid.
+
+            Args:
+                x (tf.Tensor): Float token tensor ``[B, tokens, dim]``.
+
+            Returns:
+                tf.Tensor: Float tokens on the active-resolution grid.
+            """
+
+            return self._resize_reshaper_tokens(
                 x, 
                 input_grid_size=grid_size, 
                 output_grid_size=(
                     grid_size * self._current_resolution // self.image_size
                 ), 
                 dim=dim, 
-                grid_has_cls_token=grid_has_cls_token
-            ), 
+                grid_has_cls_token=grid_has_cls_token,
+            )
+
+        x = layers.Lambda(
+            resize_to_base,
+            name=name+"/resize_to_base"
+        )(inputs) if reshape_type == "flatten" else inputs
+        x = reshaper_layer(x)
+        x = layers.Lambda(
+            resize_from_base,
             name=name+"/resize_from_base"
         )(x) if reshape_type == "unflatten" else x
 
+        # Add a variational latent projection only on KL-enabled flatten stages.
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
             latent_dim_ratio = kwargs.get("latent_dim_ratio", 1)
             latent_dim = int(
@@ -1632,6 +1753,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 [z, z_mean, z_log_var], 
                 name=name+"_"+reshape_type+"_z"
             )
+        # Use a scalar batch-size placeholder when no variational statistics exist.
         else:
             dummy_outputs = tf.shape(inputs)[0]
 
@@ -1643,7 +1765,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return reshaper
 
-    def _create_token_regularizer(self, name: str | None = None):
+    def _create_token_regularizer(self, name: str | None = None) -> layers.Dense:
         """Create an auxiliary class-token softmax head.
 
         Args:
@@ -1662,7 +1784,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return token_regularizer
 
-    def _create_layer_dict(self, i: int, layers_dicts: list[dict]):
+    def _create_layer_dict(
+        self, 
+        i: int, 
+        layers_dicts: list[dict]
+    ) -> dict[str, layers.Layer]:
         """Construct all components configured for one transformer depth.
 
         Args:
@@ -1680,6 +1806,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         layers_dict = {}
         key = i+1
 
+        # Build this depth's routed feature connector when configured.
         if key in self.connection_ids_dict:
             layers_dict[self.FC] = self._create_feature_handler(
                 ids_set=self.connection_ids_dict[key], 
@@ -1692,6 +1819,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}"
             )
         
+        # Build this depth's cross-attention feature handler when configured.
         if key in self.cross_attention_ids_dict:
             layers_dict[self.CAC] = self._create_feature_handler(
                 ids_set=self.cross_attention_ids_dict[key], 
@@ -1704,6 +1832,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}"
             )
 
+        # Build a transformer block with the width produced by preceding handlers.
         if key in self.vit_block_ids:
             mha_query_dim = layers_dict[self.CAC].output_dim if \
                             key in self.cross_attention_ids_dict and \
@@ -1727,6 +1856,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name_prefix=f"{self.name_prefix}depth_{key}_"
             )
 
+        # Build this depth's convolutional local mixer when configured.
         if key in self.local_mixer_ids:
             layers_dict[self.LM] = self._create_local_mixer(
                 i=i, 
@@ -1742,6 +1872,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
             )
 
+        # Build this depth's downsampler when configured.
         if key in self.downsample_ids:
             layers_dict[self.DS] = self._create_scaler(
                 scaler_type="downsample", 
@@ -1758,6 +1889,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
             )
 
+        # Build this depth's upsampler when configured.
         if key in self.upsample_ids:
             layers_dict[self.US] = self._create_scaler(
                 scaler_type="upsample", 
@@ -1774,6 +1906,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
             )
 
+        # Build this depth's flatten or unflatten reshaper when configured.
         if key in self.reshaper_ids_dict:
             layers_dict[self.R] = self._create_reshaper(
                 reshape_type=self.reshaper_ids_dict[key], 
@@ -1785,6 +1918,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
             )
 
+        # Build this depth's auxiliary token classifier when configured.
         if key in self.cls_token_regularizer_ids:
             layers_dict[self.CTR] = self._create_token_regularizer(
                 name=f"{self.name_prefix}depth_{key}_{self.CTR[2:]}"
@@ -1792,11 +1926,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return layers_dict
 
-    def _create_layers(self):
+    def _create_layers(self) -> None:
         """Create the ``depth`` stage dictionaries.
 
         Returns:
-            None.  ``layers_dicts`` is replaced by a list of length ``depth``;
+            None: ``layers_dicts`` is replaced by a list of length ``depth``;
             with ``depth=0`` it is an empty list.
         """
 
@@ -1807,7 +1941,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 self._create_layer_dict(i, self.layers_dicts)
             )
 
-    def _create_unpatchifier(self):
+    def _create_unpatchifier(self) -> None:
         """Create the final adaptive projection and image reconstruction head.
 
         The head removes no class token itself; :meth:`encode` does so first.
@@ -1816,10 +1950,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         optionally applies the residual CNN refiner.
 
         Returns:
-            None.  ``self.unpatchifier`` is assigned when
+            None: ``self.unpatchifier`` is assigned when
             ``use_unpatchify=True``.  No attribute is created otherwise.
         """
 
+        # Derive the final token width required by image unpatchification.
         if self.use_unpatchify:
             dim = self._get_unforced_total_dim(
                 [self.depth], 
@@ -1880,6 +2015,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 self.channels
             ), name=f"{name}/reshape_2")
 
+            # Optionally refine the unpatchified image with residual convolutions.
             if self.use_refiner_cnn:
                 hidden_dim = dim if self.refiner_cnn_hidden_dim is None \
                             else self.refiner_cnn_hidden_dim
@@ -1917,7 +2053,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Return the square image resolution currently processed.
 
         Returns:
-            The active positive integer resolution.
+            int: Active positive integer resolution.
         """
 
         return self._current_resolution
@@ -1925,7 +2061,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def build(
         self, 
         input_shape: tuple[tuple, tuple, tuple] | None = None
-    ):
+    ) -> None:
         """Build the network against its current configured resolution.
 
         Args:
@@ -1934,7 +2070,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 generated by :meth:`build_model` from model configuration.
 
         Returns:
-            None.  Variables are created and the Keras built flag is set.
+            None: Variables are created and the Keras built flag is set.
         """
 
         input_shape = self.build_model()
@@ -1976,16 +2112,23 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             min_depth=min_depth,
             training=training
         )
+        # Supply neutral conditioning to the adaptive image head when conditions are disabled.
+        if self.use_unpatchify and cond is None:
+            cond = tf.zeros(
+                (tf.shape(x)[0], self.cond_dim),
+                dtype=x.dtype,
+            )
         noises = self.unpatchifier(
             (x, cond), 
             training=training
         ) if self.use_unpatchify else x
 
+        # Include condition, features, regularizers, and latent values only on request.
         if full_return:
             return noises, cond, features_list, regs_list, z_vals 
         return noises
 
-    def set_current_resolution(self, resolution: int | None = None):
+    def set_current_resolution(self, resolution: int | None = None) -> None:
         """Set the active square resolution used by embeddings and reshapers.
 
         Args:
@@ -1994,7 +2137,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 differ from and exceed the base image size.
 
         Returns:
-            None.  ``current_resolution`` changes in place.
+            None: ``current_resolution`` changes in place.
 
         Raises:
             AssertionError: If the value is nonintegral, nonpositive, or not
@@ -2003,7 +2146,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         resolution = self.image_size if resolution is None else resolution
 
-        assert int(resolution) == resolution, \
+        assert not isinstance(resolution, bool) and int(resolution) == resolution, \
             "resolution must be an integer."
         assert resolution > 0, \
             "resolution must be positive."
@@ -2013,7 +2156,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         self._current_resolution = int(resolution)
 
-    def build_model(self, call_model: bool = True):
+    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create symbolic Keras inputs for the active resolution.
 
         Args:
@@ -2059,11 +2202,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return input_shape
 
-    def embed_conditions(self, times: tf.Tensor, 
-                        labels: tf.Tensor, 
-                        cond_type: CondType, 
-                        full_return: bool = False, 
-                        training: bool | None = None):
+    def embed_conditions(
+        self, times: tf.Tensor, 
+        labels: tf.Tensor, 
+        cond_type: CondType | None,
+        full_return: bool = False, 
+        training: bool | None = None
+    ) -> tf.Tensor | None | tuple[
+        tf.Tensor | None, 
+        tf.Tensor | None, 
+        tf.Tensor | None
+    ]:
         """Embed the requested subset of timestep and label conditions.
 
         Args:
@@ -2091,7 +2240,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         label_embeds = self.label_embedder(
             labels, 
             training=training
-        ) if self.label_embedder is not None and "label" in cond_type else None
+        ) if self.label_embedder is not None and (
+            "label" in cond_type or 0 in self.cls_token_regularizer_ids
+        ) else None
 
         conds = self.conds_merger(
             (time_embeds, label_embeds), 
@@ -2099,9 +2250,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ) if self.time_embedder is not None and self.label_embedder is not None \
             and "time" in cond_type and "label" in cond_type else None
 
+        # Derive the combined condition from the configured condition type.
         if conds is None:
-            conds = time_embeds if time_embeds is not None else label_embeds
+            conds = time_embeds if "time" in cond_type else (
+                label_embeds if "label" in cond_type else None
+            )
 
+        # Expose component embeddings only for callers requesting full metadata.
         if full_return:
             return conds, time_embeds, label_embeds
         return conds
@@ -2112,7 +2267,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         cond_type: CondType, 
         full_return: bool = False, 
         training: bool | None = None
-    ):
+    ) -> tuple[tf.Tensor, object]:
         """Create depth-0 patch tokens and condition embeddings.
 
         Args:
@@ -2159,13 +2314,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x, conds_list
 
-    def prepend_cls_token(self, x: tf.Tensor, 
-                        cls_token_type: TokenType, 
-                        time_embeds: tf.Tensor | None = None, 
-                        label_embeds: tf.Tensor | None = None, 
-                        times: tf.Tensor | None = None, 
-                        labels: tf.Tensor | None = None, 
-                        training: bool | None = None):
+    def prepend_cls_token(
+        self, 
+        x: tf.Tensor, 
+        cls_token_type: TokenType, 
+        time_embeds: tf.Tensor | None = None, 
+        label_embeds: tf.Tensor | None = None, 
+        times: tf.Tensor | None = None, 
+        labels: tf.Tensor | None = None, 
+        training: bool | None = None
+    ) -> tf.Tensor:
         """Prepend the configured learned or condition-derived single token.
 
         Args:
@@ -2186,16 +2344,19 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             at index 0.
         """
 
+        # Initialize the class token from timestep embeddings.
         if cls_token_type == "time":
             embeds = self.time_embedder(
                 times, 
                 training=training
             ) if time_embeds is None else time_embeds
+        # Initialize the class token from label embeddings.
         elif cls_token_type == "label":
             embeds = self.label_embedder(
                 labels, 
                 training=training
             ) if label_embeds is None else label_embeds
+        # Initialize the class token from merged time and label conditions.
         elif cls_token_type == "time_label":
             embeds = self.embed_conditions(
                 times, labels, 
@@ -2203,6 +2364,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 full_return=False, 
                 training=training
             )
+        # Use the learned standalone token instead of per-example embeddings.
         elif cls_token_type == "new_weight":
             embeds = None
 
@@ -2216,8 +2378,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x
 
-    def slice_and_flatten_tokens(self, x: tf.Tensor, 
-                                start: int, end: int):
+    def slice_and_flatten_tokens(
+        self, 
+        x: tf.Tensor, 
+        start: int, 
+        end: int
+    ) -> tf.Tensor:
         """Select a token interval and flatten it per sample.
 
         Args:
@@ -2231,6 +2397,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             tf.Tensor: Rank-2 tensor ``[B, (end-start)*D]``.
         """
 
+        # Slice token sequences directly; spatial inputs are pooled below.
         if x.shape.rank == 3:
             x = x[:, start: end, :]
 
@@ -2282,6 +2449,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "min_depth must be in the range of [0, depth]."
 
 
+        # Embed raw inputs when execution starts at the network entrance.
         if min_depth == 0:
             x, (cond, time_embeds, label_embeds) = self.embed_inputs(
                 inputs,
@@ -2297,6 +2465,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 labels=inputs[2],
                 training=training
             ) if self.cls_token_type is not None else x
+        # Resume from a precomputed feature while rebuilding its conditions.
         else:
             x = inputs[0]
             cond, time_embeds, label_embeds = self.embed_conditions(
@@ -2315,8 +2484,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         regs_list = [z] + [None] * min_depth
         z_vals = (None, None)
         for i, layers_dict in enumerate(self.layers_dicts):
+            # Stop before the exclusive maximum depth.
             if i == max_depth:
                 break
+            # Leave earlier stages untouched during resumed execution.
             if i < min_depth:
                 continue
 
@@ -2421,6 +2592,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         depth_specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
         depth_specs = [spec for spec in depth_specs if spec is not None]
         old_depth = self.depth
+        # Leave the architecture unchanged for an empty growth request.
         if len(depth_specs) == 0:
             return {
                 "network": {
@@ -2445,16 +2617,20 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         try:
             for layer_spec in depth_specs:
+                # Interpret a string as one enabled progressive layer.
                 if isinstance(layer_spec, str):
                     layer_spec = {layer_spec: True}
+                # Interpret a collection as several enabled layers in one depth.
                 elif isinstance(layer_spec, (tuple, set, frozenset)):
                     layer_spec = dict.fromkeys(layer_spec, True)
 
                 key = len(planned_layers) + 1
                 for layer_name, options in layer_spec.items():
+                    # Ignore explicitly disabled layers.
                     if options is False:
                         continue
 
+                    # Register routed feature IDs for connector layers.
                     if layer_name in (self.FC[2:], self.CAC[2:]):
                         ids = options.get("ids") if isinstance(options, dict) else options
                         ids = [-1] if ids is None or ids is True else ids
@@ -2482,6 +2658,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             **getattr(self, dict_name), 
                             key: ids
                         })
+                    # Register transformer-block mode and output-width options.
                     elif layer_name == self.VTB[2:]:
                         block_options = options if isinstance(options, dict) else {}
 
@@ -2495,20 +2672,24 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             **self.vit_block_mlp_output_dims, 
                             key: block_options["mlp_output_dim"], 
                         } if block_options.get("mlp_output_dim") is not None else self.vit_block_mlp_output_dims
+                    # Register a local mixer at the new depth.
                     elif layer_name == self.LM[2:]:
                         self.local_mixer_ids = [
                             *self.local_mixer_ids, key
                         ]
+                    # Register a downsampler at the new depth.
                     elif layer_name == self.DS[2:]:
                         self.downsample_ids = [
                             *self.downsample_ids, 
                             key
                         ]
+                    # Register an upsampler at the new depth.
                     elif layer_name == self.US[2:]:
                         self.upsample_ids = [
                             *self.upsample_ids, 
                             key
                         ]
+                    # Register the new depth's flattening direction.
                     elif layer_name == self.R[2:]:
                         reshape_type = options.get("reshape_type") \
                                     if isinstance(options, dict) else options
@@ -2516,10 +2697,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         self.reshaper_ids_dict = {
                             **self.reshaper_ids_dict, key: reshape_type
                         }
+                    # Register an auxiliary token classifier at the new depth.
                     elif layer_name == self.CTR[2:]:
                         self.cls_token_regularizer_ids = [
                             *self.cls_token_regularizer_ids, key
                         ]
+                    # Reject progressive layer names unsupported by this transformer.
                     else:
                         raise ValueError(
                             f"Unknown progressive classifier layer: {layer_name}."
@@ -2530,6 +2713,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 )
                 planned_layers.append(layers_dict)
 
+            # Keep progressive output width compatible with the existing output head.
             if self._get_last_output_dim(
                 len(planned_layers)-1, 
                 planned_layers, self.dim
@@ -2559,7 +2743,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             }
         }
 
-    def get_variables_names(self, vars: list[tf.Variable] | None = None):
+    def get_variables_names(
+        self, 
+        vars: list[tf.Variable] | None = None
+    ) -> list[str]:
         """Return TensorFlow names for selected trainable variables.
 
         Args:
@@ -2680,6 +2867,7 @@ def run_self_tests() -> dict[str, str]:
                 inputs, model.cond_type, training=False
             )
             assert tokens.shape == (2, 4, 4)
+            # Verify shifted patch ordering in the shift-input test case.
             if shift_inputs:
                 tf.debugging.assert_near(
                     tokens[:, 0, :],
@@ -2688,6 +2876,7 @@ def run_self_tests() -> dict[str, str]:
 
     for token_type in ("new_weight", "time", "label", "time_label"):
         for merger_type in ("add", "concat"):
+            # Confirm incompatible concatenated class-token widths fail construction.
             if merger_type == "concat" and token_type != "new_weight":
                 try:
                     DiffusionTransformer(
@@ -2710,10 +2899,7 @@ def run_self_tests() -> dict[str, str]:
                 cls_token_pos_merger_type=merger_type, 
                 **base
             )
-            single_weight_concat = token_type == "new_weight" and merger_type == "concat"
-            selected_inputs = (
-                tuple(value[:1] for value in inputs) if single_weight_concat else inputs
-            )
+            selected_inputs = inputs
             selected_times, selected_labels = selected_inputs[1:]
             tokens, (_, time_embeds, label_embeds) = model.embed_inputs(
                 selected_inputs, model.cond_type, 
@@ -2727,20 +2913,11 @@ def run_self_tests() -> dict[str, str]:
                 labels=selected_labels, 
                 training=False, 
             )
-            expected_batch = 1 if single_weight_concat else 2
+            expected_batch = 2
             assert tokens.shape[0] == expected_batch and tokens.shape[1] == 5
             assert model(selected_inputs, training=False).shape == (
                 expected_batch, 4, 4, 1
             )
-            if single_weight_concat:
-                try:
-                    model(inputs, training=False)
-                except tf.errors.InvalidArgumentError:
-                    pass
-                else:
-                    raise AssertionError(
-                        "The learned concat token's single-row limitation changed"
-                    )
 
     configured_token = DiffusionTransformer(
         depth=0, 
@@ -2836,8 +3013,10 @@ def run_self_tests() -> dict[str, str]:
         )
         value, _, _, _, latent = bottleneck(inputs, full_return=True, training=False)
         assert value.shape == (2, 4, 4, 1)
+        # Validate tensor latent statistics for a KL-enabled reshaper.
         if add_kl:
             assert latent[0].shape == latent[1].shape == (2, 16)
+        # Validate scalar placeholders when KL statistics are disabled.
         else:
             assert latent[0].shape == latent[1].shape == tf.TensorShape([])
             assert int(latent[0]) == int(latent[1]) == 2
@@ -2901,6 +3080,15 @@ def run_self_tests() -> dict[str, str]:
     clone = DiffusionTransformer.from_config(progressive.get_config())
     assert clone.depth == 3
     assert clone(inputs, training=False).shape == (2, 4, 4, 1)
+    progressive.connection_kwargs["connect_type"] = "add"
+    progressive.use_decoder_ids.append(99)
+    progressive.cls_token_regularizer_kwargs["start"] = 1
+    pristine_defaults = DiffusionTransformer(depth=0, **base)
+    assert pristine_defaults.connection_kwargs == {}
+    assert pristine_defaults.use_decoder_ids == []
+    assert pristine_defaults.cls_token_regularizer_kwargs == {
+        "start": 0, "end": 1
+    }
 
     progressive_cross = DiffusionTransformer(depth=0, **base)
     cross_growth = progressive_cross.add_depths({
@@ -3269,5 +3457,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiffusionTransformer": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

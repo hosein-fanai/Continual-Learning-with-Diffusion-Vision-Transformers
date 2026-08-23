@@ -6,6 +6,8 @@ import os
 
 from datetime import datetime
 
+from typing import Any
+
 from common.utils import plot_images, create_gif
 
 
@@ -48,13 +50,21 @@ class ImageGeneratorCallback(callbacks.Callback):
         self, 
         show_images: bool = True, 
         save_gifs: bool = False, 
-        results_path: str | None = None, 
+        results_path: str | os.PathLike[str] | None = None,
         project_tag: str | None = None, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Validate output mode and create the timestamped result directories.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            show_images (bool): Whether to display each generated image grid.
+            save_gifs (bool): Whether to save intermediate denoising frames as
+                a GIF for each epoch.
+            results_path (str | os.PathLike[str] | None): Optional output base
+                directory. A timestamped run directory is created beneath it.
+            project_tag (str | None): Optional suffix for the run-directory
+                name.
+            **kwargs (Any): Options forwarded to the Keras callback base class.
 
         Returns:
             ``None``.
@@ -62,10 +72,12 @@ class ImageGeneratorCallback(callbacks.Callback):
 
         super().__init__(**kwargs)
 
-        assert show_images or results_path is not None, \
-            "The callback needs to either show images or save them."
-        assert not save_gifs or results_path is not None, \
-            "save_gifs requires results_path."
+        # Reject configurations that neither display nor save generated images.
+        if not show_images and results_path is None:
+            raise ValueError("The callback must show or save images.")
+        # Require an output directory whenever GIF saving is enabled.
+        if save_gifs and results_path is None:
+            raise ValueError("save_gifs requires results_path.")
 
 
         self.show_images = show_images
@@ -74,6 +86,7 @@ class ImageGeneratorCallback(callbacks.Callback):
 
         project_tag = "" if project_tag is None else " " + project_tag
 
+        # Create a timestamped artifact directory when saving is requested.
         if self.results_path is not None:
             self.results_path = os.path.join(
                 self.results_path, 
@@ -85,20 +98,25 @@ class ImageGeneratorCallback(callbacks.Callback):
                 os.path.join(self.results_path, "images"), 
                 exist_ok=True
             )
+            # Create the GIF subdirectory only for GIF-enabled runs.
             if save_gifs:
                 os.makedirs(
                     os.path.join(self.results_path, "gifs"), 
                     exist_ok=True
                 )
 
-    def on_epoch_end(self, epoch, logs=None):
+    def on_epoch_end(
+        self, 
+        epoch: int, 
+        logs: dict[str, Any] | None = None
+    ) -> None:
         """Sample the bound diffusion model and render epoch artifacts.
 
         Args:
-            epoch: Zero-based integer epoch index. Output filenames use
+            epoch (int): Zero-based epoch index. Output filenames use
                 ``epoch + 1``.
-            logs: Optional Keras epoch-log mapping. It is accepted for callback
-                compatibility and is not read or modified.
+            logs (dict[str, Any] | None): Optional Keras epoch-log mapping. It
+                is accepted for callback compatibility and is not read.
 
         Returns:
             ``None``. ``model.sample`` returns images shaped
@@ -111,6 +129,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         cfg_scale = self.model.test_cfg_scale
         eta = self.model.test_eta
 
+        # Request intermediate denoising frames when a GIF will be written.
         if self.save_gifs:
             imgs, frames1, frames2 = self.model.sample(
                 steps=steps, 
@@ -130,6 +149,7 @@ class ImageGeneratorCallback(callbacks.Callback):
                 frames2, 
                 verbose=0
             )
+        # Sample only final images when no GIF frames are needed.
         else:
             imgs = self.model.sample(
                 steps=steps, 
@@ -137,6 +157,7 @@ class ImageGeneratorCallback(callbacks.Callback):
                 eta=eta, 
             )
 
+        # Save the image grid, optionally displaying it at the same time.
         if self.results_path is not None: 
             plot_images(
                 imgs, 
@@ -148,6 +169,7 @@ class ImageGeneratorCallback(callbacks.Callback):
                     f"-{cfg_scale:.1f}_eta-{eta:.4f}.png"
                 ) 
             )
+        # Display the grid directly when no artifact directory is configured.
         else:
             plot_images(imgs)
 
@@ -159,7 +181,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after constructor combinations, directory creation,
+        dict[str, str]: A one-entry mapping after constructor combinations, directory creation,
         sampling arguments, image/GIF paths, plotting flags, and hook returns.
     """
 
@@ -177,7 +199,7 @@ def run_self_tests() -> dict[str, str]:
     ):
         try:
             ImageGeneratorCallback(**invalid_kwargs)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Invalid output-mode combinations must fail.")
@@ -280,5 +302,6 @@ def run_self_tests() -> dict[str, str]:
     return {"ImageGeneratorCallback": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

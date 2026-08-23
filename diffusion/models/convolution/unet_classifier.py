@@ -4,15 +4,17 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 
 from copy import deepcopy
+
 from collections.abc import Mapping
 
 from diffusion.layers.convolution import LayerDict
 from diffusion.layers.convolution import ResidualConvStack
 from diffusion.layers.convolution import VariationalReshaper
-
+from diffusion.models.convolution import UNetFullOutput, UNetInputs
 from diffusion.models.convolution.unet import UNet
 
 
+@tf.keras.utils.register_keras_serializable(package="continual_learning")
 class UNetClassifier(UNet):
     """Attach a small convolutional classifier to a conditional U-Net.
 
@@ -46,7 +48,7 @@ class UNetClassifier(UNet):
         classifier_mlp_activation_func: str = "tanh", 
         dropout_rate: float = 0.0, 
         build: bool = True, 
-        **kwargs, 
+        **kwargs: object
     ) -> None:
         """Create the inherited denoiser and its convolutional classifier.
 
@@ -61,9 +63,40 @@ class UNetClassifier(UNet):
         When KL is enabled, the globally pooled classifier feature is sampled
         through :class:`VariationalReshaper`, and its rank-two statistics are
         returned for the unchanged classifier wrappers.
+
+        Args:
+            aggregate_from_noises (bool): Classify the predicted noise image
+                instead of saved U-Net features.
+            feature_aggregation_ids_dict (dict[int, tuple[int | None, ...]]):
+                Classifier depth-to-U-Net feature routes.
+            classifier_only_cls_token (bool): Compatibility flag controlling
+                ownership of the tracked classifier token placeholder.
+            clf_dim (int | None): Positive classifier width; None uses the last
+                U-Net encoder width.
+            clf_depth (int): Nonnegative number of classifier residual stages.
+            clf_block_depth (int): Positive residual blocks per classifier stage.
+            clf_reshaper_kwargs (dict[str, object]): Optional classifier
+                ``add_kl`` and positive ``latent_dim_ratio``.
+            clf_cls_token_regularizer_ids (list[int | None]): Auxiliary
+                classifier-head depths; None expands across all depths.
+            force_global_avg_pooling (bool): Globally pool classifier maps when
+                true; false uses resolution-independent global max pooling.
+            classifier_mlp_ratio (float | None): Positive hidden-width ratio,
+                or None to omit the hidden Dense layer.
+            classifier_mlp_activation_func (str): Hidden Keras activation name.
+            dropout_rate (float): Classifier/U-Net dropout probability in
+                ``[0,1)``.
+            build (bool): Build model variables immediately when true.
+            **kwargs (object): Inherited :class:`UNet` constructor options and
+                standard Keras model options.
+
+        Returns:
+            None: Denoiser, classifier branch, and optional symbolic graph are
+            initialized in place.
         """
 
         feature_aggregation_ids_dict = deepcopy(feature_aggregation_ids_dict)
+        # Normalize numeric string depth keys before base-class serialization.
         if isinstance(feature_aggregation_ids_dict, dict):
             feature_aggregation_ids_dict = {
                 int(key) if isinstance(key, str) and key.lstrip("-").isdigit()
@@ -106,9 +139,16 @@ class UNetClassifier(UNet):
                 name=f"{self.name_prefix}clf_depth_0_cls_token",
             )
 
-        self.classifier_feature_extractor = layers.GlobalAveragePooling2D(
-            dtype=tf.float32, 
-            name=f"{self.name_prefix}classifier_feature_extractor", 
+        self.classifier_feature_extractor = (
+            layers.GlobalAveragePooling2D(
+                dtype=tf.float32,
+                name=f"{self.name_prefix}classifier_feature_extractor",
+            )
+            if self.force_global_avg_pooling
+            else layers.GlobalMaxPooling2D(
+                dtype=tf.float32,
+                name=f"{self.name_prefix}classifier_feature_extractor",
+            )
         )
         self.clf_labels_embed_reg = self._create_clf_regularizer(
             "clf_depth_0_cls_token_regularizer",
@@ -116,59 +156,80 @@ class UNetClassifier(UNet):
         self._create_classifier_layers()
         self._create_classifier_head()
 
+        # Materialize classifier and denoiser variables when requested.
         if self.build_:
             self.build()
 
     def _check_classifier_arguments(self, local_vars: dict) -> None:
-        """Validate dimensions, feature IDs, and classifier-only options."""
+        """Validate dimensions, feature IDs, and classifier-only options.
 
+        Args:
+            local_vars (dict[str, object]): Classifier constructor namespace.
+
+        Returns:
+            None: Valid inputs return normally; invalid inputs raise ValueError.
+        """
+
+        # Require an explicit boolean for noise-based classification.
         if not isinstance(local_vars["aggregate_from_noises"], bool):
             raise ValueError("aggregate_from_noises must be boolean.")
+        # Require an explicit boolean for classifier-only token ownership.
         if not isinstance(local_vars["classifier_only_cls_token"], bool):
             raise ValueError("classifier_only_cls_token must be boolean.")
+        # Require an explicit boolean for the classifier pooling policy.
         if not isinstance(local_vars["force_global_avg_pooling"], bool):
             raise ValueError("force_global_avg_pooling must be boolean.")
 
         for name in ("clf_depth", "clf_block_depth"):
             value = local_vars[name]
             minimum = 0 if name == "clf_depth" else 1
+            # Validate classifier counts and depth as bounded integers.
             if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
                 raise ValueError(f"{name} must be an integer greater than or equal to {minimum}.")
 
         clf_dim = local_vars["clf_dim"]
+        # Require an optional classifier width to be a positive integer.
         if clf_dim is not None and (
             not isinstance(clf_dim, int) or isinstance(clf_dim, bool) or clf_dim < 1
         ):
             raise ValueError("clf_dim must be None or a positive integer.")
 
         mlp_ratio = local_vars["classifier_mlp_ratio"]
+        # Require an optional classifier MLP ratio to be positive and numeric.
         if mlp_ratio is not None and (
             not isinstance(mlp_ratio, (int, float))
             or isinstance(mlp_ratio, bool)
             or mlp_ratio <= 0.0
         ):
             raise ValueError("classifier_mlp_ratio must be None or positive.")
+        # Keep classifier dropout in the half-open unit interval.
         if not 0.0 <= local_vars["dropout_rate"] < 1.0:
             raise ValueError("dropout_rate must be in the range [0, 1).")
 
         aggregation_ids = local_vars["feature_aggregation_ids_dict"]
+        # Require an initial feature route for classifier depth one.
         if not isinstance(aggregation_ids, dict) or 1 not in aggregation_ids:
             raise ValueError("feature_aggregation_ids_dict must contain key 1.")
         max_classifier_key = max(1, local_vars["clf_depth"])
         for key, ids in aggregation_ids.items():
+            # Restrict aggregation keys to valid classifier depths.
             if not isinstance(key, int) or isinstance(key, bool) \
             or not 1 <= key <= max_classifier_key:
                 raise ValueError("Classifier aggregation depths are out of range.")
+            # Require each aggregation stage to select at least one feature.
             if not isinstance(ids, (list, tuple)) or len(ids) == 0:
                 raise ValueError("Every classifier aggregation needs feature IDs.")
             for feature_id in ids:
+                # Preserve None as the sentinel for all compatible features.
                 if feature_id is None:
                     continue
+                # Restrict explicit feature IDs to the encoder's relative-ID range.
                 if not isinstance(feature_id, int) or isinstance(feature_id, bool) \
                 or not -(self.depth + 1) <= feature_id <= self.depth:
                     raise ValueError("A classifier feature ID is out of range.")
 
         allowed_reshaper_keys = {"add_kl", "latent_dim_ratio"}
+        # Reject unknown or non-mapping classifier reshaper options.
         if not isinstance(local_vars["clf_reshaper_kwargs"], dict) \
         or not set(local_vars["clf_reshaper_kwargs"]) <= allowed_reshaper_keys:
             raise ValueError(
@@ -178,14 +239,23 @@ class UNetClassifier(UNet):
         latent_dim_ratio = local_vars["clf_reshaper_kwargs"].get(
             "latent_dim_ratio", 1.0,
         )
+        # Require a boolean classifier KL switch.
         if not isinstance(add_kl, bool):
             raise ValueError("Classifier reshaper add_kl must be boolean.")
+        # Require a positive classifier latent-width ratio.
         if not isinstance(latent_dim_ratio, (int, float)) \
         or isinstance(latent_dim_ratio, bool) or latent_dim_ratio <= 0.0:
             raise ValueError("Classifier latent_dim_ratio must be positive.")
 
     def _create_clf_regularizer(self, suffix: str) -> layers.Layer:
-        """Return a float32 auxiliary classifier head."""
+        """Create a float32 auxiliary classifier head.
+
+        Args:
+            suffix (str): Suffix appended to the model name prefix.
+
+        Returns:
+            tf.keras.layers.Layer: Dense class-probability projection.
+        """
 
         return layers.Dense(
             self.num_classes, 
@@ -195,7 +265,11 @@ class UNetClassifier(UNet):
         )
 
     def _create_classifier_layers(self) -> None:
-        """Create tracked convolution stages and one terminal layer mapping."""
+        """Create tracked convolution stages and one terminal layer mapping.
+
+        Returns:
+            None: ``clf_layers_dicts`` is populated in place.
+        """
 
         self.clf_layers_dicts = []
         for depth_id in range(1, self.clf_depth + 1):
@@ -212,6 +286,7 @@ class UNetClassifier(UNet):
             dtype=tf.float32, 
             name=f"{self.name_prefix}clf_terminal_feature_projector",
         )
+        # Add a variational classifier bottleneck when KL output is enabled.
         if self.clf_reshaper_kwargs.get("add_kl", False):
             terminal[self.RESHAPER] = VariationalReshaper(
                 reshape_type="flatten", 
@@ -226,7 +301,14 @@ class UNetClassifier(UNet):
         self.clf_layers_dicts.append(terminal)
 
     def _make_classifier_stage(self, depth_id: int) -> LayerDict:
-        """Create one fixed-width classifier processing depth."""
+        """Create one fixed-width classifier processing depth.
+
+        Args:
+            depth_id (int): Positive one-based classifier depth.
+
+        Returns:
+            LayerDict: Residual stack and optional auxiliary regularizer.
+        """
 
         stage = LayerDict(name=f"{self.name_prefix}clf_depth_{depth_id}")
         stage[self.STACK] = ResidualConvStack(
@@ -237,6 +319,7 @@ class UNetClassifier(UNet):
             use_batch_norm=self.use_batch_norm, 
             name=f"{self.name_prefix}clf_depth_{depth_id}_residual_conv_stack", 
         )
+        # Attach an auxiliary regularizer at selected classifier depths.
         if depth_id in self.clf_cls_token_regularizer_ids:
             stage[self.REGULARIZER] = self._create_clf_regularizer(
                 f"clf_depth_{depth_id}_cls_token_regularizer", 
@@ -245,11 +328,16 @@ class UNetClassifier(UNet):
         return stage
 
     def _create_classifier_head(self) -> None:
-        """Create the optional hidden projection and final softmax."""
+        """Create the optional hidden projection and final softmax.
+
+        Returns:
+            None: ``classifier`` is assigned in place.
+        """
 
         self.classifier = models.Sequential(
             name=f"{self.name_prefix}classes",
         )
+        # Add the optional hidden classifier projection.
         if self.classifier_mlp_ratio is not None:
             self.classifier.add(layers.Dense(
                 max(1, int(self.clf_dim * self.classifier_mlp_ratio)),
@@ -257,6 +345,7 @@ class UNetClassifier(UNet):
                 dtype=tf.float32,
                 name=f"{self.name_prefix}classes_first_layer",
             ))
+        # Add classifier dropout only for a nonzero rate.
         if self.dropout_rate > 0.0:
             self.classifier.add(layers.Dropout(
                 self.dropout_rate,
@@ -271,8 +360,17 @@ class UNetClassifier(UNet):
         ))
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None) -> None:
-        """Set the greatest inherited feature depth needed for classification."""
+        """Set the greatest inherited feature depth needed for classification.
 
+        Args:
+            max_encoder_num (int | None): Depth in ``[0, depth]``; None infers
+                the greatest routed main feature.
+
+        Returns:
+            None: ``max_encoder_num`` is updated in place.
+        """
+
+        # Infer the deepest encoder feature required by configured routes.
         if max_encoder_num is None:
             feature_ids = [
                 feature_id
@@ -281,6 +379,7 @@ class UNetClassifier(UNet):
             ]
             max_encoder_num = self.depth if self.aggregate_from_noises \
                 else max(feature_ids)
+        # Require an explicit encoder limit to be a valid network depth.
         if not isinstance(max_encoder_num, int) or isinstance(max_encoder_num, bool) \
         or not 0 <= max_encoder_num <= self.depth:
             raise ValueError("max_encoder_num must be in the range [0, depth].")
@@ -288,8 +387,17 @@ class UNetClassifier(UNet):
 
     @staticmethod
     def _resize_feature(feature: tf.Tensor, reference: tf.Tensor) -> tf.Tensor:
-        """Resize one feature map to a reference feature's spatial shape."""
+        """Resize one feature map to a reference feature's spatial shape.
 
+        Args:
+            feature (tf.Tensor): Rank-four source feature map.
+            reference (tf.Tensor): Rank-four target-shape feature map.
+
+        Returns:
+            tf.Tensor: Resized source in the reference dtype.
+        """
+
+        # Align only spatial feature maps with known image axes.
         if feature.shape.rank != 4 or reference.shape.rank != 4:
             raise ValueError("Classifier features must be rank-four image maps.")
 
@@ -301,10 +409,19 @@ class UNetClassifier(UNet):
         return tf.cast(feature, reference.dtype)
 
     def _normalize_feature(self, feature: tf.Tensor) -> tf.Tensor:
-        """Return a rank-four feature with the fixed classifier width."""
+        """Return a rank-four feature with the fixed classifier width.
 
+        Args:
+            feature (tf.Tensor): Rank-two vector or rank-four image feature.
+
+        Returns:
+            tf.Tensor: Rank-four feature padded/truncated to ``clf_dim``.
+        """
+
+        # Promote vector features to one-by-one spatial maps for aggregation.
         if feature.shape.rank == 2:
             feature = feature[:, None, None, :]
+        # Reject feature ranks unsupported by classifier aggregation.
         elif feature.shape.rank != 4:
             raise ValueError("Classifier features must be rank two or four.")
 
@@ -326,15 +443,26 @@ class UNetClassifier(UNet):
         self, 
         features_list: list[tf.Tensor], 
         feature_ids: list[int], 
-        current: tf.Tensor | None = None, 
+        current: tf.Tensor | None = None
     ) -> tf.Tensor:
-        """Align and average selected main features and current state."""
+        """Align and average selected main features and current state.
+
+        Args:
+            features_list (list[tf.Tensor]): Main-branch depth features.
+            feature_ids (list[int]): Selected absolute feature depths.
+            current (tf.Tensor | None): Current classifier feature to include.
+
+        Returns:
+            tf.Tensor: Spatially aligned, fixed-width average feature.
+        """
 
         selected = [features_list[feature_id] for feature_id in feature_ids]
+        # Fail if an explicitly requested encoder feature was not produced.
         if any(feature is None for feature in selected):
             raise ValueError("A requested classifier feature was not encoded.")
         selected = [self._normalize_feature(feature) for feature in selected]
 
+        # Initialize aggregation from the deepest selected feature group.
         if current is None:
             reference = selected[-1]
             aligned = [
@@ -355,13 +483,23 @@ class UNetClassifier(UNet):
         return tf.add_n(aligned) / len(aligned)
 
     def _regularize_feature(
-        self,
-        regularizer: layers.Layer | None,
-        feature: tf.Tensor,
-        training: bool | None,
+        self, 
+        regularizer: layers.Layer | None, 
+        feature: tf.Tensor, 
+        training: bool | None
     ) -> tf.Tensor | None:
-        """Pool a feature and apply an optional auxiliary classifier."""
+        """Pool a feature and apply an optional auxiliary classifier.
 
+        Args:
+            regularizer (tf.keras.layers.Layer | None): Optional class head.
+            feature (tf.Tensor): Rank-four classifier feature.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | None: Float32 class probabilities or None.
+        """
+
+        # Skip auxiliary prediction when this depth has no regularizer.
         if regularizer is None:
             return None
 
@@ -382,7 +520,7 @@ class UNetClassifier(UNet):
         times: tf.Tensor, 
         labels: tf.Tensor, 
         cond: tf.Tensor | None = None, 
-        training: bool | None = None, 
+        training: bool | None = None
     ) -> tuple[
         tf.Tensor, 
         tf.Tensor | None, 
@@ -390,13 +528,31 @@ class UNetClassifier(UNet):
         list[tf.Tensor | None], 
         tuple[tf.Tensor | None, tf.Tensor | None],
     ]:
-        """Return class probabilities and classifier branch intermediates."""
+        """Return class probabilities and classifier branch intermediates.
+
+        Args:
+            features_list (list[tf.Tensor]): Saved main U-Net features.
+            noises (tf.Tensor | None): Predicted noise image when classifying it.
+            times (tf.Tensor): Integer timestep IDs; retained for API parity.
+            labels (tf.Tensor): Integer label IDs; retained for API parity.
+            cond (tf.Tensor | None): Condition passed into residual stacks.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor | None, list[tf.Tensor],
+            list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]]:
+            Probabilities, condition, classifier features, auxiliary predictions,
+            and classifier latent mean/log variance.
+        """
 
         del times, labels
+        # Start classification from predicted noise when configured.
         if self.aggregate_from_noises:
+            # Noise-based aggregation requires the denoiser's prediction.
             if noises is None:
                 raise ValueError("aggregate_from_noises requires predicted noises.")
             x = self._normalize_feature(noises)
+        # Otherwise initialize from configured encoder features.
         else:
             x = self._aggregate_features(
                 features_list,
@@ -411,6 +567,7 @@ class UNetClassifier(UNet):
         )]
 
         for depth_id, stage in enumerate(self.clf_layers_dicts[:-1], start=1):
+            # Merge additional encoder features at routed classifier depths.
             if depth_id > 1 and depth_id in self.feature_aggregation_ids_dict:
                 x = self._aggregate_features(
                     features_list,
@@ -430,6 +587,7 @@ class UNetClassifier(UNet):
             ))
 
         terminal = self.clf_layers_dicts[-1]
+        # Project terminal features to the configured classifier width.
         if self.PROJECTOR in terminal:
             x = terminal[self.PROJECTOR](x, training=training)
 
@@ -439,6 +597,7 @@ class UNetClassifier(UNet):
         )
         clf_z_vals = (None, None)
 
+        # Produce classifier latent statistics at a variational terminal.
         if self.RESHAPER in terminal:
             x, z_mean, z_log_var = terminal[self.RESHAPER](x, training=training)
             clf_z_vals = (z_mean, z_log_var)
@@ -461,15 +620,28 @@ class UNetClassifier(UNet):
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         training: bool | None = None, 
-        min_depth: int = 0, 
+        min_depth: int = 0
     ) -> dict[str, object] | tf.Tensor | tuple:
         """Predict both branches, or resume only latent noise decoding.
 
         ``min_depth=0`` returns the classifier wrapper mapping. A positive
         ``min_depth`` follows :class:`UNet` and returns its tensor/tuple output,
         which lets the unchanged VAE sampler resume after a flatten depth.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/latent,
+                timestep, and label tensors.
+            full_return (bool): Include both branches' intermediates when true.
+            training (bool | None): Keras training mode.
+            min_depth (int): Resume the denoiser from this depth; zero runs both
+                denoiser and classifier.
+
+        Returns:
+            dict[str, object] | tf.Tensor | tuple: Branch mapping at depth zero,
+            or inherited U-Net tensor/full output when resuming a latent decode.
         """
 
+        # Delegate resumed denoiser execution directly to the base U-Net.
         if min_depth != 0:
             return UNet.call(
                 self, 
@@ -497,6 +669,7 @@ class UNetClassifier(UNet):
             "classes": classes, 
         }
 
+        # Attach condition and intermediate metadata only for full returns.
         if full_return:
             outputs.update({
                 "cond": cond, 
@@ -512,11 +685,20 @@ class UNetClassifier(UNet):
 
     def predict_noise(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        inputs: UNetInputs,
         full_return: bool = False, 
-        training: bool | None = None, 
-    ):
-        """Run only the inherited U-Net noise branch."""
+        training: bool | None = None
+    ) -> tf.Tensor | UNetFullOutput:
+        """Run only the inherited U-Net noise branch.
+
+        Args:
+            inputs (UNetInputs): Image, timestep, and label tensors.
+            full_return (bool): Include denoiser intermediates when true.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | UNetFullOutput: Same output as :meth:`UNet.call`.
+        """
 
         return super().call(
             inputs, 
@@ -526,19 +708,37 @@ class UNetClassifier(UNet):
 
     def predict_class(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        inputs: UNetInputs,
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None, 
-    ):
-        """Classify inputs while executing only the required encoder depths."""
+        training: bool | None = None
+    ) -> tf.Tensor | tuple[
+        tf.Tensor, tf.Tensor | None, list[tf.Tensor],
+        list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]
+    ]:
+        """Classify inputs while executing selected encoder depths.
 
+        Args:
+            inputs (UNetInputs): Image, timestep, and label tensors.
+            max_encoder_num (int | None): Exclusive encoder stop; -1 runs all
+                stages and None uses the greatest routed feature depth.
+            full_return (bool): Include classifier intermediates when true.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor | tuple: Float32 probabilities ``[B,num_classes]`` or
+            probabilities plus classifier condition, features, regularizers,
+            and latent statistics.
+        """
+
+        # Run the complete denoiser first when classification consumes its noise output.
         if self.aggregate_from_noises:
             noises, cond, features_list, _, _ = super().call(
                 inputs, 
                 full_return=True, 
                 training=training, 
             )
+        # Otherwise encode only as deeply as classifier feature routes require.
         else:
             max_encoder_num = self.max_encoder_num \
                 if max_encoder_num is None else max_encoder_num
@@ -562,7 +762,14 @@ class UNetClassifier(UNet):
 
     @staticmethod
     def _normalize_classifier_depth_spec(spec: object) -> bool:
-        """Validate one progressive classifier depth and report regularization."""
+        """Validate one progressive classifier depth and report regularization.
+
+        Args:
+            spec (object): Layer name, collection, or enabled-option mapping.
+
+        Returns:
+            bool: Whether the stage requests an auxiliary regularizer.
+        """
 
         stack_names = {
             "convolution_block", 
@@ -577,17 +784,22 @@ class UNetClassifier(UNet):
         }
         allowed_names = stack_names | regularizer_names
 
+        # Interpret a string as one classifier layer name.
         if isinstance(spec, str):
             names = {spec}
+        # Interpret a collection as several layers in one classifier depth.
         elif isinstance(spec, (tuple, set, frozenset)):
             names = set(spec)
+        # Retain enabled layer names from a mapped depth specification.
         elif isinstance(spec, Mapping):
             names = {name for name, enabled in spec.items() if enabled is not False}
+        # Reject unsupported classifier depth specification types.
         else:
             raise ValueError(
                 "A classifier depth must be a layer name, collection, or mapping."
             )
 
+        # Reject empty specifications and unknown classifier layer names.
         if not names or not names <= allowed_names:
             unknown = sorted(str(name) for name in names - allowed_names)
             raise ValueError(f"Unknown progressive classifier layers: {unknown}.")
@@ -595,10 +807,18 @@ class UNetClassifier(UNet):
         return bool(names & regularizer_names)
 
     def _append_classifier_depth(self, use_regularizer: bool) -> int:
-        """Insert one classifier stage immediately before its terminal mapping."""
+        """Insert one classifier stage immediately before its terminal mapping.
+
+        Args:
+            use_regularizer (bool): Attach an auxiliary class head when true.
+
+        Returns:
+            int: One-based depth assigned to the new classifier stage.
+        """
 
         terminal = self.clf_layers_dicts.pop()
         new_depth = self.clf_depth + 1
+        # Register newly added classifier regularizer depths.
         if use_regularizer:
             self.clf_cls_token_regularizer_ids.append(new_depth)
 
@@ -609,7 +829,11 @@ class UNetClassifier(UNet):
         return new_depth
 
     def _refresh_aggregation_ids(self) -> None:
-        """Re-resolve negative main-feature IDs after inherited depth growth."""
+        """Re-resolve negative main-feature IDs after inherited depth growth.
+
+        Returns:
+            None: Feature routes and required encoder depth are updated.
+        """
 
         original_ids = deepcopy(
             self._init_config["feature_aggregation_ids_dict"],
@@ -630,25 +854,37 @@ class UNetClassifier(UNet):
         items append separate fixed-width residual stages; a tuple, set, or
         mapping describes one stage. Transformer block names are accepted as
         compatibility aliases for a residual convolution stack.
+
+        Args:
+            depth_spec (object): Untargeted network spec or mapping containing
+                ``network`` and/or ``classifier`` specifications.
+
+        Returns:
+            dict[str, dict[str, int]]: Per-branch before/added/after counts.
         """
 
         targeted = isinstance(depth_spec, Mapping) and any(
             name in depth_spec for name in ("network", "classifier")
         )
+        # Treat an unscoped specification as ordinary denoiser growth.
         if not targeted:
             growth = super().add_depths(depth_spec)
             self._refresh_aggregation_ids()
 
             return growth
 
+        # Restrict targeted growth to network and classifier branches.
         if not set(depth_spec) <= {"network", "classifier"}:
             raise ValueError("Targeted depth keys must be network or classifier.")
 
         classifier_spec = depth_spec.get("classifier")
+        # Normalize an empty classifier request to no classifier growth.
         if classifier_spec is None or classifier_spec == [] or classifier_spec == {}:
             classifier_specs = []
+        # Preserve a list as an ordered sequence of classifier depths.
         elif isinstance(classifier_spec, list):
             classifier_specs = classifier_spec
+        # Wrap one classifier specification as a single-depth sequence.
         else:
             classifier_specs = [classifier_spec]
 
@@ -685,15 +921,12 @@ class UNetClassifier(UNet):
         }
 
 
-if __name__ != "__main__":
-    tf.keras.utils.register_keras_serializable(
-        package="continual_learning",
-    )(UNetClassifier)
-    tf.keras.utils.get_custom_objects()["UNetClassifier"] = UNetClassifier
-
-
 def run_self_tests() -> dict[str, str]:
-    """Run compact call, KL, gradient, and serialization checks."""
+    """Run compact call, KL, gradient, and serialization checks.
+
+    Returns:
+        dict[str, str]: ``{"UNetClassifier": "passed"}`` after all checks.
+    """
 
     tf.keras.backend.clear_session()
     tf.random.set_seed(109)
@@ -737,6 +970,16 @@ def run_self_tests() -> dict[str, str]:
     assert model.predict_noise(inputs).shape == inputs[0].shape
     assert model.predict_class(inputs).shape == (2, 2)
     assert len(model.clf_layers_dicts) == model.clf_depth + 1
+
+    max_pooled = UNetClassifier(
+        **common,
+        force_global_avg_pooling=False,
+    )
+    assert isinstance(
+        max_pooled.classifier_feature_extractor,
+        layers.GlobalMaxPooling2D,
+    )
+    assert max_pooled.predict_class(inputs).shape == (2, 2)
 
     with tf.GradientTape() as tape:
         classes = model.predict_class(inputs, training=True)
@@ -799,5 +1042,6 @@ def run_self_tests() -> dict[str, str]:
     return {"UNetClassifier": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

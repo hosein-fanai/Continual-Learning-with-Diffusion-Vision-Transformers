@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
+from typing import Any
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -54,9 +56,8 @@ class LocalMixer(BaseEmbedding):
         MLP projection can change it.
 
     Serialization:
-        ``get_config()`` includes inherited ``ln_dim`` even though
-        :class:`BaseEmbedding` supplies it from ``dim``. Remove ``ln_dim`` from
-        a copied config before calling ``LocalMixer.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
     """
 
     def __init__(
@@ -70,11 +71,21 @@ class LocalMixer(BaseEmbedding):
         use_pointwise: bool = True, 
         zero_init: bool = True, # make this arg enforcing towards every layer for zero output (pos_embed)
         circumvent_cls_token: bool = False, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create local convolutions, residual projections, and position data.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            use_layer_norm (bool): Whether to normalize before convolution.
+            kernel_size (int): Positive depthwise kernel size.
+            strides (int): Positive depthwise stride.
+            padding (str): Keras ``"same"`` or ``"valid"`` padding.
+            depth_multiplier (int): Positive depthwise channel multiplier.
+            pointwise_dim_ratio (int): Positive pointwise channel multiplier.
+            use_pointwise (bool): Whether to apply the pointwise convolution.
+            zero_init (bool): Whether to zero-initialize the depthwise kernel.
+            circumvent_cls_token (bool): Whether to preserve token zero.
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
@@ -85,6 +96,18 @@ class LocalMixer(BaseEmbedding):
             **kwargs
         )
         self._save_init_args(locals())
+
+        for name in ("kernel_size", "strides", "depth_multiplier", "pointwise_dim_ratio"):
+            value = getattr(self, name)
+            # Require positive integer convolution and projection dimensions.
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
+        # Require a source grid for spatial token reshaping.
+        if self.grid_size is None:
+            raise ValueError("LocalMixer requires grid_size.")
+        # Restrict padding to Keras's supported spatial modes.
+        if self.padding not in ("same", "valid"):
+            raise ValueError("padding must be 'same' or 'valid'.")
 
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
@@ -104,17 +127,20 @@ class LocalMixer(BaseEmbedding):
             padding=self.padding, 
             depth_multiplier=self.depth_multiplier, 
             depthwise_initializer="zeros" if self.zero_init else "glorot_uniform", 
-            name=f"{self.name}/depthwise"
+            name=f"{self.name}/depthwise",
+            dtype=self.dtype_policy,
         )
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
             padding="same", 
-            name=f"{self.name}/pointwise"
+            name=f"{self.name}/pointwise",
+            dtype=self.dtype_policy,
         ) if self.use_pointwise else None
         self.residual_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/residual_projector"
+            name=f"{self.name}/residual_projector",
+            dtype=self.dtype_policy,
         ) if self.dim != self.output_dim and self.add_residual else None
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
@@ -128,23 +154,30 @@ class LocalMixer(BaseEmbedding):
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/token_projector"
+            name=f"{self.name}/token_projector",
+            dtype=self.dtype_policy,
         ) if self.dim != self.output_dim else None
         self.residual_token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/residual_token_projector"
+            name=f"{self.name}/residual_token_projector",
+            dtype=self.dtype_policy,
         ) if residual_token_dim != self.output_dim and \
             self.circumvent_cls_token else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
 
-    def call(self, inputs, training=None):
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor | None], 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Mix neighboring spatial tokens and apply the configured residual.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class input contract.
-            training: Optional Keras training flag forwarded to normalization,
+            inputs (tuple[tf.Tensor, tf.Tensor | None]): Pair ``(x, cond)``
+                following the class input contract.
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to normalization,
                 convolutions, positional projection, and MLP layers.
 
         Returns:
@@ -233,7 +266,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after normalization, convolution, pointwise,
+        dict[str, str]: A one-entry mapping after normalization, convolution, pointwise,
         residual, stride, class-token, position, projection, gradient,
         invalid-shape, and config tests pass.
     """
@@ -338,15 +371,7 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Non-square spatial token counts must fail.")
 
     config = identity_layer.get_config()
-    try:
-        LocalMixer.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = LocalMixer.from_config(filtered_config)
+    restored = LocalMixer.from_config(config)
     assert restored.kernel_size == 3 and restored.strides == 1
 
     dtype_layer = LocalMixer(
@@ -360,11 +385,11 @@ def run_self_tests() -> dict[str, str]:
     )
     dtype_output = dtype_layer((tf.ones((1, 16, 2), tf.float64), None))
     assert dtype_layer.compute_dtype == "float64"
-    # The nested depthwise convolution retains its default float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     return {"LocalMixer": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

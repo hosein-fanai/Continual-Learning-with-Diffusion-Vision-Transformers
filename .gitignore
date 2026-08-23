@@ -14,7 +14,6 @@ results
 *.yaml
 
 test.ipynb
-schedulers.png
 
 # Keep directory-level documentation visible while ignoring generated/data
 # contents in the directories above.

@@ -75,29 +75,27 @@ Top-level `**kwargs` goes to `tf.keras.Model`, so common valid examples are
 
 `train` accepts `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
 `validation_data`, `callbacks_list`, `callbacks_monitor`, `clf`, and `verbose`.
-Its `train_num` behavior is exact but unusual:
+Its `train_num` behavior is:
 
 - `-1`: use each supplied row once, with no manual resampling;
-- a value below `len(x)`: sample `len(x)` rows with replacement;
-- a value above `len(x)`: sample that larger number with replacement.
+- any positive value: sample exactly that many rows with replacement.
 
 Conditional training records argmax label IDs in `seen_classes`. Calling
 `generate(classes=None)` replays all recorded classes. An explicit empty class
 list returns two empty Python lists; unconditional generation returns only the
 sample array and ignores `classes`/`onehot_y_output`.
 
-## `VAEClassifer`
+## `VAEClassifier`
 
-`VAEClassifer` fixes conditional mode, attaches a classifier, and adds
-`alpha * categorical_crossentropy` plus accuracy trackers. The forward call
-returns classifier predictions for reconstructed vectors. Its custom training
-and test loss, however, evaluates `classifier(x)` on the original vectors and
-uses a batch **sum** for categorical cross-entropy.
+`VAEClassifier` fixes conditional mode, attaches a classifier, and adds
+`alpha * categorical_crossentropy` plus accuracy trackers. Forward, training,
+and evaluation all classify reconstructed vectors and average categorical
+cross-entropy over each batch.
 
 ```python
-from autoencoder.vae_classifier import VAEClassifer
+from autoencoder import VAEClassifier
 
-model = VAEClassifer(
+model = VAEClassifier(
     class_num=10, 
     classifier=classifier, 
     alpha=0.01, 
@@ -108,12 +106,12 @@ model = VAEClassifer(
 history = model.train(x_train, one_hot_y_train, epochs=10, train_num=-1)
 ```
 
-Its `**kwargs` accepts the VAE architecture keys, `compile_args`, and Keras
-model keys. Do not pass `conditioned` or `class_num`. The current implementation
-also cannot accept `compile` through `**kwargs` because it already forwards
-`compile=False` internally; doing so raises a duplicate-key `TypeError`.
+Its `**kwargs` accepts the VAE architecture keys, `compile_args`, `compile`, and
+Keras model keys. Do not pass `conditioned` or `class_num`. Set `compile=False`
+to construct without compiling, for example before supplying a custom compile
+configuration later.
 
-`VAEClassifer.train(**kwargs)` accepts only the base training controls
+`VAEClassifier.train(**kwargs)` accepts only the base training controls
 `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
 `validation_data`, `callbacks_list`, and `verbose`. It supplies `clf` and
 monitors `val_clf_accuracy` itself.
@@ -124,12 +122,12 @@ monitors `val_clf_accuracy` itself.
 conditional VAE. At each epoch end it generates examples for every class in
 `model.seen_classes`, classifies them, and adds `decoder_accuracy` to Keras
 logs. The classifier must accept `classifier(x_gen, training=False)` and return
-`[samples, class_num]` scores. At least one class must have been recorded before
-the callback runs.
+`[samples, class_num]` scores. `samples_per_class` must be positive, and at
+least one class must have been recorded before the callback runs.
 
 ## Continual-learning integration
 
-In direct mode, pass a conditional `VariationalAutoencoder` or `VAEClassifer`
+In direct mode, pass a conditional `VariationalAutoencoder` or `VAEClassifier`
 to `common.learner.continually_learn` with `generative_model=model`. In config
 mode, select `model.name="vae"` or `"vae_classifier"`; `get_model` creates the
 VAE and standalone classifier, while `get_datasets` supplies the loader. The
@@ -138,7 +136,7 @@ VAE training and evaluation through `common.train`.
 
 The dataset loader must return one-hot labels, and `data_dim` must match the
 loaded image/feature width. With `use_generative_model_classifier=True`, a
-`VAEClassifer`'s attached classifier becomes the continual model; setting
+`VAEClassifier`'s attached classifier becomes the continual model; setting
 `train_classifier_separately=True` gives it an additional classifier-only fit
 and requires that classifier to already be compiled.
 

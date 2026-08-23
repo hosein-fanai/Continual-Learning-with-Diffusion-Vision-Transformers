@@ -4,8 +4,10 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 from collections.abc import Iterator, Mapping
+from typing import Any
 
 
+@tf.keras.utils.register_keras_serializable(package="continual_learning")
 class LayerDict(layers.Layer):
     """Store named child layers with mapping access and Keras variable tracking.
 
@@ -18,18 +20,32 @@ class LayerDict(layers.Layer):
         self, 
         layers_dict: Mapping[str, layers.Layer] | None = None, 
         execution_order: list[str] | tuple[str, ...] | None = None, 
-        **kwargs
-    ):
-        """Track the supplied layers in a stable public key order."""
+        **kwargs: Any
+    ) -> None:
+        """Track the supplied layers in a stable public key order.
+
+        Args:
+            layers_dict (Mapping[str, layers.Layer] | None): Optional mapping of
+                public keys to child Keras layers.
+            execution_order (list[str] | tuple[str, ...] | None): Optional exact
+                key order; ``None`` preserves mapping insertion order.
+            **kwargs (Any): Standard Keras layer options.
+
+        Returns:
+            None: Initialization mutates only the new container.
+        """
 
         super().__init__(**kwargs)
         source = {} if layers_dict is None else dict(layers_dict)
+        # Require every layer key to be a non-empty string.
         if any(not isinstance(key, str) or not key for key in source):
             raise ValueError("LayerDict keys must be non-empty strings.")
+        # Require every stored value to be a Keras layer.
         if any(not isinstance(value, layers.Layer) for value in source.values()):
             raise TypeError("LayerDict values must be Keras layers or models.")
 
         order = list(source) if execution_order is None else list(execution_order)
+        # Require the execution order to contain each key exactly once.
         if len(order) != len(set(order)) or set(order) != set(source):
             raise ValueError("execution_order must contain every layer key exactly once.")
 
@@ -41,20 +57,39 @@ class LayerDict(layers.Layer):
 
     @property
     def execution_order(self) -> tuple[str, ...]:
-        """Return component keys in their stable execution order."""
+        """Return component keys in their stable execution order.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[str, ...]: Immutable public-key order.
+        """
 
         return tuple(self._execution_order)
 
     def __setitem__(self, key: str, value: layers.Layer) -> None:
-        """Add or replace one tracked child layer."""
+        """Add or replace one tracked child layer.
 
+        Args:
+            key (str): Non-empty public layer key.
+            value (layers.Layer): Keras child layer or model to track.
+
+        Returns:
+            None: The container is updated in place.
+        """
+
+        # Require a non-empty string for each newly assigned key.
         if not isinstance(key, str) or not key:
             raise ValueError("LayerDict keys must be non-empty strings.")
+        # Preserve Keras tracking by accepting layer values only.
         if not isinstance(value, layers.Layer):
             raise TypeError("LayerDict values must be Keras layers or models.")
 
+        # Reuse the existing trackable attribute when replacing a key.
         if key in self._layers_dict:
             attribute_name = self._tracked_attribute_names[key]
+        # Allocate a stable new trackable attribute for a new key.
         else:
             attribute_name = f"_tracked_layer_{len(self._execution_order)}"
             self._execution_order.append(key)
@@ -64,37 +99,124 @@ class LayerDict(layers.Layer):
         self._layers_dict[key] = value
 
     def update(self, values: Mapping[str, layers.Layer]) -> None:
-        """Add or replace the supplied components in mapping order."""
+        """Add or replace the supplied components in mapping order.
+
+        Args:
+            values (Mapping[str, layers.Layer]): Components to insert.
+
+        Returns:
+            None: The container is updated in place.
+        """
 
         for key, value in values.items():
             self[key] = value
 
     def __getitem__(self, key: str) -> layers.Layer:
+        """Return one child layer.
+
+        Args:
+            key (str): Public child-layer key.
+
+        Returns:
+            layers.Layer: Tracked layer stored under ``key``.
+        """
+
         return self._layers_dict[key]
 
     def __iter__(self) -> Iterator[str]:
+        """Iterate over public keys in execution order.
+
+        Args:
+            None.
+
+        Returns:
+            Iterator[str]: Iterator over stable public keys.
+        """
+
         return iter(self._execution_order)
 
     def __len__(self) -> int:
+        """Return the number of tracked child layers.
+
+        Args:
+            None.
+
+        Returns:
+            int: Number of public keys.
+        """
+
         return len(self._execution_order)
 
     def __contains__(self, key: object) -> bool:
+        """Report whether a public key is present.
+
+        Args:
+            key (object): Candidate mapping key.
+
+        Returns:
+            bool: ``True`` when ``key`` exists.
+        """
+
         return key in self._layers_dict
 
-    def keys(self):
+    def keys(self) -> tuple[str, ...]:
+        """Return public keys in execution order.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[str, ...]: Stable key sequence.
+        """
+
         return tuple(self._execution_order)
 
-    def values(self):
+    def values(self) -> tuple[layers.Layer, ...]:
+        """Return child layers in execution order.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[layers.Layer, ...]: Stable child-layer sequence.
+        """
+
         return tuple(self._layers_dict[key] for key in self._execution_order)
 
-    def items(self):
+    def items(self) -> tuple[tuple[str, layers.Layer], ...]:
+        """Return key-layer pairs in execution order.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[tuple[str, layers.Layer], ...]: Stable mapping items.
+        """
+
         return tuple((key, self._layers_dict[key]) for key in self._execution_order)
 
-    def get(self, key: str, default=None):
+    def get(self, key: str, default: Any | None = None) -> layers.Layer | Any:
+        """Return a child layer or a caller-supplied default.
+
+        Args:
+            key (str): Public child-layer key.
+            default (Any | None): Value returned when ``key`` is absent.
+
+        Returns:
+            layers.Layer | Any: Stored child layer or ``default``.
+        """
+
         return self._layers_dict.get(key, default)
 
-    def get_config(self) -> dict:
-        """Serialize the stable order and every contained Keras layer."""
+    def get_config(self) -> dict[str, Any]:
+        """Serialize the stable order and every contained Keras layer.
+
+        Args:
+            None.
+
+        Returns:
+            dict[str, Any]: JSON-compatible Keras constructor configuration.
+        """
 
         config = super().get_config()
         config.update({
@@ -108,8 +230,15 @@ class LayerDict(layers.Layer):
         return config
 
     @classmethod
-    def from_config(cls, config):
-        """Deserialize child layers before reconstructing the container."""
+    def from_config(cls, config: dict[str, Any]) -> "LayerDict":
+        """Deserialize child layers before reconstructing the container.
+
+        Args:
+            config (dict[str, Any]): Serialized :class:`LayerDict` config.
+
+        Returns:
+            LayerDict: Reconstructed tracked mapping.
+        """
 
         config = dict(config)
         serialized_layers = config.pop("layers_dict")
@@ -121,14 +250,15 @@ class LayerDict(layers.Layer):
         return cls(**config)
 
 
-if __name__ != "__main__":
-    tf.keras.utils.register_keras_serializable(
-        package="continual_learning"
-    )(LayerDict)
-
-
 def run_self_tests() -> dict[str, str]:
-    """Check mapping behavior, tracking, validation, and serialization."""
+    """Check mapping behavior, tracking, validation, and serialization.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: One success entry after all checks pass.
+    """
 
     first = layers.Dense(4, name="first")
     second = layers.Dense(2, name="second")
@@ -162,5 +292,6 @@ def run_self_tests() -> dict[str, str]:
     return {"LayerDict": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

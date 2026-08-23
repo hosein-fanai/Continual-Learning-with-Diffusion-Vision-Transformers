@@ -141,8 +141,7 @@ is also forwarded to `_create_embeddings`. Unknown keys likewise raise
 Embedding constructors accept BaseLayer settings (`use_layer_norm`,
 `ln_mlp_ratio`, `ln_no_adaptation`, `mlp_ratio`, `mlp_activation_func`, and
 `mlp_output_dim` where the subclass permits them) and Keras settings such as
-`name`, `dtype`, and `trainable`. Saved configs currently contain inherited
-`ln_dim`, while `BaseEmbedding` always supplies `ln_dim=dim` internally. For
-`ConditionEmbedding`, `PatchEmbedding`, and other BaseEmbedding derivatives,
-remove `ln_dim` from a copied config before calling `Class.from_config(config)`
-to avoid a duplicate-key `TypeError`.
+`name`, `dtype`, and `trainable`. Direct
+`Class.from_config(layer.get_config())` round trips are supported. The base
+constructor ignores a serialized `ln_dim` and consistently derives it from
+`dim`.

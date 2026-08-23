@@ -12,16 +12,31 @@ The code is organized as importable research modules rather than a published
 Python package. Run scripts and notebooks from the repository root so imports
 such as `from diffusion import DiffusionModel` resolve consistently.
 
+The root CLI loads a YAML configuration without training by default, or runs
+the configured experiment with `--train`:
+
+```powershell
+python __main__.py configs/my-run.yaml
+python __main__.py --train configs/my-run.yaml
+```
+
+Use `python __main__.py --help` for the complete command contract. Because the
+repository has no root package initializer, `python -m <package>` and relative
+imports from the root entry point are intentionally not used.
+
 ## Environment
 
-Install the pinned TensorFlow runtime and the reporting/HPO dependencies with:
+Use Python 3.10, which is the version exercised by this project and supported
+by the pinned TensorFlow 2.10 runtime. Install the runtime and reporting/HPO
+dependencies with:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-The requirements include Optuna, TensorBoard, PyYAML, pandas, scikit-learn,
-Matplotlib, and Pillow used by the experiment pipeline.
+The requirements include a TensorFlow-compatible NumPy 1.21--1.23 range plus
+Optuna, TensorBoard, PyYAML, pandas, scikit-learn, Matplotlib, and Pillow used
+by the experiment pipeline.
 
 ## How the diffusion API fits together
 
@@ -140,7 +155,8 @@ karras = generate_sigmas(ScheduleConfig(
 
 `make_schedule` returns beta, cumulative-alpha, signal/noise amplitude, sigma,
 and normalized-time arrays. Use `generate_sigmas` directly for native VE or
-Karras magnitudes; the all-in-one helper reports a VP beta-equivalent curve.
+Karras magnitudes and endpoint-sampled sub-VP marginal deviations; the
+all-in-one helper reports a VP beta-equivalent curve.
 
 ## Configuration-driven experiments
 
@@ -263,3 +279,18 @@ Every source subdirectory has its own API README. Every Python class, method,
 and function documents its accepted input types, output types, tensor shapes,
 state changes, valid modes, and constrained dictionary/keyword forms in its
 docstring.
+
+## Validation
+
+Run the complete repository assessment from the project root in the supported
+Conda environment:
+
+```powershell
+conda run -n tf_env python test.py
+```
+
+This command first enforces the source-wide documentation, type-annotation,
+named-callable, and branch-purpose-comment contracts. It then discovers the
+maintained model and layer classes and runs every registered TensorFlow 2.10
+self-test. A missing class, an omitted self-test result, or any non-passing
+result makes the command fail.

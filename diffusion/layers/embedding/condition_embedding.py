@@ -1,5 +1,9 @@
 """Discrete timestep and class-condition embedding layers."""
 
+import tensorflow as tf
+
+from typing import Any
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -35,18 +39,20 @@ class ConditionEmbedding(BaseEmbedding):
         output width, normally ``[..., dim]``.
 
     Serialization:
-        The saved config contains an inherited ``ln_dim`` key that duplicates
-        the value supplied internally by :class:`BaseEmbedding`. Remove that
-        key from a copied config before calling ``ConditionEmbedding.from_config``.
+        ``from_config(get_config())`` is supported; inherited normalization
+        width is reconstructed from ``dim``.
     """
 
     def __init__(
         self, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Create the lookup table and optional frequency projection MLP.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
+                ``dim`` and positive ``embed_steps`` are required; supported
+                table modes are ``"new_weight"`` and ``"1d_sincos"``.
 
         Returns:
             ``None``.
@@ -54,6 +60,15 @@ class ConditionEmbedding(BaseEmbedding):
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
+
+        # Require a finite vocabulary size for discrete condition lookup.
+        if self.embed_steps is None:
+            raise ValueError("ConditionEmbedding requires positive embed_steps.")
+        # Reject spatial positional modes that cannot initialize a lookup table.
+        if self.pos_embed_type not in ("new_weight", "1d_sincos"):
+            raise ValueError(
+                "ConditionEmbedding supports new_weight or 1d_sincos only."
+            )
 
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
@@ -66,14 +81,18 @@ class ConditionEmbedding(BaseEmbedding):
             self.embed_dim
         )
 
-    def call(self, x, training=None):
+    def call(
+        self, 
+        x: tf.Tensor, 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Look up and optionally project discrete conditions.
 
         Args:
-            x: Integer TensorFlow tensor with values in
+            x (tf.Tensor): Integer TensorFlow tensor with values in
                 ``[0, self.embed_steps)``. For diffusion batches it is commonly
                 shaped ``[batch]``.
-            training: Optional Keras training flag forwarded to the lookup and
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to the lookup and
                 projection layers. No stochastic operation is introduced here.
 
         Returns:
@@ -101,12 +120,9 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry success mapping after mode, rank, dtype, projection,
+        dict[str, str]: A one-entry success mapping after mode, rank, dtype, projection,
         trainability, boundary-error, gradient, and serialization checks.
     """
-
-    import tensorflow as tf
-
 
     learned = ConditionEmbedding(
         dim=4, 
@@ -174,8 +190,7 @@ def run_self_tests() -> dict[str, str]:
     )
     dtype_output = dtype_layer(tf.constant([0, 1], dtype=tf.int32))
     assert dtype_layer.compute_dtype == "float64"
-    # The nested Keras Embedding retains its TensorFlow 2.10 float32 policy.
-    assert dtype_output.dtype == tf.float32
+    assert dtype_output.dtype == tf.float64
 
     for invalid_id in (5, -1):
         try:
@@ -199,7 +214,7 @@ def run_self_tests() -> dict[str, str]:
                 embed_steps=4, 
                 pos_embed_type=unsupported_spatial_mode, 
             )
-        except (TypeError, ValueError, tf.errors.InvalidArgumentError):
+        except ValueError:
             pass
         else:
             raise AssertionError(
@@ -208,20 +223,13 @@ def run_self_tests() -> dict[str, str]:
             )
 
     config = learned.get_config()
-    try:
-        ConditionEmbedding.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate-ln_dim limit changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("ln_dim")
-    restored = ConditionEmbedding.from_config(filtered_config)
+    restored = ConditionEmbedding.from_config(config)
     assert restored.dim == 4 and restored.embed_steps == 5
     assert restored(tf.constant([0])).shape == (1, 4)
 
     return {"ConditionEmbedding": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

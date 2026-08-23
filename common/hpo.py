@@ -21,7 +21,11 @@ import gc
 
 import re
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from common.config import Config, load_config, save_config
+from common.dataloader import get_dataset_spec
 from common.train import main
 
 
@@ -140,7 +144,7 @@ SEARCH_SPACES = {
         }, 
         "vae_classifier": {
             **_VAE, 
-            "alpha": "log-uniform 1e-5 to 1e-2 (batch-summed CE)", 
+            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)",
             "objective": "Pareto minimize reconstruction / maximize accuracy"
         }
     },
@@ -183,7 +187,7 @@ SEARCH_SPACES = {
         "vae": {**_VAE, **_CONTINUAL_NOTE}, 
         "vae_classifier": {
             **_VAE, 
-            "alpha": "log-uniform 1e-5 to 1e-2 (batch-summed CE)", 
+            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)",
             **_CONTINUAL_NOTE
         }
     }
@@ -206,7 +210,16 @@ _MODEL_TAGS = {
 }
 
 
-def _value_tag(value):
+def _value_tag(value: object) -> str:
+    """Convert one sampled value to a compact path-safe tag.
+
+    Args:
+        value (object): Optuna parameter value.
+
+    Returns:
+        str: Compact alphanumeric representation used in event filenames.
+    """
+
     short_values = {
         "adam": "a", "adamw": "aw", "linear": "l", 
         "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
@@ -216,19 +229,31 @@ def _value_tag(value):
         "avg": "a"
     }
 
+    # Use stable abbreviations for common categorical values.
     if value in short_values:
         return short_values[value]
 
+    # Encode booleans compactly for filesystem-safe trial names.
     if isinstance(value, bool):
         return str(int(value))
 
+    # Format floats compactly while retaining meaningful precision.
     if isinstance(value, float):
         return f"{value:.2g}".replace("+", "")
 
     return re.sub(r"[^A-Za-z0-9.-]", "", str(value)).replace("_", "")
 
 
-def _tensorboard_name(trial):
+def _tensorboard_name(trial: Any) -> str:
+    """Build a compact deterministic TensorBoard suffix for one trial.
+
+    Args:
+        trial (optuna.trial.Trial): Trial with ``number`` and ``params`` state.
+
+    Returns:
+        str: Trial-number prefix followed by value tags in key-sorted order.
+    """
+
     # Values follow alphabetical parameter-name order. The full mapping is in
     # config.yaml and the TensorBoard text summary; omitting repeated long keys
     # keeps Windows event-file paths below MAX_PATH.
@@ -239,19 +264,34 @@ def _tensorboard_name(trial):
     return "-".join(parts)
 
 
-def _suggest_optimizer(trial, family):
+def _suggest_optimizer(trial: Any, family: str) -> dict[str, object]:
+    """Suggest optimizer and batch settings for a model family.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        family (str): Normalized model-family name.
+
+    Returns:
+        dict[str, object]: Batch size and nested optimizer configuration.
+    """
+
+    # Search conservative rates for pretrained feature extractors.
     if family == "pretrained":
         learning_rate = trial.suggest_float("learning_rate", 1e-6, 5e-4, log=True)
         batch_choices = [32, 64, 128]
+    # Search the VAE-specific learning-rate range.
     elif family in ("vae", "vae_classifier"):
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
         batch_choices = [128, 256, 512]
+    # Search the classifier-specific learning-rate range.
     elif family in ("cnn", "dnn"):
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True)
         batch_choices = [64, 128, 256]
+    # Search the U-Net-specific learning-rate range.
     elif family in ("unet", "unet_classifier"):
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 2e-3, log=True)
         batch_choices = [32, 64, 128]
+    # Use the transformer learning-rate range for remaining families.
     else:
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
         batch_choices = [32, 64, 128]
@@ -272,7 +312,19 @@ def _suggest_optimizer(trial, family):
     }
 
 
-def _suggest_diffusion_wrapper(trial):
+def _suggest_diffusion_wrapper(
+    trial: Any, 
+) -> tuple[int, dict[str, object]]:
+    """Suggest diffusion process and evaluation settings.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+
+    Returns:
+        tuple[int, dict[str, object]]: Training timestep count and wrapper
+        keyword mapping.
+    """
+
     timesteps = trial.suggest_categorical("timesteps", [250, 500, 1000])
 
     return timesteps, {
@@ -293,7 +345,22 @@ def _suggest_diffusion_wrapper(trial):
     }
 
 
-def _suggest_dit(trial, image_size, model_name):
+def _suggest_dit(
+    trial: Any, 
+    image_size: int, 
+    model_name: str
+) -> dict[str, object]:
+    """Suggest a shape-compatible transformer architecture.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        image_size (int): Square input resolution.
+        model_name (str): Selected DiT-family name.
+
+    Returns:
+        dict[str, object]: Raw-network constructor options.
+    """
+
     capacity = trial.suggest_categorical(
         "capacity", ["32x2", "64x4", "96x4", "128x8"]
     )
@@ -311,6 +378,7 @@ def _suggest_dit(trial, image_size, model_name):
         )
     }
 
+    # Tune encoder and decoder depths independently for joint DiT models.
     if model_name in ("dit_encoder_decoder", "dit_encoder_decoder_classifier"):
         kwargs["depth"] = trial.suggest_categorical("encoder_depth", [2, 4, 6])
         kwargs["decoder_kwargs"] = {
@@ -319,6 +387,7 @@ def _suggest_dit(trial, image_size, model_name):
             "vit_block_mlp_ratio": kwargs["vit_block_mlp_ratio"], 
             "shift_inputs": False
         }
+    # Tune decoder depth for a standalone DiT decoder.
     elif model_name == "dit_decoder":
         kwargs["depth"] = trial.suggest_categorical("decoder_depth", [1, 2, 4])
         kwargs.update({
@@ -326,13 +395,27 @@ def _suggest_dit(trial, image_size, model_name):
             "shift_inputs": False, 
             "use_causal_mask": False
         })
+    # Tune a single shared depth for the remaining transformer families.
     else:
         kwargs["depth"] = trial.suggest_categorical("depth", [2, 4, 6])
 
     return kwargs
 
 
-def _suggest_unet(trial, classifier=False):
+def _suggest_unet(
+    trial: Any, 
+    classifier: bool = False
+) -> dict[str, object]:
+    """Suggest a convolutional U-Net architecture.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        classifier (bool): Include classifier-depth settings when true.
+
+    Returns:
+        dict[str, object]: Raw U-Net constructor options.
+    """
+
     widths_name = trial.suggest_categorical(
         "widths", ["32-64", "32-64-96", "64-96-128"]
     )
@@ -361,6 +444,7 @@ def _suggest_unet(trial, classifier=False):
         "upsampling_method": "interpolate" if resampling == "pool" else "cnn_transpose"
     }
 
+    # Add classification-head settings for classifier-capable U-Nets.
     if classifier:
         kwargs.update({
             "clf_depth": trial.suggest_categorical("clf_depth", [1, 2, 3])
@@ -369,7 +453,20 @@ def _suggest_unet(trial, classifier=False):
     return kwargs
 
 
-def _suggest_vae(trial, classifier=False):
+def _suggest_vae(
+    trial: Any, 
+    classifier: bool = False
+) -> dict[str, object]:
+    """Suggest a dense VAE architecture and loss coefficients.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        classifier (bool): Include the classifier coefficient when true.
+
+    Returns:
+        dict[str, object]: VAE constructor options.
+    """
+
     latent_dim = trial.suggest_categorical("latent_dim", [8, 16, 32, 64, 128])
     template = trial.suggest_categorical(
         "hidden_template", ["256-64", "512-128", "512-256-64"]
@@ -391,13 +488,32 @@ def _suggest_vae(trial, classifier=False):
         "beta": trial.suggest_float("beta", 0.01, 2., log=True)
     }
 
+    # Tune joint classification weight only when a classifier branch exists.
     if classifier:
         kwargs["alpha"] = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
 
     return kwargs
 
 
-def _suggest_joint(trial, model_name, kwargs, wrapper_kwargs):
+def _suggest_joint(
+    trial: Any, 
+    model_name: str, 
+    kwargs: dict[str, object], 
+    wrapper_kwargs: dict[str, object]
+) -> None:
+    """Add joint-classification suggestions to mutable model settings.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        model_name (str): Selected joint model family.
+        kwargs (dict[str, object]): Raw-model options updated in place.
+        wrapper_kwargs (dict[str, object]): Wrapper options updated in place.
+
+    Returns:
+        None.
+    """
+
+    # Add DiT-specific decoder and conditioning choices.
     if model_name.startswith("dit"):
         kwargs.update({
             "clf_depth": trial.suggest_categorical("clf_depth", [1, 2, 3]), 
@@ -419,13 +535,28 @@ def _suggest_joint(trial, model_name, kwargs, wrapper_kwargs):
         "mask_by_t_threshold": masking in ("timestep", "both")
     })
 
+    # Tune timestep masking only for modes that use it.
     if masking in ("timestep", "both"):
         wrapper_kwargs["mask_t_percentage"] = trial.suggest_categorical(
             "mask_t", [50, 70, 90]
         )
 
 
-def _suggest_classifier(trial, model_name):
+def _suggest_classifier(
+    trial: Any, 
+    model_name: str
+) -> dict[str, object]:
+    """Suggest a standalone classifier architecture.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        model_name (str): ``cnn``, ``dnn``, or ``pretrained``.
+
+    Returns:
+        dict[str, object]: Classifier-family constructor options.
+    """
+
+    # Build tunable convolutional stage widths and depths.
     if model_name == "cnn":
         widths = trial.suggest_categorical(
             "widths", ["32-64-128", "64-128-256", "64-128-128-256"]
@@ -452,6 +583,7 @@ def _suggest_classifier(trial, model_name):
             }
         }
 
+    # Build a tunable dense hidden-layer template.
     if model_name == "dnn":
         template = trial.suggest_categorical(
             "hidden_template", ["256", "512-128", "512-256-64"]
@@ -481,16 +613,43 @@ def _suggest_classifier(trial, model_name):
 
 
 def _build_trial_config(
-    trial, task, model_name, 
-    dataset_name, epochs, seed, 
-    results_path
-):
+    trial: Any, 
+    task: str, 
+    model_name: str, 
+    dataset_name: str, 
+    epochs: int, 
+    seed: int, 
+    results_path: str | Path
+) -> Config:
+    """Build one complete, shape-compatible trial configuration.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        task (str): Generation, joint, classification, or continual task.
+        model_name (str): Selected model family.
+        dataset_name (str): Supported dataset name.
+        epochs (int): Maximum epochs per phase.
+        seed (int): Trial-specific random seed.
+        results_path (str | pathlib.Path): HPO artifact root.
+
+    Returns:
+        Config: Fully typed trial configuration.
+
+    Raises:
+        ValueError: If the dataset/model combination is unsupported.
+    """
+
     dataset_name = dataset_name.lower()
 
+    # Reject datasets outside the four supported HPO families.
     if dataset_name not in ("fmnist", "mnist", "cifar10", "cifar100"):
         raise ValueError("dataset_name must be FMNIST, MNIST, CIFAR10, or CIFAR100.")
+    # Restrict pretrained Xception search to three-channel CIFAR inputs.
+    if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
+        raise ValueError("The Xception classifier requires three-channel CIFAR data.")
 
-    image_size = 28 if dataset_name == "mnist" else 32
+    _, image_shape, _ = get_dataset_spec(dataset_name)
+    image_size = image_shape[0]
     optimization = _suggest_optimizer(trial, model_name)
 
     model_kwargs = {}
@@ -504,12 +663,15 @@ def _build_trial_config(
         "unet", "unet_classifier"
     ) else "min-max"
     return_features = False
+    features_path = None
     onehot_labels = model_name in ("vae", "vae_classifier")
 
+    # Tune transformer diffusion schedules and wrapper behavior.
     if model_name.startswith("dit") or model_name == "diffusion_transformer":
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(trial)
         model_kwargs = _suggest_dit(trial, image_size, model_name)
         model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
+    # Tune U-Net diffusion schedules and wrapper behavior.
     elif model_name in ("unet", "unet_classifier"):
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(trial)
         model_kwargs = _suggest_unet(
@@ -517,6 +679,7 @@ def _build_trial_config(
             classifier=model_name == "unet_classifier"
         )
         model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
+    # Tune VAE architecture and reconstruction settings.
     elif model_name in ("vae", "vae_classifier"):
         model_kwargs = _suggest_vae(
             trial, 
@@ -529,14 +692,18 @@ def _build_trial_config(
             "dropout_rate": 0.2, 
             "architecture_kwargs": {"hidden_dims": (256,), "activation": "relu"}
         }
+    # Tune standalone classifier architecture for classification tasks.
     elif task == "classification":
         model_kwargs = _suggest_classifier(trial, model_name)
 
+        # Use saved features for dense-classifier trials.
         if model_name == "dnn":
             preprocess = "normalize"
+        # Preserve raw image scale for pretrained preprocessing layers.
         elif model_name == "pretrained":
             preprocess = None
 
+    # Add joint loss/search options for supported generative classifiers.
     if task in ("joint", "continual") and model_name in (
         "dit_classifier", "dit_encoder_decoder_classifier", 
         "unet_classifier"
@@ -545,6 +712,7 @@ def _build_trial_config(
         wrapper_name = "diffusion_classifier"
 
     continual_kwargs = {}
+    # Tune replay policy only for continual-learning studies.
     if task == "continual":
         replay_samples = trial.suggest_categorical(
             "replay_samples", [100, 500, 1000]
@@ -560,9 +728,17 @@ def _build_trial_config(
             }
         }
 
+        # Select and configure a dense classifier for VAE replay.
         if model_name in ("vae", "vae_classifier"):
             classifier_name = "dnn"
-            preprocess, return_features, onehot_labels = "normalize", True, True
+            return_features = dataset_name in ("cifar10", "cifar100")
+            preprocess, onehot_labels = "normalize", True
+            # Point dense VAE replay at the dataset's saved feature archive.
+            if return_features:
+                features_path = str(
+                    Path("data")
+                    / f"{dataset_name}_xception_gavgpooled_features_train_val_test"
+                )
             model_kwargs["last_activation"] = "linear"
 
             classifier_kwargs = {
@@ -572,6 +748,7 @@ def _build_trial_config(
                     "activation": "relu", 
                 }
             }
+        # Select a convolutional classifier for image-space replay.
         else:
             classifier_name = "cnn"
             preprocess = "min-max"
@@ -583,22 +760,30 @@ def _build_trial_config(
                 }
             }
 
+    # Optimize validation accuracy for standalone classification.
     if task == "classification":
         monitor, monitor_mode = "val_accuracy", "max"
+    # Optimize both generation loss and classification accuracy jointly.
     elif task == "joint":
         monitor = "val_clf_accuracy" if model_name == "vae_classifier" \
                 else "val_classifier_accuracy"
         monitor_mode = "max"
+    # Optimize the final continual-learning accuracy.
     elif task == "continual":
         monitor, monitor_mode = "val_accuracy", "max"
+    # Minimize validation reconstruction loss for VAE generation.
     elif model_name in ("vae", "vae_classifier"):
         monitor, monitor_mode = "val_recon_loss", "min"
+    # Minimize validation diffusion noise loss for other generators.
     else:
         monitor, monitor_mode = "val_noise_loss", "min"
 
     tensorboard_name = _tensorboard_name(trial)
     task_tag = {"generation": "g", "joint": "j", "classification": "c", "continual": "l"}[task]
-    dataset_tag = {"mnist": "m", "cifar10": "c10", "cifar100": "c100"}[
+    dataset_tag = {
+        "mnist": "m", "fmnist": "fm",
+        "cifar10": "c10", "cifar100": "c100"
+    }[
         dataset_name
     ]
     project_tag = f"t{trial.number:04d}"
@@ -611,6 +796,7 @@ def _build_trial_config(
             "name": dataset_name, 
             "batch_size": optimization["batch_size"], 
             "preprocess": preprocess, 
+            "features_path": features_path,
             "return_features": return_features, 
             "onehot_labels": onehot_labels
         }, 
@@ -667,14 +853,35 @@ def _build_trial_config(
     return config
 
 
-def _history_value(history, names, best=None):
+def _history_value(
+    history: Mapping[str, Sequence[float]], 
+    names: Sequence[str], 
+    best: str | None = None
+) -> float:
+    """Read a final, minimum, or maximum available history metric.
+
+    Args:
+        history (Mapping[str, Sequence[float]]): Logged metric sequences.
+        names (Sequence[str]): Candidate names in preference order.
+        best (str | None): ``min``, ``max``, or ``None`` for the final value.
+
+    Returns:
+        float: Selected metric value.
+
+    Raises:
+        KeyError: If no candidate has a nonempty sequence.
+    """
+
     for name in names:
+        # Read the requested nonempty metric series from training history.
         if name in history and history[name]:
             values = history[name]
 
+            # Select the minimum observed value for minimization objectives.
             if best == "min":
                 return float(min(values))
 
+            # Select the maximum observed value for maximization objectives.
             if best == "max":
                 return float(max(values))
 
@@ -683,7 +890,24 @@ def _history_value(history, names, best=None):
     raise KeyError("None of the objective metrics were logged: " + ", ".join(names))
 
 
-def _objective_values(task, model_name, history):
+def _objective_values(
+    task: str, 
+    model_name: str, 
+    history: Mapping[str, Sequence[float]]
+) -> float | tuple[float, float]:
+    """Convert training history to the study's objective value or pair.
+
+    Args:
+        task (str): Study task.
+        model_name (str): Selected model family.
+        history (Mapping[str, Sequence[float]]): Training metric history.
+
+    Returns:
+        float | tuple[float, float]: Scalar objective, or generation-loss and
+        classification-accuracy pair for joint studies.
+    """
+
+    # Return the single generation objective for generation studies.
     if task == "generation":
         names = [
             "val_recon_loss", "recon_loss", 
@@ -695,6 +919,7 @@ def _objective_values(task, model_name, history):
 
         return _history_value(history, names, best="min")
 
+    # Combine generation and classification objectives for joint studies.
     if task == "joint":
         generation = _history_value(history, [
             "val_noise_loss", "val_recon_loss", 
@@ -707,6 +932,7 @@ def _objective_values(task, model_name, history):
 
         return generation, classification
 
+    # Return only classifier accuracy for classification studies.
     if task == "classification":
         return _history_value(
             history, 
@@ -727,7 +953,7 @@ def run_hpo(
     seed: int = 42, 
     results_path: str = "results/hpo", 
     timeout: float | None = None
-):
+) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
     ``joint`` studies are Pareto searches with generative loss minimized and
@@ -737,16 +963,17 @@ def run_hpo(
     incrementally updated CSV.
 
     Args:
-        task: ``generation``, ``joint``, ``classification``, or ``continual``.
-        model_name: A key in ``SEARCH_SPACES[task]``.
-        dataset_name: ``MNIST``, ``CIFAR10``, or ``CIFAR100``. Xception and
-            continual studies impose their documented dataset restrictions.
-        n_trials: Positive number of additional trials to run.
-        epochs: Positive maximum epochs per fit/task.
-        seed: Reproducible TPE and first-trial seed.
-        results_path: HPO root. Study state is written below
+        task (str): ``generation``, ``joint``, ``classification``, or
+            ``continual``.
+        model_name (str): A key in ``SEARCH_SPACES[task]``.
+        dataset_name (str): ``FMNIST``, ``MNIST``, ``CIFAR10``, or
+            ``CIFAR100``. Xception requires a three-channel CIFAR dataset.
+        n_trials (int): Positive number of additional trials to run.
+        epochs (int): Positive maximum epochs per fit/task.
+        seed (int): Reproducible TPE and first-trial seed.
+        results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``.
-        timeout: Optional study wall-time limit in seconds.
+        timeout (float | None): Optional study wall-time limit in seconds.
 
     Returns:
         optuna.study.Study: Resumable completed/partial study. Joint studies
@@ -768,8 +995,10 @@ def run_hpo(
     task = task.lower()
     model_name = model_name.lower()
 
+    # Require a supported task/model search-space pairing.
     if task not in SEARCH_SPACES or model_name not in SEARCH_SPACES[task]:
         raise ValueError(f"Unsupported task/model pair: {task}/{model_name}")
+    # Require positive trial and epoch budgets.
     if n_trials <= 0 or epochs <= 0:
         raise ValueError("n_trials and epochs must be positive.")
 
@@ -786,8 +1015,10 @@ def run_hpo(
         "load_if_exists": True, 
     }
 
+    # Configure two optimization directions for joint studies.
     if task == "joint":
         create_kwargs["directions"] = ["minimize", "maximize"]
+    # Configure the single direction used by other study types.
     else:
         create_kwargs["direction"] = (
             "minimize" if task == "generation" else "maximize"
@@ -796,7 +1027,15 @@ def run_hpo(
     study = optuna.create_study(**create_kwargs)
 
 
-    def objective(trial):
+    def objective(trial: Any) -> float | tuple[float, float]:
+        """Execute and score one Optuna trial.
+
+        Args:
+            trial (optuna.trial.Trial): Active trial.
+
+        Returns:
+            float | tuple[float, float]: Study objective value or joint pair.
+        """
         tf.keras.backend.clear_session()
         gc.collect()
 
@@ -841,7 +1080,18 @@ def run_hpo(
         return values
 
 
-    def save_trials(study_, trial_):
+    def save_trials(study_: Any, trial_: Any) -> None:
+        """Persist the study table after a completed trial.
+
+        Args:
+            study_ (optuna.study.Study): Updated study.
+            trial_ (optuna.trial.FrozenTrial): Just-completed trial; unused.
+
+        Returns:
+            None.
+        """
+
+        del trial_
         study_.trials_dataframe().to_csv(
             study_root / "trials.csv", 
             index=False

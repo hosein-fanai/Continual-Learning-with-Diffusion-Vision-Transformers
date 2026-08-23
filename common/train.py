@@ -6,6 +6,8 @@ schedule, EMA copy, noising, custom optimization steps, evaluation, and
 iterative sampling around the selected network.
 """
 
+from __future__ import annotations
+
 import tensorflow as tf
 from tensorflow.keras import utils, callbacks
 
@@ -18,7 +20,8 @@ import os
 import json
 
 from copy import deepcopy
-from collections.abc import Callable, Sequence
+
+from collections.abc import Callable, Mapping, Sequence
 
 from common.utils import plot_images, plot_history, create_gif
 from common.lr_logger_callback import LrLoggerCallback
@@ -67,8 +70,8 @@ def train_model(
             selects an alternate model method such as VAE ``"train"`` or V2
             ``"fit_generator"``/``"fit_discriminator"``; ``fit_kwargs`` is
             shallow-copied and forwarded to that method. A continual model
-            bundle consumes ``continual_kwargs`` spelling remains accepted in 
-            direct mode) and also accepts ``max_train_samples``, 
+            bundle consumes ``continual_kwargs`` (the legacy spelling remains
+            accepted in direct mode) and also accepts ``max_train_samples``,
             ``max_val_samples``, ``shuffle_buffer``, raw-image ``pad``, and 
             ``seed``.
 
@@ -87,8 +90,16 @@ def train_model(
         trajectory sampling is limited to compatible diffusion wrappers. A
         continual model bundle is updated with its final classifier/replay
         model and a ``continual_details`` mapping.
+
+    Raises:
+        TypeError: If ``model`` or ``trainset`` is omitted.
     """
 
+    # Require both a model and training input for orchestration.
+    if model is None or trainset is None:
+        raise TypeError("model and trainset are required.")
+
+    # Resolve training settings from direct keyword arguments.
     if config is None:
         show_images = kwargs.get("show_images", True)
         save_gifs = kwargs.get("save_gifs", False)
@@ -127,6 +138,7 @@ def train_model(
         )
         fit_method = kwargs.get("fit_method", "fit")
         fit_kwargs = dict(kwargs.get("fit_kwargs", {}))
+    # Resolve training settings from typed project configuration.
     else:
         show_images = config.training.show_images
         save_gifs = config.training.save_gifs
@@ -168,7 +180,7 @@ def train_model(
 
     callbacks_list = [
         LrLoggerCallback(), 
-        callbacks.ProgbarLogger(count_mode="steps"), 
+        callbacks.ProgbarLogger(count_mode="steps")
     ]
 
     image_callback = ImageGeneratorCallback(
@@ -177,21 +189,25 @@ def train_model(
         results_path=results_path, 
         project_tag=project_tag
     )
+    # Sample diffusion trajectories only for compatible wrappers.
     if isinstance(model, DiffusionModel) and \
     report_every_epoch and not model.swap_noise_image:
         callbacks_list.append(image_callback)
 
+    # Add ordinary early stopping outside continual bundle training.
     if not isinstance(model, dict) and  patience > 0:
         callbacks_list.append(callbacks.EarlyStopping(
-            monitor=monitor, 
+            monitor=monitor or ("val_loss" if valset is not None else "loss"),
             mode=monitor_mode, 
             patience=patience, 
             restore_best_weights=True
         ))
 
+    # Record the callback's concrete timestamped results directory.
     if config is not None:
         config.training.results_path = image_callback.results_path
 
+    # Configure TensorBoard metrics and hyperparameter metadata when requested.
     if use_tensorboard:
         tensorboard_name = tensorboard_run_name or "run"
         tensorboard_root = tensorboard_path or os.path.join(
@@ -221,9 +237,11 @@ def train_model(
             )
         writer.flush()
 
+    # Append caller-provided callbacks after the shared defaults.
     if extra_callbacks is not None:
         callbacks_list += list(extra_callbacks)
 
+    # Write the resolved configuration before training when requested.
     if save_config_ and config is not None:
         config_path = os.path.join(
             image_callback.results_path, 
@@ -231,6 +249,7 @@ def train_model(
         )
         save_config(config, config_path)
 
+    # Delegate continual bundles to the incremental-learning workflow.
     if isinstance(model, dict):
         classifier_name = model["classifier_name"]
         template_path = os.path.join(
@@ -244,6 +263,7 @@ def train_model(
         configured_class_num = continual_kwargs.pop("class_num", None)
         class_num = dataset_class_num if configured_class_num is None \
                     else configured_class_num
+        # Require at least the initial two-class continual task.
         if class_num < 2:
             raise ValueError("continual class_num must be at least 2.")
 
@@ -337,9 +357,11 @@ def train_model(
             for task_history in details["histories"]
         ]
         history["task_val_accuracy"] = final_val_accuracy
+    # Invoke a caller-selected training method when it is not standard fit.
     elif fit_method != "fit":
         method = getattr(model, fit_method)
 
+        # Adapt shared arguments to the project's custom train API.
         if fit_method == "train":
             method_kwargs = {
                 "epochs": epochs, 
@@ -352,6 +374,7 @@ def train_model(
                 trainset, 
                 **method_kwargs
             )
+        # Adapt shared arguments to other Keras-like training methods.
         else:
             method_kwargs = {
                 "x": trainset, 
@@ -366,6 +389,7 @@ def train_model(
             )
 
         history = getattr(trained, "history", trained)
+    # Train V2 generator and classifier phases with separate fit mappings.
     elif isinstance(model, DiffusionClassifierV2):
         fit_kwargs = {
             "x": trainset, 
@@ -378,6 +402,7 @@ def train_model(
             gen_kwargs=fit_kwargs, 
             clf_kwargs={**fit_kwargs}, 
         )
+    # Use ordinary Keras fit for remaining model families.
     else:
         history = model.fit(
             trainset, 
@@ -387,12 +412,14 @@ def train_model(
             verbose=training_verbose
         ).history
 
+    # Persist final trained weights when requested.
     if save_weights:
         weights_path = os.path.join(
             image_callback.results_path, 
             "model.weights.h5"
         )
 
+        # Save continual classifier and optional replay-model weights separately.
         if isinstance(model, dict):
             model["classifier"].save_weights(weights_path)
             replay_weights_path = os.path.join(
@@ -400,19 +427,25 @@ def train_model(
                 "replay-model.weights.h5"
             )
 
+            # Persist replay-model weights when generative replay was used.
             if model["generative_model"] is not None:
                 model["generative_model"].save_weights(replay_weights_path)
+                # Record both continual artifact paths in configuration metadata.
                 if config is not None:
                     config.model.weights_path = replay_weights_path
                     config.hpo["replay_weights_path"] = replay_weights_path
                     config.hpo["classifier_weights_path"] = weights_path
+            # Record classifier weights when no replay model exists.
             elif config is not None:
                 config.model.weights_path = weights_path
+        # Save a standalone model's weights directly.
         else:
             model.save_weights(weights_path)
+            # Record the standalone model's weight path.
             if config is not None:
                 config.model.weights_path = weights_path
 
+    # Rewrite configuration after training to include resolved artifact paths.
     if save_config_ and config is not None:
         save_config(config, config_path)
 
@@ -421,12 +454,12 @@ def train_model(
 
 def report(
     config: Config | None = None, 
-    history=None, 
-    model=None, 
-    trainset=None, 
-    valset=None, 
+    history: Mapping[str, Sequence[float]] | None = None, 
+    model: tf.keras.Model | dict[str, object] | None = None, 
+    trainset: tf.data.Dataset | Callable[..., object] | None = None, 
+    valset: tf.data.Dataset | None = None, 
     **kwargs: object
-):
+) -> dict[str, object]:
     """Create configured history, evaluation, sample-image, and GIF reports.
 
     Args:
@@ -452,11 +485,17 @@ def report(
         written beneath the result path.
 
     Raises:
-        TypeError: If a saving option is enabled without a usable result path.
+        TypeError: If history, model, or trainset is omitted, or a saving
+            option is enabled without a usable result path.
         ValueError: If requested sampling steps/scales or datasets violate the
             wrapper's constraints.
     """
 
+    # Require completed training inputs before producing a report.
+    if history is None or model is None or trainset is None:
+        raise TypeError("history, model, and trainset are required.")
+
+    # Resolve reporting settings from direct keyword arguments.
     if config is None:
         results_path = kwargs.get("results_path", "./results")
         save_history_plot = kwargs.get("save_history_plot", False)
@@ -472,6 +511,7 @@ def report(
         final_images_steps = kwargs.get("final_images_steps", 1_000)
         final_images_cfg_scale = kwargs.get("final_images_cfg_scale", 3.0)
         save_final_gifs = kwargs.get("save_final_gifs", False)
+    # Resolve reporting settings from typed project configuration.
     else:
         results_path = config.training.results_path
         save_history_plot = config.reporting.save_history_plot
@@ -488,6 +528,7 @@ def report(
         final_images_cfg_scale = config.reporting.final_images_cfg_scale
         save_final_gifs = config.reporting.save_final_gifs
 
+    # Prepare history-plot output paths when saving is enabled.
     if save_history_plot:
         plot_save_path = os.path.join(
             results_path, 
@@ -497,10 +538,12 @@ def report(
             results_path, 
             "train history without first 20percent.png"
         )
+    # Disable history-plot file output when saving is off.
     else:
         plot_save_path = None
         plot_save_path_without_20percent = None
 
+    # Prepare training and evaluation CSV paths when saving is enabled.
     if save_csv:
         csv_train_save_path = os.path.join(
             results_path, 
@@ -510,9 +553,11 @@ def report(
             results_path, 
             "evals history.csv"
         )
+    # Disable training-history CSV output when saving is off.
     else:
         csv_train_save_path = None
 
+    # Plot nonempty training history using the selected outputs.
     if history:
         plot_history(
             history, 
@@ -520,6 +565,7 @@ def report(
             plot_path=plot_save_path, 
             csv_path=csv_train_save_path
         )
+        # Optionally plot a second view excluding the first training fifth.
         if plot_without_20percent:
             epochs = len(next(iter(history.values())))
             plot_history(
@@ -529,7 +575,8 @@ def report(
                 plot_path=plot_save_path_without_20percent
             )
 
-    if isinstance(model, dict): # Continual Learning
+    # Summarize continual bundles from their recorded task accuracies.
+    if isinstance(model, dict):
         eval_results = {
             "average_accuracy": float(np.nanmean(
                 history["continual_accuracy"]
@@ -537,6 +584,7 @@ def report(
             "final_accuracy": float(history["continual_accuracy"][-1])
         }
 
+        # Persist continual summary metrics when requested.
         if save_csv:
             pd.DataFrame([eval_results]).to_csv(
                 csv_evals_save_path, 
@@ -545,9 +593,11 @@ def report(
 
         return eval_results
 
+    # Evaluate non-diffusion models through their standard Keras API.
     if not isinstance(model, DiffusionModel):
         eval_results = {}
 
+        # Evaluate training data when requested.
         if run_trainset_eval:
             eval_results["trainset_eval"] = model.evaluate(
                 trainset, 
@@ -555,6 +605,7 @@ def report(
                 verbose=verbose
             )
 
+        # Evaluate available validation data when requested.
         if run_valset_eval and valset is not None:
             eval_results["valset_eval"] = model.evaluate(
                 valset, 
@@ -562,30 +613,40 @@ def report(
                 verbose=verbose
             )
 
+        # Persist any standard-model evaluations when requested.
         if eval_results and save_csv:
             pd.DataFrame(eval_results).T.to_csv(
                 csv_evals_save_path, 
                 index=True
             )
 
+        # Generate display samples for variational autoencoders when requested.
         if isinstance(model, VariationalAutoencoder) and (
             show_final_images or save_final_images
         ):
             class_num, image_shape, _ = get_dataset_spec(dataset_name)
 
+            # Generate one example for each known conditional class.
             if model.conditioned:
-                imgs, _ = model.generate(samples_per_class=1)
+                classes = model.seen_classes or list(range(model.class_num or 0))
+                imgs, _ = model.generate(
+                    classes=classes,
+                    samples_per_class=1
+                )
+            # Generate one unconditional example per dataset class.
             else:
                 imgs = model.generate(samples_per_class=class_num)
 
-            imgs = np.asarray(imgs).reshape((-1, *image_shape))
-            imgs_save_path = os.path.join(
-                results_path, 
-                "final-images.png"
-            ) if save_final_images else None
-
-            if (show_final_images or save_final_images) \
-            and imgs.shape[1] == image_shape[0]:
+            imgs = np.asarray(imgs)
+            expected_width = int(np.prod(image_shape))
+            # Reshape valid flattened image samples before plotting.
+            if imgs.ndim == 2 and len(imgs) > 0 \
+            and imgs.shape[-1] == expected_width:
+                imgs = imgs.reshape((-1, *image_shape))
+                imgs_save_path = os.path.join(
+                    results_path,
+                    "final-images.png"
+                ) if save_final_images else None
                 plot_images(
                     imgs, 
                     show_images=show_final_images, 
@@ -595,7 +656,20 @@ def report(
         return eval_results
 
 
-    def evaluate_diffusion(dataset, network_name):
+    def evaluate_diffusion(
+        dataset: tf.data.Dataset,
+        network_name: str,
+    ) -> dict[str, object]:
+        """Evaluate one diffusion network on one prepared dataset.
+
+        Args:
+            dataset (tf.data.Dataset): Batched evaluation input.
+            network_name (str): ``"raw"`` or ``"ema"`` network selector.
+
+        Returns:
+            dict[str, object]: Wrapper-specific evaluation metrics.
+        """
+        # Ask V2 wrappers to evaluate generator and classifier together.
         if isinstance(model, DiffusionClassifierV2):
             return model.evaluate(
                 eval_both=True, 
@@ -613,9 +687,11 @@ def report(
 
     eval_results = {}
 
+    # Evaluate raw and optional EMA networks on training data.
     if run_trainset_eval:
         print("Trainset evaluation:")
 
+        # Include the EMA network when the wrapper maintains one.
         if model.use_ema:
             print("EMA Network:")
             trainset_ema_eval = evaluate_diffusion(trainset, "ema")
@@ -625,9 +701,11 @@ def report(
         trainset_network_eval = evaluate_diffusion(trainset, "raw")
         eval_results["trainset_network_eval"] = trainset_network_eval
 
+    # Evaluate raw and optional EMA networks on validation data.
     if run_valset_eval and valset is not None:
         print("Valset evaluation:")
 
+        # Include the EMA network when the wrapper maintains one.
         if model.use_ema:
             print("EMA Network:")
             valset_ema_eval = evaluate_diffusion(valset, "ema")
@@ -637,6 +715,7 @@ def report(
         valset_network_eval = evaluate_diffusion(valset, "raw")
         eval_results["valset_network_eval"] = valset_network_eval
 
+    # Persist nonempty diffusion evaluations when requested.
     if len(eval_results) > 0 and save_csv:
         eval_results_df = pd.DataFrame(eval_results).T
         eval_results_df.index.name = "dataset + network type"
@@ -645,9 +724,17 @@ def report(
             index=True
         )
 
+    # Skip diffusion sampling when no visual artifact was requested.
     if not any((show_final_images, save_final_images, save_final_gifs)):
         return eval_results
 
+    # Reject GIF trajectories unavailable in swapped-noise sampling mode.
+    if save_final_gifs and model.swap_noise_image:
+        raise ValueError(
+            "Final GIF trajectories are unavailable when swap_noise_image=True."
+        )
+
+    # Sample and save full denoising trajectories for GIF output.
     if save_final_gifs and not model.swap_noise_image:
         imgs, frames1, frames2 = model.sample(
             scale=final_images_cfg_scale, 
@@ -663,27 +750,32 @@ def report(
             ), 
             frames1, frames2
         )
+    # Sample only final images when GIF trajectories are unnecessary.
     else:
         imgs = model.sample(
-            network_name=network_name, 
+            network_name=model.test_network_name,
             scale=final_images_cfg_scale, 
             steps=final_images_steps
         )
     
+    # Prepare a final-image path when file output is enabled.
     if save_final_images:
         imgs_save_path = os.path.join(
             results_path, 
             f"final-images_steps-{final_images_steps}"
             f"_scale-{final_images_cfg_scale:.1f}.png"
         )
+    # Disable final-image file output while retaining optional display.
     else:
         imgs_save_path = None
 
-    plot_images(
-        imgs, 
-        show_images=show_final_images, 
-        save_path=imgs_save_path
-    )
+    # Render final samples when display or file output was requested.
+    if show_final_images or save_final_images:
+        plot_images(
+            imgs,
+            show_images=show_final_images,
+            save_path=imgs_save_path
+        )
 
     return eval_results 
 
@@ -708,6 +800,7 @@ def main(
         and the concrete timestamped ``results_path``.
     """
 
+    # Announce typed configuration and obtain its seed.
     if config is not None:
         print(
             "Initiating training process with "
@@ -715,6 +808,7 @@ def main(
         )
 
         seed = config.training.seed
+    # Announce direct settings and obtain their seed.
     else:
         print(
             "Initiating training process with "
@@ -723,6 +817,7 @@ def main(
 
         seed = kwargs.get("seed")
 
+    # Seed supported random generators for reproducible orchestration.
     if seed is not None:
         utils.set_random_seed(seed)
 
@@ -731,6 +826,7 @@ def main(
         **kwargs
     )
 
+    # Supply direct model construction with the prepared batch count.
     if config is None and "trainset_len" not in kwargs \
     and not callable(trainset):
         kwargs["trainset_len"] = len(trainset)
@@ -766,6 +862,26 @@ def main(
     }
 
 
+def run_experiment(
+    config: Config | None = None, 
+    **kwargs: object
+) -> dict[str, object]:
+    """Run the complete experiment pipeline through :func:`main`.
+
+    Args:
+        config (Config | None): Optional typed project configuration.
+        **kwargs (object): Direct-mode dataset, model, training, and reporting
+            settings accepted by :func:`main`.
+
+    Returns:
+        dict[str, object]: Model, history, evaluations, and result path returned
+        by :func:`main`.
+    """
+
+    return main(config, **kwargs)
+
+
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     config = load_config()
     main(config)

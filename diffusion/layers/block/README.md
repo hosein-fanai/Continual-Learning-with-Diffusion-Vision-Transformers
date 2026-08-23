@@ -57,9 +57,8 @@ Useful forwarded `**kwargs` are `ln_mlp_ratio`, `ln_no_adaptation`, and
 `use_layer_norm`, `ln_dim`, `mlp_ratio`, and `mlp_activation_func` are already
 supplied by this class and must not be repeated.
 
-`get_config()` currently records the forced `use_layer_norm` and `ln_dim` keys.
-For a manual round trip, copy the config and remove those two keys before
-calling `VisionTransformerBlock.from_config(config)`.
+`VisionTransformerBlock.from_config(block.get_config())` is supported; the
+constructor discards its forced normalization keys before initialization.
 
 ## `DiTDecoderBlock`
 
@@ -87,9 +86,9 @@ decoder tokens for cross-attention queries; `values=None` also uses the decoder
 tokens, making the second branch another self-attention pass. Do not pass
 `gate_query_flag` in `**kwargs`: the decoder fixes it to `False`.
 
-For `DiTDecoderBlock.from_config`, remove `gate_query_flag`, `use_layer_norm`,
-and `ln_dim` from a copied saved config; otherwise those internally supplied
-keywords are passed twice.
+`DiTDecoderBlock.from_config(block.get_config())` is also supported. The
+constructor discards the serialized `gate_query_flag`, and its parent handles
+the forced normalization keys.
 
 ## Initialization and training
 

@@ -8,11 +8,13 @@ metrics, EMA use, timestep masking, and Keras train/test steps.
 import tensorflow as tf
 from tensorflow.keras import callbacks, metrics
 
+from math import ceil
+
 from typing import get_args
 
-from autoencoder.variational_autoencoder import VariationalAutoencoder
-
 from . import NetworkName, TrainType
+
+from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
@@ -31,7 +33,9 @@ class DiffusionClassifier(DiffusionModel):
         clf_loss_coef (tf.Tensor): Float32 scalar initialized from the
             constructor coefficient.
         filter_t_threshold (tf.Tensor): Int32 scalar
-            ``int(mask_t_percentage / 100 * timesteps)``.
+            ``ceil(mask_t_percentage / 100 * timesteps) - 1``.  The inclusive
+            comparison therefore selects the requested count of leading
+            timesteps; 0 percent selects none.
         use_clf_kl_loss (bool | None): True only when a classifier reshaper is
             present, KL-enabled, and ``kl_loss_coef > 0``; None when the network
             exposes no classifier reshaper metadata.
@@ -47,8 +51,8 @@ class DiffusionClassifier(DiffusionModel):
         use_ensemble_loss_instead: bool = False, 
         clf_train_type: TrainType = "cond", 
         clf_loss_coef: float = 8.6e-3, 
-        **kwargs
-    ):
+        **kwargs: object
+    ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
 
         Args:
@@ -58,10 +62,10 @@ class DiffusionClassifier(DiffusionModel):
                 requires ``p_uncond > 0``.
             mask_by_t_threshold (bool): Additionally select only examples with
                 sampled ``t <= filter_t_threshold``.
-            mask_t_percentage (int): Percentage used to construct the inclusive
-                threshold ``int(percentage / 100 * timesteps)``.  For T=1000 and
-                70, examples through timestep 700 are selected.  Values are not
-                clamped by this class.
+            mask_t_percentage (int): Percentage in ``[0,100]`` used to construct the inclusive
+                threshold ``ceil(percentage / 100 * timesteps) - 1``.  For
+                T=1000 and 70, exactly timesteps 0 through 699 are selected;
+                0 percent selects no examples.
             use_ensemble_loss_instead (bool): Ignore the current forward pass's
                 class probabilities for classifier loss and use
                 ``EnsembleAccuracy(self, max_t=4).ensemble_predict_batched`` on
@@ -72,7 +76,7 @@ class DiffusionClassifier(DiffusionModel):
                 explicit null-label pass and requires ``train_cfg_scale``.
             clf_loss_coef (float): Scalar multiplier for classifier
                 cross-entropy, default ``8.6e-3``.
-            **kwargs: Arguments forwarded to ``DiffusionModel``.  Required in
+            **kwargs (object): Arguments forwarded to ``DiffusionModel``.  Required in
                 normal use is ``network=DiTClassifier(...)``; supported wrapper
                 keys include EMA/scheduler/CFG settings, all four diffusion loss
                 coefficients and train types, timestep bounds, resize options,
@@ -80,7 +84,7 @@ class DiffusionClassifier(DiffusionModel):
                 ``name``, ``trainable``, ``dtype``, and ``dynamic``.
 
         Returns:
-            None.  Classifier coefficients, threshold, and loss flags are
+            None: Classifier coefficients, threshold, and loss flags are
             initialized; trackers are created by :meth:`compile`.
         """
 
@@ -94,11 +98,11 @@ class DiffusionClassifier(DiffusionModel):
             dtype=tf.float32
         )
         self.filter_t_threshold = tf.constant(
-            int(self.mask_t_percentage / 100 * self.timesteps), 
+            ceil(self.mask_t_percentage / 100 * self.timesteps) - 1,
             dtype=tf.int32
         )
 
-    def _check_clf_assertions(self, local_vars: dict) -> None:
+    def _check_clf_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate classifier training choices after base initialization.
 
         Null-label masking requires classifier-free guidance dropout. Selecting
@@ -106,22 +110,43 @@ class DiffusionClassifier(DiffusionModel):
         while conditional training has no such scale requirement.
 
         Args:
-            local_vars: The classifier constructor arguments to validate.
+            local_vars (dict[str, object]): Classifier constructor arguments.
 
         Returns:
-            ``None``. Invalid combinations raise an assertion with the relevant
+            None: Invalid combinations raise an assertion with the relevant
             configuration requirement.
         """
 
+        # Null-only masking requires a nonzero probability of null labels.
         if local_vars["mask_by_nulls"]:
             assert self.p_uncond > 0., "mask_by_nulls is not campatible with p_uncond = 0."
+
+        assert isinstance(local_vars["mask_by_nulls"], bool), \
+            "mask_by_nulls must be boolean."
+        assert isinstance(local_vars["mask_by_t_threshold"], bool), \
+            "mask_by_t_threshold must be boolean."
+        assert isinstance(local_vars["use_ensemble_loss_instead"], bool), \
+            "use_ensemble_loss_instead must be boolean."
+        assert isinstance(local_vars["mask_t_percentage"], int) and \
+            not isinstance(local_vars["mask_t_percentage"], bool) and \
+            0 <= local_vars["mask_t_percentage"] <= 100, \
+            "mask_t_percentage must be an integer in [0, 100]."
+        assert isinstance(local_vars["clf_loss_coef"], (int, float)) and \
+            not isinstance(local_vars["clf_loss_coef"], bool) and \
+            local_vars["clf_loss_coef"] >= 0., \
+            "clf_loss_coef must be a nonnegative number."
+        # The four-step ensemble requires at least four available timesteps.
+        if local_vars["use_ensemble_loss_instead"]:
+            assert self.timesteps >= 4, \
+                "use_ensemble_loss_instead requires at least four timesteps."
 
         assert local_vars["clf_train_type"] in get_args(TrainType), \
             f"clf_train_type can only be one of {TrainType}."
 
+        # Unconditional classifier training requires an explicit CFG pass.
         if local_vars["clf_train_type"] == "uncond":
-            assert self.train_cfg_scale is not None, \
-                "clf_train_type can be uncond only when train_cfg_scale is not None."
+            assert self.use_cfg and self.train_cfg_scale is not None, \
+                "Unconditional classifier training requires CFG and train_cfg_scale."
 
     def _refresh_loss_flags(self) -> None:
         """Refresh diffusion and classifier auxiliary-loss availability.
@@ -179,41 +204,17 @@ class DiffusionClassifier(DiffusionModel):
         stage, or in ``final_epochs`` when it follows the last listed stage.
 
         Args:
-            stage_tasks: Ordered mixed-stage descriptions, or the shorthand
-                ``"timesteps_only"``, ``"resolutions_only"`` or
-                ``"depths_only"``. A stage may be a task string, a
-                ``(task, value)`` pair, a set of task names, or a dictionary
-                combining ``timesteps``, ``resolution`` and ``depth``.
-            stages_num: Number of stages used only when a shorthand schedule
-                must be generated because its companion values are omitted.
-            stages_verbose: Whether to print the resolved state of each stage.
-            stage_epochs: Maximum epochs allocated to every listed stage.
-            final_epochs: Epochs for final full-timestep, native-resolution
-                training. ``None`` uses ``stage_epochs``; ``0`` disables it.
-            timestep_boundaries: Stage-indexed ``(lower, upper)`` timestep
-                ranges used by timestep tasks without an inline range.
-            timestep_clustering_type: ``"uniform"`` or ``"log_snr"``; used
-                only to generate omitted timestep boundaries.
-            resolutions: Stage-indexed image sizes used by resolution tasks
-                without an inline value. The network performs its normal
-                resolution validation.
-            depths: Stage-indexed network or targeted classifier depth
-                specifications used by depth tasks without an inline value.
-            pacing_type: ``"fixed"`` runs all allocated epochs; ``"plateau"``
-                may advance a stage after the monitored value stops improving.
-            earlystopping_type: ``"epoch_wise"`` uses Keras early stopping;
-                ``"batch_wise"`` uses the project's batch plateau callback.
-            monitor: Training or validation metric watched in plateau mode.
-            patience: Non-improving epochs or batches tolerated in plateau mode.
-            min_delta: Minimum change considered an improvement.
-            stopper_mode: Direction used by epoch-wise early stopping.
-            **kwargs: Arguments forwarded to ``DiffusionModel.fit_progressively``:
-                all stage/timestep/resolution/depth/pacing options documented
-                above plus standard Keras fit inputs, validation data, callbacks,
-                and step options. Epoch indices are managed by that method.
+            **kwargs (object): Arguments forwarded to
+                ``DiffusionModel.fit_progressively``. They include ordered
+                stage descriptions, optional generated-stage counts, timestep
+                boundaries, resolutions, depth specifications, pacing and
+                early-stopping controls, plus standard Keras fit inputs,
+                validation data, callbacks, and step options. Epoch indices are
+                managed by the base method.
 
         Returns:
-            The merged Keras ``History`` from the base implementation. Every
+            tf.keras.callbacks.History: Merged history from the base
+            implementation. Every
             ``progressive_stages`` item additionally records the classifier
             depth before its stage and, when depth growth was requested, the
             classifier depth after that growth.
@@ -225,13 +226,15 @@ class DiffusionClassifier(DiffusionModel):
         for stage in history.progressive_stages:
             stage["classifier_depth"] = classifier_depth
             growth = stage.get("depth_growth", {}).get("classifier")
+            # Record and carry forward classifier depth after structural growth.
             if growth is not None:
                 stage["post_classifier_depth"] = growth["after"]
+                classifier_depth = growth["after"]
 
         return history
 
     @property
-    def metrics(self):
+    def metrics(self) -> list[metrics.Metric]:
         """Return diffusion and classifier metric trackers.
 
         Returns:
@@ -249,18 +252,18 @@ class DiffusionClassifier(DiffusionModel):
             self.clf_ctr_accuracy_tracker
         ]
 
-    def compile(self, **kwargs):
+    def compile(self, **kwargs: object) -> None:
         """Compile the wrapper and create classifier metrics/loss helper.
 
         Args:
-            **kwargs: Forwarded to ``DiffusionModel.compile``.  Accepted keys
+            **kwargs (object): Forwarded to ``DiffusionModel.compile``.  Accepted keys
                 include ``loss`` (loss object/name; default MSE), ``optimizer``
                 (required for training), ``run_eagerly``,
                 ``steps_per_execution``, ``jit_compile`` where supported,
                 ``metrics``, ``weighted_metrics``, and ``loss_weights``.
 
         Returns:
-            None.  Creates ``EnsembleAccuracy`` when enabled plus five
+            None: Creates ``EnsembleAccuracy`` when enabled plus five
             classifier metric trackers.
         """
 
@@ -277,7 +280,7 @@ class DiffusionClassifier(DiffusionModel):
         self.clf_ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(name="clf_ctr_accuracy")
 
     def train_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
-                ) -> dict:
+                ) -> dict[str, tf.Tensor]:
         """Perform one joint raw-network diffusion/classifier update.
 
         Args:
@@ -297,9 +300,11 @@ class DiffusionClassifier(DiffusionModel):
         classes) = self.prep_inputs(inputs)
 
         clf_loss_mask = tf.ones_like(cfg_labels, dtype=tf.float32)
+        # Restrict classifier metrics and loss to CFG-dropped examples.
         if self.mask_by_nulls:
             null_ids = (cfg_labels == 0)
             clf_loss_mask = clf_loss_mask * tf.cast(null_ids, dtype=tf.float32)
+        # Restrict classifier metrics and loss to the configured leading timesteps.
         if self.mask_by_t_threshold:
             not_exceeded_t_threshold_ids = (t <= self.filter_t_threshold)
             clf_loss_mask = clf_loss_mask * tf.cast(not_exceeded_t_threshold_ids, dtype=tf.float32)
@@ -364,7 +369,7 @@ class DiffusionClassifier(DiffusionModel):
 
 
     def test_step(self, inputs: tuple[tf.Tensor, tf.Tensor]
-                ) -> dict:
+                ) -> dict[str, tf.Tensor]:
         """Evaluate diffusion plus unconditional clean-image classification.
 
         Diffusion metrics use noisified inputs and the configured test CFG scale.
@@ -455,7 +460,20 @@ class DiffusionClassifier(DiffusionModel):
         scale: float | None = None, 
         network_name: NetworkName = "raw", 
         training: bool = False
-    ):
+    ) -> tuple[
+        tuple[tf.Tensor, tf.Tensor | None],
+        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None],
+        tuple[
+            tuple[tf.Tensor | None, tf.Tensor | None],
+            tuple[tf.Tensor | None, tf.Tensor | None] | None,
+        ],
+        tuple[tf.Tensor, tf.Tensor | None],
+        tuple[list[tf.Tensor | None], list[tf.Tensor | None] | None],
+        tuple[
+            tuple[tf.Tensor | None, tf.Tensor | None],
+            tuple[tf.Tensor | None, tf.Tensor | None] | None,
+        ],
+    ]:
         """Run conditional and optional unconditional ``DiTClassifier`` passes.
 
         Args:
@@ -506,19 +524,22 @@ class DiffusionClassifier(DiffusionModel):
     def compute_clf_kl_ctr_loss(
         self, 
         classes: tf.Tensor, 
-        classes_pred_c: tf.Tensor, 
-        clf_z_vals_c: tuple[tf.Tensor, tf.Tensor], 
-        clf_regs_list_c: list[tf.Tensor], 
+        classes_pred_c: tf.Tensor | None,
+        clf_z_vals_c: tuple[tf.Tensor | None, tf.Tensor | None] | None,
+        clf_regs_list_c: list[tf.Tensor | None] | None,
         classes_pred_u: tf.Tensor | None = None, 
-        clf_z_vals_u: tuple[tf.Tensor, tf.Tensor] | None = None, 
-        clf_regs_list_u: list[tf.Tensor] | None = None, 
+        clf_z_vals_u: tuple[tf.Tensor | None, tf.Tensor | None] | None = None,
+        clf_regs_list_u: list[tf.Tensor | None] | None = None,
         clf_loss_mask: tf.Tensor | None = None, 
         clf_train_type: TrainType | None = None, 
         kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
-        x0: tf.Tensor = None, 
+        x0: tf.Tensor | None = None,
         training: bool | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[
+        tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
+        tf.Tensor, tf.Tensor | float
+    ]:
         """Compute weighted classifier, classifier-KL, and token objectives.
 
         Args:
@@ -545,14 +566,16 @@ class DiffusionClassifier(DiffusionModel):
             training (bool | None): Mode passed to the ensemble predictor.
 
         Returns:
-            tuple: Weighted classifier total, raw classifier loss, classifier KL
-            loss, classifier token loss, selected/ensemble class probabilities,
-            and averaged classifier token probabilities.
+            tuple[tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
+            tf.Tensor, tf.Tensor | float]: Weighted classifier total, raw
+            classifier loss, classifier KL loss, classifier token loss,
+            selected/ensemble probabilities, and averaged token probabilities.
         """
         clf_train_type = self.clf_train_type if clf_train_type is None else clf_train_type
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
 
+        # Use clean-image ensemble predictions when ensemble loss is enabled.
         if self.ensemble_loss_fn is not None:
             classes_pred = self.ensemble_loss_fn.ensemble_predict_batched(
                 x0, 
@@ -562,6 +585,7 @@ class DiffusionClassifier(DiffusionModel):
                 classes, 
                 classes_pred
             ))
+        # Otherwise select the configured conditional or unconditional prediction.
         else:
             classes_pred = classes_pred_c if clf_train_type == "cond" else classes_pred_u
             clf_loss = self.scce_loss_fn(
@@ -602,10 +626,10 @@ class DiffusionClassifier(DiffusionModel):
         clf_kl_loss: tf.Tensor | None = None, 
         clf_ctr_loss: tf.Tensor | None = None, 
         clf_ctr_preds: tf.Tensor | None = None, 
-        use_total_loss: tf.Tensor | None = None, 
-        use_kl_loss: tf.Tensor | None = None, 
-        use_ctr_loss: tf.Tensor | None = None
-    ) -> dict:
+        use_total_loss: bool | None = None,
+        use_kl_loss: bool | None = None,
+        use_ctr_loss: bool | None = None
+    ) -> dict[str, tf.Tensor]:
         """Update classifier metric trackers and return current values.
 
         Args:
@@ -644,6 +668,7 @@ class DiffusionClassifier(DiffusionModel):
 
         results = {}
 
+        # Update total loss only when the caller enabled that tracker.
         if use_total_loss:
             assert total_loss is not None, \
                 "When use_total_loss is True, total_loss cannot be None."
@@ -660,6 +685,7 @@ class DiffusionClassifier(DiffusionModel):
             self.clf_loss_tracker.result(), 
         })
 
+        # Update classifier KL loss only when its objective is active.
         if use_kl_loss:
             assert clf_kl_loss is not None, \
                 "When use_kl_loss is True, kl_loss cannot be None."
@@ -671,6 +697,7 @@ class DiffusionClassifier(DiffusionModel):
                 self.clf_kl_loss_tracker.result(), 
             })
 
+        # Update classifier token loss only when predictions are available.
         if use_ctr_loss:
             assert clf_ctr_loss is not None \
             and clf_ctr_preds is not None, \
@@ -689,6 +716,7 @@ class DiffusionClassifier(DiffusionModel):
             self.accuracy_tracker.result()
         })
 
+        # Track classifier token accuracy alongside its active loss.
         if use_ctr_loss:
             self.clf_ctr_accuracy_tracker.update_state(
                 classes, 
@@ -803,19 +831,19 @@ def run_self_tests() -> dict[str, str]:
     )
     assert threshold_only.mask_by_nulls is False
     assert threshold_only.mask_by_t_threshold is True
-    assert int(threshold_only.filter_t_threshold) == 1
-    unclamped_low = make_wrapper(
+    assert int(threshold_only.filter_t_threshold) == 0
+    empty_threshold = make_wrapper(
         mask_by_nulls=False, 
-        mask_t_percentage=-25, 
+        mask_t_percentage=0,
         p_uncond=0.0, 
     )
-    unclamped_high = make_wrapper(
+    full_threshold = make_wrapper(
         mask_by_nulls=False, 
-        mask_t_percentage=150, 
+        mask_t_percentage=100,
         p_uncond=0.0, 
     )
-    assert int(unclamped_low.filter_t_threshold) == -1
-    assert int(unclamped_high.filter_t_threshold) == 6
+    assert int(empty_threshold.filter_t_threshold) == -1
+    assert int(full_threshold.filter_t_threshold) == 3
 
     images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
     classes = tf.constant([0, 1], dtype=tf.uint8)
@@ -983,17 +1011,23 @@ def run_self_tests() -> dict[str, str]:
 
     progressive = make_wrapper(mask_by_nulls=False)
     progressive_history = progressive.fit_progressively(
-        stage_tasks=[{"depth": {"classifier": "vision_transformer_block"}}],
+        stage_tasks=[
+            {"depth": {"classifier": "vision_transformer_block"}},
+            {"depth": {"classifier": "vision_transformer_block"}},
+        ],
         x=dataset, 
         stages_verbose=False, 
         stage_epochs=1, 
         final_epochs=0, 
         verbose=0, 
     )
-    record = progressive_history.progressive_stages[0]
-    assert record["classifier_depth"] == 1
-    assert record["post_classifier_depth"] == 2
-    assert record["depth_growth"]["classifier"]["added"] == 1
+    first_record, second_record = progressive_history.progressive_stages
+    assert first_record["classifier_depth"] == 1
+    assert first_record["post_classifier_depth"] == 2
+    assert first_record["depth_growth"]["classifier"]["added"] == 1
+    assert second_record["classifier_depth"] == 2
+    assert second_record["post_classifier_depth"] == 3
+    assert second_record["depth_growth"]["classifier"]["added"] == 1
 
     branch_growth = make_wrapper(mask_by_nulls=False)
     network_growth = branch_growth._add_depths({
@@ -1037,6 +1071,8 @@ def run_self_tests() -> dict[str, str]:
 
     for kwargs in (
         {"mask_by_nulls": True, "p_uncond": 0.0},
+        {"mask_t_percentage": -1, "mask_by_nulls": False},
+        {"mask_t_percentage": 101, "mask_by_nulls": False},
         {"clf_train_type": "unknown", "mask_by_nulls": False},
         {
             "clf_train_type": "uncond", "train_cfg_scale": None,
@@ -1084,5 +1120,6 @@ def run_self_tests() -> dict[str, str]:
     return {"DiffusionClassifier": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

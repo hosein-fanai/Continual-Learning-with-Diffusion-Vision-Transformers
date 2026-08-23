@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+from typing import Any
+
 from common.argument_saver import ArgumentSaverLayer
 
 
@@ -51,11 +53,19 @@ class AdaLNZero(ArgumentSaverLayer):
         return_gate: bool = True, 
         no_adaptation: bool = False, 
         epsilon: float = 1e-6, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Initialize the normalization and optional conditioning network.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            dim (int): Feature width normalized and modulated by the layer.
+            gate_dim (int | None): Optional residual-gate width; ``None`` uses
+                ``dim``.
+            mlp_ratio (float | None): Optional conditioning-MLP width ratio.
+            return_gate (bool): Whether :meth:`call` returns a residual gate.
+            no_adaptation (bool): Whether to omit condition-driven modulation.
+            epsilon (float): Positive variance stabilizer for normalization.
+            **kwargs (Any): Standard Keras layer options.
 
         Returns:
             ``None``.
@@ -70,44 +80,54 @@ class AdaLNZero(ArgumentSaverLayer):
             center=False, 
             scale=False, 
             epsilon=self.epsilon, 
-            name="layer_norm"
+            name="layer_norm", 
+            dtype=self.dtype_policy
         )
 
         self.mlp_output_dim = self.dim * 2 + (
             self.gate_dim if self.return_gate else 0
         )
+        # Use activation-only conditioning when no hidden-width ratio is set.
         if self.mlp_ratio is None:
             mlp_first_layer = layers.Activation(
                 "swish", 
-                name=f"{self.name}/mlp/first_layer"
+                name=f"{self.name}/mlp/first_layer",
+                dtype=self.dtype_policy,
             )
+        # Otherwise add the configured hidden conditioning projection.
         else:
             mlp_first_layer = layers.Dense(
                 int(self.dim * self.mlp_ratio), 
                 activation="swish", 
                 # kernel_initializer="zeros", 
-                name=f"{self.name}/mlp/first_layer"
+                name=f"{self.name}/mlp/first_layer",
+                dtype=self.dtype_policy,
             )
         self.mlp = models.Sequential([
             mlp_first_layer, 
             layers.Dense(
                 self.mlp_output_dim, 
                 kernel_initializer="zeros", 
-                name=f"{self.name}/mlp/final_layer"
+                name=f"{self.name}/mlp/final_layer",
+                dtype=self.dtype_policy,
             )
         ], name="mlp") if not self.no_adaptation else None
 
-    def call(self, inputs, training=None):
+    def call(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor | None], 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor | float]:
         """Apply conditional normalization.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class-level input
+            inputs (tuple[tf.Tensor, tf.Tensor | None]): Pair ``(x, cond)``
+                following the class-level input
                 contract. The feature dtype must be supported by Keras layer
                 normalization; the condition must be compatible with the
                 layer's compute dtype.
-            training: Optional Python boolean or Keras training flag forwarded
-                to the nested normalization and dense layers. This layer has no
-                stochastic training-only operation.
+            training (bool | tf.Tensor | None): Optional Python boolean or
+                symbolic Keras training flag forwarded to the nested layers.
 
         Returns:
             ``tf.Tensor`` with the shape and dtype of normalized ``x``, or a
@@ -119,7 +139,9 @@ class AdaLNZero(ArgumentSaverLayer):
 
         h = self.norm(x, training=training)
 
+        # Bypass condition-driven modulation in plain-normalization mode.
         if self.no_adaptation:
+            # Supply an identity residual gate when the caller requests one.
             if self.return_gate:
                 return h, 1.
             return h
@@ -127,6 +149,7 @@ class AdaLNZero(ArgumentSaverLayer):
         params = self.mlp(cond, training=training)
         params = tf.expand_dims(params, 1)
 
+        # Split out the learned residual gate when gated output is enabled.
         if self.return_gate:
             shift, scale, gate = tf.split(
                 params,
@@ -146,12 +169,13 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping whose value is ``"passed"`` after all adaptive,
+        dict[str, str]: A one-entry mapping whose value is ``"passed"`` after all adaptive,
         non-adaptive, gated, ungated, shape, dtype, gradient, and
         serialization checks succeed.
     """
 
     import numpy as np
+
 
     tf.random.set_seed(1701)
     x = tf.constant([
@@ -199,9 +223,7 @@ def run_self_tests() -> dict[str, str]:
     plain_ungated_result = plain_ungated((x64, None))
     assert plain_ungated_result.shape == (2, 4)
     assert plain_ungated.compute_dtype == "float64"
-    # The nested LayerNormalization retains the global float32 policy in
-    # TensorFlow 2.10 because the outer policy is not forwarded explicitly.
-    assert plain_ungated_result.dtype == tf.float32
+    assert plain_ungated_result.dtype == tf.float64
     assert plain_ungated.norm.epsilon == 1e-4
 
     config = AdaLNZero(dim=4, gate_dim=3, mlp_ratio=1.5).get_config()
@@ -220,5 +242,6 @@ def run_self_tests() -> dict[str, str]:
     return {"AdaLNZero": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

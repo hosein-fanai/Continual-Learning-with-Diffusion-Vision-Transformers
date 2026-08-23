@@ -2,7 +2,7 @@
 
 import tensorflow as tf
 
-from typing import get_args
+from typing import Any, Sequence, get_args
 
 from diffusion.layers.embedding import MergeType
 from diffusion.layers.base_layer import BaseLayer
@@ -30,10 +30,9 @@ class FeatureHandler(BaseLayer):
             ``use_layer_norm``, ``ln_dim``, ``ln_mlp_ratio``,
             ``ln_no_adaptation``, ``mlp_ratio``, ``mlp_activation_func``, and
             ``mlp_output_dim``, followed by standard Keras layer options.
-            ``ln_dim`` is required by the current constructor because it is
-            passed to the MLP factory even when no MLP is created. When adaptive
-            normalization is enabled, it must also match the merged last-axis
-            width and :meth:`call` needs ``cond``.
+            ``ln_dim`` is required only when normalization or an output MLP is
+            enabled. In those cases it must match the merged last-axis width;
+            adaptive normalization also requires ``cond`` at call time.
 
     Inputs:
         A sequence of same-rank tensors, normally each shaped
@@ -50,11 +49,16 @@ class FeatureHandler(BaseLayer):
         ids: list[int] | None = None, 
         connect_axis: int = -1, 
         connect_type: MergeType = "concat", 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Initialize feature-selection and post-merge processing options.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            ids (list[int] | None): Default feature indices, or ``None`` to
+                require call-specific indices.
+            connect_axis (int): Concatenation axis.
+            connect_type (MergeType): Either ``"concat"`` or ``"add"``.
+            **kwargs (Any): Typed :class:`BaseLayer` and Keras options.
 
         Returns:
             ``None``.
@@ -71,43 +75,51 @@ class FeatureHandler(BaseLayer):
             self.ln_dim
         )
 
-    def _check_fh_assertions(self, local_vars):
+    def _check_fh_assertions(self, local_vars: dict[str, Any]) -> None:
         """Validate merge mode and projection dimensions.
 
         Args:
-            local_vars: Constructor-local mapping containing ``connect_type``.
+            local_vars (dict[str, Any]): Constructor-local mapping containing
+                ``connect_type``.
 
         Returns:
             ``None``. Invalid modes or a projected MLP without ``ln_dim`` raise
-            ``AssertionError``.
+            ``ValueError``.
         """
 
-        assert local_vars["connect_type"] in get_args(MergeType), \
-            f"connect_type can be one of {get_args(MergeType)}."
+        # Restrict feature merging to concatenation or addition.
+        if local_vars["connect_type"] not in get_args(MergeType):
+            raise ValueError(
+                f"connect_type must be one of {get_args(MergeType)}."
+            )
 
+        # A configured projection requires a known merged input width.
         if self.mlp_output_dim is not None:
-            assert self.ln_dim is not None, \
-                "ln_dim cannot be None when mlp_output_dim is not None."
+            # Reject projection setup when that merged width is missing.
+            if self.ln_dim is None:
+                raise ValueError(
+                    "ln_dim cannot be None when mlp_output_dim is not None."
+                )
 
     def call(
         self, 
-        features_list, 
-        second_list=None, 
-        ids=None, 
-        cond=None, 
-        training=None
-    ):
+        features_list: Sequence[tf.Tensor], 
+        second_list: Sequence[tf.Tensor] | None = None, 
+        ids: list[int] | None = None, 
+        cond: tf.Tensor | None = None, 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor | None:
         """Select, merge, and optionally transform feature tensors.
 
         Args:
-            features_list: Indexable sequence of ``tf.Tensor`` objects.
-            second_list: Optional iterable of tensors appended to the selected
+            features_list (Sequence[tf.Tensor]): Indexable feature sequence.
+            second_list (Sequence[tf.Tensor] | None): Optional tensors appended to the selected
                 primary features. ``None`` means no secondary features.
-            ids: Optional call-specific ``list[int]`` overriding ``self.ids``.
+            ids (list[int] | None): Optional call-specific indices overriding ``self.ids``.
                 Negative and duplicate indices follow Python list semantics.
-            cond: Optional condition tensor shaped ``[batch, condition_dim]``.
+            cond (tf.Tensor | None): Optional condition tensor shaped ``[batch, condition_dim]``.
                 It is required only by adaptive layer normalization.
-            training: Optional Keras training flag forwarded to nested layers.
+            training (bool | tf.Tensor | None): Optional Keras training flag.
 
         Returns:
             ``tf.Tensor | None``. Concatenation preserves tensor dtype and
@@ -119,6 +131,11 @@ class FeatureHandler(BaseLayer):
         second_list = [] if second_list is None else second_list
         ids = self.ids if ids is None else ids
 
+        # Require call-time IDs when selection was deferred at construction.
+        if ids is None:
+            raise ValueError("ids must be supplied either at construction or call time.")
+
+        # Return no feature when both primary and secondary selections are empty.
         if len(ids) == 0 and len(second_list) == 0:
             return None
 
@@ -126,11 +143,13 @@ class FeatureHandler(BaseLayer):
             features_list[id_] for id_ in ids
         ] + list(second_list)
 
+        # Concatenate selected features along the configured axis.
         if self.connect_type == "concat":
             x = tf.concat(
                 selected_features, 
                 axis=self.connect_axis
             )
+        # Otherwise combine the selected features by elementwise addition.
         else:
             x = sum(selected_features)
 
@@ -153,11 +172,12 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry success mapping after selection, merge, normalization,
+        dict[str, str]: A one-entry success mapping after selection, merge, normalization,
         projection, override, empty-input, config, and invalid-input tests.
     """
 
     import numpy as np
+
 
     features = [
         tf.ones((2, 2, 2), dtype=tf.float32),
@@ -168,17 +188,13 @@ def run_self_tests() -> dict[str, str]:
     for invalid_mode in ("multiply", "", None):
         try:
             FeatureHandler(ids=[0], connect_type=invalid_mode, ln_dim=2)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Unknown feature merge modes must fail.")
 
-    try:
-        FeatureHandler(ids=[0])
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented ln_dim construction limit changed.")
+    unconfigured = FeatureHandler(ids=[0])
+    np.testing.assert_array_equal(unconfigured(features).numpy(), features[0].numpy())
 
     concat = FeatureHandler(ids=[-1, 0, 0], connect_type="concat", ln_dim=2)
     concatenated = concat(features)
@@ -200,7 +216,7 @@ def run_self_tests() -> dict[str, str]:
     assert deferred(features, ids=[2]).shape == (2, 2, 2)
     try:
         deferred(features)
-    except TypeError:
+    except ValueError:
         pass
     else:
         raise AssertionError("A deferred selector requires call-time ids.")
@@ -245,5 +261,6 @@ def run_self_tests() -> dict[str, str]:
     return {"FeatureHandler": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

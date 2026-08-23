@@ -1,8 +1,13 @@
 """Fixed-capacity replay storage used by the continual-learning workflow."""
 
+from __future__ import annotations
+
 import numpy as np
 
 from collections import deque
+
+from collections.abc import Iterable, Sequence
+from numbers import Integral
 
 import random
 
@@ -11,8 +16,8 @@ class ReplayBuffer(object):
     """Store and randomly replay ``(sample, label)`` items.
 
     The backing :class:`collections.deque` discards the oldest item from its
-    left side when a bounded buffer is full.  Sampling is non-destructive and
-    uses Python's process-wide :mod:`random` generator.
+    left side when a bounded buffer is full. Sampling is non-destructive and
+    uses an instance-local seeded random generator.
 
     Attributes:
         maxlen (int | None): Maximum retained item count.  ``None`` creates an
@@ -20,28 +25,44 @@ class ReplayBuffer(object):
         buffer (collections.deque): Current replay items, initialized empty.
     """
 
-    def __init__(self, maxlen, seed=None):
-        """Create an empty replay buffer and seed Python's random generator.
+    def __init__(
+        self: ReplayBuffer, 
+        maxlen: int | None, 
+        seed: int | float | str | bytes | bytearray | None = None
+    ) -> None:
+        """Create an empty replay buffer with a local random generator.
 
         Args:
-            maxlen (int | None): Capacity passed to ``deque``.  Once full,
-                appending removes the oldest element; ``None`` is unbounded.
-            seed (int | float | str | bytes | bytearray | None): Seed passed to
-                ``random.seed``.  ``None`` uses system entropy.  Because this
-                seeds the module-level generator, it also affects other code
-                that uses :mod:`random`.
+            maxlen (int | None): Non-boolean, nonnegative capacity passed to
+                ``deque``. Once full, appending removes the oldest element;
+                ``None`` is unbounded.
+            seed (int | float | str | bytes | bytearray | None): Seed for this
+                buffer's private generator. ``None`` uses system entropy and
+                no module-level random state is changed.
 
         Returns:
             None.
+
+        Raises:
+            ValueError: If ``maxlen`` is neither ``None`` nor a non-boolean,
+                nonnegative integer.
         """
 
-        self.maxlen = maxlen
+        # Require an optional non-boolean integral buffer capacity.
+        if maxlen is not None and (
+            isinstance(maxlen, bool)
+            or not isinstance(maxlen, Integral)
+            or maxlen < 0
+        ):
+            raise ValueError("maxlen must be None or a nonnegative integer.")
 
-        random.seed(seed)
+        self.maxlen = int(maxlen) if maxlen is not None else None
+
+        self._rng = random.Random(seed)
 
         self.clear()
 
-    def __len__(self):
+    def __len__(self: ReplayBuffer) -> int:
         """Return the number of currently retained items.
 
         Returns:
@@ -50,7 +71,7 @@ class ReplayBuffer(object):
 
         return len(self.buffer)
 
-    def clear(self):
+    def clear(self: ReplayBuffer) -> None:
         """Replace the backing deque with a new empty deque.
 
         Returns:
@@ -59,37 +80,48 @@ class ReplayBuffer(object):
 
         self.buffer = deque(maxlen=self.maxlen)
 
-    def sample(self, list_, num):
+    def sample(
+        self: ReplayBuffer, 
+        list_: Sequence[object] | deque, 
+        num: int
+    ) -> list[object]:
         """Randomly select up to ``num`` elements without replacement.
 
         Args:
             list_ (Sized iterable): Population accepted by ``random.sample``;
                 normally a list or the buffer's deque.
-            num (int): Requested sample count.  ``0`` returns an empty list when
-                the population is nonempty; positive values select that many
-                items when available.
+            num (int): Non-boolean requested sample count. ``0`` returns an
+                empty list; positive values select that many items when
+                available.
 
         Returns:
             list[object]: ``[]`` for an empty population, a random sample when
-            ``len(list_) >= num``, or ``list(self.buffer)`` when the requested
-            count exceeds the population.  The last behavior is significant
-            for populations other than ``self.buffer``: it returns the replay
-            buffer, not the supplied population.
+            ``len(list_) >= num``, or every supplied item in its current order
+            when the requested count exceeds the population.
 
         Raises:
-            ValueError: If ``num`` is negative and sampling reaches
-                ``random.sample``.
+            TypeError: If ``num`` is not a non-boolean integer.
+            ValueError: If ``num`` is negative.
         """
 
+        # Reject booleans and non-integral replay sample counts.
+        if isinstance(num, bool) or not isinstance(num, Integral):
+            raise TypeError("num must be a non-boolean integer.")
+        # Keep replay sample counts nonnegative.
+        if num < 0:
+            raise ValueError("num must be nonnegative.")
+        num = int(num)
+        # Preserve the empty population without invoking random sampling.
         if len(list_) == 0:
             return []
         
+        # Return every item when the request exceeds the population.
         if len(list_) < num:
-            return list(self.buffer)
+            return list(list_)
 
-        return random.sample(list_, k=num)
+        return self._rng.sample(list(list_), k=num)
 
-    def sample_buffer(self, num):
+    def sample_buffer(self: ReplayBuffer, num: int) -> list[object]:
         """Sample retained replay items without removing them.
 
         Args:
@@ -102,7 +134,7 @@ class ReplayBuffer(object):
 
         return self.sample(self.buffer, num)
 
-    def append(self, item):
+    def append(self: ReplayBuffer, item: object) -> None:
         """Append one item, evicting the oldest item if capacity is full.
 
         Args:
@@ -115,7 +147,7 @@ class ReplayBuffer(object):
 
         self.buffer.append(item)
 
-    def extend(self, items):
+    def extend(self: ReplayBuffer, items: Iterable[object]) -> None:
         """Append every item from an iterable in order.
 
         Args:
@@ -128,7 +160,7 @@ class ReplayBuffer(object):
 
         self.buffer.extend(items)
 
-    def pop(self):
+    def pop(self: ReplayBuffer) -> object:
         """Remove and return the newest (rightmost) replay item.
 
         Returns:
@@ -140,7 +172,7 @@ class ReplayBuffer(object):
 
         return self.buffer.pop()
 
-    def pop_and_append(self):
+    def pop_and_append(self: ReplayBuffer) -> object:
         """Return the newest item after removing and immediately re-adding it.
 
         The final deque contents and order are unchanged; this method therefore
@@ -158,7 +190,10 @@ class ReplayBuffer(object):
         
         return item
 
-    def sample_buffer_and_prepare_dataset(self, num):
+    def sample_buffer_and_prepare_dataset(
+        self: ReplayBuffer, 
+        num: int
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Convert sampled ``(x, y)`` pairs to NumPy training arrays.
 
         Args:
@@ -182,17 +217,19 @@ class ReplayBuffer(object):
 
         return x_buffer, y_buffer
 
-    def sample_dataset_and_extend_buffer(self, dataset, num):
+    def sample_dataset_and_extend_buffer(
+        self: ReplayBuffer, 
+        dataset: tuple[Iterable[object], ...], 
+        num: int
+    ) -> None:
         """Sample aligned arrays and append their paired elements.
 
         Args:
             dataset (tuple[Iterable[object], ...]): Parallel iterables, normally
                 ``(x_array, y_array)``.  ``zip(*dataset)`` truncates to the
                 shortest iterable and creates tuple items.
-            num (int): Number of pairs requested.  When the zipped dataset has
-                fewer than ``num`` pairs, :meth:`sample` currently returns the
-                existing buffer rather than all dataset pairs, so the buffer is
-                duplicated instead of ingesting that undersized dataset.
+            num (int): Number of pairs requested. When the zipped dataset has
+                fewer than ``num`` pairs, all available dataset pairs are used.
 
         Returns:
             None.
@@ -224,11 +261,30 @@ def run_self_tests() -> dict[str, str]:
         pass
     else:
         raise AssertionError("deque must reject a negative replay capacity.")
+    for invalid_capacity in (True, 1.5):
+        try:
+            ReplayBuffer(maxlen=invalid_capacity)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Replay capacity must be an integer or None.")
 
     empty = ReplayBuffer(maxlen=3, seed=1)
     assert len(empty) == 0
     assert empty.sample_buffer(10) == []
-    assert empty.sample([], -1) == []
+    try:
+        empty.sample([], -1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Negative sample sizes must fail for every population.")
+    for invalid_count in (True, 1.5):
+        try:
+            empty.sample([], invalid_count)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("Replay sample counts must be integers.")
     x_empty, y_empty = empty.sample_buffer_and_prepare_dataset(2)
     assert x_empty.shape == (0,) and x_empty.dtype == np.float32
     assert y_empty.shape == (0,) and y_empty.dtype == np.uint8
@@ -259,10 +315,7 @@ def run_self_tests() -> dict[str, str]:
     assert bounded.sample([10, 20], 0) == []
     one_sample = bounded.sample([10, 20, 30], 1)
     assert len(one_sample) == 1 and one_sample[0] in {10, 20, 30}
-    assert bounded.sample(["external"], 2) == [2, 3, 4], (
-        "When an external population is undersized, the current method "
-        "returns the replay buffer rather than that population."
-    )
+    assert bounded.sample(["external"], 2) == ["external"]
     try:
         bounded.sample([1], -1)
     except ValueError:
@@ -329,14 +382,12 @@ def run_self_tests() -> dict[str, str]:
     )
     assert list(undersized_buffer.buffer) == [
         ("existing", 1), 
-        ("existing", 1), 
-    ], (
-        "The documented undersized-dataset branch duplicates the current "
-        "buffer instead of ingesting the external item."
-    )
+        ("new", 2),
+    ]
 
     return {"ReplayBuffer": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

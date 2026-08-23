@@ -1,5 +1,7 @@
 """Keras callback for adding the effective learning rate to epoch logs."""
 
+from __future__ import annotations
+
 from tensorflow.keras import callbacks
 from tensorflow.keras import backend as K
 
@@ -13,7 +15,11 @@ class LrLoggerCallback(callbacks.Callback):
     epoch log mapping.
     """
 
-    def on_epoch_end(self, epoch, logs=None):
+    def on_epoch_end(
+        self: LrLoggerCallback, 
+        epoch: int, 
+        logs: dict[str, object] | None = None
+    ) -> None:
         """Insert the effective learning rate into Keras epoch logs.
 
         Args:
@@ -32,10 +38,13 @@ class LrLoggerCallback(callbacks.Callback):
         """
 
         lr = self.model.optimizer.learning_rate
+        # Evaluate scheduled learning rates at the current optimizer step.
         if callable(lr):
             lr = lr(self.model.optimizer.iterations)
 
-        logs = logs or {}
+        # Create a log mapping when Keras supplies no mapping.
+        if logs is None:
+            logs = {}
         logs["learning_rate"] = float(K.get_value(lr))
 
 
@@ -43,8 +52,8 @@ def run_self_tests() -> dict[str, str]:
     """Run callback tests for scalar and scheduled learning rates.
 
     The checks exercise attached and unattached callbacks, tensor/scalar and
-    callable rates, preservation of existing log entries, and the documented
-    behavior in which an empty dictionary is replaced rather than mutated.
+    callable rates, preservation of existing log entries, mutation of an empty
+    supplied dictionary, and a ``None`` log mapping.
 
     Args:
         None.
@@ -102,10 +111,7 @@ def run_self_tests() -> dict[str, str]:
 
     empty_logs = {}
     callback.on_epoch_end(3, empty_logs)
-    assert empty_logs == {}, (
-        "The current `logs or {}` implementation intentionally does not "
-        "mutate an empty caller-supplied dictionary."
-    )
+    assert abs(empty_logs["learning_rate"] - 0.1) < 1e-7
     assert callback.on_epoch_end(4, None) is None
 
     unattached = LrLoggerCallback()
@@ -119,5 +125,6 @@ def run_self_tests() -> dict[str, str]:
     return {"LrLoggerCallback": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

@@ -1,6 +1,9 @@
 """Condition-adaptive vision-transformer residual blocks."""
 
+import tensorflow as tf
 from tensorflow.keras import layers
+
+from typing import Any
 
 from diffusion.layers.base_layer import BaseLayer
 from diffusion.layers.drop_path import DropPath
@@ -42,9 +45,11 @@ class VisionTransformerBlock(BaseLayer):
             keys include ``ln_mlp_ratio``, ``ln_no_adaptation``, and
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
             ``trainable``. ``use_layer_norm``, ``ln_dim``, ``mlp_ratio``, and
-            ``mlp_activation_func`` are set explicitly here and must not be
-            repeated. ``ln_no_adaptation=True`` replaces zero gates with
-            scalar-one gates and makes the initial block non-identity.
+            ``mlp_activation_func`` are set explicitly here. Serialized
+            ``use_layer_norm=True`` and ``ln_dim=dim`` values are accepted,
+            while conflicting values are rejected. ``ln_no_adaptation=True``
+            replaces zero gates with scalar-one gates and makes the initial
+            block non-identity.
 
     Inputs:
         Pair ``(x, cond)`` where ``x`` is floating
@@ -56,15 +61,13 @@ class VisionTransformerBlock(BaseLayer):
         the shape matches ``x``.
 
     Serialization:
-        The saved config includes ``use_layer_norm`` and ``ln_dim``, but this
-        constructor supplies both to :class:`BaseLayer`. Remove those two keys
-        from a copied config before calling
-        ``VisionTransformerBlock.from_config`` to avoid duplicate-key errors.
+        ``from_config(get_config())`` is supported. Constructor-controlled
+        normalization keys are discarded before the base class is initialized.
     """
 
     def __init__(
         self, 
-        mlp_ratio: int | None = 4, 
+        mlp_ratio: float | None = 4, 
         mlp_activation_func: str = "gelu", 
         dim: int = 32, 
         key_dim: int | None = None, 
@@ -74,16 +77,37 @@ class VisionTransformerBlock(BaseLayer):
         gate_query_flag: bool = True, 
         drop_prob: float = 0., 
         drop_per_sample: bool = True, 
-        **kwargs
-    ):
+        **kwargs: Any
+    ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
 
-        Arguments and accepted types are documented on the class.
+        Args:
+            mlp_ratio (float | None): Optional feed-forward hidden-width ratio.
+            mlp_activation_func (str): Keras feed-forward activation name.
+            dim (int): Input and normalization feature width.
+            key_dim (int | None): Optional per-head query/key width.
+            value_dim (int | None): Optional per-head value width.
+            query_dim (int | None): Optional attention output width.
+            num_heads (int): Positive attention-head count.
+            gate_query_flag (bool): Whether the attention gate uses query width.
+            drop_prob (float): Stochastic-depth probability in ``[0, 1)``.
+            drop_per_sample (bool): Whether each example receives its own path mask.
+            **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
             ``None``.
         """
 
+        temp_val = (
+            kwargs.pop("use_layer_norm", True),
+            kwargs.pop("ln_dim", dim),
+        )
+        # Preserve the block's mandatory adaptive-normalization setting.
+        if temp_val[0] is not True:
+            raise ValueError("VisionTransformerBlock requires use_layer_norm=True.")
+        # Keep the serialized normalization width consistent with ``dim``.
+        if temp_val[1] != dim:
+            raise ValueError("ln_dim must equal dim for VisionTransformerBlock.")
         super().__init__(
             use_layer_norm=True, 
             ln_dim=dim, 
@@ -105,16 +129,19 @@ class VisionTransformerBlock(BaseLayer):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
-            name="mha"
+            name="mha",
+            dtype=self.dtype_policy
         )
         self.mha_residual_projector = layers.Dense(
             self.query_dim, 
-            name="mha_residual_projector"
+            name="mha_residual_projector",
+            dtype=self.dtype_policy
         ) if self.query_dim != self.dim else None
         self.mha_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
-            name=f"{self.name}/mha_drop_path"
+            name=f"{self.name}/mha_drop_path",
+            dtype=self.dtype_policy
         )
 
         self.mlp_layer_norm = self._create_layer_norm(
@@ -127,40 +154,42 @@ class VisionTransformerBlock(BaseLayer):
         )
         self.mlp_residual_projector = layers.Dense(
             self.mlp_output_dim, 
-            name="mlp_residual_projector"
+            name="mlp_residual_projector",
+            dtype=self.dtype_policy
         ) if self.mlp_output_dim != self.query_dim else None
         self.mlp_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
-            name=f"{self.name}/mlp_drop_path"
+            name=f"{self.name}/mlp_drop_path",
+            dtype=self.dtype_policy
         )
 
     def _call_self_attention(
         self, 
-        x, 
-        cond, 
-        queries, 
-        values, 
-        mask, 
-        training
-    ): # also can perform cross attention
+        x: tf.Tensor, 
+        cond: tf.Tensor, 
+        queries: tf.Tensor | None, 
+        values: tf.Tensor | None, 
+        mask: tf.Tensor | None, 
+        training: bool | tf.Tensor | None
+    ) -> tf.Tensor: # also can perform cross attention
         """Execute the block's first attention residual branch.
 
         Args:
-            x: Residual token tensor shaped ``[batch, tokens, dim]``.
-            cond: Per-example condition tensor ``[batch, condition_dim]``.
-            queries: Optional attention query tensor. ``None`` uses normalized
+            x (tf.Tensor): Residual token tensor shaped ``[batch, tokens, dim]``.
+            cond (tf.Tensor): Per-example condition tensor ``[batch, condition_dim]``.
+            queries (tf.Tensor | None): Optional attention query tensor. ``None`` uses normalized
                 ``x``. A supplied tensor should have shape
                 ``[batch, tokens, query_dim]`` so residual shapes align.
-            values: Optional key/value tensor ``[batch, source_tokens,
+            values (tf.Tensor | None): Optional key/value tensor ``[batch, source_tokens,
                 value_channels]``. ``None`` uses normalized ``x``.
-            mask: Optional boolean or numeric Keras attention mask broadcastable
+            mask (tf.Tensor | None): Optional boolean or numeric Keras attention mask broadcastable
                 to ``[batch, query_tokens, source_tokens]``; one permits and
                 zero blocks attention.
-            training: Optional Keras training flag, including for DropPath.
+            training (bool | tf.Tensor | None): Optional Keras training flag.
 
         Returns:
-            Floating ``tf.Tensor`` containing the gated attention residual,
+            tf.Tensor: Floating gated attention residual,
             normally shaped ``[batch, tokens, query_dim]``.
         """
 
@@ -174,6 +203,7 @@ class VisionTransformerBlock(BaseLayer):
             attention_mask=mask, 
             training=training
         )
+        h = tf.cast(h, x.dtype)
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -187,17 +217,17 @@ class VisionTransformerBlock(BaseLayer):
 
     def _call_mlp(
         self, 
-        x, 
-        cond, 
-        training
-    ):
+        x: tf.Tensor, 
+        cond: tf.Tensor, 
+        training: bool | tf.Tensor | None
+    ) -> tf.Tensor:
         """Execute the condition-gated feed-forward residual branch.
 
         Args:
-            x: Floating token tensor shaped
+            x (tf.Tensor): Floating token tensor shaped
                 ``[batch, tokens, query_dim]``.
-            cond: Floating condition tensor ``[batch, condition_dim]``.
-            training: Optional Keras training flag forwarded to normalization,
+            cond (tf.Tensor): Floating condition tensor ``[batch, condition_dim]``.
+            training (bool | tf.Tensor | None): Optional Keras training flag forwarded to normalization,
                 dense layers, and DropPath.
 
         Returns:
@@ -225,27 +255,28 @@ class VisionTransformerBlock(BaseLayer):
 
     def call(
         self, 
-        inputs, 
-        queries=None, 
-        values=None, 
-        mask=None, 
-        training=None
-    ):
+        inputs: tuple[tf.Tensor, tf.Tensor], 
+        queries: tf.Tensor | None = None, 
+        values: tf.Tensor | None = None, 
+        mask: tf.Tensor | None = None, 
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
         """Apply attention followed by the feed-forward branch.
 
         Args:
-            inputs: Pair ``(x, cond)`` following the class input contract.
-            queries: Optional replacement attention queries. ``None`` selects
+            inputs (tuple[tf.Tensor, tf.Tensor]): Pair ``(x, cond)`` following
+                the class input contract.
+            queries (tf.Tensor | None): Optional replacement attention queries. ``None`` selects
                 normalized ``x`` (ordinary self-attention).
-            values: Optional replacement values. ``None`` selects normalized
+            values (tf.Tensor | None): Optional replacement values. ``None`` selects normalized
                 ``x``; supplying values enables cross-attention-like behavior.
-            mask: Optional Keras attention mask broadcastable to
+            mask (tf.Tensor | None): Optional Keras attention mask broadcastable to
                 ``[batch, query_tokens, value_tokens]``.
-            training: Optional training flag. Stochastic depth runs only when
+            training (bool | tf.Tensor | None): Optional training flag. Stochastic depth runs only when
                 this is true.
 
         Returns:
-            Floating ``tf.Tensor`` shaped
+            tf.Tensor: Floating tokens shaped
             ``[batch, tokens, mlp_output_dim]``.
         """
 
@@ -273,7 +304,7 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        A one-entry mapping after every finite boolean branch and representative
+        dict[str, str]: A one-entry mapping after every finite boolean branch and representative
         dimension, training, error, gradient, and serialization case passes.
     """
 
@@ -365,7 +396,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_probability in (-0.1, 1.0):
         try:
             VisionTransformerBlock(dim=4, drop_prob=invalid_probability)
-        except AssertionError:
+        except ValueError:
             pass
         else:
             raise AssertionError("Invalid stochastic-depth probabilities must fail.")
@@ -386,16 +417,7 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("An incompatible attention mask must fail.")
 
     config = identity.get_config()
-    try:
-        VisionTransformerBlock.from_config(config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The documented duplicate base keys changed.")
-    filtered_config = dict(config)
-    filtered_config.pop("use_layer_norm")
-    filtered_config.pop("ln_dim")
-    restored = VisionTransformerBlock.from_config(filtered_config)
+    restored = VisionTransformerBlock.from_config(config)
     assert restored.dim == 4 and restored.num_heads == 2
 
     dtype_block = VisionTransformerBlock(
@@ -404,20 +426,15 @@ def run_self_tests() -> dict[str, str]:
         dtype="float64"
     )
     assert dtype_block.compute_dtype == "float64"
-    try:
-        dtype_block((
-            tf.ones((1, 3, 4), dtype=tf.float64), 
-            tf.ones((1, 2), dtype=tf.float64)
-        ))
-    except (tf.errors.InvalidArgumentError, ValueError):
-        pass
-    else:
-        raise AssertionError(
-            "Nested float32 attention currently rejects a float64 outer policy."
-        )
+    dtype_output = dtype_block((
+        tf.ones((1, 3, 4), dtype=tf.float64),
+        tf.ones((1, 2), dtype=tf.float64),
+    ))
+    assert dtype_output.dtype == tf.float64
 
     return {"VisionTransformerBlock": "passed"}
 
 
+# Run the module's focused self-tests when executed directly.
 if __name__ == "__main__":
     print(run_self_tests())

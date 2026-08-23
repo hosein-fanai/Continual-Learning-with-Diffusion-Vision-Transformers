@@ -1,52 +1,70 @@
-"""Loss functions for comparing a prediction with a prefix of its target."""
+"""Serializable losses for comparing predictions with target prefixes."""
+
+from __future__ import annotations
 
 import tensorflow as tf
 from tensorflow.keras import losses
 
 
+@tf.keras.utils.register_keras_serializable(package="continual_learning")
 class MaskedLoss(losses.Loss):
     """Compute MAE or MSE after truncating the target's last dimension.
 
-    For rank-two classification-style tensors, ``N`` is
-    ``tf.shape(y_pred)[1]`` and the loss compares ``y_pred`` with
+    For classification-style tensors, ``N`` is
+    ``tf.shape(y_pred)[-1]`` and the loss compares ``y_pred`` with
     ``y_true[..., :N]``.  Thus a target of shape ``[batch, 10]`` and prediction
     of shape ``[batch, 4]`` uses only target columns ``0`` through ``3``.  Equal
-    widths behave like the selected standard Keras loss.  The implementation is
-    intended for tensors of rank at least two; for ranks above two, ``N`` still
-    comes from prediction axis 1 while slicing occurs on the target's last axis.
+    widths behave like the selected standard Keras loss. Both tensors must have
+    rank at least two, the prediction width must be positive, and the target's
+    last dimension cannot be narrower than the prediction's.
 
     Attributes:
-        loss (tf.keras.losses.Loss): ``MeanAbsoluteError`` when ``loss_type`` is
-            ``"mae"`` or ``MeanSquaredError`` when it is ``"mse"``.
+        loss (Callable): Elementwise ``tf.math.abs`` for ``"mae"`` or
+            ``tf.math.square`` for ``"mse"``.
+        loss_type (str): Serializable loss-mode identifier.
     """
 
-    def __init__(self, loss_type="mae", name="masked_loss"):
+    def __init__(
+        self: MaskedLoss, 
+        loss_type: str = "mae", 
+        name: str = "masked_loss", 
+        reduction: str = losses.Reduction.AUTO
+    ) -> None:
         """Initialize the selected elementwise regression loss.
 
         Args:
             loss_type (str): Exactly ``"mae"`` or ``"mse"``.  The default is
                 mean absolute error.
             name (str): Keras loss name; defaults to ``"masked_loss"``.
+            reduction (str): Keras loss reduction. The TensorFlow 2.10 default
+                is ``tf.keras.losses.Reduction.AUTO``.
 
         Returns:
             None.
 
         Raises:
-            TypeError: If ``loss_type`` is unsupported.  The current
-                implementation attempts to raise a descriptive string, which
-                Python surfaces as ``TypeError``.
+            ValueError: If ``loss_type`` is unsupported.
         """
 
-        super(MaskedLoss, self).__init__(name=name)
+        super(MaskedLoss, self).__init__(name=name, reduction=reduction)
 
+        # Use absolute elementwise error for MAE mode.
         if loss_type == "mae":
-            self.loss = losses.MeanAbsoluteError()
+            self.loss = tf.math.abs
+        # Use squared elementwise error for MSE mode.
         elif loss_type == "mse":
-            self.loss = losses.MeanSquaredError()
+            self.loss = tf.math.square
+        # Reject loss modes outside the two documented choices.
         else:
-            raise("loss_type needs to be one of mae or mse.")
+            raise ValueError("loss_type needs to be one of 'mae' or 'mse'.")
 
-    def call(self, y_true, y_pred):
+        self.loss_type = loss_type
+
+    def call(
+        self: MaskedLoss, 
+        y_true: tf.Tensor, 
+        y_pred: tf.Tensor
+    ) -> tf.Tensor:
         """Evaluate the configured loss on the target prefix.
 
         Args:
@@ -55,16 +73,50 @@ class MaskedLoss(losses.Loss):
             y_pred (tf.Tensor): Predictions shaped ``[batch, pred_width]``.
 
         Returns:
-            tf.Tensor: Scalar mean MAE or MSE using
-            ``y_true[..., :tf.shape(y_pred)[1]]``.
+            tf.Tensor: One MAE or MSE value per batch row, averaged over every
+            non-batch axis after truncating the target's last dimension. Keras
+            then applies the configured reduction and sample weights.
+
+        Raises:
+            ValueError: If a statically shaped tensor has rank below two.
+            tf.errors.InvalidArgumentError: If a dynamically checked rank is
+                below two or the target's last dimension is narrower than the
+                prediction.
         """
 
-        n = tf.shape(y_pred)[1]
+        rank_true = tf.debugging.assert_rank_at_least(y_true, 2)
+        rank_pred = tf.debugging.assert_rank_at_least(y_pred, 2)
+        width_assertion = tf.debugging.assert_greater_equal(
+            tf.shape(y_true)[-1],
+            tf.shape(y_pred)[-1],
+            message="y_true must be at least as wide as y_pred.",
+        )
+        positive_width = tf.debugging.assert_positive(
+            tf.shape(y_pred)[-1],
+            message="y_pred must have a positive last dimension.",
+        )
+        assertions = [
+            assertion for assertion in (
+                rank_true, rank_pred, width_assertion, positive_width
+            ) if assertion is not None
+        ]
 
-        y_true_last = y_true[..., :n]
-        y_pred_last = y_pred
+        with tf.control_dependencies(assertions):
+            n = tf.shape(y_pred)[-1]
+            y_true_last = tf.cast(y_true[..., :n], y_pred.dtype)
+            error = y_true_last - y_pred
 
-        return self.loss(y_true_last, y_pred_last)
+        non_batch_axes = tf.range(1, tf.rank(error))
+        return tf.reduce_mean(self.loss(error), axis=non_batch_axes)
+
+    def get_config(self: MaskedLoss) -> dict[str, object]:
+        """Return a Keras-serializable configuration.
+
+        Returns:
+            dict[str, object]: Base loss settings plus ``loss_type``.
+        """
+
+        return {**super().get_config(), "loss_type": self.loss_type}
 
 
 def run_self_tests() -> dict[str, str]:
@@ -72,9 +124,8 @@ def run_self_tests() -> dict[str, str]:
 
     Both supported modes are checked with equal and wider target widths,
     eager and graph execution, rank-three inputs, inherited sample weights,
-    invalid modes/ranks/shapes, custom names, and the current serialization
-    limitations: Keras emits an unsupported ``reduction`` key and does not
-    persist a nondefault ``loss_type``.
+    invalid modes/ranks/shapes, custom names, per-example sample weighting, and
+    Keras configuration/serialization round trips.
 
     Args:
         None.
@@ -94,25 +145,20 @@ def run_self_tests() -> dict[str, str]:
     ], dtype=tf.float32)
 
     mae = MaskedLoss()
-    assert isinstance(mae.loss, losses.MeanAbsoluteError)
+    assert mae.loss is tf.math.abs
     assert mae.name == "masked_loss"
     tf.debugging.assert_near(mae(y_true, y_pred), tf.constant(1.25))
     tf.debugging.assert_near(
         mae(y_true, y_pred, sample_weight=tf.constant(0.5)), 
         tf.constant(0.625), 
     )
-    try:
-        mae(y_true, y_pred, sample_weight=tf.constant([1.0, 0.0]))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError(
-            "Per-example weights are incompatible because call() returns an "
-            "already reduced scalar from its nested Keras loss."
-        )
+    tf.debugging.assert_near(
+        mae(y_true, y_pred, sample_weight=tf.constant([1.0, 0.0])),
+        tf.constant(0.75),
+    )
 
     mse = MaskedLoss(loss_type="mse", name="masked_mse")
-    assert isinstance(mse.loss, losses.MeanSquaredError)
+    assert mse.loss is tf.math.square
     assert mse.name == "masked_mse"
     tf.debugging.assert_near(mse(y_true, y_pred), tf.constant(2.25))
 
@@ -121,10 +167,21 @@ def run_self_tests() -> dict[str, str]:
     tf.debugging.assert_near(mae(equal_true, equal_pred), tf.constant(0.0))
     tf.debugging.assert_near(mse(equal_true, equal_pred), tf.constant(0.0))
 
-    rank_three_true = tf.reshape(tf.range(6, dtype=tf.float32), (1, 2, 3))
-    rank_three_pred = rank_three_true[..., :2]
+    rank_three_true = tf.constant([
+        [[1., 3., 99.], [5., 7., 99.]],
+        [[2., 2., 99.], [2., 2., 99.]],
+    ])
+    rank_three_pred = tf.zeros((2, 2, 2))
     tf.debugging.assert_near(
-        mae(rank_three_true, rank_three_pred), tf.constant(0.0)
+        mae.call(rank_three_true, rank_three_pred), tf.constant([4., 2.])
+    )
+    tf.debugging.assert_near(
+        mae(
+            rank_three_true,
+            rank_three_pred,
+            sample_weight=tf.constant([1., 0.]),
+        ),
+        tf.constant(2.),
     )
 
 
@@ -150,59 +207,60 @@ def run_self_tests() -> dict[str, str]:
 
     mae_config = mae.get_config()
     assert mae_config["name"] == "masked_loss"
-    assert "reduction" in mae_config and "loss_type" not in mae_config
-    try:
-        MaskedLoss.from_config(mae_config)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError(
-            "Keras's emitted reduction key is not accepted by this constructor."
-        )
+    assert mae_config["loss_type"] == "mae" and "reduction" in mae_config
+    config_clone = MaskedLoss.from_config(mae_config)
+    assert config_clone.loss_type == "mae"
     serialized = tf.keras.losses.serialize(mae)
-    try:
-        tf.keras.losses.deserialize(
-            serialized, 
-            custom_objects={"MaskedLoss": MaskedLoss}
-        )
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The current Keras loss round trip must expose its limitation.")
-    sanitized_clone = MaskedLoss(name=mse.get_config()["name"])
-    assert isinstance(sanitized_clone.loss, losses.MeanAbsoluteError), (
-        "Even after removing the unsupported reduction key, loss_type is "
-        "absent and reconstruction therefore uses the MAE default."
+    serialized_clone = tf.keras.losses.deserialize(
+        serialized
     )
+    assert isinstance(serialized_clone, MaskedLoss)
+    assert serialized_clone.loss_type == "mae"
+    mse_clone = MaskedLoss.from_config(mse.get_config())
+    assert mse_clone.loss_type == "mse"
 
     for invalid_mode in ("MAE", "unknown", None):
         try:
             MaskedLoss(loss_type=invalid_mode)
-        except TypeError:
+        except ValueError:
             pass
         else:
-            raise AssertionError("Unsupported loss modes must raise TypeError.")
+            raise AssertionError("Unsupported loss modes must raise ValueError.")
 
     try:
         mae(tf.constant([1.0, 2.0]), tf.constant([1.0, 2.0]))
-    except (tf.errors.InvalidArgumentError, IndexError):
+    except (tf.errors.InvalidArgumentError, ValueError):
         pass
     else:
-        raise AssertionError("Rank-one predictions must fail at axis-one lookup.")
+        raise AssertionError("Rank-one predictions must fail clearly.")
 
-    tf.debugging.assert_near(
-        mae(tf.constant([[1.0]]), tf.constant([[1.0, 2.0]])), 
-        tf.constant(0.5), 
-    )
+    try:
+        mae(tf.constant([[1.0]]), tf.constant([[1.0, 2.0]]))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        raise AssertionError("A target narrower than its prediction must fail.")
     try:
         mae(tf.ones((1, 0)), tf.ones((1, 2)))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
     else:
         raise AssertionError("A zero-width target cannot broadcast to predictions.")
+    try:
+        mae(tf.ones((1, 0)), tf.ones((1, 0)))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        raise AssertionError("A zero-width prediction has no defined mean loss.")
+
+    tf.debugging.assert_near(
+        mae(tf.constant([[1, 2]], tf.int32), tf.constant([[0., 0.]])),
+        tf.constant(1.5),
+    )
 
     return {"MaskedLoss": "passed"}
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())

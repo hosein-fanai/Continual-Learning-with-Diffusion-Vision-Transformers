@@ -5,9 +5,13 @@ their constructor configuration without duplicating ``get_config`` and
 ``from_config`` implementations.
 """
 
+from __future__ import annotations
+
 from tensorflow.keras import layers, models
 
 from copy import deepcopy
+
+from collections.abc import Collection, Mapping
 
 
 class ArgumentSaver:
@@ -16,22 +20,27 @@ class ArgumentSaver:
     Subclasses call ``self._save_init_args(locals())`` from ``__init__`` after
     their superclass has been initialized.  The mixin stores each selected
     value both as an instance attribute and in ``_init_config``.  Mutable
-    ``list``, ``set``, and ``dict`` values are copied for the saved config so
-    later in-place mutations do not change the serialized constructor input.
+    ``list``, ``set``, and ``dict`` values are independently copied for the
+    attribute and saved config.  Caller or instance mutations therefore cannot
+    change another object's defaults or the serialized constructor input.
 
     Attributes:
         _init_config (dict[str, object]): Constructor argument names mapped to
-            their original values.  It is created by the first call to
+            their constructor values.  Mutable values are defensive copies.
+            The mapping is created by the first call to
             :meth:`_save_init_args` and extended by later calls, which supports
             subclasses that save both base and derived constructor arguments.
     """
 
     def _save_init_args(
-        self, 
-        local_vars, 
-        exclude=("self", "kwargs", "__class__", "temp_val"), 
-        rename={"build": "build_"}, 
-    ):
+        self: ArgumentSaver, 
+        local_vars: Mapping[str, object], 
+        exclude: Collection[str] = (
+            "self", "kwargs", 
+            "__class__", "temp_val"
+        ), 
+        rename: Mapping[str, str] | None = None
+    ) -> dict[str, object]:
         """Save selected local constructor variables as state and config.
 
         Args:
@@ -41,9 +50,9 @@ class ArgumentSaver:
                 ``self``, catch-all ``kwargs``, ``__class__``, and the temporary
                 name ``temp_val``.  Supply a different collection to retain a
                 normally excluded name.
-            rename (Mapping[str, str]): Attribute-only renames.  For example,
-                the default ``{"build": "build_"}`` creates ``self.build_``
-                while retaining the constructor key ``"build"`` in the config.
+            rename (Mapping[str, str] | None): Attribute-only renames. ``None``
+                uses ``{"build": "build_"}``, which creates ``self.build_``
+                while retaining the constructor key ``"build"`` in config.
 
         Returns:
             dict[str, object]: The cumulative ``_init_config`` dictionary.
@@ -54,26 +63,36 @@ class ArgumentSaver:
             ``enabled`` and exposes its value as ``self.is_enabled``.
         """
 
+        rename = {"build": "build_"} if rename is None else rename
+        # Initialize cumulative configuration storage on the first save.
         if not hasattr(self, "_init_config"):
             self._init_config = {}
 
         for name, value in local_vars.items():
+            # Omit constructor locals explicitly excluded from persistence.
             if name in exclude:
                 continue
+
+            # Isolate mutable state from both callers and serialized config.
+            if isinstance(value, (list, set, dict)):
+                attribute_value = deepcopy(value)
+                config_value = deepcopy(value)
+            # Preserve immutable or object-valued arguments by identity.
+            else:
+                attribute_value = value
+                config_value = value
 
             setattr(
                 self, 
                 rename.get(name, name), 
-                value
+                attribute_value
             )
 
-            self._init_config[name] = deepcopy(
-                value
-            ) if isinstance(value, (list, set, dict)) else value
+            self._init_config[name] = config_value
 
         return self._init_config
 
-    def get_config(self):
+    def get_config(self: ArgumentSaver) -> dict[str, object]:
         """Return the superclass config plus saved constructor arguments.
 
         Returns:
@@ -91,7 +110,10 @@ class ArgumentSaver:
         return config
 
     @classmethod
-    def from_config(cls, config):
+    def from_config(
+        cls: type[ArgumentSaver], 
+        config: Mapping[str, object]
+    ) -> ArgumentSaver:
         """Reconstruct an instance from a Keras configuration mapping.
 
         Args:
@@ -153,17 +175,30 @@ def run_self_tests() -> dict[str, str]:
         "build": "deferred", 
         "kwargs": {"ignored": True}, 
         "temp_val": "ignored", 
-        "__class__": ArgumentSaver, 
+        "__class__": ArgumentSaver
     })
+
     assert saved is saver._init_config
-    assert saver.items is source_list
-    assert saver.options is source_dict
-    assert saver.members is source_set
+    assert saver.items is not source_list and saver.items == source_list
+    assert saver.options is not source_dict and saver.options == source_dict
+    assert saver.members is not source_set and saver.members == source_set
+    assert saver.items is not saved["items"]
+    assert saver.options is not saved["options"]
+    assert saver.members is not saved["members"]
     assert saver.build_ == "deferred" and not hasattr(saver, "build")
     assert set(saved) == {"items", "options", "members", "build"}
     source_list[1]["nested"] = 99
     source_dict["enabled"] = False
     source_set.add(3)
+    assert saved["items"] == [1, {"nested": 2}]
+    assert saved["options"] == {"enabled": True}
+    assert saved["members"] == {1, 2}
+    assert saver.items == [1, {"nested": 2}]
+    assert saver.options == {"enabled": True}
+    assert saver.members == {1, 2}
+    saver.items[1]["nested"] = 7
+    saver.options["enabled"] = False
+    saver.members.add(4)
     assert saved["items"] == [1, {"nested": 2}]
     assert saved["options"] == {"enabled": True}
     assert saved["members"] == {1, 2}
@@ -187,7 +222,7 @@ def run_self_tests() -> dict[str, str]:
         self: ArgumentSaverLayer, 
         value: int = 1, 
         payload: dict[str, object] | None = None, 
-        **kwargs: object, 
+        **kwargs: object
     ) -> None:
         """Initialize the dynamic layer probe used by this self-test.
 
@@ -236,7 +271,7 @@ def run_self_tests() -> dict[str, str]:
         self: ArgumentSaverModel, 
         width: int = 2, 
         metadata: dict[str, object] | None = None, 
-        **kwargs: object, 
+        **kwargs: object
     ) -> None:
         """Initialize the dynamic model probe used by this self-test.
 
@@ -282,9 +317,10 @@ def run_self_tests() -> dict[str, str]:
     return {
         "ArgumentSaver": "passed", 
         "ArgumentSaverLayer": "passed", 
-        "ArgumentSaverModel": "passed", 
+        "ArgumentSaverModel": "passed"
     }
 
 
+# Run this module's executable self-test entry point when invoked directly.
 if __name__ == "__main__":
     print(run_self_tests())
