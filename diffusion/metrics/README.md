@@ -45,9 +45,10 @@ metric.reset_state()
 larger than `model.timesteps`. Every image is independently noised at each
 selected timestep. Unconditional label 0 is passed to the classifier branch.
 
-`weighted=False` computes a uniform mean. `weighted=True` gives timestep `t`
-weight `1 - t / max_t`, emphasizing cleaner inputs. Prediction values may be
-logits or probabilities because sparse categorical accuracy uses `argmax`.
+`weighted=False` computes a uniform mean. `weighted=True` uses normalized SNR
+weights from the wrapper's existing diffusion schedule, emphasizing cleaner
+inputs. Prediction values may be logits or probabilities because sparse
+categorical accuracy uses `argmax`.
 
 ## Batched versus chunked
 

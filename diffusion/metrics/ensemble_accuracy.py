@@ -29,8 +29,9 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify``, ``network``, and ``ema_network``. Each selected inner network
-    must expose ``num_classes`` and ``predict_class``.
+    ``noisify``, ``network``, and ``ema_network``. Weighted evaluation also
+    requires ``get_noise_and_signal_rates``. Each selected inner network must
+    expose ``num_classes`` and ``predict_class``.
 
     Args:
         diffusion_clf: A ``DiffusionClassifier``-compatible wrapper.
@@ -39,9 +40,8 @@ class EnsembleAccuracy(metrics.Metric):
             ``network``. Only these two values are valid.
         compute_type: ``"chunked"`` for bounded memory or ``"batched"`` for
             one larger network call.
-        weighted: If true, weight timestep ``t`` by ``1 - t / max_t`` so clean
-            and lightly noised samples contribute more. If false, use a uniform
-            mean.
+        weighted: If true, use normalized signal-to-noise-ratio weights so
+            cleaner timesteps contribute more. If false, use a uniform mean.
         max_t: Positive number of evaluated timesteps, no greater than the
             wrapper's total ``timesteps``. Timestep ``max_t`` itself is excluded.
         t_chunk_size: Positive number of timesteps per call in chunked mode.
@@ -81,7 +81,7 @@ class EnsembleAccuracy(metrics.Metric):
                 ``timesteps``, ``noisify``, ``network``, and ``ema_network``.
             netwrok_name (NetworkName): ``"ema"`` or ``"raw"`` network selector.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
-            weighted (bool): Whether early timesteps receive larger weights.
+            weighted (bool): Whether timesteps use normalized SNR weights.
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
             random_seed (int | None): Optional noising seed.
@@ -107,6 +107,14 @@ class EnsembleAccuracy(metrics.Metric):
         # Require a callable forward-noising operation.
         if not callable(diffusion_clf.noisify):
             raise TypeError("diffusion_clf.noisify must be callable.")
+        # SNR weighting uses the wrapper's existing schedule-rate lookup.
+        if weighted and not callable(
+            getattr(diffusion_clf, "get_noise_and_signal_rates", None)
+        ):
+            raise TypeError(
+                "Weighted evaluation requires callable "
+                "diffusion_clf.get_noise_and_signal_rates."
+            )
         # Require a positive integer diffusion horizon from the wrapper.
         if not isinstance(diffusion_clf.timesteps, int) \
         or isinstance(diffusion_clf.timesteps, bool) \
@@ -125,7 +133,6 @@ class EnsembleAccuracy(metrics.Metric):
         # Restrict prediction to the wrapper's raw or EMA network.
         if netwrok_name not in ("ema", "raw"):
             raise ValueError("netwrok_name must be 'ema' or 'raw'.")
-
 
         # Use bounded-memory prediction when timesteps should be chunked.
         if compute_type == "chunked":
@@ -160,6 +167,41 @@ class EnsembleAccuracy(metrics.Metric):
             dtype=self.dtype,
         )
 
+    def _get_timestep_weights(self) -> tf.Tensor:
+        """Return uniform or normalized SNR weights for all ensemble steps.
+
+        Returns:
+            tf.Tensor: One nonnegative weight per timestep, shaped ``[max_t]``.
+        """
+
+        # Preserve a uniform mean when schedule-aware weighting is disabled.
+        if not self.weighted:
+            return tf.ones((self.max_t,), dtype=self.dtype)
+
+        timesteps = tf.range(self.max_t, dtype=tf.int32)
+        signal_rates, noise_rates = self.diffusion_clf.get_noise_and_signal_rates(
+            timesteps
+        )
+
+        signal_power = tf.cast(
+            tf.square(signal_rates), 
+            tf.float32
+        )
+        noise_power = tf.cast(
+            tf.square(noise_rates), 
+            tf.float32
+        )
+        epsilon = tf.cast(
+            tf.keras.backend.epsilon(), 
+            tf.float32
+        )
+        log_snr = (
+            tf.math.log(tf.maximum(signal_power, epsilon))
+            - tf.math.log(tf.maximum(noise_power, epsilon))
+        )
+
+        return tf.cast(tf.nn.softmax(log_snr), self.dtype)
+
     def ensemble_predict_batched(
         self, 
         x: tf.Tensor, 
@@ -175,7 +217,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         Returns:
             tf.Tensor: Floating scores shaped ``[batch, num_classes]`` containing
-            the uniform or linearly weighted timestep mean.
+            the uniform or SNR-weighted timestep mean.
         """
 
         batch_size = tf.shape(x)[0]
@@ -201,17 +243,9 @@ class EnsembleAccuracy(metrics.Metric):
             (batch_size, self.max_t, -1)
         )
 
-        denominator = tf.cast(self.max_t, self.dtype)
-        # Give earlier, less-corrupted timesteps greater influence when requested.
-        if self.weighted:
-            weights = 1.0 - tf.cast(ts, self.dtype) / tf.cast(
-                self.max_t,
-                self.dtype,
-            )
-            weights = tf.reshape(weights, (1, self.max_t, 1))
-            cls_pred = cls_pred * weights
-
-            denominator = tf.reduce_sum(weights)              
+        weights = self._get_timestep_weights()
+        denominator = tf.reduce_sum(weights)
+        cls_pred = cls_pred * tf.reshape(weights, (1, self.max_t, 1))
 
         return tf.reduce_sum(cls_pred, axis=1) / denominator
 
@@ -235,6 +269,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         batch_size = tf.shape(x)[0]
         num_classes = self.network.num_classes
+        weights = self._get_timestep_weights()
 
         pred_sum = tf.zeros(
             (batch_size, num_classes), 
@@ -251,7 +286,8 @@ class EnsembleAccuracy(metrics.Metric):
 
             x_rep = tf.repeat(x, repeats=chunk_t, axis=0)
             x_rep, *_ = self.diffusion_clf.noisify(
-                x_rep, t_rep, 
+                x_rep, 
+                t_rep, 
                 seed=self.random_seed
             )
 
@@ -265,26 +301,15 @@ class EnsembleAccuracy(metrics.Metric):
                 (batch_size, chunk_t, num_classes)
             )
 
-            # Apply the same early-timestep weighting within each chunk.
-            if self.weighted:
-                weights = 1.0 - tf.cast(ts_chunk, self.dtype) / tf.cast(
-                    self.max_t,
-                    self.dtype,
-                )
-                weights = tf.reshape(weights, (1, chunk_t, 1))
-                cls_pred = cls_pred * weights
+            chunk_weights = tf.reshape(
+                weights[start: start + chunk_t], 
+                (1, chunk_t, 1)
+            )
+            cls_pred = cls_pred * chunk_weights
 
             pred_sum += tf.reduce_sum(cls_pred, axis=1)
 
-        denominator = tf.cast(self.max_t, self.dtype)
-        # Normalize weighted predictions by their total timestep weight.
-        if self.weighted:
-            denominator = tf.reduce_sum(
-                1. - tf.range(self.max_t, dtype=self.dtype) / tf.cast(
-                    self.max_t,
-                    self.dtype,
-                )
-            )
+        denominator = tf.reduce_sum(weights)
 
         return pred_sum / denominator
 
@@ -462,11 +487,64 @@ def run_self_tests() -> dict[str, str]:
 
     raw_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
     ema_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
+    alpha_bar_values = np.array(
+        [0.8, 0.5, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625],
+        dtype=np.float32,
+    )
+
+
+    def get_noise_and_signal_rates(
+        timesteps: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Return deterministic schedule amplitudes for metric tests.
+
+        Args:
+            timesteps (tf.Tensor): Schedule indices to gather.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: Signal and noise amplitudes.
+        """
+
+        alpha_bar = tf.gather(
+            tf.constant(alpha_bar_values, dtype=tf.float32),
+            timesteps,
+        )
+
+        return tf.sqrt(alpha_bar), tf.sqrt(1.0 - alpha_bar)
+
+
+    def expected_prediction(max_t: int, weighted: bool) -> np.ndarray:
+        """Aggregate the deterministic class IDs with expected weights.
+
+        Args:
+            max_t (int): Number of leading timesteps to aggregate.
+            weighted (bool): Whether to normalize by timestep SNR.
+
+        Returns:
+            np.ndarray: Expected three-class prediction vector.
+        """
+
+        weights = np.ones((max_t,), dtype=np.float32)
+        # Match the metric's normalized SNR weighting when enabled.
+        if weighted:
+            weights = alpha_bar_values[:max_t] / (
+                1.0 - alpha_bar_values[:max_t]
+            )
+        weights /= np.sum(weights)
+
+        return np.bincount(
+            np.arange(max_t) % 3,
+            weights=weights,
+            minlength=3,
+        ).astype(np.float32)
+
+
     wrapper = SimpleNamespace(
         timesteps=8, 
         network=raw_network, 
         ema_network=ema_network, 
         noisify=noisify, 
+        get_noise_and_signal_rates=get_noise_and_signal_rates,
     )
     images = tf.ones((2, 2, 2, 1), dtype=tf.float32)
 
@@ -490,11 +568,7 @@ def run_self_tests() -> dict[str, str]:
         assert np.all(predict_calls[0][1] == 0)
         assert noisify_calls[0][0] == (10, 2, 2, 1)
         assert noisify_calls[0][2] == 17
-        expected_row = (
-            np.array([1.4, 1.0, 0.6], dtype=np.float32) / 3.0
-            if weighted
-            else np.array([2.0, 2.0, 1.0], dtype=np.float32) / 5.0
-        )
+        expected_row = expected_prediction(5, weighted)
         np.testing.assert_allclose(
             batched_prediction.numpy(), 
             np.repeat(expected_row[None, :], 2, axis=0), 
@@ -600,11 +674,7 @@ def run_self_tests() -> dict[str, str]:
         )
         assert full_horizon.max_t == wrapper.timesteps
         full_horizon_output = full_horizon.ensemble_predict(images)
-        expected_full_row = (
-            np.array([1.875, 1.5, 1.125], dtype=np.float32) / 4.5
-            if weighted
-            else np.array([3.0, 3.0, 2.0], dtype=np.float32) / 8.0
-        )
+        expected_full_row = expected_prediction(wrapper.timesteps, weighted)
         np.testing.assert_allclose(
             full_horizon_output.numpy(), 
             np.repeat(expected_full_row[None, :], 2, axis=0), 
@@ -619,6 +689,48 @@ def run_self_tests() -> dict[str, str]:
     )
     assert named.name == "custom_ensemble" and named.dtype == "float64"
     assert named.ensemble_predict(images).dtype == tf.float64
+
+    def get_zero_noise_rates(
+        timesteps: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Return a schedule whose first timestep is exactly noiseless.
+
+        Args:
+            timesteps (tf.Tensor): Schedule indices to gather.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: Signal and noise amplitudes.
+        """
+
+        signal = tf.gather(tf.constant([1.0, 0.5]), timesteps)
+        noise = tf.gather(tf.constant([0.0, np.sqrt(0.75)]), timesteps)
+
+        return signal, noise
+
+
+    zero_noise_wrapper = SimpleNamespace(
+        timesteps=2,
+        network=raw_network,
+        ema_network=ema_network,
+        noisify=noisify,
+        get_noise_and_signal_rates=get_zero_noise_rates,
+    )
+    zero_noise_metric = EnsembleAccuracy(
+        zero_noise_wrapper,
+        compute_type="batched",
+        weighted=True,
+        max_t=2,
+    )
+    zero_noise_prediction = zero_noise_metric.ensemble_predict(images)
+    assert bool(tf.reduce_all(tf.math.is_finite(zero_noise_prediction)))
+    tf.debugging.assert_near(
+        tf.reduce_sum(zero_noise_prediction, axis=-1),
+        tf.ones((2,)),
+        atol=1e-6,
+    )
+    assert bool(tf.reduce_all(
+        zero_noise_prediction[:, 0] > zero_noise_prediction[:, 1]
+    ))
 
     invalid_wrapper = SimpleNamespace(
         timesteps=8,
