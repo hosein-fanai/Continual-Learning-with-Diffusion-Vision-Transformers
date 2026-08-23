@@ -93,11 +93,17 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *self.clf_vars_noise_part_ids
         ]))
 
+        if self.clf_train_noisified_max_timesteps is not None \
+        and self.clf_test_noisified_max_timesteps:
+            self.clf_test_noisified_max_timesteps = int(
+                self.clf_train_noisified_max_timesteps
+            )
+
         self.clf_trainable_variables = None
         self.gen_trainable_variables = None
         self._train_part = None
         self._test_part = None
-        
+
     def _check_clfv2_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate shared-embedding and main-depth variable selectors.
 
@@ -118,8 +124,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 "clf_vars_noise_part_ids items can only be in [-depth, 0) or [1, depth]."
 
         for name in (
-            "clf_train_noisified_max_timesteps",
-            "clf_test_noisified_max_timesteps",
+            "clf_train_noisified_max_timesteps", 
+            "clf_test_noisified_max_timesteps"
         ):
             value = local_vars[name]
             assert value is None or (
@@ -129,7 +135,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             ), f"{name} must be None or an integer in [1, timesteps]."
 
         assert self.use_cfg, \
-            "DiffusionClassifierV2 requires CFG for its null-label classifier phase."
+            "DiffusionClassifierV2 requires CFG "\
+            "for its null-label classifier phase."
 
     def _set_clf_variables(self) -> None:
         """Assemble variables owned by the classifier optimizer.
@@ -415,9 +422,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
 
     def prep_clfv2_inputs(
-        self,
-        inputs: tuple[tf.Tensor, tf.Tensor],
-        noisified_max_timesteps: int | None,
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor], 
+        noisified_max_timesteps: int | None
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Prepare clean or bounded-noise inputs for a classifier-only phase.
 

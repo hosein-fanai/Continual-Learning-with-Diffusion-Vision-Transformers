@@ -119,8 +119,10 @@ _PRETRAINED = {
 }
 _JOINT_NOTE = {
     "classifier_loss_coefficient": "log-uniform 1e-4 to 1e-1", 
-    "masking_recipe": "CFG-null, timestep, both, or neither", 
-    "mask_t_percentage": "35, 50, 70, or 90 when timestep masking is used", 
+    "masking_recipe": "V1 only: CFG-null, timestep, both, or neither", 
+    "mask_t_percentage": (
+        "V1 only: 35, 50, 70, or 90 when timestep masking is used"
+    ), 
     "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
 _DIT_CLASSIFIER_NOTE = {
@@ -134,6 +136,13 @@ _DIT_CLASSIFIER_NOTE = {
     "classifier_block_dropout": "0, 0.1, 0.2, or 0.25", 
     "classifier_mlp_ratio": "None, 1, or 2", 
     "classifier_head_dropout": "0, 0.1, 0.2, 0.25, or 0.5"
+}
+_DIT_CLASSIFIER_WRAPPER_NOTE = {
+    "wrapper_name": "diffusion_classifier (V1) or diffusion_classifier_v2 (V2)", 
+    "clf_train_noisified_max_timesteps": (
+        "V2 only: None (no cap), 0 (clean only), 64, 128, 256, or 512; "
+        "bounded by timesteps"
+    )
 }
 _CONTINUAL_NOTE = {
     "replay_samples_per_class": "100, 500, 1000, 2500, or 5000", 
@@ -160,7 +169,12 @@ SEARCH_SPACES = {
         "vae": _VAE
     },
     "joint": {
-        "dit_classifier": {**_DIT, **_DIT_CLASSIFIER_NOTE, **_JOINT_NOTE}, 
+        "dit_classifier": {
+            **_DIT, 
+            **_DIT_CLASSIFIER_NOTE, 
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
+            **_JOINT_NOTE
+        }, 
         "dit_encoder_decoder_classifier": {
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
             **_DIT_CLASSIFIER_NOTE, 
@@ -187,7 +201,11 @@ SEARCH_SPACES = {
     "continual": {
         "diffusion_transformer": {**_DIT, **_CONTINUAL_NOTE}, 
         "dit_classifier": {
-            **_DIT, **_DIT_CLASSIFIER_NOTE, **_JOINT_NOTE, **_CONTINUAL_NOTE
+            **_DIT, 
+            **_DIT_CLASSIFIER_NOTE, 
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
+            **_JOINT_NOTE, 
+            **_CONTINUAL_NOTE
         }, 
         "dit_decoder": {
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
@@ -260,6 +278,8 @@ def _value_tag(value: object) -> str:
         "timestep": "t", "both": "b", "null": "n", "neither": "x", 
         "last": "l", "all": "a", "new_weight": "nw", 
         "time_label": "tl", "label": "y", 
+        "diffusion_classifier": "v1", 
+        "diffusion_classifier_v2": "v2", 
         "relu": "r", "elu": "e", "selu": "s", "max": "x", 
         "avg": "a"
     }
@@ -579,7 +599,8 @@ def _suggest_joint(
     trial: Any, 
     model_name: str, 
     kwargs: dict[str, object], 
-    wrapper_kwargs: dict[str, object]
+    wrapper_kwargs: dict[str, object], 
+    tune_masking: bool = True
 ) -> None:
     """Add joint-classification suggestions to mutable model settings.
 
@@ -588,6 +609,7 @@ def _suggest_joint(
         model_name (str): Selected joint model family.
         kwargs (dict[str, object]): Raw-model options updated in place.
         wrapper_kwargs (dict[str, object]): Wrapper options updated in place.
+        tune_masking (bool): Suggest V1 classifier masking options when true.
 
     Returns:
         None.
@@ -632,24 +654,27 @@ def _suggest_joint(
                 "clf_cls_token_type", ["new_weight", "time_label", "label"]
             )
 
-    masking = trial.suggest_categorical(
-        "masking", ["null", "timestep", "both", "neither"]
+    wrapper_kwargs["clf_loss_coef"] = trial.suggest_float(
+        "clf_loss_coef", 
+        1e-4, 1e-1, 
+        log=True
     )
-    wrapper_kwargs.update({
-        "clf_loss_coef": trial.suggest_float(
-            "clf_loss_coef", 
-            1e-4, 1e-1, 
-            log=True
-        ), 
-        "mask_by_nulls": masking in ("null", "both"), 
-        "mask_by_t_threshold": masking in ("timestep", "both")
-    })
 
-    # Tune timestep masking only for modes that use it.
-    if masking in ("timestep", "both"):
-        wrapper_kwargs["mask_t_percentage"] = trial.suggest_categorical(
-            "mask_t", [35, 50, 70, 90]
+    # Tune classifier masking only for the jointly trained V1 wrapper.
+    if tune_masking:
+        masking = trial.suggest_categorical(
+            "masking", ["null", "timestep", "both", "neither"]
         )
+        wrapper_kwargs.update({
+            "mask_by_nulls": masking in ("null", "both"), 
+            "mask_by_t_threshold": masking in ("timestep", "both")
+        })
+
+        # Tune timestep masking only for modes that use it.
+        if masking in ("timestep", "both"):
+            wrapper_kwargs["mask_t_percentage"] = trial.suggest_categorical(
+                "mask_t", [35, 50, 70, 90]
+            )
 
 
 def _suggest_classifier(
@@ -835,8 +860,32 @@ def _build_trial_config(
         "dit_classifier", "dit_encoder_decoder_classifier", 
         "unet_classifier"
     ):
-        _suggest_joint(trial, model_name, model_kwargs, wrapper_kwargs)
         wrapper_name = "diffusion_classifier"
+        # Compare the two existing wrappers only for the DiT classifier family.
+        if model_name == "dit_classifier":
+            wrapper_name = trial.suggest_categorical("wrapper_name", [
+                "diffusion_classifier", "diffusion_classifier_v2"
+            ])
+
+        _suggest_joint(
+            trial, 
+            model_name, 
+            model_kwargs, 
+            wrapper_kwargs, 
+            tune_masking=wrapper_name == "diffusion_classifier"
+        )
+        # Tune V2-only classifier-input noising for the DiT classifier family.
+        if model_name == "dit_classifier" \
+        and wrapper_name == "diffusion_classifier_v2":
+            clf_max_timesteps = trial.suggest_categorical(
+                "clf_train_noisified_max_timesteps", 
+                [None, 0, 64, 128, 256, 512]
+            )
+            wrapper_kwargs["clf_train_noisified_max_timesteps"] = (
+                timesteps if clf_max_timesteps is None 
+                else None if clf_max_timesteps == 0 
+                else min(clf_max_timesteps, timesteps)
+            )
 
     continual_kwargs = {}
     # Tune replay policy only for continual-learning studies.
@@ -856,6 +905,15 @@ def _build_trial_config(
                 "train_num": train_num
             }
         }
+
+        # Train and evaluate the selected DiT wrapper's own classifier head.
+        if model_name == "dit_classifier":
+            continual_kwargs.update({
+                "use_generative_model_classifier": True, 
+                "train_classifier_separately": (
+                    wrapper_name == "diffusion_classifier_v2"
+                )
+            })
 
         # Enable per-task diffusion ensemble reports when they are the HPO signal.
         if use_ensemble_accuracy:

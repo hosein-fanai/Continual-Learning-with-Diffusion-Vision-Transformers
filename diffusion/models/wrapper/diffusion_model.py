@@ -594,15 +594,15 @@ class DiffusionModel(ArgumentSaverModel):
 
         self.set_timestep_bounds(
             self.train_noisified_min_timesteps, 
-            self.train_noisified_max_timesteps, 
+            self.train_noisified_max_timesteps
         )
 
         try:
             return super().fit(x=x, y=y, **kwargs)
         finally:
             self.set_timestep_bounds(
-                prev_t_min,
-                prev_t_max,
+                prev_t_min, 
+                prev_t_max
             )
 
     def evaluate(self, x: object | None = None,
