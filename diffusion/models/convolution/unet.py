@@ -38,7 +38,8 @@ class UNet(ArgumentSaverModel):
 
     Args:
         num_classes: Number of real dataset classes, or ``None`` for dynamic
-            continual growth.
+            continual growth. After growth, ``get_config()`` records the
+            current class width for checkpoint reconstruction.
         use_cfg: Reserve label ID 0 for classifier-free guidance.
         timesteps: Number of discrete diffusion timesteps.
         image_size: Native square input resolution.
@@ -514,6 +515,59 @@ class UNet(ArgumentSaverModel):
             ],
             name=name,
         )
+
+    def _expand_regularizer(
+        self,
+        regularizer: layers.Layer | None,
+        source_regularizer: layers.Layer | None = None,
+    ) -> layers.Layer | None:
+        """Append one softmax output while preserving existing head weights.
+
+        Args:
+            regularizer (tf.keras.layers.Layer | None): Head to expand.
+            source_regularizer (tf.keras.layers.Layer | None): Optional
+                expanded raw head supplying the new EMA output parameters.
+
+        Returns:
+            tf.keras.layers.Layer | None: Expanded head, or ``None`` when the
+            input head is disabled.
+        """
+
+        # Leave disabled auxiliary heads untouched.
+        if regularizer is None:
+            return None
+
+        old_layer = regularizer.layers[-1] \
+            if isinstance(regularizer, models.Sequential) else regularizer
+        old_kernel, old_bias = old_layer.get_weights()
+        layer_config = old_layer.get_config()
+        layer_config["units"] = self.num_classes
+        new_layer = old_layer.__class__.from_config(layer_config)
+        new_layer(
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
+            training=False,
+        )
+        new_kernel, new_bias = new_layer.get_weights()
+        new_kernel[..., :-1] = old_kernel
+        new_bias[:-1] = old_bias
+
+        # Initialize only the new EMA output from the expanded raw head.
+        if source_regularizer is not None:
+            source_layer = source_regularizer.layers[-1] \
+                if isinstance(source_regularizer, models.Sequential) \
+                else source_regularizer
+            source_kernel, source_bias = source_layer.get_weights()
+            new_kernel[..., -1] = source_kernel[..., -1]
+            new_bias[-1] = source_bias[-1]
+
+        new_layer.set_weights([new_kernel, new_bias])
+        # Retain pooling or hidden layers and replace only the final softmax.
+        if isinstance(regularizer, models.Sequential):
+            regularizer.pop()
+            regularizer.add(new_layer)
+            return regularizer
+
+        return new_layer
 
     def _append_stage(
         self, 
@@ -1131,7 +1185,8 @@ class UNet(ArgumentSaverModel):
                 network whose new embedding row initializes an EMA clone.
 
         Returns:
-            None: The label vocabulary grows by one in place.
+            None: The label vocabulary grows by one in place and
+            ``get_config()`` records the grown class width.
 
         Raises:
             ValueError: If the network was initialized with a fixed class count.
@@ -1144,6 +1199,7 @@ class UNet(ArgumentSaverModel):
         old_label_embedder = self.label_embedder
         old_weights = old_label_embedder.get_weights()
         self.num_classes += 1
+        self._init_config["num_classes"] = self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
 
         label_config = old_label_embedder.get_config()
@@ -1163,6 +1219,19 @@ class UNet(ArgumentSaverModel):
 
         new_label_embedder.set_weights(new_weights)
         self.label_embedder = new_label_embedder
+
+        self.labels_embed_reg = self._expand_regularizer(
+            self.labels_embed_reg,
+            source_network.labels_embed_reg if source_network is not None else None,
+        )
+        for index, stage in enumerate(self.layers_dicts):
+            # Expand only stages that own an auxiliary class head.
+            if self.CTR in stage:
+                stage[self.CTR] = self._expand_regularizer(
+                    stage[self.CTR],
+                    source_network.layers_dicts[index][self.CTR]
+                    if source_network is not None else None,
+                )
 
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Append shape-preserving convolution or regularizer stages.

@@ -245,10 +245,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             created and the outer Keras model is marked built.
         """
 
-        symbolic_shapes = self.build_model(call_model=True)
+        symbolic_shapes = self._build_model(call_model=True)
         tf.keras.Model.build(self, symbolic_shapes)
 
-    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
+    def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create the four-input encoder/teacher-forcing symbolic interface.
 
         Args:
@@ -559,7 +559,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 joint network used to initialize new EMA rows and output.
 
         Returns:
-            None: Both label vocabularies and the classifier head grow by one.
+            None: Both label vocabularies and the classifier head grow by one,
+            and their saved initialization configs record the current width.
         """
 
         DiTClassifier.add_class(self, source_network=source_network)
@@ -567,6 +568,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             source_network=(
                 source_network.decoder if source_network is not None else None
             )
+        )
+        self._init_config["decoder_kwargs"]["num_classes"] = (
+            self.decoder.num_classes
         )
 
     def predict_class(

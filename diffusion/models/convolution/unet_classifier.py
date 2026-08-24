@@ -374,6 +374,20 @@ class UNetClassifier(UNet):
         old_kernel, old_bias = old_layer.get_weights()
         super().add_class(source_network=source_network)
 
+        self.clf_labels_embed_reg = self._expand_regularizer(
+            self.clf_labels_embed_reg,
+            source_network.clf_labels_embed_reg
+            if source_network is not None else None,
+        )
+        for index, stage in enumerate(self.clf_layers_dicts):
+            # Expand only classifier stages that own an auxiliary class head.
+            if self.REGULARIZER in stage:
+                stage[self.REGULARIZER] = self._expand_regularizer(
+                    stage[self.REGULARIZER],
+                    source_network.clf_layers_dicts[index][self.REGULARIZER]
+                    if source_network is not None else None,
+                )
+
         layer_config = old_layer.get_config()
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
@@ -1009,6 +1023,25 @@ def run_self_tests() -> dict[str, str]:
     assert model.predict_noise(inputs).shape == inputs[0].shape
     assert model.predict_class(inputs).shape == (2, 2)
     assert len(model.clf_layers_dicts) == model.clf_depth + 1
+
+    dynamic_regularized = UNetClassifier(
+        **{**common, "num_classes": None},
+        cls_token_regularizer_ids=[None],
+        clf_cls_token_regularizer_ids=[None],
+    )
+    dynamic_regularized.add_class()
+    dynamic_regularized.add_class()
+    dynamic_outputs = dynamic_regularized(
+        inputs,
+        full_return=True,
+        training=False,
+    )
+    assert dynamic_outputs["classes"].shape == (2, 2)
+    assert all(item.shape == (2, 2) for item in dynamic_outputs["regs_list"])
+    assert all(
+        item.shape == (2, 2)
+        for item in dynamic_outputs["clf_regs_list"][:-1]
+    )
 
     max_pooled = UNetClassifier(
         **common,

@@ -35,7 +35,9 @@ select a family with `model.name`, `model.kwargs`, and `model.wrapper_kwargs`.
 diffusion preprocessing mode to `"standardize"`. `get_model` uses the recorded
 length to resolve a missing cosine-decay length. `train_model` then records the
 actual result directory in `config.training.results_path` and, when enabled,
-the saved weights path in `config.model.weights_path`.
+the saved weights path in `config.model.weights_path`. Saving dynamic diffusion
+weights requires a `Config` and always writes the paired `config.yaml`, even
+when `save_config_=False`.
 
 Direct `get_model(...)` calls default to a constant learning rate because no
 dataset length is necessarily available. Requesting cosine decay directly
@@ -170,9 +172,11 @@ class count and padded input dimensions automatically. Typed diffusion sections
 receive the padded dimensions; in continual mode their constructors always
 receive `num_classes=None` so classes are added as labels are observed.
 `model.weights_path` initializes a continual VAE replay model, or the
-incremental classifier in classifier-only and buffer runs. Continual diffusion
-checkpoints require their `seen_classes` mapping, so pass an already initialized
-dynamic wrapper instead of using `model.weights_path`.
+incremental classifier in classifier-only and buffer runs. It also restores a
+continual diffusion checkpoint when the paired config contains its current raw
+`num_classes` and zero-based wrapper `seen_classes`. Fresh and restored continual factory
+construction still passes raw `num_classes=None`; the wrapper replays the
+mapping to grow raw/EMA topology before loading the weights.
 
 With `config=None`, all inputs are direct keywords:
 
@@ -228,6 +232,12 @@ diffusion data as needed and returns generated samples to the classifier's input
 representation. When a raw diffusion network is passed directly,
 `generative_model_compile_args` overrides the default Adam/MSE compilation. An
 already-wrapped model remains compiled as provided.
+
+For dynamic diffusion, `seen_classes` is retained by reference in the
+wrapper's initialization config as a zero-based target mapping, so later label discovery is immediately
+serializable. Each raw transformer/U-Net `add_class()` also updates its saved
+`num_classes` to the current width. A dynamic weight checkpoint is therefore a
+pair: the `.weights.h5` file and the automatically updated `config.yaml`.
 
 For `VAEClassifier`, set `use_generative_model_classifier=True` to use its
 attached classifier as the continually learned model. By default that classifier

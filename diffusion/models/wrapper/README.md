@@ -34,12 +34,23 @@ Keras `fit`/`evaluate` datasets normally yield:
 
 - images: float `tf.Tensor` `[B, H, W, channels]`, normally normalized to
   `[-1, 1]`;
-- classes: zero-based integer `tf.Tensor` `[B]` in `0..num_classes-1`.
+- classes: integer `tf.Tensor` `[B]`; fixed-width models use zero-based IDs in
+  `0..num_classes-1`, while dynamic models map observed dataset IDs.
 
-When classifier-free guidance is enabled, `prep_inputs` shifts dataset classes
-by one. Network label 0 is null and real network labels are 1..`num_classes`.
-Direct raw-network calls and `sample(labels=...)` expect these already-shifted
-network IDs; wrapper training data remains zero-based.
+For fixed-width models with classifier-free guidance, `prep_inputs` shifts
+dataset classes by one. Network label 0 is null and real network labels are
+1..`num_classes`. Direct raw-network calls and `sample(labels=...)` expect
+these network IDs; wrapper training data uses dataset IDs.
+
+With raw `num_classes=None`, the wrapper discovers real labels during `fit` and
+stores their consecutive zero-based classifier targets in `seen_classes`.
+`prep_inputs` adds the CFG offset before a raw-network call, and default
+sampling does the same; explicit `sample(labels=...)` values remain network
+condition IDs. The dictionary is retained by reference in the wrapper
+initialization config, so each discovery updates the serializable state
+immediately. Passing a saved nonempty mapping to the constructor restores
+dynamic growth and expands a smaller raw/EMA topology before checkpoint
+weights are loaded.
 
 ## Basic training and sampling
 
@@ -333,10 +344,13 @@ target pipeline, even when `image_loss_coef=0`. Progressive
 depth changes grow the encoder only; decoder depth is fixed at raw-network
 construction. Resolution changes are synchronized across both branches and a
 non-None value must be divisible by both patch sizes.
-`get_config`/`from_config` reconstruct a separate raw network, restore its
-weights, preserve wrapper `name`/`trainable`/`dtype`/`dynamic` state, and
-initialize a new EMA copy when enabled. Use a training checkpoint when the
-historical moving-average weights and optimizer state must also be resumed.
+Raw-network `get_config`/`from_config` reconstructs the configured topology;
+learned raw and EMA values still come from checkpoint weights. For continual
+checkpoints, use the project-level paired `config.yaml` and `.weights.h5`: the
+factory passes raw `num_classes=None`, the wrapper uses saved `seen_classes` to
+restore the grown topology, and only then are weights loaded. Project training
+requires a `Config` for dynamic diffusion weight saving and writes this paired
+config even when `save_config_=False`.
 
 The wrapper also accepts a standalone, context-free `DiTDecoder` when it uses
 `decoder_separate_cond=True`, `shift_inputs=False`, and no encoder-feature

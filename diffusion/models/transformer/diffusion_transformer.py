@@ -9,7 +9,7 @@ the diffusion schedule, noising, losses, optimization, EMA, and sampling.
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-from typing import Literal
+from typing import Literal, get_args
 
 from . import CondType, TokenType, IdsType, IdsDictType
 
@@ -67,6 +67,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             the wrapper.
         dynamic_num_classes (bool): Whether ``num_classes=None`` requested
             class-by-class vocabulary growth.
+        num_classes (int): Current real-class width. After dynamic growth,
+            ``get_config()`` records this current value so checkpoint topology
+            can be reconstructed at the correct size.
         cls_token (SingleTokenLayer | None): Optional sequence-prefix token.
         unpatchifier (tf.keras.Model): Output projection when
             ``use_unpatchify=True``.
@@ -304,10 +307,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             cls_token_regularizer_ids (list[int | None]): Depth IDs whose token
                 slice feeds an auxiliary ``num_classes`` softmax.  ID 0 applies
                 a regularizer to the label embedding; ``[None]`` selects 0..N.
-            cls_token_regularizer_kwargs (dict[str, int]): Exactly ``start``
-                and ``end``, Python slice bounds on the token axis.  The default
-                ``{"start": 0, "end": 1}`` classifies the first/class token;
-                ``{"start": 0, "end": 4}`` flattens the first four tokens.
+            cls_token_regularizer_kwargs (dict[str, object]): ``start`` and
+                ``end`` are Python token-slice bounds. Optional ``mlp_ratio``
+                adds a hidden Dense layer, and ``activation_function`` selects
+                its activation. Missing values default to ``None`` and
+                ``"tanh"``, respectively.
             final_ffn_activation_func (str | callable): Activation on the
                 zero-initialized patch-output projection.
             use_refiner_cnn (bool): Add a two-convolution image-space refinement
@@ -494,7 +498,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             not isinstance(local_vars["mha_num_heads"], bool) and \
             local_vars["mha_num_heads"] > 0, \
             "mha_num_heads must be a positive integer."
-
         effective_cond_dim = (
             local_vars["dim"]
             if local_vars["cond_dim"] is None
@@ -520,9 +523,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             assert local_vars["ln_no_adaptation"], \
                 "When cond_type is None, layer_norm cannot use adaptation."
 
-        assert local_vars["cls_token_type"] in (vals:=(None, "new_weight", 
-                                                "time_label", "time", 
-                                                "label")), \
+        assert local_vars["cls_token_type"] in (vals:=get_args(TokenType)), \
             f"cls_token_type can only be one of {vals}."
 
         self._check_dict_assertions(
@@ -667,7 +668,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=(cls_token_regularizer_kwargs_allowed_vals:=(
-                "start", "end"
+                "start", "end", "mlp_ratio", "activation_function"
             )), 
             check_values=False, 
         ); self.cls_token_regularizer_kwargs_allowed_vals = cls_token_regularizer_kwargs_allowed_vals
@@ -1263,6 +1264,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ) if self.patches_conds_merger_type is not None else None
 
         self.labels_embed_reg = self._create_token_regularizer(
+            input_dim=self.cond_embedder_dim, 
+            kwargs=self.cls_token_regularizer_kwargs, 
             name=f"{self.name_prefix}depth_0_{self.CTR[2:]}"
         ) if 0 in self.cls_token_regularizer_ids else None
 
@@ -1838,22 +1841,61 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return reshaper
 
-    def _create_token_regularizer(self, name: str | None = None) -> layers.Dense:
+    def _create_token_regularizer(
+        self, 
+        i: int, 
+        layers_dicts: list[dict], 
+        layers_dict: dict, 
+        base_dim: int, 
+        kwargs: dict = {}, 
+        name: str | None = None
+    ) -> layers.Layer:
         """Create an auxiliary class-token softmax head.
 
         Args:
+            input_dim (int): Flattened input width used to size an optional
+                hidden layer.
+            kwargs (dict): ...
             name (str | None): Keras layer name.
 
         Returns:
-            tf.keras.layers.Dense: Layer mapping ``[B, features]`` to class
-            probabilities of shape ``[B, num_classes]``.
+            tf.keras.layers.Layer: A direct Dense softmax, or a two-Dense
+            Sequential head when ``mlp_ratio`` is configured.
         """
 
-        token_regularizer = layers.Dense(
-            self.num_classes, 
-            activation="softmax", 
-            name=name
+        input_dim = self._get_current_output_dim(
+            i, 
+            layers_dicts, 
+            layers_dict, 
+            base_dim
+        ) 
+        input_dim *= (kwargs["end"] - ["start"])
+
+        mlp_ratio = kwargs.get("mlp_ratio", None)
+        activation_function = kwargs.get(
+            "activation_function", "tanh"
         )
+
+        # Preserve the original one-layer topology when no MLP is requested.
+        if mlp_ratio is None:
+            return layers.Dense(
+                self.num_classes,
+                activation="softmax",
+                name=name
+            )
+
+        token_regularizer = models.Sequential([
+            layers.Dense(
+                max(1, int(input_dim * mlp_ratio)), 
+                activation=activation_function, 
+                name=f"{name}/first_layer"
+            ), 
+            layers.Dense(
+                self.num_classes, 
+                activation="softmax", 
+                name=f"{name}/final_layer"
+            )
+        ], name=name)
 
         return token_regularizer
 
@@ -1994,6 +2036,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Build this depth's auxiliary token classifier when configured.
         if key in self.cls_token_regularizer_ids:
             layers_dict[self.CTR] = self._create_token_regularizer(
+                i=i, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
+                kwargs=self.cls_token_regularizer_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.CTR[2:]}"
             )
 
@@ -2121,6 +2168,107 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 name=name
             )
 
+    def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
+        """Create symbolic Keras inputs for the active resolution.
+
+        Args:
+            call_model (bool): Execute :meth:`call` on the symbolic inputs and
+                assign ``self.outputs`` when true; otherwise leave outputs None.
+
+        Returns:
+            list[tf.TensorShape]: Shapes for image ``[None, H, H, C]``, scalar
+            timestep ``[None]``, and scalar label ``[None]`` inputs.  The
+            created image dtype is ``tf.float32``, timestep ``tf.int32``, and
+            label ``tf.uint8``.
+        """
+
+        noisy_images = layers.Input(
+            shape=(
+                self._current_resolution, 
+                self._current_resolution, 
+                self.channels
+            ), 
+            dtype=tf.float32, 
+            name="noisy_images"
+        )
+        ts = layers.Input(
+            shape=(), 
+            dtype=tf.int32, 
+            name="timesteps"
+        )
+        labels = layers.Input(
+            shape=(), 
+            dtype=tf.uint8, 
+            name="labels"
+        )
+
+        self.inputs = (noisy_images, ts, labels)
+        self.outputs = self.call(
+            self.inputs
+        ) if call_model else None
+
+        input_shape = [
+            input_layer.shape 
+            for input_layer in self.inputs
+        ]
+
+        return input_shape
+
+    def _expand_token_regularizer(
+        self, 
+        regularizer: layers.Layer | None, 
+        source_regularizer: layers.Layer | None = None
+    ) -> layers.Layer | None:
+        """Append one output to an auxiliary softmax while preserving weights.
+
+        Args:
+            regularizer (tf.keras.layers.Layer | None): Head to expand.
+            source_regularizer (tf.keras.layers.Layer | None): Optional
+                expanded raw head supplying the new EMA output parameters.
+
+        Returns:
+            tf.keras.layers.Layer | None: Expanded head, or ``None`` when the
+            input head is disabled.
+        """
+
+        # Leave disabled regularizers untouched.
+        if regularizer is None:
+            return None
+
+        old_layer = regularizer.layers[-1] if isinstance(regularizer, models.Sequential) \
+                    else regularizer
+        old_kernel, old_bias = old_layer.get_weights()
+        layer_config = old_layer.get_config()
+        layer_config["units"] = self.num_classes
+
+        new_layer = old_layer.__class__.from_config(layer_config)
+        new_layer(
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype), 
+            training=False
+        )
+        new_kernel, new_bias = new_layer.get_weights()
+        new_kernel[..., :-1] = old_kernel
+        new_bias[:-1] = old_bias
+
+        # Initialize only the new EMA output from the expanded raw head.
+        if source_regularizer is not None:
+            source_layer = source_regularizer.layers[-1] \
+                        if isinstance(source_regularizer, models.Sequential) \
+                        else source_regularizer
+            source_kernel, source_bias = source_layer.get_weights()
+            new_kernel[..., -1] = source_kernel[..., -1]
+            new_bias[-1] = source_bias[-1]
+
+        new_layer.set_weights([new_kernel, new_bias])
+
+        # Retain an optional hidden layer and replace only its final softmax.
+        if isinstance(regularizer, models.Sequential):
+            regularizer.pop()
+            regularizer.add(new_layer)
+            return regularizer
+
+        return new_layer
+
     @property
     def current_resolution(self) -> int:
         """Return the square image resolution currently processed.
@@ -2146,7 +2294,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None: Variables are created and the Keras built flag is set.
         """
 
-        input_shape = self.build_model()
+        input_shape = self._build_model()
         super().build(input_shape)
 
     def call(
@@ -2228,52 +2376,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
 
         self._current_resolution = int(resolution)
-
-    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
-        """Create symbolic Keras inputs for the active resolution.
-
-        Args:
-            call_model (bool): Execute :meth:`call` on the symbolic inputs and
-                assign ``self.outputs`` when true; otherwise leave outputs None.
-
-        Returns:
-            list[tf.TensorShape]: Shapes for image ``[None, H, H, C]``, scalar
-            timestep ``[None]``, and scalar label ``[None]`` inputs.  The
-            created image dtype is ``tf.float32``, timestep ``tf.int32``, and
-            label ``tf.uint8``.
-        """
-
-        noisy_images = layers.Input(
-            shape=(
-                self._current_resolution, 
-                self._current_resolution, 
-                self.channels
-            ), 
-            dtype=tf.float32, 
-            name="noisy_images"
-        )
-        ts = layers.Input(
-            shape=(), 
-            dtype=tf.int32, 
-            name="timesteps"
-        )
-        labels = layers.Input(
-            shape=(), 
-            dtype=tf.uint8, 
-            name="labels"
-        )
-
-        self.inputs = (noisy_images, ts, labels)
-        self.outputs = self.call(
-            self.inputs
-        ) if call_model else None
-
-        input_shape = [
-            input_layer.shape 
-            for input_layer in self.inputs
-        ]
-
-        return input_shape
 
     def embed_conditions(
         self, 
@@ -2624,6 +2726,25 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x, cond, features_list, regs_list, z_vals
 
+    def get_variables_names(
+        self, 
+        vars: list[tf.Variable] | None = None
+    ) -> list[str]:
+        """Return TensorFlow names for selected trainable variables.
+
+        Args:
+            vars (list[tf.Variable] | None): Variables to inspect.  ``None``
+                selects every current trainable variable.
+
+        Returns:
+            list[str]: Variable names in input/model order.
+        """
+
+        vars = self.trainable_variables if vars is None else vars
+        names = [var.name for var in vars]
+
+        return names
+
     def add_depths(
         self, 
         depth_spec: str | tuple | set | dict | list | None
@@ -2818,7 +2939,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         }
 
     def add_class(self, source_network: object | None = None) -> None:
-        """Append one label embedding while preserving all existing rows.
+        """Append one class to the label embedding and auxiliary heads.
 
         Args:
             source_network (object | None): Optional already-expanded raw
@@ -2826,8 +2947,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 row in an EMA clone; existing EMA rows remain unchanged.
 
         Returns:
-            None: ``num_classes``, ``num_labels``, and ``label_embedder`` are
-            updated in place.
+            None: ``num_classes``, ``num_labels``, ``label_embedder``, and all
+            configured regularizer outputs are updated in place.
 
         Raises:
             ValueError: If the network was initialized with a fixed class count.
@@ -2835,58 +2956,55 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Restrict structural growth to the explicit dynamic constructor mode.
         if not self.dynamic_num_classes:
-            raise ValueError("add_class requires num_classes=None at initialization.")
+            raise ValueError(
+                "add_class requires num_classes=None at initialization."
+            )
 
         old_label_embedder = self.label_embedder
         self.num_classes += 1
+        self._init_config["num_classes"] = self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
 
-        # Label-free architectures only need their public counts updated.
-        if old_label_embedder is None:
-            return
+        # Expand the label embedder when this architecture uses one.
+        if old_label_embedder is not None:
+            old_weights = old_label_embedder.get_weights()
+            label_config = old_label_embedder.get_config()
+            label_config["embed_steps"] = self.num_labels
 
-        old_weights = old_label_embedder.get_weights()
-        label_config = old_label_embedder.get_config()
-        label_config["embed_steps"] = self.num_labels
+            new_label_embedder = old_label_embedder.__class__.from_config(
+                label_config
+            )
+            new_label_embedder(
+                tf.zeros((1,), dtype=tf.int32),
+                training=False
+            )
+            new_weights = new_label_embedder.get_weights()
 
-        new_label_embedder = old_label_embedder.__class__.from_config(
-            label_config
+            new_weights[0][:-1] = old_weights[0]
+            for index in range(1, len(old_weights)):
+                new_weights[index] = old_weights[index]
+
+            # Initialize only the new EMA row from its raw-network counterpart.
+            if source_network is not None:
+                new_weights[0][-1] = (
+                    source_network.label_embedder.get_weights()[0][-1]
+                )
+
+            new_label_embedder.set_weights(new_weights)
+            self.label_embedder = new_label_embedder
+
+        self.labels_embed_reg = self._expand_token_regularizer(
+            self.labels_embed_reg, 
+            source_network.labels_embed_reg if source_network is not None else None
         )
-        new_label_embedder(
-            tf.zeros((1,), dtype=tf.int32), 
-            training=False
-        )
-        new_weights = new_label_embedder.get_weights()
-
-        new_weights[0][:-1] = old_weights[0]
-        for index in range(1, len(old_weights)):
-            new_weights[index] = old_weights[index]
-
-        # Initialize only the new EMA row from its raw-network counterpart.
-        if source_network is not None:
-            new_weights[0][-1] = source_network.label_embedder.get_weights()[0][-1]
-
-        new_label_embedder.set_weights(new_weights)
-        self.label_embedder = new_label_embedder
-
-    def get_variables_names(
-        self, 
-        vars: list[tf.Variable] | None = None
-    ) -> list[str]:
-        """Return TensorFlow names for selected trainable variables.
-
-        Args:
-            vars (list[tf.Variable] | None): Variables to inspect.  ``None``
-                selects every current trainable variable.
-
-        Returns:
-            list[str]: Variable names in input/model order.
-        """
-
-        vars = self.trainable_variables if vars is None else vars
-        names = [var.name for var in vars]
-
-        return names
+        for index, layers_dict in enumerate(self.layers_dicts):
+            # Expand only stages that own an auxiliary class head.
+            if self.CTR in layers_dict:
+                layers_dict[self.CTR] = self._expand_token_regularizer(
+                    layers_dict[self.CTR], 
+                    source_network.layers_dicts[index][self.CTR]
+                    if source_network is not None else None
+                )
 
 
 def run_self_tests() -> dict[str, str]:
@@ -3151,7 +3269,9 @@ def run_self_tests() -> dict[str, str]:
         depth=1, 
         cls_token_type="new_weight", 
         cls_token_regularizer_ids=[None], 
-        cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+        cls_token_regularizer_kwargs={
+            "start": 0, "end": 1, "mlp_ratio": 2.0
+        },
         **base,
     )
     _, _, _, regularizers, _ = regularized(inputs, full_return=True, training=False)
@@ -3160,6 +3280,19 @@ def run_self_tests() -> dict[str, str]:
     tf.debugging.assert_near(
         tf.reduce_sum(regularizers[1], axis=-1), tf.ones((2,)), atol=1e-5
     )
+    assert isinstance(regularized.labels_embed_reg, models.Sequential)
+    assert regularized.labels_embed_reg.layers[0].units == 8
+    assert regularized.labels_embed_reg.layers[0].activation.__name__ == "tanh"
+    assert (
+        regularized.get_config()["cls_token_regularizer_kwargs"]["mlp_ratio"]
+        == 2.0
+    )
+    direct_regularizer = DiffusionTransformer(
+        depth=0,
+        cls_token_regularizer_ids=[0],
+        **base,
+    )
+    assert isinstance(direct_regularizer.labels_embed_reg, layers.Dense)
     flat = regularized.slice_and_flatten_tokens(tf.ones((2, 3, 4)), 0, 2)
     assert flat.shape == (2, 8)
 
@@ -3551,6 +3684,9 @@ def run_self_tests() -> dict[str, str]:
         {"upsample_kwargs": {"unknown": 1}}, 
         {"reshaper_kwargs": {"unknown": 1}}, 
         {"cls_token_regularizer_kwargs": {"unknown": 1}}, 
+        {"cls_token_regularizer_kwargs": {
+            "start": 0, "end": 1, "mlp_ratio": 0
+        }},
     )
     for overrides in invalid_cases:
         try:

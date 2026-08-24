@@ -438,10 +438,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
             marked built.
         """
 
-        symbolic_shapes = self.build_model(call_model=True)
+        symbolic_shapes = self._build_model(call_model=True)
         tf.keras.Model.build(self, symbolic_shapes)
 
-    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
+    def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create encoder and teacher-forcing symbolic inputs.
 
         Args:
@@ -768,7 +768,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 encoder-decoder used to initialize new EMA embedding rows.
 
         Returns:
-            None: Both label vocabularies grow by one in place.
+            None: Both label vocabularies grow by one and their saved
+            initialization configs record the current class width.
         """
 
         super().add_class(source_network=source_network)
@@ -776,6 +777,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
             source_network=(
                 source_network.decoder if source_network is not None else None
             )
+        )
+        self._init_config["decoder_kwargs"]["num_classes"] = (
+            self.decoder.num_classes
         )
 
     def set_current_resolution(self, resolution: int | None = None) -> None:

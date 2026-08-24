@@ -72,8 +72,9 @@ family and select the continual classifier with `model.classifier_name` and
 `common.train`. Fixed-buffer replay suppresses generative-model construction.
 Dataset sample limits, shuffle capacity, raw-image padding, and the training
 seed carry into every task. Typed replay-model sections automatically use the
-selected dataset's padded dimensions. Continual diffusion constructors always
-receive `num_classes: null`; their class vocabulary grows as labels are seen.
+selected dataset's padded dimensions. Fresh and restored continual diffusion
+constructors always receive raw `num_classes: null`; on restoration the wrapper
+uses saved zero-based `seen_classes` to regrow the topology before loading weights.
 
 Nested model dataclasses expose `kwargs() -> dict[str, Any]`; those dictionaries
 are forwarded to the corresponding transformer or wrapper constructor. Use the
@@ -93,6 +94,8 @@ tag is appended to that timestamp. `weights_path: null` starts with newly
 initialized weights; otherwise it must identify a Keras-compatible weights
 file for the selected architecture. Continual VAE replay uses it to initialize
 the replay model; classifier-only and fixed-buffer continual runs use it to
-initialize the incremental classifier and visible head columns. For continual
-diffusion, pass an already initialized dynamic wrapper so its `seen_classes`
-mapping and grown layers remain aligned.
+initialize the incremental classifier and visible head columns. Continual
+diffusion uses it with the paired config's current raw `num_classes` and wrapper
+zero-based `seen_classes`; the wrapper rebuilds the grown raw/EMA topology before loading
+the checkpoint. Dynamic diffusion weight saving requires a `Config` and writes
+this paired `config.yaml` even when `save_config_=False`.

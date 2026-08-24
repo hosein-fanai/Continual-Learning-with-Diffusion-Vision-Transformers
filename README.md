@@ -252,11 +252,14 @@ pipelines. Both training and test evaluation are reported through
 `common.train`. Fixed-buffer and generative rehearsal are mutually exclusive.
 Configured sample limits, shuffling, raw-image padding, and seed are preserved
 inside the task loop. Typed replay models derive padded dimensions from the
-dataset; continual diffusion constructors receive `num_classes=None` and grow
-their class vocabulary as labels are observed. `model.weights_path` initializes
-a continual VAE replay model, or the incremental classifier for classifier-only
-and buffer runs. To resume continual diffusion, pass an initialized dynamic
-wrapper carrying its `seen_classes` mapping.
+dataset; fresh and restored continual diffusion constructors receive raw
+`num_classes=None` and grow their class vocabulary as labels are observed.
+`model.weights_path` initializes a continual VAE replay model, the incremental
+classifier for classifier-only and buffer runs, or a continual diffusion model
+when its paired config contains zero-based `seen_classes`. The wrapper restores the grown
+topology before weight loading. Saving dynamic diffusion weights requires a
+`Config` and always writes the paired `config.yaml`, even when ordinary config
+saving was disabled.
 See `common/README.md` for the complete direct-key list, config-field mapping,
 supported raw-model/wrapper mappings, loader requirements, and dictionary keys;
 see

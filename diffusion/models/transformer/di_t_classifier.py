@@ -214,9 +214,11 @@ class DiTClassifier(DiffusionTransformer):
             clf_cls_token_regularizer_ids (list[int | None]): Classifier depths
                 0..``clf_depth`` with auxiliary class softmax heads.  Empty by
                 default; ``[None]`` selects the full range.
-            clf_cls_token_regularizer_kwargs (dict[str, int] | None): ``start``
-                and ``end`` token-slice bounds.  ``None`` inherits the main
-                mapping, normally ``{"start": 0, "end": 1}``.
+            clf_cls_token_regularizer_kwargs (dict[str, object] | None): Token
+                slice and optional regularizer MLP settings. ``None`` inherits
+                ``cls_token_regularizer_kwargs``. Missing ``mlp_ratio`` and
+                ``activation_function`` values default to ``None`` and
+                ``"tanh"``, respectively.
             force_global_avg_pooling (bool): Average all final tokens even when
                 a class token is available.  Without a usable class token,
                 global average pooling is selected automatically.
@@ -377,7 +379,8 @@ class DiTClassifier(DiffusionTransformer):
         )
 
         assert -1 in local_vars["clf_connection_ids_dict"], \
-            "There must be at least one feature vector to extract from the classifier part."
+            "There must be at least one feature vector "\
+            "to extract from the classifier part."
         self._check_dict_assertions(
             local_vars, 
             "clf_connection_ids_dict", 
@@ -624,8 +627,11 @@ class DiTClassifier(DiffusionTransformer):
             max_id=None
         )
 
-    def _get_layers_dict_last_output_dim(self, layers_dict: dict, 
-                                        skip_reshaper: bool) -> int | None:
+    def _get_layers_dict_last_output_dim(
+        self, 
+        layers_dict: dict, 
+        skip_reshaper: bool
+    ) -> int | None:
         """Return the final feature width from a classifier/main stage mapping.
 
         Args:
@@ -701,6 +707,11 @@ class DiTClassifier(DiffusionTransformer):
         ) if clf_conds_merger_flag and self.conds_merger is None else self.conds_merger
 
         self.clf_labels_embed_reg = self._create_token_regularizer(
+            input_dim=self.cond_embedder_dim,
+            mlp_ratio=self.clf_cls_token_regularizer_kwargs.get("mlp_ratio"),
+            activation_function=self.clf_cls_token_regularizer_kwargs.get(
+                "activation_function", "tanh"
+            ),
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
 
@@ -845,9 +856,9 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_cls_token=(self.classifier_only_cls_token and \
-                                    self.clf_cls_token_type is not None) or \
-                                    (not self.classifier_only_cls_token and \
+                circumvent_cls_token=(self.classifier_only_cls_token and 
+                                    self.clf_cls_token_type is not None) or 
+                                    (not self.classifier_only_cls_token and 
                                     self.cls_token_type is not None),
                 kwargs=self.clf_local_mixer_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
@@ -900,9 +911,9 @@ class DiTClassifier(DiffusionTransformer):
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, base_dim=self.clf_dim, 
                 base_grid_size=self.clf_grid_size, 
-                grid_has_cls_token=(self.clf_cls_token_type is not None and \
-                                    self.classifier_only_cls_token) or \
-                                    (self.cls_token_type is not None and \
+                grid_has_cls_token=(self.clf_cls_token_type is not None and 
+                                    self.classifier_only_cls_token) or 
+                                    (self.cls_token_type is not None and 
                                     not self.classifier_only_cls_token), 
                 kwargs=self.clf_reshaper_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
@@ -911,6 +922,11 @@ class DiTClassifier(DiffusionTransformer):
         # Build this classifier depth's auxiliary token head.
         if key in self.clf_cls_token_regularizer_ids:
             layers_dict[self.CTR] = self._create_token_regularizer(
+                i=i, 
+                layers_dicts=layers_dicts, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
+                kwargs=self.clf_cls_token_regularizer_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.CTR[2:]}"
             )
 
@@ -1020,7 +1036,7 @@ class DiTClassifier(DiffusionTransformer):
         full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | tuple[
-        tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor],
+        tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor], 
         tuple[tf.Tensor, tf.Tensor]
     ]:
         """Run only the inherited diffusion noise-prediction branch.
@@ -1568,7 +1584,7 @@ class DiTClassifier(DiffusionTransformer):
         }
 
     def add_class(self, source_network: object | None = None) -> None:
-        """Append one classifier output while preserving the existing head.
+        """Append one output to the classifier and its auxiliary heads.
 
         Args:
             source_network (object | None): Optional already-expanded raw
@@ -1576,12 +1592,27 @@ class DiTClassifier(DiffusionTransformer):
                 output in an EMA clone while the clone's old outputs are kept.
 
         Returns:
-            None: The label vocabulary and final classifier layer grow by one.
+            None: The label vocabulary, regularizers, and final classifier
+            layer grow by one.
         """
 
         old_layer = self.classifier.layers[-1]
         old_kernel, old_bias = old_layer.get_weights()
         super().add_class(source_network=source_network)
+
+        self.clf_labels_embed_reg = self._expand_token_regularizer(
+            self.clf_labels_embed_reg, 
+            source_network.clf_labels_embed_reg
+            if source_network is not None else None
+        )
+        for index, layers_dict in enumerate(self.clf_layers_dicts):
+            # Expand only classifier stages that own an auxiliary class head.
+            if self.CTR in layers_dict:
+                layers_dict[self.CTR] = self._expand_token_regularizer(
+                    layers_dict[self.CTR], 
+                    source_network.clf_layers_dicts[index][self.CTR]
+                    if source_network is not None else None
+                )
 
         layer_config = old_layer.get_config()
         layer_config["units"] = self.num_classes
@@ -1732,7 +1763,9 @@ def run_self_tests() -> dict[str, str]:
         local_mixer_kwargs={"pos_embed_type": None}, 
         downsample_kwargs={"scaling_method": "avg_pooling"}, 
         upsample_kwargs={"scaling_method": "interpolate"}, 
-        cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+        cls_token_regularizer_kwargs={
+            "start": 0, "end": 1, "mlp_ratio": 2.0
+        },
         clf_mha_num_heads=None, 
         clf_vit_block_mlp_ratio=None, 
         clf_vit_block_mlp_output_dims=None, 
@@ -1961,6 +1994,18 @@ def run_self_tests() -> dict[str, str]:
     regularized = make_model(
         clf_cls_token_regularizer_ids=[None], 
         cls_token_regularizer_ids=[None], 
+        cls_token_regularizer_kwargs={
+            "start": 0,
+            "end": 1,
+            "mlp_ratio": 2.0,
+            "activation_function": "relu",
+        },
+        clf_cls_token_regularizer_kwargs={
+            "start": 0,
+            "end": 1,
+            "mlp_ratio": 1.5,
+            "activation_function": "tanh",
+        },
     )
     regularized_outputs = regularized(inputs, full_return=True, training=False)
     assert all(
@@ -1969,6 +2014,40 @@ def run_self_tests() -> dict[str, str]:
     )
     assert regularized_outputs["clf_regs_list"][-1] is None
     assert all(item.shape == (2, 2) for item in regularized_outputs["regs_list"])
+    assert regularized.labels_embed_reg.layers[0].units == 8
+    assert regularized.clf_labels_embed_reg.layers[0].units == 6
+    assert regularized.labels_embed_reg.layers[0].activation.__name__ == "relu"
+    assert regularized.clf_labels_embed_reg.layers[0].activation.__name__ == "tanh"
+    assert (
+        regularized.get_config()["clf_cls_token_regularizer_kwargs"][
+            "activation_function"
+        ] == "tanh"
+    )
+
+    dynamic_regularized = make_model(
+        num_classes=None,
+        cls_token_regularizer_ids=[None],
+        clf_cls_token_regularizer_ids=[None],
+        cls_token_regularizer_kwargs={
+            "start": 0, "end": 1, "mlp_ratio": 2.0
+        },
+        clf_cls_token_regularizer_kwargs={
+            "start": 0, "end": 1, "mlp_ratio": 1.5
+        },
+    )
+    dynamic_regularized.add_class()
+    dynamic_regularized.add_class()
+    dynamic_outputs = dynamic_regularized(
+        inputs,
+        full_return=True,
+        training=False,
+    )
+    assert dynamic_outputs["classes"].shape == (2, 2)
+    assert all(item.shape == (2, 2) for item in dynamic_outputs["regs_list"])
+    assert all(
+        item.shape == (2, 2)
+        for item in dynamic_outputs["clf_regs_list"][:-1]
+    )
 
     progressive = make_model(clf_depth=1)
     growth = progressive.add_depths({
@@ -2206,6 +2285,9 @@ def run_self_tests() -> dict[str, str]:
         {"clf_upsample_kwargs": {"unknown": 1}}, 
         {"clf_reshaper_kwargs": {"unknown": 1}}, 
         {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
+        {"clf_cls_token_regularizer_kwargs": {
+            "start": 0, "end": 1, "mlp_ratio": 0
+        }},
     )
     for overrides in invalid_cases:
         try:

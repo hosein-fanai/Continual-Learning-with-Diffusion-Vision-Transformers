@@ -116,7 +116,11 @@ existing features. Transformer blocks perform global attention and an FFN.
 Local mixers perform depthwise spatial convolution on square patch grids.
 Scalers resize token grids. Reshapers create or reverse vector bottlenecks. A
 regularizer applies a `num_classes` softmax to a configured flattened token
-slice. Components omitted from a depth are identity/no-op paths.
+slice. Setting `mlp_ratio` inside `cls_token_regularizer_kwargs` adds a Dense
+hidden projection before that softmax. Its `activation_function` defaults to
+`"tanh"` when omitted. The classifier branch uses the same keys in
+`clf_cls_token_regularizer_kwargs`.
+Components omitted from a depth are identity/no-op paths.
 
 `DiTClassifier` adds main-feature aggregators and cross-attention aggregators
 before the analogous classifier components. Its final extractor uses the first
@@ -135,7 +139,7 @@ selected depth of that component type; they are not keyed per depth.
 | `downsample_kwargs` | Common embedding/norm/position/MLP keys above plus `scaling_method`: `"avg_pooling"`, `"max_pooling"`, or `"cnn_stride"`; `cnn_dim_ratio: int`; `cnn_kernel_size: int`; `cnn_activation_func` |
 | `upsample_kwargs` | Common embedding/norm/position/MLP keys plus `scaling_method`: `"cnn_transpose"`, `"interpolate"`, or `"cnn_interpolate"`; `scaling_interpolation_method`; `cnn_dim_ratio`; `cnn_kernel_size`; `cnn_activation_func` |
 | `reshaper_kwargs` | `add_kl: bool`; `latent_dim_ratio: positive float` |
-| `cls_token_regularizer_kwargs` | `start: int`; `end: int`; these are Python token-slice bounds before flattening |
+| `cls_token_regularizer_kwargs`, `clf_cls_token_regularizer_kwargs` | `start: int`; `end: int`; these are Python token-slice bounds before flattening; optional `mlp_ratio: positive float or None` adds a hidden Dense layer; optional `activation_function: Keras activation` defaults to `"tanh"` |
 
 `pos_embed_type` is `None` or one of `new_weight`, `1d_sincos`,
 `1d_interpolate`, `1d_learned_interpolate`, `2d_sincos`, `2d_interpolate`, and
@@ -383,6 +387,15 @@ growth = classifier_network.add_depths({
 Classifier-only additional names are `feature_aggregator` and
 `cross_attention_aggregator`. Added sequences must preserve the feature width
 expected by the already-created output/classifier head.
+
+Dynamic class growth follows the same serialization rule across transformer
+variants: each `add_class()` updates `get_config()["num_classes"]` to the
+current width and expands every configured auxiliary softmax plus the final
+classifier output, including attached decoder configuration where applicable.
+Optional regularizer hidden layers are preserved. That integer records the
+checkpoint's final topology. Continual restoration still starts from
+`num_classes=None` and replays the wrapper's persisted zero-based
+`seen_classes`, which retains the real-label mapping and future growth intent.
 
 ## Encoder/decoder status
 

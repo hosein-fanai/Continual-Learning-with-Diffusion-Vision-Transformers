@@ -586,8 +586,10 @@ def get_model(
             values (including raw-image ``pad``), optimizer values, ``task``,
             ``loss_function``, summary/weight settings, and the documented
             legacy classifier options. Typed configured VAE/diffusion sections
-            inherit dataset dimensions. Continual diffusion construction always
-            passes ``num_classes=None`` so its label vocabulary grows in place.
+            inherit dataset dimensions. Fresh and restored continual diffusion
+            construction always passes raw ``num_classes=None``; a paired
+            checkpoint's zero-based ``seen_classes`` mapping then replays the saved class
+            growth before weights are loaded.
 
     Returns:
         tf.keras.Model | dict[str, object]: A built and compiled classifier,
@@ -996,11 +998,15 @@ def get_model(
             selected_kwargs.pop("compile_args", {}) or {}
         )
         continual_diffusion = str(task).lower() == "continual"
+        saved_seen_classes = wrapper_kwargs.get("seen_classes") or {}
+        restoring_dynamic_diffusion = bool(saved_seen_classes)
         dataset_dimensions = {
-            "num_classes": None if continual_diffusion or (
-                using_typed_model_config and
-                selected_kwargs.get("num_classes") is None
-            ) else class_num,
+            "num_classes": (
+                None if continual_diffusion or restoring_dynamic_diffusion or (
+                    using_typed_model_config and
+                    selected_kwargs.get("num_classes") is None
+                ) else class_num
+            ),
             "image_size": image_shape[0], 
             "channels": image_shape[-1]
         }
@@ -1012,9 +1018,11 @@ def get_model(
         else:
             for key, value in dataset_dimensions.items():
                 selected_kwargs.setdefault(key, value)
-            # Override only class width for direct continual construction.
-            if continual_diffusion:
-                selected_kwargs["num_classes"] = None
+            # Dynamic construction replays any saved width from seen_classes.
+            if restoring_dynamic_diffusion or continual_diffusion:
+                selected_kwargs["num_classes"] = dataset_dimensions[
+                    "num_classes"
+                ]
 
         # Construct the base diffusion transformer.
         if name == "diffusion_transformer":
@@ -1219,12 +1227,13 @@ def get_model(
 
         use_buffer = config.continually_learn.use_buffer \
                     if config is not None else kwargs.get("use_buffer", False)
-        # Dynamic checkpoints need a restored seen-class mapping before loading.
+        # Dynamic checkpoints need their paired persisted label mapping.
         if not use_buffer and weights_path is not None \
-        and model_name in _DIFFUSION_MODELS:
+        and model_name in _DIFFUSION_MODELS \
+        and not wrapper_kwargs.get("seen_classes"):
             raise ValueError(
-                "weights_path is not supported for continual diffusion; "
-                "pass an initialized dynamic wrapper directly instead."
+                "Continual diffusion weights require a paired config "
+                "containing seen_classes."
             )
         classifier = build_classifier(
             selected_classifier_name, 

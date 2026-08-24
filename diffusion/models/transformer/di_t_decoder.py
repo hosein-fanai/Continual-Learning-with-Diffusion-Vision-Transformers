@@ -867,6 +867,11 @@ class DiTDecoder(DiffusionTransformer):
         # Build this decoder depth's auxiliary token head.
         if key in self.cls_token_regularizer_ids:
             stage[self.CTR] = self._create_token_regularizer(
+                i=i, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                kwargs=self.cls_token_regularizer_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.CTR[2:]}"
             )
 
@@ -1012,10 +1017,10 @@ class DiTDecoder(DiffusionTransformer):
             None: Variables are created in place.
         """
 
-        shapes = self.build_model(call_model=True)
+        shapes = self._build_model(call_model=True)
         tf.keras.Model.build(self, shapes)
 
-    def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
+    def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create decoder inputs plus one input per encoder feature.
 
         Args:
@@ -1025,7 +1030,7 @@ class DiTDecoder(DiffusionTransformer):
             list[tf.TensorShape]: Shapes of every packed input.
         """
 
-        DiffusionTransformer.build_model(self, call_model=False)
+        DiffusionTransformer._build_model(self, call_model=False)
         decoder_inputs = self.inputs
         encoder_cond = layers.Input(
             shape=(self.cond_dim,), 

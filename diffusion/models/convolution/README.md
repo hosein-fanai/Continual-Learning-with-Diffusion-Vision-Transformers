@@ -282,6 +282,12 @@ Constructor values and appended depth specifications are included in
 rebuild the topology used for EMA cloning; learned state still transfers
 through normal Keras weight/model saving or `set_weights`.
 
+For a dynamically grown U-Net, each `add_class()` also updates the saved
+`num_classes` to the current width and expands every enabled main/classifier
+auxiliary softmax plus the final classifier head. Continual restoration
+additionally requires the wrapper's persisted zero-based `seen_classes`
+mapping; it restores label identity and enables later growth.
+
 `cls_token_regularizer_ids` and classifier `clf_` names are retained for
 compatibility with the existing wrappers even though the convolutional model
 has spatial features rather than transformer class tokens.

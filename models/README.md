@@ -20,5 +20,7 @@ model.load_weights("models/DiT/model.weights.h5")
 
 Keras weights do not encode every Python constructor choice. Treat the nearby
 YAML as provenance, and note that historical configuration keys may predate
-the current APIs. Do not confuse this artifact directory with the import path
-`diffusion.models`.
+the current APIs. A dynamic continual-diffusion checkpoint requires its paired
+updated config: it records the current raw class width and wrapper
+zero-based `seen_classes` mapping used to rebuild the topology before loading weights. Do
+not confuse this artifact directory with the import path `diffusion.models`.

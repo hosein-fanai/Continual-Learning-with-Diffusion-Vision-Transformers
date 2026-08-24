@@ -333,7 +333,14 @@ class UNetClassifierConfig(UNetConfig):
 
 @dataclass
 class DiffusionModelConfig(KwargsMixin):
-    """Arguments forwarded to ``DiffusionModel`` except ``network``."""
+    """Arguments forwarded to ``DiffusionModel`` except ``network``.
+
+    ``seen_classes`` is normally empty in input configs. Dynamic diffusion
+    checkpoint saving fills it with the live dataset-label-to-zero-based-target
+    mapping. On a continual reload, the raw constructor still receives
+    ``num_classes=None``
+    and the wrapper uses this mapping to restore the grown topology.
+    """
 
     use_ema: bool = True
     test_network_name: str = "ema"
@@ -358,6 +365,7 @@ class DiffusionModelConfig(KwargsMixin):
     resize_method: str = "area"
     resize_antialias: bool = True
     swap_noise_image: bool = False
+    seen_classes: dict[object, int] = field(default_factory=dict)
     seed: int | None = None
 
 
@@ -489,10 +497,13 @@ class ModelConfig:
         weights_path (str | None): Keras weights file loaded after construction,
             or ``None`` for fresh weights. In continual runs it initializes a
             VAE replay model, or the classifier and its incremental head
-            prefixes for classifier-only and buffer-based runs. Continual
-            diffusion instead requires an initialized dynamic wrapper carrying
-            its ``seen_classes`` mapping. Training updates this field to its
-            saved ``model.weights.h5`` path.
+            prefixes for classifier-only and buffer-based runs. A continual
+            diffusion checkpoint requires a paired config containing the
+            current ``num_classes`` and zero-based wrapper ``seen_classes``
+            mapping. The
+            continual factory still constructs a dynamic raw network and the
+            wrapper grows it before loading these weights. Training updates
+            this field to its saved ``model.weights.h5`` path.
         diffusion_transformer (DiffusionTransformerConfig): Raw denoising
             network settings used only when ``with_classifier=False``.
         dit_classifier (DiTClassifierConfig): Raw joint network settings used
@@ -692,6 +703,8 @@ class TrainingConfig:
         results_path (str | None): Base artifact directory passed to the image
             callback; ``None`` delegates path selection to that callback.
         save_weights (bool): Save final wrapper weights and record their path.
+            Dynamic diffusion weights require a paired updated config file;
+            training writes it even if ordinary config saving was disabled.
         task (str): ``legacy``, ``generation``, ``joint``, ``classification``,
             or ``continual``.
         seed (int | None): TensorFlow/Keras and dataset split seed.
@@ -966,12 +979,22 @@ def run_self_tests() -> dict[str, str]:
         depth=0, 
         vit_block_mlp_ratio=1, 
         ln_mlp_ratio=3, 
+        cls_token_regularizer_kwargs={
+            "start": 0,
+            "end": 1,
+            "mlp_ratio": 2.0,
+            "activation_function": "relu",
+        },
         use_refiner_cnn=True, 
         refiner_cnn_hidden_dim=7, 
         refiner_cnn_residual=False, 
     )
     assert transformer_custom.kwargs() == asdict(transformer_custom)
     assert transformer_custom.depth == 0 and transformer_custom.use_cfg is False
+    assert (
+        transformer_custom.cls_token_regularizer_kwargs["activation_function"]
+        == "relu"
+    )
     transformer_none_values = DiffusionTransformerConfig(
         time_freq_dim=None, 
         time_mlp_ratio=None, 
@@ -1010,10 +1033,21 @@ def run_self_tests() -> dict[str, str]:
         aggregate_from_noises=True, 
         classifier_only_cls_token=False, 
         cls_token_pos_merger_type="concat", 
+        clf_cls_token_regularizer_kwargs={
+            "start": 0,
+            "end": 1,
+            "mlp_ratio": 1.5,
+            "activation_function": "tanh",
+        },
         dropout_rate=0.5, 
     )
     assert classifier_custom.kwargs()["aggregate_from_noises"] is True
     assert classifier_custom.kwargs()["num_classes"] == 3
+    assert (
+        classifier_custom.kwargs()["clf_cls_token_regularizer_kwargs"][
+            "mlp_ratio"
+        ] == 1.5
+    )
 
     encoder_decoder_classifier_defaults = DiTEncoderDecoderClassifierConfig()
     assert isinstance(encoder_decoder_classifier_defaults, DiTClassifierConfig)
@@ -1047,6 +1081,7 @@ def run_self_tests() -> dict[str, str]:
     diffusion_defaults = DiffusionModelConfig()
     assert diffusion_defaults.test_network_name == "ema"
     assert diffusion_defaults.swap_noise_image is False
+    assert diffusion_defaults.seen_classes == {}
     diffusion_custom = DiffusionModelConfig(
         test_network_name="raw", 
         ema_decay=0.0, 
@@ -1056,9 +1091,12 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         test_cfg_scale=1.0, 
         swap_noise_image=True, 
+        seen_classes={4: 0},
     )
     assert diffusion_custom.kwargs() == asdict(diffusion_custom)
     assert diffusion_custom.modify_first_t and diffusion_custom.swap_noise_image
+    diffusion_defaults.seen_classes[9] = 0
+    assert DiffusionModelConfig().seen_classes == {}
 
     diffusion_classifier_defaults = DiffusionClassifierConfig()
     assert isinstance(diffusion_classifier_defaults, DiffusionModelConfig)

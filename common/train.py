@@ -58,8 +58,9 @@ def train_model(
             CIFAR loader used by continual learning.
         valset (tf.data.Dataset | None): Optional validation pairs.
         save_config_ (bool): Save ``config.yaml`` before training and again
-            after paths are updated.  It does not disable callback artifacts or
-            weight saving.
+            after paths are updated. Dynamic diffusion weight saving always
+            writes the required paired config even when this is false. It does
+            not disable callback artifacts or other weight saving.
         extra_callbacks (Sequence[tf.keras.callbacks.Callback] | None): Extra
             callbacks appended after the standard callbacks. HPO uses this for
             pruning; the continual learner uses it for per-task callbacks.
@@ -88,13 +89,16 @@ def train_model(
         writes ``model.weights.h5`` and sets ``config.model.weights_path`` to
         the selected model's weights. A continual replay model is saved as
         ``replay-model.weights.h5`` and is the selected model in that case.
+        Dynamic diffusion saves also persist the current raw ``num_classes``
+        and wrapper ``seen_classes`` in the mandatory paired ``config.yaml``.
         TensorBoard and HPO metadata are written when configured. Epoch
         trajectory sampling is limited to compatible diffusion wrappers. A
         continual model bundle is updated with its final classifier/replay
         model and a ``continual_details`` mapping.
 
     Raises:
-        TypeError: If ``model`` or ``trainset`` is omitted.
+        TypeError: If ``model`` or ``trainset`` is omitted, or dynamic
+            diffusion weights are requested without a ``Config`` to save.
     """
 
     # Require both a model and training input for orchestration.
@@ -179,6 +183,23 @@ def train_model(
         ))
         fit_method = "fit"
         fit_kwargs = {}
+
+    checkpoint_model = model.get("generative_model") \
+        if isinstance(model, dict) else model
+    dynamic_diffusion_checkpoint = save_weights and isinstance(
+        checkpoint_model, DiffusionModel
+    ) and getattr(
+        checkpoint_model.network, "dynamic_num_classes", False
+    )
+    # Never write dynamic diffusion weights without their reconstruction state.
+    if dynamic_diffusion_checkpoint and config is None:
+        raise TypeError(
+            "Dynamic diffusion weight saving requires a Config so its "
+            "num_classes and seen_classes can be saved."
+        )
+    # A reconstructable dynamic checkpoint always includes its paired YAML.
+    if dynamic_diffusion_checkpoint:
+        save_config_ = True
 
     callbacks_list = [
         LrLoggerCallback(), 
@@ -425,6 +446,50 @@ def train_model(
             image_callback.results_path, 
             "model.weights.h5"
         )
+
+        # Store the topology and label map required to reload dynamic weights.
+        if dynamic_diffusion_checkpoint:
+            checkpoint_model = model.get("generative_model") \
+                if isinstance(model, dict) else model
+            current_num_classes = checkpoint_model.network.num_classes or None
+            configured_model_name = str(
+                config.model.name or (
+                    "dit_classifier" if config.model.with_classifier
+                    else "diffusion_transformer"
+                )
+            ).lower()
+
+            # Update the same raw-model source that get_model will read.
+            if config.model.name is not None and config.model.kwargs:
+                raw_config = config.model.kwargs
+                raw_config["num_classes"] = current_num_classes
+                decoder_config = raw_config.get("decoder_kwargs")
+                # Keep an explicitly configured composite decoder aligned.
+                if isinstance(decoder_config, dict):
+                    decoder_config["num_classes"] = current_num_classes
+            # Otherwise update the selected typed raw-model section.
+            else:
+                raw_config = getattr(config.model, configured_model_name)
+                raw_config.num_classes = current_num_classes
+                decoder_config = getattr(raw_config, "decoder_kwargs", None)
+                # Keep an explicitly configured composite decoder aligned.
+                if isinstance(decoder_config, dict):
+                    decoder_config["num_classes"] = current_num_classes
+
+            saved_seen_classes = dict(checkpoint_model.seen_classes)
+            # Update a generic wrapper mapping only when it already has precedence.
+            if config.model.name is not None and config.model.wrapper_kwargs:
+                config.model.wrapper_kwargs["seen_classes"] = saved_seen_classes
+            # Otherwise update the typed section matching the actual wrapper.
+            else:
+                wrapper_section_name = "diffusion_classifier_v2" \
+                    if isinstance(checkpoint_model, DiffusionClassifierV2) \
+                    else "diffusion_classifier" \
+                    if isinstance(checkpoint_model, DiffusionClassifier) \
+                    else "diffusion_model"
+                getattr(
+                    config.model, wrapper_section_name
+                ).seen_classes = saved_seen_classes
 
         # Save continual classifier and optional replay-model weights separately.
         if isinstance(model, dict):
