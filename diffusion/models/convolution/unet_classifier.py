@@ -359,6 +359,41 @@ class UNetClassifier(UNet):
             name=f"{self.name_prefix}classes_final_layer",
         ))
 
+    def add_class(self, source_network: object | None = None) -> None:
+        """Append one classifier output while preserving the existing head.
+
+        Args:
+            source_network (object | None): Optional already-expanded raw
+                classifier whose new output initializes an EMA clone.
+
+        Returns:
+            None: The label vocabulary and final classifier layer grow by one.
+        """
+
+        old_layer = self.classifier.layers[-1]
+        old_kernel, old_bias = old_layer.get_weights()
+        super().add_class(source_network=source_network)
+
+        layer_config = old_layer.get_config()
+        layer_config["units"] = self.num_classes
+        new_layer = old_layer.__class__.from_config(layer_config)
+        new_layer.build((None, old_kernel.shape[0]))
+        new_kernel, new_bias = new_layer.get_weights()
+        new_kernel[..., :-1] = old_kernel
+        new_bias[:-1] = old_bias
+
+        # Initialize the new EMA output from the already-expanded raw network.
+        if source_network is not None:
+            source_kernel, source_bias = (
+                source_network.classifier.layers[-1].get_weights()
+            )
+            new_kernel[..., -1] = source_kernel[..., -1]
+            new_bias[-1] = source_bias[-1]
+
+        new_layer.set_weights([new_kernel, new_bias])
+        self.classifier.pop()
+        self.classifier.add(new_layer)
+
     def set_max_encoder_num(self, max_encoder_num: int | None = None) -> None:
         """Set the greatest inherited feature depth needed for classification.
 

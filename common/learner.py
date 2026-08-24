@@ -78,8 +78,9 @@ def _continually_learn(
 ) -> list[float] | dict[str, object]:
     """Run class-incremental classifier training from two through N classes.
 
-    A new output head is created at each task unless a generative model's
-    full-width classifier is selected. Optional replay comes either from a
+    Standalone classifier heads are expanded between tasks. A diffusion
+    classifier initialized with ``num_classes=None`` instead grows its attached
+    head in place as labels are discovered. Optional replay comes either from a
     fixed-size sample buffer or a conditional generative model; the two modes
     are mutually exclusive.
 
@@ -148,7 +149,8 @@ def _continually_learn(
             to ``DiffusionModel``. Pass a compiled wrapper directly
             when custom wrapper or optimizer settings are needed. This cannot
             be combined with ``use_buffer``. Diffusion replay requires image
-            data and accepts every loader preprocessing value.
+            data, requires a network initialized with ``num_classes=None``, and
+            accepts every loader preprocessing value.
         generative_model_compile_args (dict[str, object] | None): Compilation
             values used when this function wraps a raw diffusion network.
             Values override ``{"optimizer": "adam", "loss": "mse"}``.
@@ -161,11 +163,11 @@ def _continually_learn(
             value samples exactly that many current-task rows with replacement.
         use_generative_model_classifier (bool): Use the classifier attached to
             a ``VAEClassifier`` or the classifier branch of a
-            ``DiffusionClassifier`` as the continually learned model. The
-            selected classifier keeps its original full-width output head. A
-            joint-only VAE task reports reconstruction-based classifier
-            accuracy through the VAE; a separately trained classifier reports
-            its direct-input accuracy.
+            ``DiffusionClassifier`` as the continually learned model. A VAE
+            classifier keeps its fixed-width head; a diffusion classifier adds
+            one output for each newly observed label. A joint-only VAE task
+            reports reconstruction-based classifier accuracy through the VAE;
+            a separately trained classifier reports its direct-input accuracy.
         train_classifier_separately (bool): Give the selected classifier its
             own training step in addition to generative training. This remains
             optional for ``VAEClassifier`` and requires its classifier to be
@@ -603,11 +605,12 @@ def _continually_learn(
             seed=buffer_kwargs["seed"]
         )
 
+    # Wrap raw diffusion classifiers for joint replay training.
     if isinstance(generative_model, (
         DiTClassifier, 
         DiTEncoderDecoderClassifier, 
         UNetClassifier
-    )): # Wrap raw diffusion classifiers for joint replay training.
+    )):
         generative_model = DiffusionClassifier(
             network=generative_model, 
             mask_by_nulls=generative_model.use_cfg, 
@@ -636,6 +639,15 @@ def _continually_learn(
         raise TypeError(
             "generative_model must be a supported VAE, "
             "diffusion network, or diffusion wrapper."
+        )
+
+    # Continual diffusion always uses the dynamic class-vocabulary API.
+    if isinstance(generative_model, DiffusionModel) and not getattr(
+        generative_model.network, "dynamic_num_classes", False
+    ):
+        raise ValueError(
+            "Continual diffusion networks must be initialized with "
+            "num_classes=None."
         )
 
     # Require the classifier wrapper that owns ensemble evaluation when enabled.
@@ -1367,6 +1379,7 @@ def continually_learn(
               verbosity.
             - ``generative_model`` (tf.keras.Model | None): Conditional VAE,
               raw diffusion network, or diffusion wrapper used for replay.
+              Diffusion networks must be initialized with ``num_classes=None``.
             - ``generative_model_compile_args`` (dict | None): Compile
               overrides used only when a raw diffusion network is wrapped;
               defaults to Adam and MSE.

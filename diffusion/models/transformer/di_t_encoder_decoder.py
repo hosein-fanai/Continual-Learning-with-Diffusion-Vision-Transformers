@@ -115,8 +115,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
         decoder_config = deepcopy(saved_decoder_kwargs)
         decoder_config["build"] = False
         decoder_config.setdefault("name_prefix", "decoder_model/")
-        decoder_config.setdefault("num_classes", self.num_classes)
-        decoder_config.setdefault("use_cfg", self.use_cfg)
+        # Keep the nested decoder on the same dynamic vocabulary contract.
+        if self.dynamic_num_classes:
+            decoder_config["num_classes"] = None
+            decoder_config["use_cfg"] = self.use_cfg
+        # Preserve explicit nested-decoder settings in fixed-width mode.
+        else:
+            decoder_config.setdefault("num_classes", self.num_classes)
+            decoder_config.setdefault("use_cfg", self.use_cfg)
         decoder_config.setdefault("timesteps", self.timesteps)
         decoder_config.setdefault("image_size", self.image_size)
         decoder_config.setdefault("channels", self.channels)
@@ -753,6 +759,24 @@ class DiTEncoderDecoder(DiffusionTransformer):
         probe._apply_depths(deepcopy(depth_spec))
 
         return self._apply_depths(depth_spec)
+
+    def add_class(self, source_network: object | None = None) -> None:
+        """Grow the encoder and attached decoder label vocabularies together.
+
+        Args:
+            source_network (object | None): Optional already-expanded raw
+                encoder-decoder used to initialize new EMA embedding rows.
+
+        Returns:
+            None: Both label vocabularies grow by one in place.
+        """
+
+        super().add_class(source_network=source_network)
+        self.decoder.add_class(
+            source_network=(
+                source_network.decoder if source_network is not None else None
+            )
+        )
 
     def set_current_resolution(self, resolution: int | None = None) -> None:
         """Synchronize active encoder and decoder resolutions.

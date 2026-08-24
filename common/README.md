@@ -165,10 +165,14 @@ policy; and `reporting` controls aggregate artifacts. A classifier-family
 `model.name` creates a classifier-only run. A VAE or diffusion `model.name`
 creates that replay model and uses `model.classifier_name` plus
 `model.classifier_kwargs` for the standalone classifier. Buffer replay sets the
-generative model to `None`. Typed VAE/diffusion sections receive the selected
-dataset's class count and padded input dimensions automatically. In continual
-mode, `model.weights_path` initializes the replay model when present; for a
-classifier-only or buffer run it initializes the incremental classifier.
+generative model to `None`. Typed VAE sections receive the selected dataset's
+class count and padded input dimensions automatically. Typed diffusion sections
+receive the padded dimensions; in continual mode their constructors always
+receive `num_classes=None` so classes are added as labels are observed.
+`model.weights_path` initializes a continual VAE replay model, or the
+incremental classifier in classifier-only and buffer runs. Continual diffusion
+checkpoints require their `seen_classes` mapping, so pass an already initialized
+dynamic wrapper instead of using `model.weights_path`.
 
 With `config=None`, all inputs are direct keywords:
 
@@ -216,13 +220,14 @@ for VAE construction and resampling behavior.
 For diffusion replay, raw classifier variants receive `DiffusionClassifier`;
 all other supported raw diffusion models, including `DiTDecoder` and
 `DiTEncoderDecoder`, receive `DiffusionModel`. An already-created diffusion
-wrapper is preserved. `generative_model_kwargs` uses the same `train_num` and
-`samples_per_class` controls. Diffusion replay accepts every loader preprocessing
-value, including `normalize`; the learner converts diffusion data as needed and
-returns generated samples to the classifier's input representation. When a raw
-diffusion network is passed directly, `generative_model_compile_args` overrides
-the default Adam/MSE compilation. An already-wrapped model remains compiled as
-provided.
+wrapper is preserved. Raw networks and wrappers passed directly must have been
+initialized with `num_classes=None`. `generative_model_kwargs` uses the same
+`train_num` and `samples_per_class` controls. Diffusion replay accepts every
+loader preprocessing value, including `normalize`; the learner converts
+diffusion data as needed and returns generated samples to the classifier's input
+representation. When a raw diffusion network is passed directly,
+`generative_model_compile_args` overrides the default Adam/MSE compilation. An
+already-wrapped model remains compiled as provided.
 
 For `VAEClassifier`, set `use_generative_model_classifier=True` to use its
 attached classifier as the continually learned model. By default that classifier
@@ -238,7 +243,9 @@ The same classifier-selection flag supports `DiffusionClassifier` and
 `train_classifier_separately` must be false because its existing `fit` step
 trains generation and classification jointly. For V2 it must be true; the
 learner uses `fit_generator` followed by the existing `fit_discriminator` API.
-Evaluation uses the selected raw/EMA network's `predict_class` path.
+Each newly observed label grows the dynamic diffusion classifier's final layer
+by one output while preserving existing weights. Evaluation uses the selected
+raw/EMA network's `predict_class` path.
 Set `continually_learn.evaluate_ensemble_accuracy=True` to evaluate the same
 task test data with timestep ensembling. Normal task scores remain in
 `accuracies`; with `return_details=True`, ensemble scores are returned in

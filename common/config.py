@@ -281,7 +281,7 @@ class DiTEncoderDecoderClassifierConfig(DiTClassifierConfig):
 class UNetConfig(KwargsMixin):
     """Arguments forwarded to ``UNet``."""
 
-    num_classes: int = 10
+    num_classes: int | None = 10
     use_cfg: bool = True
     timesteps: int = 1_000
     image_size: int = 32
@@ -474,7 +474,8 @@ class ModelConfig:
             legacy compact DiT selection below.
         kwargs (dict): Generic raw-model or classifier constructor arguments.
             When nonempty, these retain precedence over the typed section for
-            ``name``.
+            ``name``. Continual diffusion construction overrides
+            ``num_classes`` with ``None``.
         wrapper_kwargs (dict): Generic diffusion-wrapper arguments.
         classifier_name (str | None): Target classifier for continual runs.
         classifier_kwargs (dict): Target-classifier architecture arguments.
@@ -486,10 +487,12 @@ class ModelConfig:
         show_network_summary (bool): Print the wrapper/network summary after
             construction.
         weights_path (str | None): Keras weights file loaded after construction,
-            or ``None`` for fresh weights. In continual runs it initializes the
-            replay model when one is built, otherwise the classifier and its
-            incremental head prefixes. Training updates this field to its saved
-            ``model.weights.h5`` path.
+            or ``None`` for fresh weights. In continual runs it initializes a
+            VAE replay model, or the classifier and its incremental head
+            prefixes for classifier-only and buffer-based runs. Continual
+            diffusion instead requires an initialized dynamic wrapper carrying
+            its ``seen_classes`` mapping. Training updates this field to its
+            saved ``model.weights.h5`` path.
         diffusion_transformer (DiffusionTransformerConfig): Raw denoising
             network settings used only when ``with_classifier=False``.
         dit_classifier (DiTClassifierConfig): Raw joint network settings used
@@ -625,7 +628,8 @@ class ContinuallyLearnConfig(KwargsMixin):
     Attributes:
         class_num (int | None): Number of classes introduced across the run.
             ``None`` uses the selected dataset's complete class count; an
-            explicit value must be between 2 and that count.
+            explicit value must be between 2 and that count. This controls the
+            task sequence, not the dynamic diffusion model's initial head width.
         remove_prev_classes (bool): Train later tasks on only the newly
             introduced class when true; otherwise train on every seen class.
         keep_same_model (bool): Carry shared classifier weights and old output

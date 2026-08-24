@@ -514,6 +514,7 @@ class DiffusionModel(ArgumentSaverModel):
                 yield ``(images, labels)`` batches.
             y (object | None): Separate Keras labels.  When supplied, these take
                 precedence over labels contained in ``x``.
+            verbose (int | bool): Whether to print newly discovered labels.
 
         Returns:
             None: New real labels are mapped to consecutive network condition
@@ -554,6 +555,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Refresh symbolic outputs, optimizer variables, and cached traces once.
         if len(new_classes) > 0:
+            # Report the labels added during this scan when requested.
             if verbose:
                 print("Found new classes:", new_classes)
 
@@ -651,8 +653,11 @@ class DiffusionModel(ArgumentSaverModel):
             self.ctr_accuracy_tracker
         ]
 
-    def compile(self, loss: losses.Loss | str = "mse", 
-                **kwargs: object) -> None:
+    def compile(
+        self,
+        loss: losses.Loss | str = "mse",
+        **kwargs: object
+    ) -> None:
         """Configure the compiled prediction loss, optimizer, and trackers.
 
         Args:

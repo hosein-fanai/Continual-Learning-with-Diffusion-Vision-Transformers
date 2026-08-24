@@ -251,9 +251,12 @@ Each task rebuilds its training and validation inputs as `tf.data.Dataset`
 pipelines. Both training and test evaluation are reported through
 `common.train`. Fixed-buffer and generative rehearsal are mutually exclusive.
 Configured sample limits, shuffling, raw-image padding, and seed are preserved
-inside the task loop; typed replay models derive their class count and padded
-dimensions from the dataset. `model.weights_path` initializes the replay model,
-or the incremental classifier when no replay model is built.
+inside the task loop. Typed replay models derive padded dimensions from the
+dataset; continual diffusion constructors receive `num_classes=None` and grow
+their class vocabulary as labels are observed. `model.weights_path` initializes
+a continual VAE replay model, or the incremental classifier for classifier-only
+and buffer runs. To resume continual diffusion, pass an initialized dynamic
+wrapper carrying its `seen_classes` mapping.
 See `common/README.md` for the complete direct-key list, config-field mapping,
 supported raw-model/wrapper mappings, loader requirements, and dictionary keys;
 see

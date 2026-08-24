@@ -586,7 +586,8 @@ def get_model(
             values (including raw-image ``pad``), optimizer values, ``task``,
             ``loss_function``, summary/weight settings, and the documented
             legacy classifier options. Typed configured VAE/diffusion sections
-            inherit dataset dimensions and class count.
+            inherit dataset dimensions. Continual diffusion construction always
+            passes ``num_classes=None`` so its label vocabulary grows in place.
 
     Returns:
         tf.keras.Model | dict[str, object]: A built and compiled classifier,
@@ -709,7 +710,7 @@ def get_model(
         onehot_labels = config.dataset.onehot_labels
         task = config.training.task
         loss_function = config.model.loss_function
-        # Restrict continual output width to the requested leading classes.
+        # Restrict the continual run to the requested leading classes.
         if task.lower() == "continual" \
         and config.continually_learn.class_num is not None:
             continual_class_num = config.continually_learn.class_num
@@ -994,21 +995,26 @@ def get_model(
         diffusion_compile_args = deepcopy(
             selected_kwargs.pop("compile_args", {}) or {}
         )
+        continual_diffusion = str(task).lower() == "continual"
         dataset_dimensions = {
-            "num_classes": None if using_typed_model_config and
-                        selected_kwargs.get("num_classes") is None 
-                        else class_num, 
+            "num_classes": None if continual_diffusion or (
+                using_typed_model_config and
+                selected_kwargs.get("num_classes") is None
+            ) else class_num,
             "image_size": image_shape[0], 
             "channels": image_shape[-1]
         }
 
-        # Make dataset-derived diffusion dimensions authoritative in typed mode.
+        # Make every dataset-derived diffusion dimension authoritative in typed mode.
         if using_typed_model_config:
             selected_kwargs.update(dataset_dimensions)
         # Preserve direct dimensions while supplying missing dataset defaults.
         else:
             for key, value in dataset_dimensions.items():
                 selected_kwargs.setdefault(key, value)
+            # Override only class width for direct continual construction.
+            if continual_diffusion:
+                selected_kwargs["num_classes"] = None
 
         # Construct the base diffusion transformer.
         if name == "diffusion_transformer":
@@ -1213,6 +1219,13 @@ def get_model(
 
         use_buffer = config.continually_learn.use_buffer \
                     if config is not None else kwargs.get("use_buffer", False)
+        # Dynamic checkpoints need a restored seen-class mapping before loading.
+        if not use_buffer and weights_path is not None \
+        and model_name in _DIFFUSION_MODELS:
+            raise ValueError(
+                "weights_path is not supported for continual diffusion; "
+                "pass an initialized dynamic wrapper directly instead."
+            )
         classifier = build_classifier(
             selected_classifier_name, 
             classifier_kwargs

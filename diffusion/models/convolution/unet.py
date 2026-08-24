@@ -37,7 +37,8 @@ class UNet(ArgumentSaverModel):
     :meth:`DiffusionModel.sample_vae` can decode a latent without bypassing it.
 
     Args:
-        num_classes: Number of real dataset classes.
+        num_classes: Number of real dataset classes, or ``None`` for dynamic
+            continual growth.
         use_cfg: Reserve label ID 0 for classifier-free guidance.
         timesteps: Number of discrete diffusion timesteps.
         image_size: Native square input resolution.
@@ -122,7 +123,8 @@ class UNet(ArgumentSaverModel):
         """Initialize a conditional convolutional diffusion U-Net.
 
         Args:
-            num_classes (int): Positive number of real classes.
+            num_classes (int | None): Positive number of real classes, or
+                ``None`` for dynamic continual growth with CFG.
             use_cfg (bool): Whether label ID 0 is reserved for CFG.
             timesteps (int): Positive timestep-embedding vocabulary size.
             image_size (int): Positive native square image side.
@@ -175,6 +177,7 @@ class UNet(ArgumentSaverModel):
         super().__init__(**kwargs)
         self._check_arguments(
             num_classes=num_classes, 
+            use_cfg=use_cfg,
             timesteps=timesteps, 
             image_size=image_size, 
             channels=channels, 
@@ -301,7 +304,8 @@ class UNet(ArgumentSaverModel):
 
     @staticmethod
     def _check_arguments(
-        num_classes: int, 
+        num_classes: int | None,
+        use_cfg: bool,
         timesteps: int, 
         image_size: int, 
         channels: int, 
@@ -320,7 +324,8 @@ class UNet(ArgumentSaverModel):
         """Validate constructor dimensions and bottleneck options.
 
         Args:
-            num_classes (int): Real class count.
+            num_classes (int | None): Real class count or dynamic sentinel.
+            use_cfg (bool): Whether dynamic mode has a null-label row.
             timesteps (int): Discrete timestep count.
             image_size (int): Native square image side.
             channels (int): Image channel count.
@@ -340,8 +345,18 @@ class UNet(ArgumentSaverModel):
             None: Valid inputs return normally; invalid inputs raise ValueError.
         """
 
+        # Accept either a fixed positive width or the continual-growth sentinel.
+        if num_classes is not None and (
+            not isinstance(num_classes, int)
+            or isinstance(num_classes, bool)
+            or num_classes < 1
+        ):
+            raise ValueError("num_classes must be None or a positive integer.")
+        # Dynamic construction needs the CFG null row as its initial vocabulary.
+        if num_classes is None and not use_cfg:
+            raise ValueError("num_classes=None requires use_cfg=True.")
+
         dimensions = {
-            "num_classes": num_classes, 
             "timesteps": timesteps, 
             "image_size": image_size, 
             "channels": channels, 
@@ -1107,6 +1122,47 @@ class UNet(ArgumentSaverModel):
         self.outputs = self.call(self.inputs) if call_model else None
 
         return [value.shape for value in self.inputs]
+
+    def add_class(self, source_network: object | None = None) -> None:
+        """Append one label embedding while preserving existing rows.
+
+        Args:
+            source_network (object | None): Optional already-expanded raw
+                network whose new embedding row initializes an EMA clone.
+
+        Returns:
+            None: The label vocabulary grows by one in place.
+
+        Raises:
+            ValueError: If the network was initialized with a fixed class count.
+        """
+
+        # Keep fixed-width construction on its established immutable path.
+        if not self.dynamic_num_classes:
+            raise ValueError("add_class requires num_classes=None at initialization.")
+
+        old_label_embedder = self.label_embedder
+        old_weights = old_label_embedder.get_weights()
+        self.num_classes += 1
+        self.num_labels = self.num_classes + int(self.use_cfg)
+
+        label_config = old_label_embedder.get_config()
+        label_config["embed_steps"] = self.num_labels
+        new_label_embedder = old_label_embedder.__class__.from_config(
+            label_config
+        )
+        new_label_embedder(tf.zeros((1,), dtype=tf.int32), training=False)
+        new_weights = new_label_embedder.get_weights()
+        new_weights[0][:-1] = old_weights[0]
+        for index in range(1, len(old_weights)):
+            new_weights[index] = old_weights[index]
+
+        # Initialize the new EMA row from the already-expanded raw network.
+        if source_network is not None:
+            new_weights[0][-1] = source_network.label_embedder.get_weights()[0][-1]
+
+        new_label_embedder.set_weights(new_weights)
+        self.label_embedder = new_label_embedder
 
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Append shape-preserving convolution or regularizer stages.
