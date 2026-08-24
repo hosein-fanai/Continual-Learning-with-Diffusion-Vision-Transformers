@@ -12,22 +12,9 @@ from copy import deepcopy
 
 from typing import Literal
 
-from . import CondType, TokenType, IdsType, IdsDictType
+from . import CondType, TokenType, IdsType, IdsDictType, select_first_token
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
-
-
-def _select_first_token(x: tf.Tensor) -> tf.Tensor:
-    """Select the class token from a token sequence.
-
-    Args:
-        x (tf.Tensor): Float token tensor of shape ``[B, tokens, features]``.
-
-    Returns:
-        tf.Tensor: First-token features of shape ``[B, features]``.
-    """
-
-    return x[:, 0, :]
 
 
 class DiTClassifier(DiffusionTransformer):
@@ -301,7 +288,7 @@ class DiTClassifier(DiffusionTransformer):
         # Otherwise classify from the first class-token position.
         else:
             self.classifier_feature_extractor = layers.Lambda(
-                _select_first_token,
+                select_first_token, 
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
@@ -1579,6 +1566,42 @@ class DiTClassifier(DiffusionTransformer):
                 "after": self.clf_depth, 
             }, 
         }
+
+    def add_class(self, source_network: object | None = None) -> None:
+        """Append one classifier output while preserving the existing head.
+
+        Args:
+            source_network (object | None): Optional already-expanded raw
+                classifier.  Its new kernel column and bias initialize the new
+                output in an EMA clone while the clone's old outputs are kept.
+
+        Returns:
+            None: The label vocabulary and final classifier layer grow by one.
+        """
+
+        old_layer = self.classifier.layers[-1]
+        old_kernel, old_bias = old_layer.get_weights()
+        super().add_class(source_network=source_network)
+
+        layer_config = old_layer.get_config()
+        layer_config["units"] = self.num_classes
+        new_layer = old_layer.__class__.from_config(layer_config)
+        new_layer.build((None, old_kernel.shape[0]))
+        new_kernel, new_bias = new_layer.get_weights()
+        new_kernel[..., :-1] = old_kernel
+        new_bias[:-1] = old_bias
+
+        # Initialize only the new EMA output from the raw classifier.
+        if source_network is not None:
+            source_kernel, source_bias = (
+                source_network.classifier.layers[-1].get_weights()
+            )
+            new_kernel[..., -1] = source_kernel[..., -1]
+            new_bias[-1] = source_bias[-1]
+
+        new_layer.set_weights([new_kernel, new_bias])
+        self.classifier.pop()
+        self.classifier.add(new_layer)
 
 
 def run_self_tests() -> dict[str, str]:

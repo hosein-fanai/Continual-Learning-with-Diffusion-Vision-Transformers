@@ -452,8 +452,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             antialias=self.resize_antialias
         ) if self._current_resolution != self.image_size else x0
 
-        classes = labels
-        labels = labels + int(self.use_cfg)
+        classes = self._map_classes(labels)
+        labels = classes + int(self.use_cfg)
         uncond_labels = tf.zeros_like(labels, dtype=tf.uint8)
 
         # Noisify classifier inputs within the configured timestep cap.

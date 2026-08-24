@@ -146,24 +146,27 @@ class EnsembleAccuracy(metrics.Metric):
 
         self.diffusion_clf = diffusion_clf
         self.network = self.diffusion_clf.get_network(netwrok_name)
+        minimum_classes = 0 if self.network.dynamic_num_classes else 1
+
         # Require the selected network's class-prediction interface.
         if self.network is None or not callable(
             getattr(self.network, "predict_class", None)
         ) or not isinstance(getattr(self.network, "num_classes", None), int) \
         or isinstance(getattr(self.network, "num_classes", None), bool) \
-        or self.network.num_classes < 1:
+        or self.network.num_classes < minimum_classes:
             raise TypeError(
-                "The selected network must expose a positive integer num_classes "
-                "and callable predict_class."
+                "The selected network must expose a valid integer "
+                "num_classes and callable predict_class."
             )
+
         self.weighted = weighted
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
         self.seed = seed
 
         self.tracker = metrics.SparseCategoricalAccuracy(
-            name="tracker",
-            dtype=self.dtype,
+            name="tracker", 
+            dtype=self.dtype
         )
 
     def _get_timestep_weights(self) -> tf.Tensor:
@@ -228,6 +231,11 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             ``None``. Internal correct and total counts are updated in place.
         """
+
+        # TensorFlow 2.10 misreads a one-column prediction as binary output.
+        if getattr(self.network, "dynamic_num_classes", False) \
+        and y_pred.shape[-1] == 1:
+            y_pred = tf.concat([y_pred, tf.zeros_like(y_pred)], axis=-1)
 
         self.tracker.update_state(
             y_true, y_pred, 
@@ -431,6 +439,10 @@ class EnsembleAccuracy(metrics.Metric):
                 raise ValueError(
                     "dataset batches must contain two or three values."
                 )
+
+            # Compare dynamic predictions with zero-based mapped targets.
+            if getattr(self.network, "dynamic_num_classes", False):
+                y = self.diffusion_clf._map_classes(y)
 
             acc = self.test_step(
                 y, x, 

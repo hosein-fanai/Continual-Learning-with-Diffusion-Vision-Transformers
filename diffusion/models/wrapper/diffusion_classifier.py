@@ -702,6 +702,13 @@ class DiffusionClassifier(DiffusionModel):
         use_ctr_loss = self.use_clf_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_total_loss = use_ctr_loss or use_kl_loss if use_total_loss is None else use_total_loss
 
+        # TensorFlow 2.10 misreads a one-column prediction as binary output.
+        if self.network.dynamic_num_classes and classes_pred.shape[-1] == 1:
+            classes_pred = tf.concat([
+                classes_pred, 
+                tf.zeros_like(classes_pred)
+            ], axis=-1)
+
         self.clf_loss_tracker.update_state(clf_loss)
         self.accuracy_tracker.update_state(
             classes[clf_acc_mask], 
@@ -724,7 +731,7 @@ class DiffusionClassifier(DiffusionModel):
 
         results.update({
             self.clf_loss_tracker.name: 
-            self.clf_loss_tracker.result(), 
+            self.clf_loss_tracker.result()
         })
 
         # Update classifier KL loss only when its objective is active.
@@ -736,7 +743,7 @@ class DiffusionClassifier(DiffusionModel):
             self.clf_kl_loss_tracker.update_state(clf_kl_loss)
             results.update({
                 self.clf_kl_loss_tracker.name: 
-                self.clf_kl_loss_tracker.result(), 
+                self.clf_kl_loss_tracker.result()
             })
 
         # Update classifier token loss only when predictions are available.

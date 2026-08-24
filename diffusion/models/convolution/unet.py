@@ -87,7 +87,7 @@ class UNet(ArgumentSaverModel):
 
     def __init__(
         self, 
-        num_classes: int = 10, 
+        num_classes: int | None = 10, 
         use_cfg: bool = True, 
         timesteps: int = 1_000, 
         image_size: int = 32, 
@@ -198,6 +198,8 @@ class UNet(ArgumentSaverModel):
             "dynamic": self.dynamic, 
         })
 
+        self.dynamic_num_classes = self.num_classes is None
+        self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
         self.condition_dim = self.time_embedding_dim + self.label_embedding_dim
         self.use_reshaper = bool(self.reshaper_ids_dict) or bool(

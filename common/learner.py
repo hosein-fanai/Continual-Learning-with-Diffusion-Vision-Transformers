@@ -63,7 +63,7 @@ def _continually_learn(
     evaluate_ensemble_accuracy: bool = False, 
     ensemble_accuracy_kwargs: dict[str, object] | None = None, 
     callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
-    return_details: bool = False, 
+    return_details: bool = True, 
     use_valset: bool = True, 
     return_features: bool | None = None, 
     max_train_samples: int | None = None, 

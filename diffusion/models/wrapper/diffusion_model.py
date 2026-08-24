@@ -52,6 +52,8 @@ class DiffusionModel(ArgumentSaverModel):
             the raw network has a KL-enabled reshaper.
         use_ctr_loss (bool): Initially true only when ``ctr_loss_coef > 0`` and
             class-token regularizer depths exist.
+        seen_classes (dict[object, int]): Dataset labels mapped to network
+            condition IDs in dynamic-class mode.
     """
 
     def __init__(
@@ -193,6 +195,7 @@ class DiffusionModel(ArgumentSaverModel):
         self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps is None \
                                             else self.test_noisified_max_timesteps
         self.use_image_loss = bool(self.image_loss_coef > 0.)
+        self.seen_classes = {}
 
         self.load_schedules()
         self.set_timestep_bounds()
@@ -498,6 +501,116 @@ class DiffusionModel(ArgumentSaverModel):
 
         return growth
 
+    def _check_new_labels(
+        self, 
+        x: object | None = None, 
+        y: object | None = None, 
+        verbose: int | bool = True
+    ) -> None:
+        """Discover dataset labels and expand a dynamic network before fitting.
+
+        Args:
+            x (tf.data.Dataset | object | None): Keras inputs.  A dataset must
+                yield ``(images, labels)`` batches.
+            y (object | None): Separate Keras labels.  When supplied, these take
+                precedence over labels contained in ``x``.
+
+        Returns:
+            None: New real labels are mapped to consecutive network condition
+            IDs and the raw/EMA label vocabularies are expanded in place.
+        """
+
+        # Preserve every legacy behavior for an explicitly sized network.
+        if not self.network.dynamic_num_classes:
+            return
+
+        data = y if y is not None else x
+        # Materialize the finite label stream from a Keras dataset.
+        if isinstance(data, tf.data.Dataset):
+            data = np.concatenate([
+                batch[1].numpy() for batch in data
+            ], axis=0)
+        # Leave Keras to report missing inputs when no labels were supplied.
+        elif y is None:
+            return
+
+        # Structural replacement needs the current embedder/head weights.
+        if not self.network.built:
+            self.network.build()
+
+        new_classes = []
+        for label in np.unique(data):
+            real_label = label.item()
+            # Expand exactly once for every newly observed real label.
+            if real_label not in self.seen_classes:
+                wrapper_label = len(self.seen_classes) + int(self.use_cfg)
+                self.seen_classes[real_label] = wrapper_label
+                new_classes.append(real_label)
+
+                self.network.add_class()
+                # Keep the EMA topology aligned and share only new parameters.
+                if self.ema_network is not None:
+                    self.ema_network.add_class(source_network=self.network)
+
+        # Refresh symbolic outputs, optimizer variables, and cached traces once.
+        if len(new_classes) > 0:
+            if verbose:
+                print("Found new classes:", new_classes)
+
+            self.network.build_model()
+            # Refresh the EMA symbolic output after mirroring the growth.
+            if self.ema_network is not None:
+                self.ema_network.build_model()
+
+            self._register_optimizer_variables()
+            self.train_function = None
+            self.test_function = None
+            self.predict_function = None
+
+    def _map_classes(self, classes: tf.Tensor) -> tf.Tensor:
+        """Map real dataset labels to zero-based dynamic classifier targets.
+
+        Args:
+            classes (tf.Tensor): Integer dataset labels of arbitrary shape.
+
+        Returns:
+            tf.Tensor: Wrapper class IDs with the same shape and dtype.
+
+        Raises:
+            ValueError: If dynamic mode has not observed any class yet.
+        """
+
+        # Fixed-width networks retain the historical zero-based label contract.
+        if not self.network.dynamic_num_classes:
+            return classes
+
+        # Dynamic evaluation cannot map labels before the first training scan.
+        if not self.seen_classes:
+            raise ValueError(
+                "No classes have been observed by this dynamic model."
+            )
+
+        real_classes = tf.constant(
+            list(self.seen_classes.keys()), 
+            dtype=classes.dtype
+        )
+        wrapper_classes = tf.constant(
+            list(self.seen_classes.values()), 
+            dtype=classes.dtype
+        ) - int(self.use_cfg)
+
+        matches = tf.equal(classes[..., None], real_classes)
+        tf.debugging.assert_equal(
+            tf.reduce_any(matches, axis=-1), 
+            tf.ones_like(classes, dtype=tf.bool), 
+            message="Dataset contains a class that has not been observed during fit."
+        )
+
+        return tf.gather(
+            wrapper_classes, 
+            tf.argmax(matches, axis=-1, output_type=tf.int32)
+        )
+
     @property
     def current_timesteps_bounds(self) -> tuple[int, int]:
         """Return active forward-noising bounds as ``[minimum, maximum)``.
@@ -567,9 +680,12 @@ class DiffusionModel(ArgumentSaverModel):
         self.ctr_loss_tracker = metrics.Mean(name="ctr_loss")
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(name="ctr_accuracy")
 
-    def fit(self, x: object | None = None,
-            y: object | None = None,
-            **kwargs: object) -> callbacks.History:
+    def fit(
+        self, 
+        x: object | None = None,
+        y: object | None = None,
+        **kwargs: object
+    ) -> callbacks.History:
         """Fit under configured training timestep bounds, then restore bounds.
 
         Args:
@@ -589,9 +705,13 @@ class DiffusionModel(ArgumentSaverModel):
             bounds are restored even when Keras raises an exception.
         """
 
+        self._check_new_labels(
+            x=x, y=y, 
+            verbose=kwargs.get("verbose", True)
+        )
+
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
-
         self.set_timestep_bounds(
             self.train_noisified_min_timesteps, 
             self.train_noisified_max_timesteps
@@ -605,10 +725,13 @@ class DiffusionModel(ArgumentSaverModel):
                 prev_t_max
             )
 
-    def evaluate(self, x: object | None = None,
-                y: object | None = None,
-                network_name: NetworkName = "ema", 
-                **kwargs: object) -> float | list[float] | dict[str, float]:
+    def evaluate(
+        self, 
+        x: object | None = None, 
+        y: object | None = None, 
+        network_name: NetworkName = "ema", 
+        **kwargs: object
+    ) -> float | list[float] | dict[str, float]:
         """Evaluate the raw or EMA network under test timestep bounds.
 
         Args:
@@ -949,6 +1072,11 @@ class DiffusionModel(ArgumentSaverModel):
             because each stage invokes a separate Keras ``fit`` call.
         """
 
+        self._check_new_labels(
+            x=fit_kwargs.get("x"),
+            y=fit_kwargs.get("y")
+        )
+
         assert "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, \
             "Do not pass epochs/initial_epoch to fit_progressively(); "\
             "use stage_epochs and final_epochs instead."
@@ -1233,7 +1361,7 @@ class DiffusionModel(ArgumentSaverModel):
     def set_timestep_bounds(
         self, 
         min_timesteps: int | None = None, 
-        max_timesteps: int | None = None, 
+        max_timesteps: int | None = None
     ) -> None:
         """Set the active half-open timestep interval for forward noising.
 
@@ -1372,7 +1500,8 @@ class DiffusionModel(ArgumentSaverModel):
         self.timesteps = timesteps
 
     def get_noise_and_signal_rates(
-        self, t: int | tf.Tensor
+        self, 
+        t: int | tf.Tensor
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Gather signal and noise amplitudes at one or more timesteps.
 
@@ -1546,9 +1675,12 @@ class DiffusionModel(ArgumentSaverModel):
 
         return True
 
-    def apply_grads(self, tape: tf.GradientTape, 
-                    loss: tf.Tensor, 
-                    variables: list[tf.Variable]| None = None) -> None:
+    def apply_grads(
+        self, 
+        tape: tf.GradientTape, 
+        loss: tf.Tensor, 
+        variables: list[tf.Variable]| None = None
+    ) -> None:
         """Differentiate a scalar loss and apply gradients with the optimizer.
 
         Args:
@@ -1568,8 +1700,11 @@ class DiffusionModel(ArgumentSaverModel):
         grads = tape.gradient(loss, variables)
         self.optimizer.apply_gradients(zip(grads, variables))
 
-    def get_cfg_labels(self, labels: tf.Tensor, 
-                       seed: int | None = None) -> tf.Tensor:
+    def get_cfg_labels(
+        self, 
+        labels: tf.Tensor, 
+        seed: int | None = None
+    ) -> tf.Tensor:
         """Apply classifier-free label dropout.
 
         Args:
@@ -1596,12 +1731,15 @@ class DiffusionModel(ArgumentSaverModel):
 
         return masked_labels
 
-    def prep_inputs(self, inputs: tuple[tf.Tensor, tf.Tensor], 
-                    use_label_dropout: bool = True, 
-                    seed: int | None = None) -> tuple[
-                        tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor,
-                        tf.Tensor, tf.Tensor, tf.Tensor
-                    ]:
+    def prep_inputs(
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor], 
+        use_label_dropout: bool = True, 
+        seed: int | None = None
+    ) -> tuple[
+        tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, 
+        tf.Tensor, tf.Tensor, tf.Tensor
+    ]:
         """Prepare one dataset batch for diffusion loss computation.
 
         Args:
@@ -1629,8 +1767,8 @@ class DiffusionModel(ArgumentSaverModel):
             antialias=self.resize_antialias
         ) if self._current_resolution != self.image_size else x0
 
-        classes = labels
-        labels = labels + int(self.use_cfg)
+        classes = self._map_classes(labels)
+        labels = classes + int(self.use_cfg)
         x_t, noises, t = self.noisify(x0, seed=seed)
         cfg_labels = self.get_cfg_labels(
             labels, 
@@ -1642,9 +1780,11 @@ class DiffusionModel(ArgumentSaverModel):
 
         return x0, noises, t, x_t, cfg_labels, uncond_labels, classes
 
-    def compute_ctr_loss(self, classes: tf.Tensor, 
-                        classes_pred_list: list[tf.Tensor]
-                        ) -> tuple[tf.Tensor, tf.Tensor]:
+    def compute_ctr_loss(
+        self, 
+        classes: tf.Tensor, 
+        classes_pred_list: list[tf.Tensor]
+    ) -> tuple[tf.Tensor, tf.Tensor]:
         """Average auxiliary class predictions and compute cross-entropy.
 
         Args:
@@ -1764,8 +1904,8 @@ class DiffusionModel(ArgumentSaverModel):
         network_name: NetworkName = "raw", 
         training: bool = False
     ) -> tuple[
-        tuple[tf.Tensor, tf.Tensor | None],
-        tuple[list[tf.Tensor], list[tf.Tensor] | None],
+        tuple[tf.Tensor, tf.Tensor | None], 
+        tuple[list[tf.Tensor], list[tf.Tensor] | None], 
         tuple[tuple[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor] | None]
     ]:
         """Run conditional and, when requested, unconditional network passes.
@@ -1840,7 +1980,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         eps_c: tf.Tensor, 
         eps_u: tf.Tensor | None = None, 
-        scale: float | None = None, 
+        scale: float | None = None
     ) -> tf.Tensor:
         """Combine conditional/unconditional noise with CFG.
 
@@ -2146,8 +2286,9 @@ class DiffusionModel(ArgumentSaverModel):
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
             labels (tf.Tensor | list[int] | None): Condition IDs, one per sample.
-                ``None`` uses ``range(network.num_labels)`` and therefore
-                includes null label 0 when CFG is enabled.  These are already
+                In dynamic mode, ``None`` uses the IDs of observed real classes
+                and excludes the CFG null label.  Fixed-width mode retains
+                ``range(network.num_labels)``. Explicit values are already
                 network label IDs, not unshifted dataset classes.
             z (tf.Tensor | None): Latent batch ``[B, latent_width]``.  ``None``
                 draws standard normal values; its batch size must match labels.
@@ -2198,12 +2339,19 @@ class DiffusionModel(ArgumentSaverModel):
             f"{network.name_prefix}depth_{z_id}_{network.R[2:]}/z"
         ) if network.reshaper_kwargs.get("latent_dim_ratio", 1) != 1 else None
 
+        default_labels = list(
+            self.seen_classes.values()
+        ) if network.dynamic_num_classes else list(
+            range(network.num_labels)
+        )
         labels = tf.cast(tf.convert_to_tensor(
-            list(range(network.num_labels)) if labels is None else labels
+            default_labels if labels is None else labels
         ), tf.int32)
         # Require one condition label per generated sample.
         if labels.shape.rank != 1:
-            raise ValueError("labels must be a one-dimensional tensor or list.")
+            raise ValueError(
+                "labels must be a one-dimensional tensor or list."
+            )
         n = len(labels)
         seed = self.seed if seed is None else seed
         ts = tf.zeros(
@@ -2250,9 +2398,11 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` predictor.
-            labels (tf.Tensor | list[int] | None): Network condition IDs.  None
-                samples every ``range(network.num_labels)`` ID, including CFG
-                null ID 0 when present.  The number of labels is the batch size.
+            labels (tf.Tensor | list[int] | None): Network condition IDs. In
+                dynamic mode, None uses observed class IDs and excludes the CFG
+                null label. Fixed-width mode samples every
+                ``range(network.num_labels)`` ID as before. The number of labels
+                is the batch size.
             x_t (tf.Tensor | None): Initial Gaussian state ``[B,H,W,C]``.  None
                 draws it at the active resolution.  In ``swap_noise_image`` VAE
                 mode this argument is instead passed to ``sample_vae`` as ``z``.
@@ -2288,9 +2438,14 @@ class DiffusionModel(ArgumentSaverModel):
                 seed=seed
             )
 
-        labels = list(
-            range(self.network.num_labels)
-        ) if labels is None else labels
+        network = self.get_network(network_name)
+        default_labels = list(
+            self.seen_classes.values()
+        ) if network.dynamic_num_classes else list(
+            range(network.num_labels)
+        )
+
+        labels = default_labels if labels is None else labels
         n = len(labels)
         seed = self.seed if seed is None else seed
         x_t = tf.random.normal((

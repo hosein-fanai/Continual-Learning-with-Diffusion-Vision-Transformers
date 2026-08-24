@@ -125,7 +125,7 @@ class KwargsMixin:
 class DiffusionTransformerConfig(KwargsMixin):
     """Arguments forwarded to ``DiffusionTransformer``."""
 
-    num_classes: int = 10
+    num_classes: int | None = 10
     use_cfg: bool = True
     timesteps: int = 1_000
     image_size: int = 28

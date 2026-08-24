@@ -995,7 +995,9 @@ def get_model(
             selected_kwargs.pop("compile_args", {}) or {}
         )
         dataset_dimensions = {
-            "num_classes": class_num, 
+            "num_classes": None if using_typed_model_config and
+                        selected_kwargs.get("num_classes") is None 
+                        else class_num, 
             "image_size": image_shape[0], 
             "channels": image_shape[-1]
         }
