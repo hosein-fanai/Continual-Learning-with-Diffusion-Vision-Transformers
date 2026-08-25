@@ -61,6 +61,16 @@ loaded = load_config("results/resolved-config.yaml")
 wrapper_kwargs = loaded.model.diffusion_model.kwargs()
 ```
 
+Set `training.fit_method="fit_progressively"` to route a diffusion wrapper
+through its existing curriculum trainer. `training.stage_tasks` is required;
+the remaining stage, timestep, resolution, depth, pacing, and stopping fields
+mirror `DiffusionModel.fit_progressively`. `stage_epochs` and `final_epochs`
+own the progressive budget, while `fit_kwargs` carries only additional Keras
+keys such as step counts. Ordinary runs keep `fit_method="fit"` and continue
+to use `training.epochs`. Saving progressive weights forces a final config
+rewrite with the post-growth network constructor state, making depth-grown
+weights reconstructable.
+
 `KwargsMixin.kwargs()` uses `dataclasses.asdict` and emits every field verbatim,
 including `None` and defaults. It does not filter, validate, or rename keys.
 `Config.continually_learn` is a typed `ContinuallyLearnConfig` section; it keeps
@@ -72,6 +82,19 @@ Set `reporting.evaluate_ensemble_accuracy=True` for a `DiffusionClassifier` or
 every enabled raw/EMA train/validation evaluation. Pass metric options such as
 `weighted`, `max_t`, `t_chunk_size`, or `seed` through
 `reporting.ensemble_accuracy_kwargs`.
+
+Distillation configuration stays YAML-safe. For a DiT classifier, enable
+`classifier_only_distil_token` and select `clf_distil_token_type` (or share an
+inherited `distil_token_type`); for a UNet classifier, enable
+`classifier_only_distil_token`. Then set the wrapper's `distil_type`
+(`"hard"` or `"soft"`), `distil_loss_coef`, and accuracy coefficients.
+`cls_token_regularizer_kwargs` and
+`clf_cls_token_regularizer_kwargs` accept `train_type` (`"normal"`,
+`"distil"`, or `"both"`) and `distil_type` (`"hard"` or `"soft"`). The live
+teacher is deliberately not a config field; pass it at runtime with
+`get_model(config, teacher_network=teacher)` or
+`main(config, teacher_network=teacher)`. Reports prefer `total_accuracy` when
+the wrapper combines classifier, distillation, and regularizer predictions.
 
 Depth numbering also belongs to the raw network API. Depth 0 is the embedding
 stem that patchifies images and constructs/merges timestep and label
@@ -205,12 +228,15 @@ accuracies = continually_learn(
 The complete direct-key set is `class_num` and `load_dataset_fn` (required),
 plus `load_dataset_fn_kwargs`, `remove_prev_classes`, `keep_same_model`,
 `tuned_model_path`, `compile_args`, `use_loaded_opt`, `batch_size`, `epochs`,
-`use_buffer`, `buffer_kwargs`, `plot_results`, `verbose`, `generative_model`,
-`generative_model_compile_args`, `generative_model_kwargs`,
+`fit_method`, `fit_kwargs`, `use_buffer`, `buffer_kwargs`, `plot_results`,
+`verbose`, `generative_model`, `generative_model_compile_args`,
+`generative_model_kwargs`,
 `use_generative_model_classifier`, `train_classifier_separately`,
-`evaluate_ensemble_accuracy`, `ensemble_accuracy_kwargs`, `callbacks_list`,
-`return_details`, and `use_valset`. Their types, defaults, and nested dictionary
-keys are listed by `help(continually_learn)`.
+`use_distillation`, `evaluate_ensemble_accuracy`,
+`ensemble_accuracy_kwargs`, `callbacks_list`, `return_details`, and
+`use_valset`; `teacher_network` is a separate runtime-only argument. Their
+types, defaults, and nested dictionary keys are listed by
+`help(continually_learn)`.
 
 The loader mapping may contain `preprocess`, `onehot_labels`, `validation_ratio`,
 `seed`, and, for built-in loaders, `features_path`; do not repeat `indices`,
@@ -232,6 +258,20 @@ diffusion data as needed and returns generated samples to the classifier's input
 representation. When a raw diffusion network is passed directly,
 `generative_model_compile_args` overrides the default Adam/MSE compilation. An
 already-wrapped model remains compiled as provided.
+
+For diffusion replay, direct calls may set
+`fit_method="fit_progressively"` and pass the existing curriculum arguments in
+`fit_kwargs`, including the required `stage_tasks`. The mapping is copied for
+each continual task. V2 uses `fit_generator_progressively` for its generator
+and retains the ordinary separate discriminator fit; non-diffusion replay
+models reject the progressive selector.
+
+For continual distillation, set
+`continually_learn.use_distillation=True`, configure the student and wrapper as
+above, and call `continually_learn(config, teacher_network=teacher)`. The flag
+records serializable intent and requires the runtime teacher; the teacher object
+never enters saved YAML. Distillation uses the same ordinary or progressive
+fit selection, including V2's progressive-generator/ordinary-classifier split.
 
 For dynamic diffusion, `seen_classes` is retained by reference in the
 wrapper's initialization config as a zero-based target mapping, so later label discovery is immediately
@@ -285,6 +325,28 @@ it to YAML, reloads it through `load_config`, and calls `main`. Search
 spaces live in `SEARCH_SPACES[task][model]`; architecture-dependent choices are
 conditional so invalid tensor shapes and wrapper combinations are not sampled.
 
+DiT classifier trials sample `classifier_architecture` from `linear`,
+`local_mixer`, `connection`, `cross_attention`, `cross_attention_decoder`,
+`cross_attention_aggregation`, `u_shape`, and `u_vae`. These choices reuse the
+existing classifier routing, attention, scaling, and reshaping arguments. The
+`u_vae` choice also samples a positive `kl_loss_coef` for its KL-enabled
+flatten/unflatten bottleneck.
+
+Joint DiT and U-Net classifier trials sample a zero-inclusive `ctr_loss_coef`.
+A positive value enables a regularizer at the final classifier depth. Without
+a teacher it uses normal labels; teacher-backed studies also sample `normal`,
+`distil`, or `both` training and hard or soft targets for the distillation
+modes. `clf_acc_coef`, `distil_acc_coef`, and `ctr_acc_coef` equally weight the
+active prediction heads and remain zero for inactive heads.
+
+V2 DiT classifier trials independently sample `clf_vars_embedding_recipe` from
+`none`, `label`, `conditions`, `core`, and `notebook`, and
+`clf_vars_noise_recipe` from `none`, `first`, `last`, and `last_two`. Embedding
+recipes map respectively to `[]`, `[2]`, `[1, 2]`, `[0, 1, 2]`, and
+`[0, 1, 2, 3]`; noise recipes map to `[]`, `[1]`, `[-1]`, and `[-2, -1]`.
+The negative final IDs remain relative to the end after progressive depth
+growth.
+
 Successful trials contain the resolved config, final weights, metric CSV files,
 history/sample plots, a GIF, and TensorBoard events. The study directory also
 contains persistent SQLite state and `trials.csv`. Joint generation and
@@ -295,6 +357,20 @@ classifier studies while retaining ordinary accuracy in their reports. Each
 resolved config records the selection in `hpo.use_ensemble_accuracy` and
 enables the matching reporting or continual evaluation option. See
 [`../notebooks/hpo/README.md`](../notebooks/hpo/README.md).
+
+HPO accepts the same `fit_method` selector and a `fit_kwargs` mapping.
+Progressive studies are limited to diffusion families and require
+`stage_tasks`; named curriculum values are written into the explicit
+`TrainingConfig` fields before every trial config is serialized and reloaded.
+The values must therefore be YAML-safe. Progressive trials use their own study
+subdirectory and SQLite identity rather than resuming an ordinary-fit study.
+
+Supplying `teacher_network` enables hard/soft distillation suggestions only for
+joint or continual `dit_classifier`, `dit_encoder_decoder_classifier`, and
+`unet_classifier` studies. Those trials use a separate `distillation`
+subdirectory, keep the teacher out of trial YAML, and prefer `total_accuracy`
+for ordinary classification feedback. Distillation and progressive fitting can
+be enabled together.
 
 ## Supporting APIs
 

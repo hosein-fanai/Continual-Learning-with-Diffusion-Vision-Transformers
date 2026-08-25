@@ -51,15 +51,19 @@ def _continually_learn(
     use_loaded_opt: bool = False, 
     batch_size: int = 128, 
     epochs: int = 100, 
+    fit_method: str = "fit",
+    fit_kwargs: dict[str, object] | None = None,
     use_buffer: bool = False, 
     buffer_kwargs: dict[str, object] | None = None, 
     plot_results: bool = True, 
     verbose: bool | int = True, 
     generative_model: tf.keras.Model | None = None, 
+    teacher_network: tf.keras.Model | None = None,
     generative_model_compile_args: dict[str, object] | None = None, 
     generative_model_kwargs: dict[str, int] | None = None, 
     use_generative_model_classifier: bool = False, 
     train_classifier_separately: bool = False, 
+    use_distillation: bool = False,
     evaluate_ensemble_accuracy: bool = False, 
     ensemble_accuracy_kwargs: dict[str, object] | None = None, 
     callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
@@ -125,7 +129,20 @@ def _continually_learn(
             model instead of ``compile_args["optimizer"]``.
         batch_size (int): Positive batch size used by each newly built
             ``tf.data.Dataset``; defaults to 128.
-        epochs (int): Positive maximum epochs per task; defaults to 100.
+        epochs (int): Positive maximum epochs per ordinary fit phase; defaults
+            to 100. Progressive diffusion replay instead uses ``stage_epochs``
+            and ``final_epochs`` from ``fit_kwargs``.
+        fit_method (str): ``"fit"`` or ``"fit_progressively"`` for the
+            diffusion replay-model phase. Standalone classifier and VAE phases
+            retain their established fit methods. For
+            ``DiffusionClassifierV2``, progressive selection affects its
+            generator phase while the discriminator remains an ordinary fit.
+        fit_kwargs (dict[str, object] | None): Extra arguments copied into each
+            diffusion replay-model fit. Progressive arguments are those of
+            ``DiffusionModel.fit_progressively``, including ``stage_tasks``,
+            ``stage_epochs``, and ``final_epochs``. The curriculum repeats for
+            every continual task; timestep/resolution state is restored after
+            each call, while requested depth growth intentionally persists.
         use_buffer (bool): Enable fixed-capacity replay.  It must not be true
             together with ``generative_model``.
         buffer_kwargs (dict[str, object] | None): Replay controls merged over
@@ -151,6 +168,9 @@ def _continually_learn(
             be combined with ``use_buffer``. Diffusion replay requires image
             data, requires a network initialized with ``num_classes=None``, and
             accepts every loader preprocessing value.
+        teacher_network (tf.keras.Model | None): Runtime-only frozen teacher
+            used when a raw diffusion classifier is wrapped. An already-created
+            wrapper must have received its teacher during initialization.
         generative_model_compile_args (dict[str, object] | None): Compilation
             values used when this function wraps a raw diffusion network.
             Values override ``{"optimizer": "adam", "loss": "mse"}``.
@@ -175,6 +195,9 @@ def _continually_learn(
             ``DiffusionClassifierV2`` because V2 separates its generator and
             classifier variables. It has no effect when
             ``use_generative_model_classifier`` is false.
+        use_distillation (bool): Require the diffusion-classifier replay model
+            to have a runtime teacher. The teacher object remains outside
+            serializable configuration.
         evaluate_ensemble_accuracy (bool): Also evaluate the attached
             diffusion classifier by ensembling predictions across timesteps
             after every task. Ordinary task accuracy is still retained.
@@ -219,12 +242,39 @@ def _continually_learn(
         report evaluations, and final model objects.
 
     Raises:
-        ValueError: If buffer and generative replay are both enabled.
+        ValueError: If buffer and generative replay are both enabled,
+            ``fit_method`` is unsupported, or progressive fitting is selected
+            without a diffusion replay model and ``stage_tasks``.
         TypeError: If a forwarded dictionary contains a conflicting or
             unsupported keyword, or ``generative_model`` is unsupported.
         ValueError: If dataset shapes/labels cannot support the requested
             task, replay, or classifier loss.
     """
+
+    # Restrict the shared selector to the two supported diffusion fit paths.
+    if fit_method not in ("fit", "fit_progressively"):
+        raise ValueError(
+            "fit_method must be 'fit' or 'fit_progressively'."
+        )
+
+    fit_kwargs = dict(fit_kwargs or {})
+    reserved_fit_keys = {
+        "x", "y", "epochs", "initial_epoch", "validation_data",
+        "callbacks", "verbose",
+    }
+    conflicting_fit_keys = sorted(reserved_fit_keys.intersection(fit_kwargs))
+    # Keep task-owned data, epoch, callback, and verbosity values unambiguous.
+    if conflicting_fit_keys:
+        raise ValueError(
+            "fit_kwargs cannot override continual orchestration arguments: "
+            + str(conflicting_fit_keys)
+        )
+    # Require the curriculum description used by every progressive task.
+    if fit_method == "fit_progressively" \
+    and fit_kwargs.get("stage_tasks") is None:
+        raise ValueError(
+            "fit_kwargs must include stage_tasks for fit_progressively."
+        )
 
     # Keep fixed-buffer and generative replay mutually exclusive.
     if use_buffer and generative_model is not None:
@@ -445,8 +495,11 @@ def _continually_learn(
             return None
 
         preferred = ("ensemble_accuracy",) if ensemble else (
+            "total_accuracy",
             "accuracy", 
             "classifier_accuracy", 
+            "cls_token_accuracy",
+            "avg_pooling_accuracy",
             "clf_accuracy", 
             "discriminator_accuracy"
         )
@@ -613,6 +666,7 @@ def _continually_learn(
     )):
         generative_model = DiffusionClassifier(
             network=generative_model, 
+            teacher_network=teacher_network,
             mask_by_nulls=generative_model.use_cfg, 
             test_steps=min(50, generative_model.timesteps)
         )
@@ -631,6 +685,15 @@ def _continually_learn(
             test_steps=min(50, generative_model.timesteps)
         )
         generative_model.compile(**generative_model_compile_args)
+
+    # A prebuilt wrapper must decide teacher preprocessing during construction.
+    elif teacher_network is not None and isinstance(
+        generative_model, DiffusionClassifier
+    ) and getattr(generative_model, "teacher_network", None) is not teacher_network:
+        raise ValueError(
+            "An existing diffusion classifier must receive teacher_network "
+            "during its initialization."
+        )
     # Reject unsupported replay-model types before task construction.
     elif generative_model is not None and not isinstance(
         generative_model, 
@@ -639,6 +702,33 @@ def _continually_learn(
         raise TypeError(
             "generative_model must be a supported VAE, "
             "diffusion network, or diffusion wrapper."
+        )
+
+    # Reject teachers for replay models without a distillation-capable wrapper.
+    if teacher_network is not None and not isinstance(
+        generative_model, DiffusionClassifier
+    ):
+        raise ValueError(
+            "teacher_network requires a diffusion classifier generative_model."
+        )
+
+    # Enforce configured distillation intent after raw networks are wrapped.
+    if use_distillation and (
+        not isinstance(generative_model, DiffusionClassifier)
+        or getattr(generative_model, "teacher_network", None) is None
+    ):
+        raise ValueError(
+            "use_distillation requires a diffusion classifier and a runtime "
+            "teacher_network."
+        )
+
+    # Prevent a progressive selector from being silently ignored by VAE,
+    # classifier-only, or fixed-buffer continual training.
+    if fit_method == "fit_progressively" and not isinstance(
+        generative_model, DiffusionModel
+    ):
+        raise ValueError(
+            "fit_progressively requires a diffusion replay model."
         )
 
     # Continual diffusion always uses the dynamic class-vocabulary API.
@@ -1170,9 +1260,14 @@ def _continually_learn(
                 drop_remainder=False
             )
 
-            fit_method = "fit_generator" if isinstance(
-                generative_model, DiffusionClassifierV2
-            ) else "fit"
+            # Select V2's phase-aware generator entry point.
+            if isinstance(generative_model, DiffusionClassifierV2):
+                generative_fit_method = "fit_generator_progressively" \
+                    if fit_method == "fit_progressively" \
+                    else "fit_generator"
+            # Use the combined replay-wrapper method for every other variant.
+            else:
+                generative_fit_method = fit_method
             generative_history = train_task_model(
                 generative_model, 
                 generative_trainset, 
@@ -1181,7 +1276,8 @@ def _continually_learn(
                     "val_loss" if generative_valset is not None else "loss", 
                     default_mode="min"
                 ), 
-                fit_method=fit_method
+                fit_method=generative_fit_method,
+                fit_kwargs=dict(fit_kwargs or {})
             )
 
             # Run a separate V2 classifier fit after diffusion-generator training.
@@ -1189,8 +1285,13 @@ def _continually_learn(
                 generative_model, DiffusionClassifierV2
             ): # Train V2 classifier variables in their required separate phase.
                 task_callbacks = phase_callbacks(
-                    "val_classifier_accuracy" if generative_valset is not None 
-                    else "classifier_accuracy",
+                    (
+                        "val_total_accuracy" if generative_valset is not None
+                        else "total_accuracy"
+                    ) if generative_model.use_total_accuracy else (
+                        "val_classifier_accuracy" if generative_valset is not None
+                        else "classifier_accuracy"
+                    ),
                     legacy_patience=5
                 )
 
@@ -1328,6 +1429,7 @@ def _continually_learn(
 
 def continually_learn(
     config: Config | dict[str, object] | None = None, 
+    teacher_network: tf.keras.Model | None = None,
     **kwargs: object
 ) -> list[float] | dict[str, object]:
     """Run class-incremental learning from a config or direct keyword inputs.
@@ -1335,7 +1437,8 @@ def continually_learn(
     Exactly one input style is used. With ``config=None``, every setting comes
     from ``kwargs`` and ``class_num`` plus ``load_dataset_fn`` are required.
     With a :class:`common.config.Config` (or a compatible root mapping), direct
-    keywords are ignored: :func:`common.dataloader.get_datasets` creates the
+    keywords except ``teacher_network`` are ignored:
+    :func:`common.dataloader.get_datasets` creates the
     loader, :func:`common.model.get_model` creates the classifier/replay-model
     bundle, and :func:`common.train.train_model` plus
     :func:`common.train.report` run the configured training and reporting.
@@ -1344,6 +1447,9 @@ def continually_learn(
     Args:
         config (Config | dict[str, object] | None): Optional complete project
             configuration. A mapping is normalized with ``Config(**config)``.
+        teacher_network (tf.keras.Model | None): Runtime-only teacher passed to
+            a newly constructed diffusion classifier. It is never stored in
+            the serializable configuration.
         **kwargs (object): Direct-mode inputs, used only when ``config`` is
             ``None``. The possible keys are:
 
@@ -1367,8 +1473,16 @@ def continually_learn(
             - ``use_loaded_opt`` (bool, default ``False``): Reuse the optimizer
               stored in ``tuned_model_path``.
             - ``batch_size`` (int, default ``128``): Per-task batch size.
-            - ``epochs`` (int, default ``100``): Maximum epochs per task and
-              per enabled replay-model phase.
+            - ``epochs`` (int, default ``100``): Maximum epochs per ordinary
+              phase. Progressive diffusion replay uses ``stage_epochs`` and
+              ``final_epochs`` from ``fit_kwargs`` instead.
+            - ``fit_method`` (str, default ``"fit"``): Select
+              ``"fit_progressively"`` only for diffusion replay-model
+              training. V2 maps this to its progressive generator method and
+              keeps its separate discriminator fit ordinary.
+            - ``fit_kwargs`` (dict | None): Extra diffusion-fit arguments,
+              copied for every task. A progressive curriculum therefore
+              repeats per task, and any requested depth additions persist.
             - ``use_buffer`` (bool, default ``False``): Enable bounded sample
               replay; it is mutually exclusive with ``generative_model``.
             - ``buffer_kwargs`` (dict | None): ``maxlen``, ``sample_num``,
@@ -1380,6 +1494,8 @@ def continually_learn(
             - ``generative_model`` (tf.keras.Model | None): Conditional VAE,
               raw diffusion network, or diffusion wrapper used for replay.
               Diffusion networks must be initialized with ``num_classes=None``.
+            - ``teacher_network`` is the explicit argument above and may be
+              used with a raw diffusion classifier.
             - ``generative_model_compile_args`` (dict | None): Compile
               overrides used only when a raw diffusion network is wrapped;
               defaults to Adam and MSE.
@@ -1391,6 +1507,8 @@ def continually_learn(
             - ``train_classifier_separately`` (bool, default ``False``): Add a
               classifier phase for ``VAEClassifier``; it must be true for
               ``DiffusionClassifierV2`` and false for ``DiffusionClassifier``.
+            - ``use_distillation`` (bool, default ``False``): Require a
+              diffusion-classifier replay model with a runtime teacher.
             - ``evaluate_ensemble_accuracy`` (bool, default ``False``): Also
               evaluate timestep-ensembled accuracy for a diffusion-classifier
               replay model after every task.
@@ -1429,6 +1547,8 @@ def continually_learn(
             "use_loaded_opt": False, 
             "batch_size": 128, 
             "epochs": 100, 
+            "fit_method": "fit",
+            "fit_kwargs": None,
             "use_buffer": False, 
             "buffer_kwargs": None, 
             "plot_results": True, 
@@ -1438,6 +1558,7 @@ def continually_learn(
             "generative_model_kwargs": None, 
             "use_generative_model_classifier": False, 
             "train_classifier_separately": False, 
+            "use_distillation": False,
             "evaluate_ensemble_accuracy": False, 
             "ensemble_accuracy_kwargs": None, 
             "callbacks_list": None, 
@@ -1463,7 +1584,10 @@ def continually_learn(
                 "Missing required continually_learn options: " + str(missing)
             )
 
-        return _continually_learn(**{**defaults, **options})
+        return _continually_learn(
+            teacher_network=teacher_network,
+            **{**defaults, **options}
+        )
 
     # Convert compatible mappings into typed configuration.
     if isinstance(config, dict):
@@ -1490,7 +1614,7 @@ def continually_learn(
         tf.keras.utils.set_random_seed(config.training.seed)
 
     trainset, valset = get_datasets(config)
-    model = get_model(config)
+    model = get_model(config, teacher_network=teacher_network)
 
     # Require the loader and model bundle produced for continual tasks.
     if not callable(trainset) or not isinstance(model, dict):

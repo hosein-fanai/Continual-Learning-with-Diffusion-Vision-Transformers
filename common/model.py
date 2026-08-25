@@ -21,6 +21,9 @@ _DIFFUSION_MODELS = {
     "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
     "unet", "unet_classifier"
 }
+_DIFFUSION_CLASSIFIER_MODELS = {
+    "dit_classifier", "dit_encoder_decoder_classifier", "unet_classifier"
+}
 _VAE_MODELS = {"vae", "variational_autoencoder", "vae_classifier"}
 
 
@@ -568,6 +571,7 @@ def _get_classifier_model(
 
 def get_model(
     config: Config | dict[str, object] | int | None = None, 
+    teacher_network: Any | None = None,
     **kwargs: object
 ) -> Any | dict[str, object]:
     """Build any classifier, VAE, or diffusion model used by the project.
@@ -580,6 +584,9 @@ def get_model(
         config (Config | int | dict[str, object] | None): A complete config,
             legacy positional class count, compatible root mapping, or ``None``
             for direct keywords.
+        teacher_network (tf.keras.Model | None): Runtime-only frozen teacher
+            forwarded to a diffusion-classifier wrapper. It is deliberately
+            separate from ``Config`` so YAML serialization remains safe.
         **kwargs (object): Direct selections such as ``model_name``/``name``,
             ``model_kwargs``, ``wrapper_name``, ``wrapper_kwargs``,
             ``classifier_name``, ``classifier_kwargs``, dataset shape/count
@@ -634,6 +641,11 @@ def get_model(
         legacy_type = kwargs.get("model_type", "CNN")
         # Use legacy construction only for classifier families.
         if str(legacy_type).lower() in _CLASSIFIER_MODELS:
+            # Reject a teacher that this legacy classifier cannot consume.
+            if teacher_network is not None:
+                raise ValueError(
+                    "teacher_network requires a diffusion classifier model family."
+                )
             legacy_kwargs = dict(kwargs)
             class_num = legacy_kwargs.pop("class_num")
             legacy_kwargs["model_type"] = _classifier_name(
@@ -800,6 +812,15 @@ def get_model(
 
     task = task.lower()
 
+    # Require the runtime half of configured continual distillation.
+    if config is not None and task == "continual" \
+    and config.continually_learn.use_distillation \
+    and teacher_network is None:
+        raise ValueError(
+            "continually_learn.use_distillation requires a runtime "
+            "teacher_network."
+        )
+
     # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
         raise ValueError("pad is not supported for saved feature inputs.")
@@ -816,6 +837,13 @@ def get_model(
         flat_dim = image_shape[0] * image_shape[1] * image_shape[2]
 
     model_name = model_name.lower()
+    # Restrict runtime teachers to raw families with classifier wrappers.
+    if teacher_network is not None and \
+    model_name not in _DIFFUSION_CLASSIFIER_MODELS:
+        raise ValueError(
+            "teacher_network requires a diffusion classifier model family."
+        )
+
     optimizer_options = dict(kwargs)
     optimizer_options.pop("trainset_len", None)
 
@@ -1092,11 +1120,8 @@ def get_model(
         )
         # Select the wrapper implied by the raw network family.
         if selected_wrapper_name is None:
-            selected_wrapper_name = "diffusion_classifier" if name in {
-                "dit_classifier", 
-                "dit_encoder_decoder_classifier", 
-                "unet_classifier"
-            } else "diffusion_model"
+            selected_wrapper_name = "diffusion_classifier" \
+                if name in _DIFFUSION_CLASSIFIER_MODELS else "diffusion_model"
         # Normalize an explicitly requested wrapper name.
         else:
             selected_wrapper_name = str(selected_wrapper_name).lower()
@@ -1104,14 +1129,21 @@ def get_model(
         # Prevent classifier wrappers from receiving generator-only networks.
         if selected_wrapper_name in {
             "diffusion_classifier", "diffusion_classifier_v2"
-        } and name not in {
-            "dit_classifier",
-            "dit_encoder_decoder_classifier",
-            "unet_classifier",
-        }:
+        } and name not in _DIFFUSION_CLASSIFIER_MODELS:
             raise ValueError(
                 f"Wrapper {selected_wrapper_name!r} requires a classifier network."
             )
+
+        # Keep live teacher objects out of serializable wrapper configuration.
+        if teacher_network is not None:
+            # Require a wrapper that implements teacher preprocessing/losses.
+            if selected_wrapper_name not in {
+                "diffusion_classifier", "diffusion_classifier_v2"
+            }:
+                raise ValueError(
+                    "teacher_network requires a diffusion classifier wrapper."
+                )
+            selected_wrapper_kwargs["teacher_network"] = teacher_network
 
         # Wrap the network with joint diffusion classification behavior.
         if selected_wrapper_name == "diffusion_classifier":

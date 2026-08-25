@@ -112,9 +112,11 @@ class UNet(ArgumentSaverModel):
         reshaper_ids_dict: Mapping[int, str] = {}, 
         reshaper_kwargs: Mapping[str, object] = {}, 
         cls_token_regularizer_ids: Sequence[int | None] = (), 
-        cls_token_regularizer_kwargs: Mapping[str, int] = {
+        cls_token_regularizer_kwargs: Mapping[str, object] = {
             "start": 0, 
             "end": 1, 
+            "train_type": "normal",
+            "distil_type": "hard",
         }, 
         extra_depth_specs: Sequence[object] = (), 
         name_prefix: str = "", 
@@ -153,8 +155,10 @@ class UNet(ArgumentSaverModel):
                 ``latent_dim_ratio`` options.
             cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class
                 head depths; None expands across all depths.
-            cls_token_regularizer_kwargs (Mapping[str, int]): Compatibility
+            cls_token_regularizer_kwargs (Mapping[str, object]): Compatibility
                 mapping containing integer ``start`` and ``end`` keys.
+                ``train_type`` is ``"normal"``, ``"distil"``, or
+                ``"both"``; ``distil_type`` is ``"hard"`` or ``"soft"``.
             extra_depth_specs (Sequence[object]): Serialized progressive stages.
             name_prefix (str): Prefix for generated Keras layer names.
             build (bool): Build variables immediately when true.
@@ -173,6 +177,8 @@ class UNet(ArgumentSaverModel):
         reshaper_kwargs = dict(reshaper_kwargs)
         cls_token_regularizer_ids = list(cls_token_regularizer_ids)
         cls_token_regularizer_kwargs = dict(cls_token_regularizer_kwargs)
+        cls_token_regularizer_kwargs.setdefault("train_type", "normal")
+        cls_token_regularizer_kwargs.setdefault("distil_type", "hard")
         extra_depth_specs = list(extra_depth_specs)
 
         super().__init__(**kwargs)
@@ -340,7 +346,8 @@ class UNet(ArgumentSaverModel):
             dropout_rate (float): Dropout probability.
             use_skip_connections (bool | None): Requested skip behavior.
             reshaper_kwargs (dict[str, object]): Variational reshaper options.
-            cls_token_regularizer_kwargs (dict[str, int]): Compatibility slice.
+            cls_token_regularizer_kwargs (dict[str, object]): Compatibility
+                slice and training policy.
 
         Returns:
             None: Valid inputs return normally; invalid inputs raise ValueError.
@@ -412,9 +419,30 @@ class UNet(ArgumentSaverModel):
         ) or ratio <= 0:
             raise ValueError("latent_dim_ratio must be positive.")
         # Require both slice bounds and no unknown regularizer options.
-        if set(cls_token_regularizer_kwargs) != {"start", "end"}:
+        allowed_regularizer_keys = {
+            "start", "end", "train_type", "distil_type"
+        }
+        # Require the regularizer bounds and reject unsupported metadata keys.
+        if not {"start", "end"} <= set(cls_token_regularizer_kwargs) \
+        or not set(cls_token_regularizer_kwargs) <= allowed_regularizer_keys:
             raise ValueError(
-                "cls_token_regularizer_kwargs must contain start and end."
+                "cls_token_regularizer_kwargs must contain start and end and "
+                "may contain train_type and distil_type."
+            )
+        # Restrict regularizer training to the documented target sources.
+        if cls_token_regularizer_kwargs["train_type"] not in (
+            "normal", "distil", "both"
+        ):
+            raise ValueError(
+                "cls_token_regularizer_kwargs train_type must be normal, "
+                "distil, or both."
+            )
+        # Restrict teacher targets to hard-label or soft-probability training.
+        if cls_token_regularizer_kwargs["distil_type"] not in (
+            "hard", "soft"
+        ):
+            raise ValueError(
+                "cls_token_regularizer_kwargs distil_type must be hard or soft."
             )
 
     def _compute_base_depth(self) -> int:
@@ -1332,6 +1360,19 @@ def run_self_tests() -> dict[str, str]:
         "build": False, 
     }
     model = UNet(**common)
+    assert model.cls_token_regularizer_kwargs["train_type"] == "normal"
+    assert model.cls_token_regularizer_kwargs["distil_type"] == "hard"
+    distil_regularized = UNet(
+        **common,
+        cls_token_regularizer_kwargs={
+            "start": 0,
+            "end": 1,
+            "train_type": "distil",
+            "distil_type": "soft",
+        },
+    )
+    assert distil_regularized.cls_token_regularizer_kwargs["train_type"] == "distil"
+    assert distil_regularized.cls_token_regularizer_kwargs["distil_type"] == "soft"
     images = tf.ones((2, 5, 7, 1))
     times = tf.constant([0, 3], tf.int32)
     labels = tf.constant([0, 1], tf.uint8)

@@ -1109,6 +1109,7 @@ def get_datasets(
         drop_remainder=False
     ) if use_valset else None # Build a deterministic validation pipeline.
 
-    if task == "continual": # Defer per-task loading to the continual learner.
+    # Defer per-task loading to the continual learner.
+    if task == "continual":
         return loader, None
     return trainset, valset

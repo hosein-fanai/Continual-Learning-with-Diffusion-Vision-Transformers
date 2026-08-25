@@ -40,7 +40,9 @@ outputs = network((noisy_images, timesteps, labels), training=False)
 `full_return=True`, it returns
 `(output, cond, features_list, regs_list, (z_mean, z_log_var))`.
 `DiTClassifier` instead returns `{"noises": ..., "classes": ...}` and adds both
-branches' intermediate values when `full_return=True`.
+branches' intermediate values when `full_return=True`. With a distillation
+token, it also returns the independent `distil_classes` head. `classes` remains
+the class-token/average-pooling result in both training and inference.
 
 `DiTEncoderDecoder` accepts the standard three tensors and reuses
 `noisy_images` as the decoder image. A fourth float image tensor supplies an
@@ -70,10 +72,45 @@ is the decoder prediction and `"classes"` is computed from encoder features
 `encoder_features_list`. The last two are explicit aliases of `cond` and
 `features_list` for decoder-oriented code.
 
+## Class and distillation tokens
+
+`distil_token_type` enables a second optional prefix token and accepts the same
+`None`, `"new_weight"`, `"time"`, `"label"`, and `"time_label"` values as
+`cls_token_type`. Its `distil_token_freq_dim`, `distil_token_mlp_ratio`, and
+`distil_token_pos_merger_type` options mirror the corresponding `cls_token_*`
+options. When both tokens exist, every retained token feature is ordered as:
+
+```text
+[class token, distillation token, patch tokens...]
+```
+
+With only a distillation token it occupies position 0. Local mixers, scalers,
+and reshapers preserve all active prefix tokens outside spatial patch-grid
+operations. `features_list` retains those prefixes, while the final
+`DiffusionTransformer`/`DiTDecoder` denoising output removes them before
+unpatchification or token return. These raw denoisers only propagate the
+tokens; they do not classify them or expose separate token predictions.
+
+`DiTClassifier` adds the distillation head. With
+`classifier_only_distil_token=True`, set `clf_distil_token_type`. With
+`classifier_only_distil_token=False`, the classifier uses the main
+transformer's `distil_token_type`. The remaining distillation-token shape/merge
+options are the inherited `distil_token_*` values.
+
+The ordinary classifier head reads the class token when present. If no class
+token exists, or `force_global_avg_pooling=True`, it averages every token except
+the distillation token; forced pooling therefore still includes an existing
+class token. The distillation head reads the distillation position directly.
+Whenever distillation is active, calls expose the primary `"classes"` and
+independent `"distil_classes"` distributions in both modes; without it, the
+established `"classes"` contract is unchanged. The wrapper combines these
+distributions only when computing `total_accuracy`. Dynamic `add_class()`
+growth expands both softmax heads.
+
 ## Depth and ID conventions
 
 Depth 0 is not a transformer block. It is the patch-embedded input, after any
-patch/condition merge and optional prefix token. Depths 1 through N are the
+patch/condition merge and optional prefix tokens. Depths 1 through N are the
 outputs of `layers_dicts[0]` through `layers_dicts[N-1]`.
 
 An ID dictionary maps a target depth to source feature depths:
@@ -119,13 +156,15 @@ regularizer applies a `num_classes` softmax to a configured flattened token
 slice. Setting `mlp_ratio` inside `cls_token_regularizer_kwargs` adds a Dense
 hidden projection before that softmax. Its `activation_function` defaults to
 `"tanh"` when omitted. The classifier branch uses the same keys in
-`clf_cls_token_regularizer_kwargs`.
+`clf_cls_token_regularizer_kwargs`. Wrapper training also reads `train_type`
+(`normal`, `distil`, or `both`) and `distil_type` (`hard` or `soft`); these
+metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
 `DiTClassifier` adds main-feature aggregators and cross-attention aggregators
-before the analogous classifier components. Its final extractor uses the first
-token when a class token exists, otherwise global average pooling; setting
-`force_global_avg_pooling=True` always chooses averaging.
+before the analogous classifier components. Its final extraction behavior,
+including distillation-token exclusion from global averaging, is described
+above.
 
 ## Configuration dictionaries
 
@@ -139,7 +178,7 @@ selected depth of that component type; they are not keyed per depth.
 | `downsample_kwargs` | Common embedding/norm/position/MLP keys above plus `scaling_method`: `"avg_pooling"`, `"max_pooling"`, or `"cnn_stride"`; `cnn_dim_ratio: int`; `cnn_kernel_size: int`; `cnn_activation_func` |
 | `upsample_kwargs` | Common embedding/norm/position/MLP keys plus `scaling_method`: `"cnn_transpose"`, `"interpolate"`, or `"cnn_interpolate"`; `scaling_interpolation_method`; `cnn_dim_ratio`; `cnn_kernel_size`; `cnn_activation_func` |
 | `reshaper_kwargs` | `add_kl: bool`; `latent_dim_ratio: positive float` |
-| `cls_token_regularizer_kwargs`, `clf_cls_token_regularizer_kwargs` | `start: int`; `end: int`; these are Python token-slice bounds before flattening; optional `mlp_ratio: positive float or None` adds a hidden Dense layer; optional `activation_function: Keras activation` defaults to `"tanh"` |
+| `cls_token_regularizer_kwargs`, `clf_cls_token_regularizer_kwargs` | `start: int`; `end: int`; these are Python token-slice bounds before flattening; optional `mlp_ratio: positive float or None` adds a hidden Dense layer; optional `activation_function: Keras activation` defaults to `"tanh"`; `train_type`: `"normal"`, `"distil"`, or `"both"`; `distil_type`: `"hard"` or `"soft"` |
 
 `pos_embed_type` is `None` or one of `new_weight`, `1d_sincos`,
 `1d_interpolate`, `1d_learned_interpolate`, `2d_sincos`, `2d_interpolate`, and
@@ -211,6 +250,7 @@ network = DiTClassifier(
 Important initial values are: `clf_depth=1`, `clf_dim=None` (resolved to the
 first aggregation width), `clf_dim_forced=False`,
 `clf_cond_type="time_label"`, `clf_cls_token_type="new_weight"`,
+`classifier_only_distil_token=True`, `clf_distil_token_type=None`,
 `clf_vit_block_ids=[None]`, and all classifier mixer/scaler/reshaper/regularizer
 ID collections empty. The terminal connection defaults to `{-1: (-1,)}`.
 `clf_mha_num_heads`, block MLP ratio, normalization mode, dropout, and most
@@ -259,6 +299,7 @@ predicted_noise = network(
 
 `network.encoder` is a read-only alias for `network`. Consequently
 `embed_conditions`, `embed_inputs`, `prepend_cls_token`,
+`prepend_distil_token`,
 `slice_and_flatten_tokens`, `encode`, `add_depths`, and variable inspection all
 belong to the encoder. The composite forces the encoder's `use_unpatchify`
 setting to `False` because only the decoder owns the final noise/image head.

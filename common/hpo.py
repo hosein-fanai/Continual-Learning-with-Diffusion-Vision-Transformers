@@ -70,7 +70,7 @@ _DIT = {
     "test_eta": "uniform 0 to 1"
 }
 _UNET = {
-    **_OPTIMIZATION,
+    **_OPTIMIZATION, 
     "width_template": "(32,64), (32,64,96), or (64,96,128)", 
     "block_depth": "1 or 2 residual blocks per scale", 
     "bottleneck_multiplier": "1.5 or 2 times the widest stage", 
@@ -122,13 +122,25 @@ _PRETRAINED = {
 }
 _JOINT_NOTE = {
     "classifier_loss_coefficient": "log-uniform 1e-4 to 1e-1", 
+    "ctr_loss_coef": (
+        "0, 1e-4, 1e-3, 1e-2, or 5e-2; positive values enable a final "
+        "classifier token regularizer"
+    ), 
     "masking_recipe": "V1 only: CFG-null, timestep, both, or neither", 
     "mask_t_percentage": (
         "V1 only: 35, 50, 70, or 90 when timestep masking is used"
     ), 
+    "distillation": (
+        "with a runtime teacher: hard or soft targets and log-uniform "
+        "distil_loss_coef"
+    ), 
     "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
 _DIT_CLASSIFIER_NOTE = {
+    "classifier_architecture": (
+        "linear, local mixer, connection, cross-attention, decoder "
+        "cross-attention, cross-attention aggregation, U-shaped, or U-VAE"
+    ), 
     "feature_aggregation": "last denoiser feature or all features", 
     "classifier_only_cls_token": "boolean", 
     "classifier_cls_token_type": (
@@ -142,6 +154,10 @@ _DIT_CLASSIFIER_NOTE = {
 }
 _DIT_CLASSIFIER_WRAPPER_NOTE = {
     "wrapper_name": "diffusion_classifier (V1) or diffusion_classifier_v2 (V2)", 
+    "v2_classifier_variables": (
+        "V2 only: classifier-only, shared embedding, first/final, or final-two "
+        "main-transformer variable recipes"
+    ), 
     "clf_train_noisified_max_timesteps": (
         "V2 only: None (clean input at timestep 0), 64, 128, 256, 512, "
         "or timesteps (full [0, timesteps) range); numeric caps are bounded "
@@ -155,7 +171,6 @@ _CONTINUAL_NOTE = {
     ), 
     "objective": "maximize selected mean class-incremental accuracy"
 }
-
 
 SEARCH_SPACES = {
     "generation": {
@@ -171,7 +186,7 @@ SEARCH_SPACES = {
         }, 
         "unet": _UNET, 
         "vae": _VAE
-    },
+    }, 
     "joint": {
         "dit_classifier": {
             **_DIT, 
@@ -193,7 +208,7 @@ SEARCH_SPACES = {
         }, 
         "vae_classifier": {
             **_VAE, 
-            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)",
+            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)", 
             "objective": "Pareto minimize reconstruction / maximize accuracy"
         }
     },
@@ -240,12 +255,11 @@ SEARCH_SPACES = {
         "vae": {**_VAE, **_CONTINUAL_NOTE}, 
         "vae_classifier": {
             **_VAE, 
-            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)",
+            "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)", 
             **_CONTINUAL_NOTE
         }
     }
 }
-
 
 _MODEL_TAGS = {
     "diffusion_transformer": "dt", 
@@ -276,15 +290,20 @@ def _value_tag(value: object) -> str:
     short_values = {
         "sgd": "s", "rmsprop": "r", "adam": "a", "adamw": "aw", 
         "nadam": "n", "cosine": "c", "constant": "k", 
-        "linear": "l", 
-        "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
+        "linear": "l", "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
         "clipped_cosine": "cc", "convolution": "c", "pool": "p", 
         "timestep": "t", "both": "b", "null": "n", "neither": "x", 
         "last": "l", "all": "a", "new_weight": "nw", 
         "time_label": "tl", "label": "y", 
         "diffusion_classifier": "v1", 
         "diffusion_classifier_v2": "v2", 
-        "timesteps": "ts", 
+        "local_mixer": "lm", "connection": "cn", 
+        "cross_attention": "ca", "cross_attention_decoder": "cad", 
+        "cross_attention_aggregation": "caa", 
+        "u_shape": "us", "u_vae": "uv", 
+        "none": "x", "conditions": "ce", "core": "co", 
+        "notebook": "nb", "first": "f", "last": "z", 
+        "last_two": "zz", "timesteps": "ts", 
         "relu": "r", "elu": "e", "selu": "s", "max": "x", 
         "avg": "a"
     }
@@ -340,23 +359,33 @@ def _suggest_optimizer(
 
     # Search conservative rates for pretrained feature extractors.
     if family == "pretrained":
-        learning_rate = trial.suggest_float("learning_rate", 1e-6, 5e-4, log=True)
+        learning_rate = trial.suggest_float(
+            "learning_rate", 1e-6, 5e-4, log=True
+        )
         batch_choices = [32, 64, 128]
     # Search the VAE-specific learning-rate range.
     elif family in ("vae", "vae_classifier"):
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+        learning_rate = trial.suggest_float(
+            "learning_rate", 1e-5, 1e-3, log=True
+        )
         batch_choices = [128, 256, 512]
     # Search the classifier-specific learning-rate range.
     elif family in ("cnn", "dnn"):
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True)
+        learning_rate = trial.suggest_float(
+            "learning_rate", 1e-5, 3e-3, log=True
+        )
         batch_choices = [64, 128, 256]
     # Search the U-Net-specific learning-rate range.
     elif family in ("unet", "unet_classifier"):
-        learning_rate = trial.suggest_float("learning_rate", 1e-4, 2e-3, log=True)
+        learning_rate = trial.suggest_float(
+            "learning_rate", 1e-4, 2e-3, log=True
+        )
         batch_choices = [32, 64, 128]
     # Use the transformer learning-rate range for remaining families.
     else:
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
+        learning_rate = trial.suggest_float(
+            "learning_rate", 1e-5, 5e-3, log=True
+        )
         batch_choices = [32, 64, 128]
 
     batch_size = trial.suggest_categorical("batch_size", batch_choices)
@@ -525,7 +554,9 @@ def _suggest_unet(
         "widths", ["32-64", "32-64-96", "64-96-128"]
     )
     widths = tuple(int(value) for value in widths_name.split("-"))
-    embedding_dim = trial.suggest_categorical("embedding_dim", [64, 96, 128])
+    embedding_dim = trial.suggest_categorical(
+        "embedding_dim", [64, 96, 128]
+    )
     quotient, remainder = divmod(embedding_dim, 3)
     resampling = trial.suggest_categorical(
         "resampling", ["pool", "convolution"]
@@ -572,7 +603,9 @@ def _suggest_vae(
         dict[str, object]: VAE constructor options.
     """
 
-    latent_dim = trial.suggest_categorical("latent_dim", [8, 16, 32, 64, 128])
+    latent_dim = trial.suggest_categorical(
+        "latent_dim", [8, 16, 32, 64, 128]
+    )
     template = trial.suggest_categorical(
         "hidden_template", ["256-64", "512-128", "512-256-64"]
     )
@@ -605,7 +638,8 @@ def _suggest_joint(
     model_name: str, 
     kwargs: dict[str, object], 
     wrapper_kwargs: dict[str, object], 
-    tune_masking: bool = True
+    tune_masking: bool = True, 
+    use_distillation: bool = False
 ) -> None:
     """Add joint-classification suggestions to mutable model settings.
 
@@ -615,27 +649,56 @@ def _suggest_joint(
         kwargs (dict[str, object]): Raw-model options updated in place.
         wrapper_kwargs (dict[str, object]): Wrapper options updated in place.
         tune_masking (bool): Suggest V1 classifier masking options when true.
+        use_distillation (bool): Add a student distillation head and suggest
+            teacher-loss settings when a runtime teacher is available.
 
     Returns:
         None.
     """
 
-    # Add DiT-specific decoder and conditioning choices.
+    classifier_architecture = "linear"
+    # Add DiT-specific architecture and conditioning choices.
     if model_name.startswith("dit"):
+        classifier_architecture = trial.suggest_categorical(
+            "classifier_architecture", [
+                "linear", "local_mixer", "connection", "cross_attention", 
+                "cross_attention_decoder", "cross_attention_aggregation", 
+                "u_shape", "u_vae"
+            ]
+        )
         classifier_only_cls_token = trial.suggest_categorical(
             "classifier_only_cls_token", [True, False]
         )
         feature_aggregation = trial.suggest_categorical(
             "feature_aggregation", ["last", "all"]
         )
+        # Preserve the existing classifier-depth search for the linear baseline.
+        if classifier_architecture == "linear":
+            clf_depth = trial.suggest_categorical(
+                "clf_depth", [1, 2, 3, 4, 5]
+            )
+        # Use two stages for the compact mixer and routing templates.
+        elif classifier_architecture in (
+            "local_mixer", "connection", "cross_attention", 
+            "cross_attention_decoder"
+        ):
+            clf_depth = 2
+        # Cross-attention aggregation is applied at the first classifier stage.
+        elif classifier_architecture == "cross_attention_aggregation":
+            clf_depth = 1
+        # Use a down/bottleneck/up classifier for the U-shaped template.
+        elif classifier_architecture == "u_shape":
+            clf_depth = 3
+        # Reserve two middle stages for the variational bottleneck.
+        else:
+            clf_depth = 5
+
         kwargs.update({
             "feature_aggregation_ids_dict": {
                 1: [-1] if feature_aggregation == "last" else [None]
             }, 
             "classifier_only_cls_token": classifier_only_cls_token, 
-            "clf_depth": trial.suggest_categorical(
-                "clf_depth", [1, 2, 3, 4, 5]
-            ), 
+            "clf_depth": clf_depth,
             "clf_ln_no_adaptation": trial.suggest_categorical(
                 "clf_ln_no_adaptation", [True, False]
             ), 
@@ -649,9 +712,84 @@ def _suggest_joint(
                 "dropout_rate", [0., 0.1, 0.2, 0.25, 0.5]
             )
         })
+
+        # Add a spatially local residual mixer between transformer blocks.
+        if classifier_architecture == "local_mixer":
+            kwargs.update({
+                "clf_local_mixer_ids": [1], 
+                "clf_local_mixer_kwargs": {"pos_embed_type": None}
+            })
+        # Merge the classifier input and first-stage output before stage two.
+        elif classifier_architecture == "connection":
+            kwargs.update({
+                "clf_connection_ids_dict": {2: [0, 1], -1: [-1]},
+                "clf_connection_kwargs": {
+                    "connect_type": trial.suggest_categorical(
+                        "clf_connection_type", ["add", "concat"]
+                    )
+                }
+            })
+        # Route the classifier input through ordinary cross-attention.
+        elif classifier_architecture in (
+            "cross_attention", 
+            "cross_attention_decoder"
+        ):
+            kwargs.update({
+                "clf_cross_attention_ids_dict": {2: [0]}, 
+                "clf_cross_attention_plug_type": trial.suggest_categorical(
+                    "clf_cross_attention_plug_type", ["values", "queries"]
+                )
+            })
+            # Select the existing decoder block for the decoder variant.
+            
+            if classifier_architecture == "cross_attention_decoder":
+                kwargs["clf_use_decoder_ids"] = [2]
+        # Cross-attend directly to the main transformer's input feature.
+        elif classifier_architecture == "cross_attention_aggregation":
+            kwargs.update({
+                "cross_attention_aggregation_ids_dict": {1: [0]}, 
+                "clf_cross_attention_plug_type": trial.suggest_categorical(
+                    "clf_cross_attention_plug_type", ["values", "queries"]
+                )
+            })
+        # Build a compact spatial downsample/bottleneck/upsample classifier.
+        elif classifier_architecture == "u_shape":
+            kwargs.update({
+                "clf_vit_block_ids": [1, 2, 3], 
+                "clf_downsample_ids": [1], 
+                "clf_downsample_kwargs": {"scaling_method": "avg_pooling"}, 
+                "clf_upsample_ids": [3], 
+                "clf_upsample_kwargs": {
+                    "scaling_method": "interpolate", 
+                    "scaling_interpolation_method": "bilinear"
+                }
+            })
+        # Insert a KL-enabled flatten/unflatten bottleneck into the U-shape.
+        elif classifier_architecture == "u_vae":
+            kwargs.update({
+                "clf_vit_block_ids": [1, 4, 5], 
+                "clf_downsample_ids": [1], 
+                "clf_downsample_kwargs": {"scaling_method": "avg_pooling"}, 
+                "clf_reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, 
+                "clf_reshaper_kwargs": {
+                    "add_kl": True, 
+                    "latent_dim_ratio": trial.suggest_categorical(
+                        "clf_latent_dim_ratio", [0.125, 0.25, 0.5]
+                    )
+                }, 
+                "clf_upsample_ids": [4], 
+                "clf_upsample_kwargs": {
+                    "scaling_method": "interpolate", 
+                    "scaling_interpolation_method": "bilinear"
+                }
+            })
+
         # Project concatenated all-depth features back to the classifier width.
         if feature_aggregation == "all":
-            kwargs.update({"clf_dim": kwargs["dim"], "clf_dim_forced": True})
+            kwargs.update({
+                "clf_dim": kwargs["dim"], 
+                "clf_dim_forced": True
+            })
 
         # Tune a dedicated classifier token only when the branch uses one.
         if classifier_only_cls_token:
@@ -659,10 +797,84 @@ def _suggest_joint(
                 "clf_cls_token_type", ["new_weight", "time_label", "label"]
             )
 
+        # Weight the classifier's variational bottleneck only when it exists.
+        if classifier_architecture == "u_vae":
+            wrapper_kwargs["kl_loss_coef"] = trial.suggest_float(
+                "kl_loss_coef", 1e-4, 1e-1, log=True
+            )
+
+    # Enable the family-specific student distillation head when requested.
+    if use_distillation:
+        # Give transformer classifiers a dedicated learned distillation token.
+        if model_name.startswith("dit"):
+            kwargs.update({
+                "classifier_only_distil_token": True, 
+                "clf_distil_token_type": "new_weight"
+            })
+        # Give the convolutional classifier its parallel distillation head.
+        elif model_name == "unet_classifier":
+            kwargs["classifier_only_distil_token"] = True
+
+        wrapper_kwargs.update({
+            "distil_type": trial.suggest_categorical(
+                "distil_type", ["hard", "soft"]
+            ), 
+            "distil_loss_coef": trial.suggest_float(
+                "distil_loss_coef", 1e-4, 1e-1, log=True
+            )
+        })
+
+    ctr_loss_coef = trial.suggest_categorical(
+        "ctr_loss_coef", [0., 1e-4, 1e-3, 1e-2, 5e-2]
+    )
+    wrapper_kwargs["ctr_loss_coef"] = ctr_loss_coef
+    # Materialize one final classifier regularizer when its loss is active.
+    if ctr_loss_coef > 0.:
+        regularizer_train_type = "normal"
+        # Let a teacher supervise the auxiliary regularizer when available.
+        if use_distillation:
+            regularizer_train_type = trial.suggest_categorical(
+                "regularizer_train_type", ["normal", "distil", "both"]
+            )
+        regularizer_distil_type = "hard"
+        # Tune hard/soft regularizer targets only for teacher-backed modes.
+        if regularizer_train_type in ("distil", "both"):
+            regularizer_distil_type = trial.suggest_categorical(
+                "regularizer_distil_type", ["hard", "soft"]
+            )
+
+        kwargs["clf_cls_token_regularizer_ids"] = [kwargs["clf_depth"]]
+        regularizer_kwargs = {
+            "start": (
+                0 if kwargs.get("classifier_only_cls_token", False)
+                else int(use_distillation)
+            ),
+            "end": (
+                1 if kwargs.get("classifier_only_cls_token", False)
+                else int(use_distillation) + 1
+            ),
+            "train_type": regularizer_train_type,
+            "distil_type": regularizer_distil_type,
+        }
+        # DiT classifiers expose a classifier-specific regularizer mapping.
+        if model_name.startswith("dit"):
+            kwargs["clf_cls_token_regularizer_kwargs"] = regularizer_kwargs
+        # U-Net classifiers reuse the inherited regularizer metadata mapping.
+        else:
+            kwargs["cls_token_regularizer_kwargs"] = regularizer_kwargs
+
+    active_accuracy_heads = 1 + int(use_distillation) + int(
+        ctr_loss_coef > 0.
+    )
+    accuracy_coef = 1. / active_accuracy_heads
+    wrapper_kwargs.update({
+        "clf_acc_coef": accuracy_coef, 
+        "distil_acc_coef": accuracy_coef if use_distillation else 0., 
+        "ctr_acc_coef": accuracy_coef if ctr_loss_coef > 0. else 0.
+    })
+
     wrapper_kwargs["clf_loss_coef"] = trial.suggest_float(
-        "clf_loss_coef", 
-        1e-4, 1e-1, 
-        log=True
+        "clf_loss_coef", 1e-4, 1e-1, log=True
     )
 
     # Tune classifier masking only for the jointly trained V1 wrapper.
@@ -745,7 +957,9 @@ def _suggest_classifier(
         }
 
     return {
-        "dropout_rate": trial.suggest_float("dropout", 0., 0.5, step=0.1), 
+        "dropout_rate": trial.suggest_float(
+            "dropout", 0., 0.5, step=0.1
+        ), 
         "num_last_not_frozen": trial.suggest_categorical(
             "unfrozen", [1, 5, 20, 0]
         )
@@ -759,9 +973,12 @@ def _build_trial_config(
     dataset_name: str, 
     epochs: int, 
     seed: int, 
-    results_path: str | Path,
-    use_ensemble_accuracy: bool = False,
-    ensemble_accuracy_kwargs: Mapping[str, object] | None = None
+    results_path: str | Path, 
+    use_ensemble_accuracy: bool = False, 
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
+    use_distillation: bool = False, 
+    fit_method: str = "fit", 
+    fit_kwargs: Mapping[str, object] | None = None
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -770,26 +987,47 @@ def _build_trial_config(
         task (str): Generation, joint, classification, or continual task.
         model_name (str): Selected model family.
         dataset_name (str): Supported dataset name.
-        epochs (int): Maximum epochs per phase.
+        epochs (int): Ordinary-fit budget and cosine-schedule sizing value.
+            Progressive diffusion phases use their stage/final budgets.
         seed (int): Trial-specific random seed.
         results_path (str | pathlib.Path): HPO artifact root.
         use_ensemble_accuracy (bool): Use post-training ensemble accuracy as
             the classification objective for diffusion-classifier studies.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
+        use_distillation (bool): Configure a student distillation head and
+            teacher objective. The runtime teacher is supplied separately by
+            :func:`run_hpo` and is never serialized.
+        fit_method (str): ``"fit"`` for ordinary Keras training or
+            ``"fit_progressively"`` for a diffusion curriculum.
+        fit_kwargs (Mapping[str, object] | None): Selected-method arguments.
+            Progressive named arguments are stored in their explicit
+            :class:`TrainingConfig` fields; remaining Keras fit arguments are
+            stored in ``TrainingConfig.fit_kwargs``.
 
     Returns:
         Config: Fully typed trial configuration.
 
     Raises:
-        ValueError: If the dataset/model combination is unsupported.
+        ValueError: If the dataset/model combination or fit selection is
+            unsupported, or progressive training omits ``stage_tasks``.
     """
 
     dataset_name = dataset_name.lower()
+    fit_kwargs = dict(fit_kwargs or {})
 
     # Reject datasets outside the four supported HPO families.
     if dataset_name not in ("fmnist", "mnist", "cifar10", "cifar100"):
         raise ValueError("dataset_name must be FMNIST, MNIST, CIFAR10, or CIFAR100.")
+    # Restrict HPO orchestration to its two supported training methods.
+    if fit_method not in ("fit", "fit_progressively"):
+        raise ValueError("fit_method must be 'fit' or 'fit_progressively'.")
+    # Progressive curricula are implemented only by diffusion wrappers.
+    if fit_method == "fit_progressively" and model_name not in _DIFFUSION_MODELS:
+        raise ValueError("fit_progressively requires a diffusion model family.")
+    # A progressive curriculum cannot infer which property should change.
+    if fit_method == "fit_progressively" and fit_kwargs.get("stage_tasks") is None:
+        raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
     if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
         raise ValueError("The Xception classifier requires three-channel CIFAR data.")
@@ -804,6 +1042,35 @@ def _build_trial_config(
         )
 
     ensemble_accuracy_kwargs = dict(ensemble_accuracy_kwargs or {})
+
+    progressive_fields = {}
+    # Move named curriculum controls into their typed training-config fields.
+    if fit_method == "fit_progressively":
+        for name in (
+            "stage_tasks", 
+            "stages_num", 
+            "stages_verbose", 
+            "stage_epochs", 
+            "final_epochs", 
+            "timestep_boundaries", 
+            "timestep_clustering_type", 
+            "resolutions", 
+            "depths", 
+            "pacing_type", 
+            "earlystopping_type", 
+            "min_delta", 
+            "stopper_mode"
+        ):
+            # Preserve TrainingConfig defaults for omitted progressive values.
+            if name in fit_kwargs:
+                progressive_fields[name] = fit_kwargs.pop(name)
+
+        # Avoid colliding with ordinary orchestration early-stopping settings.
+        if "monitor" in fit_kwargs:
+            progressive_fields["progressive_monitor"] = fit_kwargs.pop("monitor")
+        # Keep stage pacing patience independent from ordinary fit patience.
+        if "patience" in fit_kwargs:
+            progressive_fields["progressive_patience"] = fit_kwargs.pop("patience")
 
     _, image_shape, _ = get_dataset_spec(dataset_name)
     image_size = image_shape[0]
@@ -829,6 +1096,16 @@ def _build_trial_config(
     or model_name in ("vae", "vae_classifier"):
         loss_function = trial.suggest_categorical(
             "loss_function", ["mse", "mae"]
+        )
+
+    # Restrict teacher objectives to classifier-capable diffusion studies.
+    if use_distillation and not (
+        task in ("joint", "continual")
+        and model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "Distillation requires a joint or "
+            "continual diffusion classifier study."
         )
 
     # Tune transformer diffusion schedules and wrapper behavior.
@@ -874,7 +1151,7 @@ def _build_trial_config(
         "unet_classifier"
     ):
         wrapper_name = "diffusion_classifier"
-        # Compare the two existing wrappers only for the DiT classifier family.
+        # Compare the two existing wrappers for the DiT classifier family.
         if model_name == "dit_classifier":
             wrapper_name = trial.suggest_categorical("wrapper_name", [
                 "diffusion_classifier", "diffusion_classifier_v2"
@@ -885,7 +1162,8 @@ def _build_trial_config(
             model_name, 
             model_kwargs, 
             wrapper_kwargs, 
-            tune_masking=wrapper_name == "diffusion_classifier"
+            tune_masking=wrapper_name == "diffusion_classifier",
+            use_distillation=use_distillation,
         )
         # Tune V2-only classifier-input noising for the DiT classifier family.
         if model_name == "dit_classifier" \
@@ -899,6 +1177,29 @@ def _build_trial_config(
                 else timesteps if clf_max_timesteps == "timesteps" 
                 else min(clf_max_timesteps, timesteps)
             )
+            embedding_recipe = trial.suggest_categorical(
+                "clf_vars_embedding_recipe", [
+                    "none", "label", "conditions", "core", "notebook"
+                ]
+            )
+            noise_recipe = trial.suggest_categorical(
+                "clf_vars_noise_recipe", [
+                    "none", "first", "last", "last_two"
+                ]
+            )
+            wrapper_kwargs["clf_vars_embedding_ids"] = {
+                "none": [],
+                "label": [2],
+                "conditions": [1, 2],
+                "core": [0, 1, 2],
+                "notebook": [0, 1, 2, 3],
+            }[embedding_recipe]
+            wrapper_kwargs["clf_vars_noise_part_ids"] = {
+                "none": [],
+                "first": [1],
+                "last": [-1],
+                "last_two": [-2, -1],
+            }[noise_recipe]
 
     continual_kwargs = {}
     # Tune replay policy only for continual-learning studies.
@@ -912,6 +1213,7 @@ def _build_trial_config(
         continual_kwargs = {
             "remove_prev_classes": True, 
             "keep_same_model": True, 
+            "use_distillation": use_distillation,
             "plot_results": False, 
             "generative_model_kwargs": {
                 "samples_per_class": replay_samples, 
@@ -919,8 +1221,8 @@ def _build_trial_config(
             }
         }
 
-        # Train and evaluate the selected DiT wrapper's own classifier head.
-        if model_name == "dit_classifier":
+        # Train and evaluate every diffusion classifier's attached head.
+        if model_name in _DIFFUSION_CLASSIFIER_MODELS:
             continual_kwargs.update({
                 "use_generative_model_classifier": True, 
                 "train_classifier_separately": (
@@ -940,19 +1242,21 @@ def _build_trial_config(
             classifier_name = "dnn"
             return_features = dataset_name in ("cifar10", "cifar100")
             preprocess, onehot_labels = "normalize", True
+
             # Point dense VAE replay at the dataset's saved feature archive.
             if return_features:
                 features_path = str(
                     Path("data")
                     / f"{dataset_name}_xception_gavgpooled_features_train_val_test"
                 )
+
             model_kwargs["last_activation"] = "linear"
 
             classifier_kwargs = {
                 "dropout_rate": 0.2, 
                 "architecture_kwargs": {
                     "hidden_dims": (256,), 
-                    "activation": "relu", 
+                    "activation": "relu"
                 }
             }
         # Select a convolutional classifier for image-space replay.
@@ -963,7 +1267,7 @@ def _build_trial_config(
                 "dropout_rate": 0.2, 
                 "architecture_kwargs": {
                     "conv_filters": (32, 64, 128), 
-                    "conv_depths": (1, 1, 1), 
+                    "conv_depths": (1, 1, 1)
                 }
             }
 
@@ -973,6 +1277,8 @@ def _build_trial_config(
     # Optimize both generation loss and classification accuracy jointly.
     elif task == "joint":
         monitor = "val_clf_accuracy" if model_name == "vae_classifier" \
+                else "val_total_accuracy" if use_distillation or \
+                    wrapper_kwargs.get("ctr_loss_coef", 0.) > 0. \
                 else "val_classifier_accuracy"
         monitor_mode = "max"
     # Optimize the final continual-learning accuracy.
@@ -998,9 +1304,16 @@ def _build_trial_config(
     }[dataset_name]
     project_tag = f"t{trial.number:04d}"
     trial_root = Path(results_path) / task / model_name / dataset_name
+
     # Match the separate study storage used for ensemble-feedback trials.
     if use_ensemble_accuracy:
         trial_root /= "ensemble_accuracy"
+    # Keep teacher-distillation trials separate from ordinary studies.
+    if use_distillation:
+        trial_root /= "distillation"
+    # Keep progressive trials out of resumable ordinary-fit studies.
+    if fit_method == "fit_progressively":
+        trial_root /= "fit_progressively"
 
     tensorboard_root = Path(results_path) / "_tb" / (
         task_tag + _MODEL_TAGS[model_name] + dataset_tag
@@ -1008,6 +1321,12 @@ def _build_trial_config(
     # Avoid TensorBoard event-name collisions with ordinary-accuracy trials.
     if use_ensemble_accuracy:
         tensorboard_root /= "ensemble_accuracy"
+    # Keep distillation TensorBoard events in their matching study family.
+    if use_distillation:
+        tensorboard_root /= "distillation"
+    # Keep progressive TensorBoard runs beside their separate study.
+    if fit_method == "fit_progressively":
+        tensorboard_root /= "fit_progressively"
 
     config = Config(
         dataset={
@@ -1032,6 +1351,9 @@ def _build_trial_config(
         training={
             "task": task, 
             "epochs": epochs, 
+            "fit_method": fit_method,
+            "fit_kwargs": fit_kwargs,
+            **progressive_fields,
             "seed": seed, 
             "verbose": 0, 
             "patience": 5 if task in ("generation", "classification") else 0, 
@@ -1069,9 +1391,10 @@ def _build_trial_config(
             "study_model": model_name, 
             "trial_number": trial.number, 
             "params": dict(trial.params), 
-            "tensorboard_name": tensorboard_name,
-            "use_ensemble_accuracy": use_ensemble_accuracy,
-            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs
+            "tensorboard_name": tensorboard_name, 
+            "use_ensemble_accuracy": use_ensemble_accuracy, 
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
+            "use_distillation": use_distillation
         }
     )
 
@@ -1194,14 +1517,23 @@ def _objective_values(
             "val_noise_loss", "val_recon_loss", 
             "noise_loss", "recon_loss"
         ])
+
         # Read the post-training report when ensemble feedback is requested.
         if use_ensemble_accuracy:
             classification = _ensemble_accuracy_value(evaluations or {})
         # Preserve the legacy training-history objective otherwise.
         else:
             classification = _history_value(history, [
-                "val_classifier_accuracy", "val_clf_accuracy", 
-                "classifier_accuracy", "clf_accuracy"
+                "val_total_accuracy", 
+                "val_classifier_accuracy", 
+                "val_cls_token_accuracy", 
+                "val_avg_pooling_accuracy", 
+                "val_clf_accuracy", 
+                "total_accuracy", 
+                "classifier_accuracy", 
+                "cls_token_accuracy", 
+                "avg_pooling_accuracy", 
+                "clf_accuracy"
             ])
 
         return generation, classification
@@ -1230,7 +1562,10 @@ def run_hpo(
     results_path: str = "results/hpo", 
     timeout: float | None = None,
     use_ensemble_accuracy: bool = False,
-    ensemble_accuracy_kwargs: Mapping[str, object] | None = None
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
+    fit_method: str = "fit", 
+    fit_kwargs: Mapping[str, object] | None = None, 
+    teacher_network: tf.keras.Model | None = None
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -1247,7 +1582,10 @@ def run_hpo(
         dataset_name (str): ``FMNIST``, ``MNIST``, ``CIFAR10``, or
             ``CIFAR100``. Xception requires a three-channel CIFAR dataset.
         n_trials (int): Positive number of additional trials to run.
-        epochs (int): Positive maximum epochs per fit/task.
+        epochs (int): Positive ordinary-fit budget. Progressive diffusion
+            phases use ``stage_epochs`` and ``final_epochs`` instead; this
+            value still sizes existing cosine schedules and any ordinary
+            continual classifier phase.
         seed (int): Reproducible TPE and first-trial seed.
         results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``.
@@ -1256,6 +1594,16 @@ def run_hpo(
             HPO feedback for joint or continual diffusion-classifier studies.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
+        teacher_network (tf.keras.Model | None): Runtime-only frozen teacher.
+            Supplying it enables hard/soft distillation suggestions for a
+            supported joint or continual diffusion-classifier study. The
+            object is never written to trial YAML.
+        fit_method (str): ``"fit"`` for the ordinary epoch loop or
+            ``"fit_progressively"`` for diffusion curriculum training.
+        fit_kwargs (Mapping[str, object] | None): YAML-safe arguments for the
+            selected method. Progressive use requires ``stage_tasks`` and
+            accepts the named curriculum controls plus ordinary variadic
+            Keras fit keys.
 
     Returns:
         optuna.study.Study: Resumable completed/partial study. Joint studies
@@ -1263,7 +1611,8 @@ def run_hpo(
 
     Raises:
         ImportError: If Optuna is unavailable.
-        ValueError: If the task/model pair or positive budgets are invalid.
+        ValueError: If the task/model pair, fit selection, or positive budgets
+            are invalid, or progressive training omits ``stage_tasks``.
     """
 
     try:
@@ -1277,10 +1626,20 @@ def run_hpo(
 
     task = task.lower()
     model_name = model_name.lower()
+    fit_kwargs = dict(fit_kwargs or {})
 
     # Require a supported task/model search-space pairing.
     if task not in SEARCH_SPACES or model_name not in SEARCH_SPACES[task]:
         raise ValueError(f"Unsupported task/model pair: {task}/{model_name}")
+    # Restrict public HPO dispatch to the two config-supported fit methods.
+    if fit_method not in ("fit", "fit_progressively"):
+        raise ValueError("fit_method must be 'fit' or 'fit_progressively'.")
+    # Progressive curricula are available only for diffusion model families.
+    if fit_method == "fit_progressively" and model_name not in _DIFFUSION_MODELS:
+        raise ValueError("fit_progressively requires a diffusion model family.")
+    # Require an explicit curriculum description before creating the study.
+    if fit_method == "fit_progressively" and fit_kwargs.get("stage_tasks") is None:
+        raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
     # Restrict ensemble feedback to supported diffusion-classifier studies.
     if use_ensemble_accuracy and not (
         task in ("joint", "continual")
@@ -1289,6 +1648,15 @@ def run_hpo(
         raise ValueError(
             "use_ensemble_accuracy requires a joint "
             "or continual diffusion classifier study."
+        )
+    # Restrict runtime teachers to supported distillation study families.
+    if teacher_network is not None and not (
+        task in ("joint", "continual")
+        and model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "teacher_network requires a joint or "
+            "continual diffusion classifier study."
         )
     # Require positive trial and epoch budgets.
     if n_trials <= 0 or epochs <= 0:
@@ -1299,6 +1667,12 @@ def run_hpo(
     # Keep ensemble-feedback trials separate from legacy accuracy studies.
     if use_ensemble_accuracy:
         study_root /= "ensemble_accuracy"
+    # Isolate the conditional distillation search space from ordinary trials.
+    if teacher_network is not None:
+        study_root /= "distillation"
+    # Keep progressive trials separate from resumable ordinary-fit studies.
+    if fit_method == "fit_progressively":
+        study_root /= "fit_progressively"
 
     configs_path = study_root / "configs"
     configs_path.mkdir(parents=True, exist_ok=True)
@@ -1306,6 +1680,12 @@ def run_hpo(
     study_name = f"{task}-{model_name}-{dataset_name.lower()}" + (
         "-ensemble-accuracy" if use_ensemble_accuracy else ""
     )
+    # Give distillation trials an independent persistent study identity.
+    if teacher_network is not None:
+        study_name += "-distillation"
+    # Give progressive studies an independent SQLite study identity.
+    if fit_method == "fit_progressively":
+        study_name += "-fit-progressively"
     create_kwargs = {
         "study_name": study_name, 
         "storage": "sqlite:///" + storage_path, 
@@ -1334,6 +1714,7 @@ def run_hpo(
         Returns:
             float | tuple[float, float]: Study objective value or joint pair.
         """
+
         tf.keras.backend.clear_session()
         gc.collect()
 
@@ -1346,14 +1727,17 @@ def run_hpo(
             seed + trial.number, 
             results_path=root, 
             use_ensemble_accuracy=use_ensemble_accuracy, 
-            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+            use_distillation=teacher_network is not None, 
+            fit_method=fit_method, 
+            fit_kwargs=fit_kwargs
         )
 
         input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
         save_config(config, input_config_path)
         config = load_config(input_config_path)
 
-        result = main(config)
+        result = main(config, teacher_network=teacher_network)
         values = _objective_values(
             task, 
             model_name, 

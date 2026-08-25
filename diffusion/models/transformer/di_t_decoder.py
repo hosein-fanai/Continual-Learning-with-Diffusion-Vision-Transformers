@@ -167,16 +167,20 @@ class DiTDecoder(DiffusionTransformer):
             "build": build, 
         })
 
-        # Retain only embedders needed by a shared encoder condition or class token.
+        # Retain only embedders needed by shared class/distillation tokens.
         if not self.decoder_separate_cond:
             self.time_embedder = self.time_embedder \
-                if "time" in self._cls_token_type else None
+                if "time" in self._cls_token_type or \
+                "time" in self._distil_token_type else None
             self.label_embedder = self.label_embedder \
                 if "label" in self._cls_token_type or \
+                "label" in self._distil_token_type or \
                 0 in self.cls_token_regularizer_ids else None
             self.conds_merger = self.conds_merger \
-                if "time" in self._cls_token_type and \
-                "label" in self._cls_token_type else None
+                if ("time" in self._cls_token_type and \
+                "label" in self._cls_token_type) or \
+                ("time" in self._distil_token_type and \
+                "label" in self._distil_token_type) else None
         # Restore label embeddings needed by a depth-zero label regularizer.
         if 0 in self.cls_token_regularizer_ids and self.label_embedder is None:
             self.label_embedder = self._create_label_embedder()
@@ -811,7 +815,8 @@ class DiTDecoder(DiffusionTransformer):
                 base_grid_size=self.grid_size,
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
-                circumvent_cls_token=self.cls_token_type is not None,
+                circumvent_tokens=int(self.cls_token_type is not None) +
+                    int(self.distil_token_type is not None),
                 kwargs=self.local_mixer_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}",
             )
@@ -828,7 +833,8 @@ class DiTDecoder(DiffusionTransformer):
                 base_grid_size=self.grid_size,
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
-                circumvent_cls_token=self.cls_token_type is not None,
+                circumvent_tokens=int(self.cls_token_type is not None) +
+                    int(self.distil_token_type is not None),
                 kwargs=self.downsample_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}",
             )
@@ -845,7 +851,8 @@ class DiTDecoder(DiffusionTransformer):
                 base_grid_size=self.grid_size,
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
-                circumvent_cls_token=self.cls_token_type is not None,
+                circumvent_tokens=int(self.cls_token_type is not None) +
+                    int(self.distil_token_type is not None),
                 kwargs=self.upsample_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.US[2:]}",
             )
@@ -859,7 +866,8 @@ class DiTDecoder(DiffusionTransformer):
                 layers_dict=stage,
                 base_dim=self.dim,
                 base_grid_size=self.grid_size,
-                grid_has_cls_token=self.cls_token_type is not None,
+                grid_has_tokens=int(self.cls_token_type is not None) +
+                    int(self.distil_token_type is not None),
                 kwargs=self.reshaper_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}",
             )
@@ -1085,7 +1093,7 @@ class DiTDecoder(DiffusionTransformer):
         max_depth: int = -1, 
         full_return: bool = False, 
         training: bool | None = None, 
-        min_depth: int = 0, 
+        min_depth: int = 0
     ) -> tuple:
         """Decode an image or an intermediate representation.
 
@@ -1113,7 +1121,8 @@ class DiTDecoder(DiffusionTransformer):
             tuple: Normally ``(tokens, decoder_cond, features_list)``. With
             ``full_return=True``, returns ``(tokens, decoder_cond,
             features_list, regs_list, (z_mean, z_log_var))``. Returned tokens
-            exclude the optional class token.
+            exclude optional class and distillation tokens, while retained
+            features keep them in class, distillation, patch order.
 
         Raises:
             AssertionError: If ``min_depth`` is outside ``0..depth``.
@@ -1155,21 +1164,33 @@ class DiTDecoder(DiffusionTransformer):
                     self._current_resolution // self.patch_size
                     if self.image_size != self._current_resolution else None
                 ), 
-                training=training,
+                training=training
             )
             # Merge the decoder condition into patch tokens when configured.
             if self.patches_conds_merger is not None:
-                x = self.patches_conds_merger(
-                    (
-                        x, 
-                        tf.repeat(cond[:, None], tf.shape(x)[1], axis=1),
-                    ), 
-                    training=training,
+                x = self.patches_conds_merger((
+                    x, 
+                    tf.repeat(
+                        cond[:, None], 
+                        tf.shape(x)[1], 
+                        axis=1
+                    )
+                ), training=training)
+            # Prepend distillation first so a class token remains position zero.
+            if self.distil_token_type is not None:
+                x = self.prepend_single_token(
+                    x, self.distil_token, 
+                    self.distil_token_type, 
+                    time_embeds=time_embeds, 
+                    label_embeds=label_embeds, 
+                    times=times, 
+                    labels=labels, 
+                    training=training, 
                 )
             # Prepend the configured decoder class token.
             if self.cls_token_type is not None:
-                x = self.prepend_cls_token(
-                    x, 
+                x = self.prepend_single_token(
+                    x, self.cls_token, 
                     self.cls_token_type, 
                     time_embeds=time_embeds, 
                     label_embeds=label_embeds, 
@@ -1293,9 +1314,12 @@ class DiTDecoder(DiffusionTransformer):
             self.reshaper_ids_dict.get(i + 1, "unflatten") == "flatten":
                 z_vals = (x_mean, x_log_var)
 
-        # Remove the decoder class token before returning patch features.
-        if self.cls_token_type is not None:
-            x = x[:, 1:]
+        # Remove both prefix tokens only from the returned decoder patch stream.
+        prefix_tokens_num = int(self.cls_token_type is not None) + \
+            int(self.distil_token_type is not None)
+        # Preserve the established no-slice path when no prefix token exists.
+        if prefix_tokens_num:
+            x = x[:, prefix_tokens_num:]
 
         # Return decoder regularizers and latent values only on request.
         if full_return:
@@ -1698,7 +1722,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert len(encoded) == 5 and encoded[0].shape == (2, 4, 4)
 
-    symbolic_shapes = decoder.build_model(call_model=True)
+    symbolic_shapes = decoder._build_model(call_model=True)
     assert len(symbolic_shapes) == 6
     assert len(decoder.inputs) == 6 and set(decoder.outputs) == {"noises"}
 

@@ -190,7 +190,9 @@ positive IDs are main stages, and negative IDs are relative to the final main
 depth. Selected feature maps are spatially aligned, projected, processed by
 `clf_depth` residual stages, globally pooled, and classified with a float32
 softmax head. `aggregate_from_noises=True` instead classifies the predicted
-noise.
+noise. `classifier_only_distil_token=True` adds a wrapper-compatible tracked
+placeholder and an independent second softmax head over the same final pooled
+feature; it does not add a sequence token to the convolutional network.
 
 Its normal call returns a wrapper-compatible mapping:
 
@@ -210,6 +212,7 @@ network = UNetClassifier(
 outputs = network((x_t, t, labels), training=False)
 # outputs["noises"]: [B,32,32,3]
 # outputs["classes"]: [B,10]
+# outputs["distil_classes"]: [B,10] when classifier_only_distil_token=True
 ```
 
 Selected main features are spatially aligned and normalized to `clf_dim`, so
@@ -219,7 +222,10 @@ relative selectors remain shape-stable when the main network grows.
 statistics can be enabled with
 `clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": ...}`.
 `predict_noise(...)` runs only the denoiser, while `predict_class(...)` executes
-only the main depths required by the selected classifier features.
+only the main depths required by the selected classifier features. Its ordinary
+result remains `classes`; `full_return=True` appends `distil_classes` as the
+sixth item when enabled. The wrappers own teacher loss and any weighted
+combination of these two independent predictions.
 
 The inherited main U-Net can also use `reshaper_kwargs={"add_kl": True, ...}`.
 In that configuration, `DiffusionClassifier.sample_vae(...)` resumes only the
@@ -284,10 +290,13 @@ through normal Keras weight/model saving or `set_weights`.
 
 For a dynamically grown U-Net, each `add_class()` also updates the saved
 `num_classes` to the current width and expands every enabled main/classifier
-auxiliary softmax plus the final classifier head. Continual restoration
-additionally requires the wrapper's persisted zero-based `seen_classes`
-mapping; it restores label identity and enables later growth.
+auxiliary softmax plus the final classifier and distillation heads. Continual
+restoration additionally requires the wrapper's persisted zero-based
+`seen_classes` mapping; it restores label identity and enables later growth.
 
 `cls_token_regularizer_ids` and classifier `clf_` names are retained for
 compatibility with the existing wrappers even though the convolutional model
 has spatial features rather than transformer class tokens.
+`cls_token_regularizer_kwargs` also accepts `train_type` (`normal`, `distil`,
+or `both`) and `distil_type` (`hard` or `soft`); their defaults are `normal`
+and `hard`.

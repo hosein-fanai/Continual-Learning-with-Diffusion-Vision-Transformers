@@ -22,7 +22,8 @@ class EnsembleAccuracy(metrics.Metric):
 
     For every clean input, this metric creates noisy versions at integer
     timesteps ``0`` through ``max_t - 1``, obtains unconditional class
-    predictions, averages them, and delegates accuracy tracking to
+    predictions, optionally combines their primary, classifier-regularizer,
+    and distillation heads, averages them, and delegates accuracy tracking to
     ``SparseCategoricalAccuracy``. ``"batched"`` evaluates all replicas in one
     network call; ``"chunked"`` performs smaller calls and has lower peak
     memory use while computing the same aggregate.
@@ -31,7 +32,8 @@ class EnsembleAccuracy(metrics.Metric):
     be the trained classifier *wrapper*: it must expose ``timesteps``,
     ``noisify``, ``network``, and ``ema_network``. Weighted evaluation also
     requires ``get_noise_and_signal_rates``. Each selected inner network must
-    expose ``num_classes`` and ``predict_class``.
+    expose ``num_classes`` and the project's five-or-six-value
+    ``predict_class(full_return=True)`` interface.
 
     Args:
         diffusion_clf: A ``DiffusionClassifier``-compatible wrapper.
@@ -48,6 +50,12 @@ class EnsembleAccuracy(metrics.Metric):
             Values larger than ``max_t`` simply produce one chunk.
         seed: Optional seed passed to the wrapper's Gaussian noising
             operation, or ``None`` for its configured/default randomness.
+        clf_acc_coef: Nonnegative coefficient for primary class predictions.
+        distil_acc_coef: Nonnegative coefficient for distillation-head
+            predictions. A positive value requires that optional output.
+        ctr_acc_coef: Nonnegative coefficient for the mean of available
+            classifier-regularizer predictions. A positive value requires at
+            least one such output.
         name: Keras metric name.
         **kwargs: Standard ``tf.keras.metrics.Metric`` options, notably
             ``dtype``.
@@ -71,6 +79,9 @@ class EnsembleAccuracy(metrics.Metric):
         max_t: int = 128, 
         t_chunk_size: int = 16, 
         seed: int | None = None, 
+        clf_acc_coef: float = 1.,
+        distil_acc_coef: float = 0.,
+        ctr_acc_coef: float = 0.,
         name: str | None = "ensemble_accuracy", 
         **kwargs: Any
     ) -> None:
@@ -85,6 +96,11 @@ class EnsembleAccuracy(metrics.Metric):
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
             seed (int | None): Optional noising seed.
+            clf_acc_coef (float): Coefficient for primary class predictions.
+            distil_acc_coef (float): Coefficient for distillation-head
+                predictions.
+            ctr_acc_coef (float): Coefficient for averaged classifier
+                regularizer predictions.
             name (str | None): Keras metric name.
             **kwargs (Any): Standard Keras metric options.
 
@@ -134,6 +150,19 @@ class EnsembleAccuracy(metrics.Metric):
         if netwrok_name not in ("ema", "raw"):
             raise ValueError("netwrok_name must be 'ema' or 'raw'.")
 
+        for coef_name, coef in (
+            ("clf_acc_coef", clf_acc_coef),
+            ("distil_acc_coef", distil_acc_coef),
+            ("ctr_acc_coef", ctr_acc_coef),
+        ):
+            # Require every prediction-head coefficient to be finite and nonnegative.
+            if not isinstance(coef, (int, float)) or isinstance(coef, bool) \
+            or not np.isfinite(coef) or coef < 0.:
+                raise ValueError(f"{coef_name} must be a nonnegative number.")
+        # Require at least one prediction head to contribute to the ensemble.
+        if clf_acc_coef + distil_acc_coef + ctr_acc_coef <= 0.:
+            raise ValueError("At least one accuracy coefficient must be positive.")
+
         # Use bounded-memory prediction when timesteps should be chunked.
         if compute_type == "chunked":
             self.ensemble_predict = self.ensemble_predict_chunked
@@ -163,11 +192,89 @@ class EnsembleAccuracy(metrics.Metric):
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
         self.seed = seed
+        self.clf_acc_coef = float(clf_acc_coef)
+        self.distil_acc_coef = float(distil_acc_coef)
+        self.ctr_acc_coef = float(ctr_acc_coef)
 
         self.tracker = metrics.SparseCategoricalAccuracy(
             name="tracker", 
             dtype=self.dtype
         )
+
+    def _predict_classes(
+        self,
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        training: bool | tf.Tensor | None = None
+    ) -> tf.Tensor:
+        """Return the configured combination of classifier predictions.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Noisy images,
+                timesteps, and unconditional labels.
+            training (bool | tf.Tensor | None): Mode forwarded to
+                ``network.predict_class``.
+
+        Returns:
+            tf.Tensor: Coefficient-weighted class scores shaped
+            ``[batch, num_classes]``.
+
+        Raises:
+            TypeError: If the network does not return the documented
+                classifier full-return tuple.
+            ValueError: If a positively weighted optional head is unavailable.
+        """
+
+        outputs = self.network.predict_class(
+            inputs,
+            full_return=True,
+            training=training
+        )
+        # Require the common classifier full-return structure.
+        if not isinstance(outputs, (tuple, list)) or len(outputs) < 5:
+            raise TypeError(
+                "network.predict_class(full_return=True) must return at least "
+                "five classifier outputs."
+            )
+        # Require tensor predictions from the primary classifier head.
+        if not tf.is_tensor(outputs[0]):
+            raise TypeError("The primary class prediction must be a tensor.")
+
+        classes_pred = tf.cast(outputs[0], self.dtype)
+        total_pred = classes_pred * self.clf_acc_coef
+
+        # Include classifier-token regularizers when their coefficient is positive.
+        if self.ctr_acc_coef > 0.:
+            regs_list = outputs[3]
+            # Require the documented regularizer-head collection.
+            if not isinstance(regs_list, (tuple, list)):
+                raise TypeError(
+                    "Classifier regularizer predictions must be a list or tuple."
+                )
+            ctr_preds = [
+                tf.cast(pred, self.dtype)
+                for pred in regs_list
+                if pred is not None
+            ]
+            # Require at least one usable regularizer prediction.
+            if not ctr_preds:
+                raise ValueError(
+                    "ctr_acc_coef > 0 requires at least one classifier "
+                    "regularizer prediction."
+                )
+            total_pred += tf.add_n(ctr_preds) / len(ctr_preds) * self.ctr_acc_coef
+
+        # Include the distillation head when its coefficient is positive.
+        if self.distil_acc_coef > 0.:
+            # Require a usable distillation prediction for a positive weight.
+            if len(outputs) < 6 or outputs[5] is None:
+                raise ValueError(
+                    "distil_acc_coef > 0 requires a distillation prediction."
+                )
+            total_pred += tf.cast(
+                outputs[5], self.dtype
+            ) * self.distil_acc_coef
+
+        return total_pred
 
     def _get_timestep_weights(self) -> tf.Tensor:
         """Return uniform or normalized SNR weights for all ensemble steps.
@@ -286,11 +393,10 @@ class EnsembleAccuracy(metrics.Metric):
             seed=self.seed
         )
 
-        cls_pred = self.network.predict_class(
-            (x_rep, t_rep, uncond_labels), 
+        cls_pred = self._predict_classes(
+            (x_rep, t_rep, uncond_labels),
             training=training
         )
-        cls_pred = tf.cast(cls_pred, self.dtype)
         cls_pred = tf.reshape(
             cls_pred,
             (batch_size, self.max_t, -1)
@@ -344,11 +450,10 @@ class EnsembleAccuracy(metrics.Metric):
                 seed=self.seed
             )
 
-            cls_pred = self.network.predict_class(
-                (x_rep, t_rep, uncond_labels), 
+            cls_pred = self._predict_classes(
+                (x_rep, t_rep, uncond_labels),
                 training=training
             )
-            cls_pred = tf.cast(cls_pred, self.dtype)
             cls_pred = tf.reshape(
                 cls_pred, 
                 (batch_size, chunk_t, num_classes)
@@ -463,9 +568,10 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        dict[str, str]: A one-entry mapping after network selection, both compute strategies,
-        weighting, chunk boundaries, seeds, training flags, metric state,
-        evaluation looping, invalid modes, and numeric boundaries pass.
+        dict[str, str]: A one-entry mapping after network selection, both compute
+        strategies, head coefficients, missing-head errors, weighting, chunk
+        boundaries, seeds, training flags, metric state, evaluation looping,
+        invalid modes, and numeric boundaries pass.
     """
 
     import contextlib
@@ -480,24 +586,46 @@ def run_self_tests() -> dict[str, str]:
 
     def predict_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        full_return: bool = False,
         training: bool | None = None
-    ) -> tf.Tensor:
-        """Return deterministic timestep-dependent three-class scores.
+    ) -> tf.Tensor | tuple:
+        """Return deterministic primary, regularizer, and distillation scores.
 
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Replicated images,
                 timesteps, and labels.
+            full_return (bool): Return the common classifier output tuple.
             training (bool | None): Optional flag recorded for forwarding
                 verification.
 
         Returns:
-            tf.Tensor: Float32 one-hot scores shaped ``[batch, 3]``.
+            tf.Tensor | tuple: Primary scores, or the six-value classifier
+            output tuple with regularizer and distillation predictions.
         """
 
         _, timesteps, labels = inputs
-        predict_calls.append((timesteps.numpy(), labels.numpy(), training))
+        predict_calls.append((
+            timesteps.numpy(), labels.numpy(), training, full_return
+        ))
 
-        return tf.one_hot(tf.math.floormod(timesteps, 3), 3, dtype=tf.float32)
+        classes = tf.one_hot(
+            tf.math.floormod(timesteps, 3), 3, dtype=tf.float32
+        )
+        # Return only the primary scores for the compact prediction interface.
+        if not full_return:
+            return classes
+
+        ctr_classes = tf.one_hot(
+            tf.math.floormod(timesteps + 1, 3), 3, dtype=tf.float32
+        )
+        distil_classes = tf.one_hot(
+            tf.math.floormod(timesteps + 2, 3), 3, dtype=tf.float32
+        )
+
+        return (
+            classes, None, [], [ctr_classes, None],
+            (None, None), distil_classes
+        )
 
 
     def noisify(
@@ -522,8 +650,16 @@ def run_self_tests() -> dict[str, str]:
         return (images,)
 
 
-    raw_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
-    ema_network = SimpleNamespace(num_classes=3, predict_class=predict_class)
+    raw_network = SimpleNamespace(
+        num_classes=3,
+        dynamic_num_classes=False,
+        predict_class=predict_class,
+    )
+    ema_network = SimpleNamespace(
+        num_classes=3,
+        dynamic_num_classes=False,
+        predict_class=predict_class,
+    )
     network_by_name = {"raw": raw_network, "ema": ema_network}
     alpha_bar_values = np.array(
         [0.8, 0.5, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625],
@@ -551,12 +687,17 @@ def run_self_tests() -> dict[str, str]:
         return tf.sqrt(alpha_bar), tf.sqrt(1.0 - alpha_bar)
 
 
-    def expected_prediction(max_t: int, weighted: bool) -> np.ndarray:
+    def expected_prediction(
+        max_t: int,
+        weighted: bool,
+        offset: int = 0
+    ) -> np.ndarray:
         """Aggregate the deterministic class IDs with expected weights.
 
         Args:
             max_t (int): Number of leading timesteps to aggregate.
             weighted (bool): Whether to normalize by timestep SNR.
+            offset (int): Class-ID offset for an auxiliary prediction head.
 
         Returns:
             np.ndarray: Expected three-class prediction vector.
@@ -571,7 +712,7 @@ def run_self_tests() -> dict[str, str]:
         weights /= np.sum(weights)
 
         return np.bincount(
-            np.arange(max_t) % 3,
+            (np.arange(max_t) + offset) % 3,
             weights=weights,
             minlength=3,
         ).astype(np.float32)
@@ -604,6 +745,7 @@ def run_self_tests() -> dict[str, str]:
         assert batched_prediction.shape == (2, 3)
         assert batched_prediction.dtype == tf.float32
         assert len(predict_calls) == 1 and predict_calls[0][2] is True
+        assert predict_calls[0][3] is True
         assert np.all(predict_calls[0][1] == 0)
         assert noisify_calls[0][0] == (10, 2, 2, 1)
         assert noisify_calls[0][2] == 17
@@ -635,6 +777,39 @@ def run_self_tests() -> dict[str, str]:
         assert len(predict_calls) == 3
         assert [call[0].shape[0] for call in predict_calls] == [4, 4, 2]
         assert all(call[2] is False for call in predict_calls)
+        assert all(call[3] is True for call in predict_calls)
+
+    combined_kwargs = {
+        "weighted": True,
+        "max_t": 5,
+        "clf_acc_coef": 0.2,
+        "ctr_acc_coef": 0.3,
+        "distil_acc_coef": 0.5,
+    }
+    combined_batched = EnsembleAccuracy(
+        wrapper,
+        compute_type="batched",
+        **combined_kwargs
+    ).ensemble_predict(images)
+    combined_chunked = EnsembleAccuracy(
+        wrapper,
+        compute_type="chunked",
+        t_chunk_size=2,
+        **combined_kwargs
+    ).ensemble_predict(images)
+    expected_combined = (
+        expected_prediction(5, True) * 0.2
+        + expected_prediction(5, True, offset=1) * 0.3
+        + expected_prediction(5, True, offset=2) * 0.5
+    )
+    np.testing.assert_allclose(
+        combined_batched.numpy(),
+        np.repeat(expected_combined[None, :], 2, axis=0),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        combined_chunked.numpy(), combined_batched.numpy(), atol=1e-6
+    )
 
     oversized_chunk = EnsembleAccuracy(
         wrapper, 
@@ -695,13 +870,92 @@ def run_self_tests() -> dict[str, str]:
         {"max_t": 2, "t_chunk_size": 0},
         {"max_t": 2, "t_chunk_size": -1},
         {"max_t": 4, "t_chunk_size": 2.9},
+        {"max_t": 1, "clf_acc_coef": -1.0},
+        {"max_t": 1, "distil_acc_coef": float("inf")},
+        {"max_t": 1, "ctr_acc_coef": True},
+        {
+            "max_t": 1,
+            "clf_acc_coef": 0.0,
+            "distil_acc_coef": 0.0,
+            "ctr_acc_coef": 0.0,
+        },
     ):
         try:
             EnsembleAccuracy(wrapper, **invalid_kwargs)
         except ValueError:
             pass
         else:
-            raise AssertionError("Invalid horizons and chunk sizes must fail.")
+            raise AssertionError("Invalid metric options must fail.")
+
+    def missing_optional_predict_class(
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        full_return: bool = False,
+        training: bool | None = None
+    ) -> tf.Tensor | tuple:
+        """Return primary output without usable optional prediction heads.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images, timesteps,
+                and labels used to build deterministic test predictions.
+            full_return (bool): Return the common classifier output tuple.
+            training (bool | None): Unused prediction-mode flag.
+
+        Returns:
+            tf.Tensor | tuple: Primary scores, or a classifier tuple whose
+            optional prediction heads are unavailable.
+        """
+
+        del training
+        classes = tf.one_hot(
+            tf.math.floormod(inputs[1], 3), 3, dtype=tf.float32
+        )
+
+        return (
+            classes, None, [], [None], (None, None)
+        ) if full_return else classes
+
+
+    missing_network = SimpleNamespace(
+        num_classes=3,
+        dynamic_num_classes=False,
+        predict_class=missing_optional_predict_class,
+    )
+
+    def get_missing_network(name: str) -> SimpleNamespace:
+        """Return the test network without selecting between raw and EMA copies.
+
+        Args:
+            name (str): Requested network name, unused by this test double.
+
+        Returns:
+            SimpleNamespace: Network whose optional prediction heads are absent.
+        """
+
+        del name
+        return missing_network
+
+    missing_wrapper = SimpleNamespace(
+        timesteps=8,
+        network=missing_network,
+        ema_network=missing_network,
+        noisify=noisify,
+        get_network=get_missing_network,
+    )
+    for coefficient in ("ctr_acc_coef", "distil_acc_coef"):
+        missing_metric = EnsembleAccuracy(
+            missing_wrapper,
+            max_t=1,
+            clf_acc_coef=0.0,
+            **{coefficient: 1.0}
+        )
+        try:
+            missing_metric.ensemble_predict(images)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"A missing head weighted by {coefficient} must fail."
+            )
 
     for weighted in (False, True):
         full_horizon = EnsembleAccuracy(

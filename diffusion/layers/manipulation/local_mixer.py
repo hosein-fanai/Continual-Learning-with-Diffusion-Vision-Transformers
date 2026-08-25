@@ -36,8 +36,9 @@ class LocalMixer(BaseEmbedding):
         zero_init: Zero-initialize the depthwise kernel so the initial local
             correction is zero. This covers the convolutional path, while an
             adaptive normalization gate also starts at zero by default.
-        circumvent_cls_token: Exclude token 0 from spatial convolution and
-            combine it with its normalized/projected counterpart afterward.
+        circumvent_tokens: Number of leading non-spatial tokens excluded from
+            convolution. ``True`` retains the original one-token mode. The
+            legacy ``circumvent_cls_token`` keyword remains accepted.
         **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size``. Positional/MLP options can change the final channel
             width. ``use_layer_norm`` and ``ln_dim`` are supplied internally
@@ -46,8 +47,8 @@ class LocalMixer(BaseEmbedding):
     Inputs:
         Pair ``(x, cond)`` with floating tokens ``[batch, tokens, dim]``. The
         spatial token count must be a perfect square after removing an optional
-        leading class token. ``cond`` has shape ``[batch, condition_dim]`` when
-        adaptive normalization is enabled.
+        leading special tokens. ``cond`` has shape ``[batch, condition_dim]``
+        when adaptive normalization is enabled.
 
     Outputs:
         Floating token tensor at the inferred convolutional grid size. A
@@ -70,7 +71,7 @@ class LocalMixer(BaseEmbedding):
         pointwise_dim_ratio: int = 1, 
         use_pointwise: bool = True, 
         zero_init: bool = True, # make this arg enforcing towards every layer for zero output (pos_embed)
-        circumvent_cls_token: bool = False, 
+        circumvent_tokens: bool | int = False, 
         **kwargs: Any
     ) -> None:
         """Create local convolutions, residual projections, and position data.
@@ -84,12 +85,18 @@ class LocalMixer(BaseEmbedding):
             pointwise_dim_ratio (int): Positive pointwise channel multiplier.
             use_pointwise (bool): Whether to apply the pointwise convolution.
             zero_init (bool): Whether to zero-initialize the depthwise kernel.
-            circumvent_cls_token (bool): Whether to preserve token zero.
+            circumvent_tokens (bool | int): Number of leading tokens to
+                preserve; ``True`` preserves one.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
         """
+
+        temp_val = kwargs.pop("circumvent_cls_token", None)
+        # Preserve legacy one-token configurations under the canonical option.
+        if temp_val is not None:
+            circumvent_tokens = temp_val
 
         super().__init__(
             use_layer_norm=use_layer_norm, 
@@ -97,24 +104,17 @@ class LocalMixer(BaseEmbedding):
         )
         self._save_init_args(locals())
 
-        for name in ("kernel_size", "strides", "depth_multiplier", "pointwise_dim_ratio"):
-            value = getattr(self, name)
-            # Require positive integer convolution and projection dimensions.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
         # Require a source grid for spatial token reshaping.
-        if self.grid_size is None:
-            raise ValueError("LocalMixer requires grid_size.")
-        # Restrict padding to Keras's supported spatial modes.
-        if self.padding not in ("same", "valid"):
-            raise ValueError("padding must be 'same' or 'valid'.")
+        assert self.grid_size is not None, \
+            "LocalMixer requires grid_size."
+
 
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
-                        else self.grid_size // self.strides
+        else self.grid_size // self.strides
         self.add_residual = self.strides == 1
 
         self.layer_norm = self._create_layer_norm(
@@ -127,42 +127,42 @@ class LocalMixer(BaseEmbedding):
             padding=self.padding, 
             depth_multiplier=self.depth_multiplier, 
             depthwise_initializer="zeros" if self.zero_init else "glorot_uniform", 
-            name=f"{self.name}/depthwise",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/depthwise"
         )
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
             padding="same", 
-            name=f"{self.name}/pointwise",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/pointwise"
         ) if self.use_pointwise else None
         self.residual_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/residual_projector",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/residual_projector"
         ) if self.dim != self.output_dim and self.add_residual else None
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
             output_grid_size=self.output_grid_size
         )
 
-        residual_token_dim = self.output_dim \
-                            if self.residual_projector is not None else self.dim
+        residual_token_dim = self.output_dim if self.residual_projector is not None \
+                            else self.dim
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/token_projector",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/token_projector"
         ) if self.dim != self.output_dim else None
         self.residual_token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/residual_token_projector",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/residual_token_projector"
         ) if residual_token_dim != self.output_dim and \
-            self.circumvent_cls_token else None
+        self.circumvent_tokens else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
@@ -193,9 +193,11 @@ class LocalMixer(BaseEmbedding):
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else (x, 1.)
+        prefix_tokens_num = int(self.circumvent_tokens)
         h, h_token = (
-            h[:, 1:, :], h[:, 0: 1, :]
-        ) if self.circumvent_cls_token else (h, None)
+            h[:, prefix_tokens_num:, :], 
+            h[:, :prefix_tokens_num, :]
+        ) if self.circumvent_tokens else (h, None)
 
         h_shape = tf.shape(h)
         input_grid_size = tf.cast(
@@ -231,8 +233,9 @@ class LocalMixer(BaseEmbedding):
             training=training
         ) if self.residual_projector is not None else x
         x, x_token = (
-            x[:, 1:, :], x[:, 0: 1, :]
-        ) if self.circumvent_cls_token else (x, None)
+            x[:, prefix_tokens_num:, :], 
+            x[:, :prefix_tokens_num, :]
+        ) if self.circumvent_tokens else (x, None)
         x = x + gate * h if self.add_residual else h
 
         x = self._pos_merger(
@@ -250,7 +253,7 @@ class LocalMixer(BaseEmbedding):
                 training=training
             )) if self.token_projector is not None else (x_token + h_token), 
             x
-        ], axis=1) if self.circumvent_cls_token else x
+        ], axis=1) if self.circumvent_tokens else x
         x = self.mlp(
             x, 
             training=training

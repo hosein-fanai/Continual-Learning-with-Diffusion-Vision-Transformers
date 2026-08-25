@@ -71,6 +71,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``get_config()`` records this current value so checkpoint topology
             can be reconstructed at the correct size.
         cls_token (SingleTokenLayer | None): Optional sequence-prefix token.
+        distil_token (SingleTokenLayer | None): Optional distillation token,
+            placed after ``cls_token`` and before patch tokens.
         unpatchifier (tf.keras.Model): Output projection when
             ``use_unpatchify=True``.
         num_labels (int): ``num_classes + 1`` with CFG, otherwise
@@ -116,6 +118,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         cls_token_freq_dim: int | None = None, 
         cls_token_mlp_ratio: float | None = None, 
         cls_token_pos_merger_type: MergeType = "add", 
+        distil_token_type: TokenType | None = None, 
+        distil_token_freq_dim: int | None = None, 
+        distil_token_mlp_ratio: float | None = None, 
+        distil_token_pos_merger_type: MergeType = "add", 
         depth: int = 2, 
         connection_ids_dict: IdsDictType = {}, 
         connection_kwargs: dict = {}, 
@@ -142,7 +148,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         reshaper_ids_dict: dict[int, str] = {},
         reshaper_kwargs: dict = {}, 
         cls_token_regularizer_ids: IdsType = [], 
-        cls_token_regularizer_kwargs: dict = {"start": 0, "end": 1}, 
+        cls_token_regularizer_kwargs: dict = {
+            "start": 0,
+            "end": 1,
+            "train_type": "normal",
+            "distil_type": "hard",
+        },
         final_ffn_activation_func: str = "linear", 
         use_refiner_cnn: bool = False, 
         refiner_cnn_hidden_dim: int | None = None, 
@@ -220,6 +231,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 class-token projection.
             cls_token_pos_merger_type (MergeType): ``"add"`` or ``"concat"``
                 for the token's learned/positional representation.
+            distil_token_type (TokenType | None): Distillation-token source,
+                with the same ``"new_weight"``, ``"time"``, ``"label"``,
+                ``"time_label"``, and ``None`` choices as ``cls_token_type``.
+            distil_token_freq_dim (int | None): Optional width of the
+                distillation-token representation before projection.
+            distil_token_mlp_ratio (float | None): Hidden expansion used by
+                the distillation-token projection.
+            distil_token_pos_merger_type (MergeType): Positional merge for the
+                distillation token, matching ``cls_token_pos_merger_type``.
             depth (int): Number N of processing stages.  ``0`` creates only
                 depth-0 embedding plus the output head; ``1..N`` create those
                 many ordered dictionaries in ``layers_dicts``.
@@ -311,7 +331,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ``end`` are Python token-slice bounds. Optional ``mlp_ratio``
                 adds a hidden Dense layer, and ``activation_function`` selects
                 its activation. Missing values default to ``None`` and
-                ``"tanh"``, respectively.
+                ``"tanh"``, respectively. ``train_type`` is ``"normal"``,
+                ``"distil"``, or ``"both"``; ``distil_type`` is ``"hard"``
+                or ``"soft"``.
             final_ffn_activation_func (str | callable): Activation on the
                 zero-initialized patch-output projection.
             use_refiner_cnn (bool): Add a two-convolution image-space refinement
@@ -349,12 +371,21 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                                 self.cond_type == "time_label" else self.cond_dim
 
         self._create_embedders()
-        self.cls_token = self._create_cls_token(
+        self.cls_token = self._create_single_token(
             self.dim, 
             self.cls_token_pos_merger_type, 
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
-            self.cls_token_type
+            self.cls_token_type, 
+            name=f"{self.name_prefix}depth_0_cls_token"
+        )
+        self.distil_token = self._create_single_token(
+            self.dim, 
+            self.distil_token_pos_merger_type, 
+            self.distil_token_freq_dim, 
+            self.distil_token_mlp_ratio, 
+            self.distil_token_type, 
+            name=f"{self.name_prefix}depth_0_distil_token"
         )
         self._create_layers()
         self._create_unpatchifier()
@@ -375,7 +406,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         check_values: bool = True, 
         id_less_than_key: bool = True, 
         allowed_values: tuple = (), 
-        none_is_filler: bool = True, 
+        none_is_filler: bool = True
     ) -> None:
         """Validate a depth-indexed ID mapping or a shared options mapping.
 
@@ -523,8 +554,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             assert local_vars["ln_no_adaptation"], \
                 "When cond_type is None, layer_norm cannot use adaptation."
 
-        assert local_vars["cls_token_type"] in (vals:=get_args(TokenType)), \
+        assert local_vars["cls_token_type"] in (
+            vals:=(None, *get_args(TokenType))), \
             f"cls_token_type can only be one of {vals}."
+        assert local_vars["distil_token_type"] in vals, \
+            f"distil_token_type can only be one of {vals}."
 
         self._check_dict_assertions(
             local_vars, 
@@ -668,10 +702,24 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=(cls_token_regularizer_kwargs_allowed_vals:=(
-                "start", "end", "mlp_ratio", "activation_function"
+                "start", "end", "mlp_ratio", "activation_function",
+                "train_type", "distil_type"
             )), 
             check_values=False, 
         ); self.cls_token_regularizer_kwargs_allowed_vals = cls_token_regularizer_kwargs_allowed_vals
+        regularizer_mlp_ratio = local_vars["cls_token_regularizer_kwargs"].get(
+            "mlp_ratio", None
+        )
+        assert regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
+            "regularizer mlp_ratio must be None or positive."
+        assert local_vars["cls_token_regularizer_kwargs"].get(
+            "train_type", "normal"
+        ) in ("normal", "distil", "both"), \
+            "regularizer train_type must be normal, distil, or both."
+        assert local_vars["cls_token_regularizer_kwargs"].get(
+            "distil_type", "hard"
+        ) in ("hard", "soft"), \
+            "regularizer distil_type must be hard or soft."
 
         assert local_vars["cross_attention_plug_type"] in ("values", "queries"), \
             "cross_attention_plug_type can only be values or queries."
@@ -1216,10 +1264,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def _create_embedders(self) -> None:
         """Create all depth-0 patch, condition, and regularizer layers.
 
-        Time and label embedders are instantiated only if requested by either
-        ``cond_type`` or ``cls_token_type``.  ``_cond_type`` becomes empty when
-        no adaptive or patch-level condition consumes it.  A depth-0 label
-        regularizer is also created when regularizer ID 0 is selected.
+        Time and label embedders are instantiated only if requested by
+        ``cond_type``, ``cls_token_type``, or ``distil_token_type``.
+        ``_cond_type`` becomes empty when no adaptive or patch-level condition
+        consumes it. A depth-0 label regularizer is also created when
+        regularizer ID 0 is selected.
 
         Returns:
             None: Embedder and merger attributes are assigned in place.
@@ -1229,12 +1278,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         (not self.ln_no_adaptation or self.patches_conds_merger_type is not None) \
                         else []
         self._cls_token_type = self.cls_token_type if self.cls_token_type is not None else []
+        self._distil_token_type = self.distil_token_type if self.distil_token_type is not None else []
 
-        embed_times_flag = "time" in self._cls_token_type or "time" in self._cond_type
+        embed_times_flag = "time" in self._cls_token_type or \
+            "time" in self._distil_token_type or "time" in self._cond_type
         embed_labels_flag = "label" in self._cls_token_type or \
+            "label" in self._distil_token_type or \
             "label" in self._cond_type or 0 in self.cls_token_regularizer_ids
-        conds_merger_type_flag = ("time" in self._cls_token_type and "label" in self._cls_token_type) or (
-                                "time" in self._cond_type and "label" in self._cond_type)
+        conds_merger_type_flag = \
+            ("time" in self._cls_token_type and "label" in self._cls_token_type) or \
+            ("time" in self._distil_token_type and "label" in self._distil_token_type) or \
+            ("time" in self._cond_type and "label" in self._cond_type)
 
         self.patch_embedder = PatchEmbedding(
             dim=self.patches_dim, 
@@ -1264,46 +1318,51 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ) if self.patches_conds_merger_type is not None else None
 
         self.labels_embed_reg = self._create_token_regularizer(
-            input_dim=self.cond_embedder_dim, 
+            i=-1, 
+            layers_dicts=[], 
+            layers_dict={}, 
+            base_dim=self.cond_embedder_dim, 
             kwargs=self.cls_token_regularizer_kwargs, 
             name=f"{self.name_prefix}depth_0_{self.CTR[2:]}"
         ) if 0 in self.cls_token_regularizer_ids else None
 
-    def _create_cls_token(
+    def _create_single_token(
         self, 
         dim: int, 
-        cls_token_pos_merger_type: MergeType, 
-        cls_token_freq_dim: int, 
-        cls_token_mlp_ratio: float, 
-        cls_token_type: TokenType, 
-        name_prefix: str = ""
+        pos_merger_type: MergeType, 
+        freq_dim: int, 
+        mlp_ratio: float, 
+        token_type: TokenType, 
+        name: str | None = None
     ) -> SingleTokenLayer | None:
         """Create an optional learned or condition-derived prefix token.
 
         Args:
             dim (int): Output token width.
-            cls_token_pos_merger_type (MergeType): Positional merge operation.
-            cls_token_freq_dim (int | None): Optional pre-projection width.
-            cls_token_mlp_ratio (float | None): Projection hidden expansion.
-            cls_token_type (TokenType | None): ``"new_weight"``, ``"time"``,
+            pos_merger_type (MergeType): Positional merge operation.
+            freq_dim (int): Pre-projection embedding width.
+            mlp_ratio (float): Projection hidden expansion.
+            token_type (TokenType): ``"new_weight"``, ``"time"``,
                 ``"label"``, ``"time_label"``, or ``None``.
-            name_prefix (str): Additional layer-name prefix.
+            name (str | None): Optional layer name.
 
         Returns:
             SingleTokenLayer | None: Layer returning one ``[B, 1, dim]`` token,
             or ``None`` when no class token is requested.
         """
 
-        cls_token = SingleTokenLayer(
+        token = SingleTokenLayer(
             dim=dim, 
-            pos_merger_type=cls_token_pos_merger_type, 
-            embed_freq_dim=cls_token_freq_dim, 
-            mlp_ratio=cls_token_mlp_ratio, 
-            input_as_token=cls_token_type in ("time_label", "time", "label"), 
-            name=f"{self.name_prefix}{name_prefix}depth_0_cls_token"
-        ) if cls_token_type is not None else None
+            pos_merger_type=pos_merger_type, 
+            embed_freq_dim=freq_dim, 
+            mlp_ratio=mlp_ratio, 
+            input_as_token=token_type in (""
+                "time_label", "time", "label"
+            ), 
+            name=name
+        ) if token_type is not None else None
 
-        return cls_token
+        return token
 
     def _create_feature_handler(
         self, 
@@ -1461,7 +1520,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         base_grid_size: int, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
-        circumvent_cls_token: bool, 
+        circumvent_tokens: bool | int, 
         kwargs: dict = {}, 
         name: str | None = None
     ) -> LocalMixer:
@@ -1470,7 +1529,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         The mixer reshapes square patch tokens to an image grid, performs a
         depthwise convolution and optional pointwise projection, restores the
         sequence, and uses a residual only when ``strides == 1``.  A class token
-        is temporarily removed when ``circumvent_cls_token=True``.
+        is temporarily removed when ``circumvent_tokens=True``.
 
         Args:
             i (int): Zero-based current stage index.
@@ -1482,8 +1541,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             base_grid_size (int): Depth-0 grid side.
             ln_mlp_ratio (float | None): Normalization MLP expansion.
             ln_no_adaptation (bool): Disable condition adaptation.
-            circumvent_cls_token (bool): Preserve prefix token outside spatial
-                convolution.
+            circumvent_tokens (bool | int): Number of leading special tokens
+                kept outside spatial convolution.
             kwargs (dict[str, object]): Allowed ``local_mixer_kwargs`` options.
             name (str | None): Keras layer name.
 
@@ -1506,7 +1565,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ), 
             "ln_mlp_ratio": ln_mlp_ratio, 
             "ln_no_adaptation": ln_no_adaptation, 
-            "circumvent_cls_token": circumvent_cls_token, 
+            "circumvent_tokens": circumvent_tokens, 
             "name": name
         }
         local_mixer_kwargs.update(kwargs)
@@ -1532,7 +1591,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         base_grid_size: int, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
-        circumvent_cls_token: bool, 
+        circumvent_tokens: bool | int, 
         kwargs: dict = {}, 
         name: str | None = None
     ) -> Downsample | Upsample:
@@ -1549,7 +1608,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             base_grid_size (int): Depth-0 spatial grid side.
             ln_mlp_ratio (float | None): Normalization MLP expansion.
             ln_no_adaptation (bool): Disable condition adaptation.
-            circumvent_cls_token (bool): Keep a prefix token outside resizing.
+            circumvent_tokens (bool | int): Number of leading special tokens
+                kept outside resizing.
             kwargs (dict[str, object]): The corresponding documented
                 downsample/upsample option mapping.
             name (str | None): Keras layer name.
@@ -1577,7 +1637,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ), 
             "ln_mlp_ratio": ln_mlp_ratio, 
             "ln_no_adaptation": ln_no_adaptation, 
-            "circumvent_cls_token": circumvent_cls_token, 
+            "circumvent_tokens": circumvent_tokens, 
             "name": name
         }
         scaler_kwargs.update(kwargs)
@@ -1608,7 +1668,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         input_grid_size: int | None, 
         output_grid_size: int, 
         dim: int, 
-        grid_has_cls_token: bool
+        grid_has_tokens: bool | int
     ) -> tf.Tensor:
         """Resize token grids around a base-resolution reshape operation.
 
@@ -1618,11 +1678,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 from the token count after removing any class token.
             output_grid_size (int): Target grid side.
             dim (int): Static feature width used for reshape/set-shape.
-            grid_has_cls_token (bool): Preserve the first token outside resize.
+            grid_has_tokens (bool | int): Number of leading non-spatial
+                tokens to preserve; booleans retain the one-token API.
 
         Returns:
             tf.Tensor: Resized tokens of shape
-            ``[B, output_grid_size**2 + int(grid_has_cls_token), dim]``.  At the
+            ``[B, output_grid_size**2 + int(grid_has_tokens), dim]``. At the
             base image resolution the input tensor is returned unchanged.
         """
 
@@ -1631,8 +1692,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             return x
 
         x, token = (
-            x[:, 1:, :], x[:, :1, :]
-        ) if grid_has_cls_token else (x, None)
+            x[:, int(grid_has_tokens):, :], 
+            x[:, :int(grid_has_tokens), :]
+        ) if grid_has_tokens else (x, None)
 
         x_shape = tf.shape(x)
         input_grid_size = tf.cast(
@@ -1663,10 +1725,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         x = tf.concat([
             token, x
-        ], axis=1) if grid_has_cls_token else x
+        ], axis=1) if grid_has_tokens else x
         x.set_shape((
             None, 
-            output_grid_size * output_grid_size + int(grid_has_cls_token), 
+            output_grid_size * output_grid_size + int(grid_has_tokens), 
             dim
         ))
 
@@ -1680,7 +1742,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         layers_dict: dict, 
         base_dim: int, 
         base_grid_size: int, 
-        grid_has_cls_token: bool, 
+        grid_has_tokens: bool | int, 
         kwargs: dict = {}, 
         name: str | None = None
     ) -> models.Model:
@@ -1694,7 +1756,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dict (dict): Current partial stage.
             base_dim (int): Depth-0 feature width.
             base_grid_size (int): Depth-0 grid side.
-            grid_has_cls_token (bool): Include one prefix token in reshape sizes.
+            grid_has_tokens (bool | int): Number of prefix tokens included
+                in reshape sizes; booleans retain the one-token API.
             kwargs (dict[str, object]): ``add_kl`` (bool) and
                 ``latent_dim_ratio`` (float, default 1).
             name (str | None): Required/generated model name.
@@ -1725,10 +1788,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             skip_reshaper=True
         )
         shape1 = (
-            (grid_size * grid_size + int(grid_has_cls_token)) * dim, 
+            (grid_size * grid_size + int(grid_has_tokens)) * dim, 
         )
         shape2 = (
-            grid_size * grid_size + int(grid_has_cls_token), 
+            grid_size * grid_size + int(grid_has_tokens), 
             dim
         )
 
@@ -1742,7 +1805,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             target_shape = shape2
         # Reject reshaping directions outside flatten and unflatten.
         else:
-            raise ValueError("reshape_type needs to be either flatten or unflatten.")
+            raise ValueError(
+                "reshape_type needs to be either flatten or unflatten."
+            )
 
         reshaper_layer = layers.Reshape(
             target_shape, 
@@ -1752,6 +1817,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         inputs = layers.Input(
             shape=(None, dim) if reshape_type == "flatten" else source_shape
         )
+
 
         def resize_to_base(x: tf.Tensor) -> tf.Tensor:
             """Resize an active-resolution token grid to the base grid.
@@ -1768,8 +1834,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 input_grid_size=None, 
                 output_grid_size=grid_size, 
                 dim=dim, 
-                grid_has_cls_token=grid_has_cls_token,
+                grid_has_tokens=grid_has_tokens
             )
+
 
         def resize_from_base(x: tf.Tensor) -> tf.Tensor:
             """Resize a base-grid token sequence to the active grid.
@@ -1788,8 +1855,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     grid_size * self._current_resolution // self.image_size
                 ), 
                 dim=dim, 
-                grid_has_cls_token=grid_has_cls_token,
+                grid_has_tokens=grid_has_tokens
             )
+
 
         x = layers.Lambda(
             resize_to_base,
@@ -1853,9 +1921,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Create an auxiliary class-token softmax head.
 
         Args:
-            input_dim (int): Flattened input width used to size an optional
-                hidden layer.
-            kwargs (dict): ...
+            i (int): Zero-based current stage index.
+            layers_dicts (list[dict]): Previously constructed stages.
+            layers_dict (dict): Components already created at this stage.
+            base_dim (int): Depth-zero feature width used for inference.
+            kwargs (dict): Token-slice bounds and optional MLP settings.
             name (str | None): Keras layer name.
 
         Returns:
@@ -1869,7 +1939,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dict, 
             base_dim
         ) 
-        input_dim *= (kwargs["end"] - ["start"])
+        input_dim *= kwargs["end"] - kwargs["start"]
 
         mlp_ratio = kwargs.get("mlp_ratio", None)
         activation_function = kwargs.get(
@@ -1982,7 +2052,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_cls_token=self.cls_token_type is not None, 
+                circumvent_tokens=int(self.cls_token_type is not None) + 
+                                int(self.distil_token_type is not None), 
                 kwargs=self.local_mixer_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
             )
@@ -1999,7 +2070,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_cls_token=self.cls_token_type is not None, 
+                circumvent_tokens=int(self.cls_token_type is not None) + 
+                                int(self.distil_token_type is not None), 
                 kwargs=self.downsample_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
             )
@@ -2016,7 +2088,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_cls_token=self.cls_token_type is not None, 
+                circumvent_tokens=int(self.cls_token_type is not None) + 
+                                int(self.distil_token_type is not None), 
                 kwargs=self.upsample_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
             )
@@ -2028,7 +2101,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, base_dim=self.dim, 
                 base_grid_size=self.grid_size, 
-                grid_has_cls_token=self.cls_token_type is not None, 
+                grid_has_tokens=int(self.cls_token_type is not None) + 
+                                int(self.distil_token_type is not None), 
                 kwargs=self.reshaper_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
             )
@@ -2288,14 +2362,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Args:
             input_shape (tuple[tuple, tuple, tuple] | None): Accepted for the
                 Keras ``Model.build`` protocol but ignored; symbolic shapes are
-                generated by :meth:`build_model` from model configuration.
+                generated by :meth:`_build_model` from model configuration.
 
         Returns:
             None: Variables are created and the Keras built flag is set.
         """
 
-        input_shape = self._build_model()
-        super().build(input_shape)
+        input_shape = self._build_model(
+            call_model=True
+        ) if input_shape is None else input_shape
+
+        if not self.built:
+            super().build(input_shape)
 
     def call(
         self, 
@@ -2490,10 +2568,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x, conds_list
 
-    def prepend_cls_token(
+    def prepend_single_token(
         self, 
         x: tf.Tensor, 
-        cls_token_type: TokenType, 
+        token: SingleTokenLayer, 
+        token_type: TokenType, 
         time_embeds: tf.Tensor | None = None, 
         label_embeds: tf.Tensor | None = None, 
         times: tf.Tensor | None = None, 
@@ -2504,7 +2583,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             x (tf.Tensor): Patch tokens ``[B, P, D]``.
-            cls_token_type (TokenType): ``"new_weight"``, ``"time"``,
+            token (SingleTokenLayer): Layer that creates the prefix token.
+            token_type (TokenType): ``"new_weight"``, ``"time"``,
                 ``"label"``, or ``"time_label"``.
             time_embeds (tf.Tensor | None): Reusable ``[B, E]`` time embedding;
                 when omitted for a time token, it is computed from ``times``.
@@ -2520,32 +2600,36 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             at index 0.
         """
 
+        # Leave the patch sequence unchanged when this prefix token is disabled.
+        if token_type is None:
+            return x
+
         # Initialize the class token from timestep embeddings.
-        if cls_token_type == "time":
+        if token_type == "time":
             embeds = self.time_embedder(
                 times, 
                 training=training
             ) if time_embeds is None else time_embeds
         # Initialize the class token from label embeddings.
-        elif cls_token_type == "label":
+        elif token_type == "label":
             embeds = self.label_embedder(
                 labels, 
                 training=training
             ) if label_embeds is None else label_embeds
         # Initialize the class token from merged time and label conditions.
-        elif cls_token_type == "time_label":
+        elif token_type == "time_label":
             embeds = self.embed_conditions(
                 times, labels, 
-                cls_token_type, 
+                token_type, 
                 full_return=False, 
                 training=training
             )
         # Use the learned standalone token instead of per-example embeddings.
-        elif cls_token_type == "new_weight":
+        elif token_type == "new_weight":
             embeds = None
 
         x = tf.concat([
-            self.cls_token(
+            token(
                 (x, embeds), 
                 training=training
             ), 
@@ -2553,6 +2637,77 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         ], axis=1)
 
         return x
+
+    def prepend_cls_token(
+        self,
+        x: tf.Tensor,
+        cls_token_type: TokenType,
+        time_embeds: tf.Tensor | None = None,
+        label_embeds: tf.Tensor | None = None,
+        times: tf.Tensor | None = None,
+        labels: tf.Tensor | None = None,
+        training: bool | None = None
+    ) -> tf.Tensor:
+        """Prepend the configured class token.
+
+        This public helper keeps the class-token API while delegating to the
+        shared single-token implementation.
+
+        Args:
+            x (tf.Tensor): Patch tokens ``[B, P, D]``.
+            cls_token_type (TokenType): Class-token source.
+            time_embeds (tf.Tensor | None): Reusable time embedding.
+            label_embeds (tf.Tensor | None): Reusable label embedding.
+            times (tf.Tensor | None): Integer timestep IDs.
+            labels (tf.Tensor | None): Integer class IDs.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor: Sequence with the class token prepended.
+        """
+
+        return self.prepend_single_token(
+            x, self.cls_token, cls_token_type,
+            time_embeds=time_embeds,
+            label_embeds=label_embeds,
+            times=times,
+            labels=labels,
+            training=training
+        )
+
+    def prepend_distil_token(
+        self,
+        x: tf.Tensor,
+        distil_token_type: TokenType,
+        time_embeds: tf.Tensor | None = None,
+        label_embeds: tf.Tensor | None = None,
+        times: tf.Tensor | None = None,
+        labels: tf.Tensor | None = None,
+        training: bool | None = None
+    ) -> tf.Tensor:
+        """Prepend the configured distillation token.
+
+        Args:
+            x (tf.Tensor): Patch tokens ``[B, P, D]``.
+            distil_token_type (TokenType): Distillation-token source.
+            time_embeds (tf.Tensor | None): Reusable time embedding.
+            label_embeds (tf.Tensor | None): Reusable label embedding.
+            times (tf.Tensor | None): Integer timestep IDs.
+            labels (tf.Tensor | None): Integer class IDs.
+            training (bool | None): Keras training mode.
+
+        Returns:
+            tf.Tensor: Sequence with the distillation token prepended.
+        """
+
+        return self.prepend_single_token(
+            x, self.distil_token, distil_token_type,
+            time_embeds=time_embeds,
+            label_embeds=label_embeds,
+            times=times,
+            labels=labels,
+            training=training
+        )
 
     def slice_and_flatten_tokens(
         self, 
@@ -2611,11 +2766,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 matching flattened/unflattened bottleneck representation.
 
         Returns:
-            tuple: ``(tokens, cond, features_list, regs_list, z_vals)``.  Tokens
-            exclude the optional class token at return.  ``features_list[k]``
-            is depth k, ``regs_list[k]`` is its auxiliary class distribution or
-            ``None``, and ``z_vals`` is the most recent KL flatten reshaper's
-            ``(mean, log_variance)`` pair or ``(None, None)``.
+            tuple: ``(tokens, cond, features_list, regs_list, z_vals)``. Tokens
+            exclude optional class and distillation tokens at return, while
+            ``features_list`` retains them in class, distillation, patch order.
+            ``features_list[k]`` is depth k, ``regs_list[k]`` is its auxiliary
+            class distribution or ``None``, and ``z_vals`` is the most recent
+            KL flatten reshaper's ``(mean, log_variance)`` pair or
+            ``(None, None)``.
 
         Raises:
             AssertionError: If ``min_depth`` is outside ``0..depth``.
@@ -2633,14 +2790,24 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 full_return=True,
                 training=training
             )
-            x = self.prepend_cls_token(
-                x, self.cls_token_type,
-                time_embeds=time_embeds,
-                label_embeds=label_embeds,
-                times=inputs[1],
-                labels=inputs[2],
+            x = self.prepend_distil_token(
+                x,
+                self.distil_token_type, 
+                time_embeds=time_embeds, 
+                label_embeds=label_embeds, 
+                times=inputs[1], 
+                labels=inputs[2], 
                 training=training
-            ) if self.cls_token_type is not None else x
+            )
+            x = self.prepend_cls_token(
+                x,
+                self.cls_token_type, 
+                time_embeds=time_embeds, 
+                label_embeds=label_embeds, 
+                times=inputs[1], 
+                labels=inputs[2], 
+                training=training
+            )
         # Resume from a precomputed feature while rebuilding its conditions.
         else:
             x = inputs[0]
@@ -2722,7 +2889,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ) if x_mean is not None and \
             self.reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else z_vals
 
-        x = x[:, 1:] if self.cls_token_type is not None else x
+        prefix_tokens_num = int(self.cls_token_type is not None) + \
+                            int(self.distil_token_type is not None)
+        x = x[:, prefix_tokens_num:] if prefix_tokens_num else x
 
         return x, cond, features_list, regs_list, z_vals
 
@@ -3054,7 +3223,7 @@ def run_self_tests() -> dict[str, str]:
     assert len(features) == len(regs) == 1
     assert z_values == (None, None)
     assert depth_zero.current_resolution == 4
-    assert depth_zero.build_model(call_model=False) == [
+    assert depth_zero._build_model(call_model=False) == [
         tf.TensorShape([None, 4, 4, 1]),
         tf.TensorShape([None]),
         tf.TensorShape([None]),
@@ -3346,7 +3515,8 @@ def run_self_tests() -> dict[str, str]:
     assert pristine_defaults.connection_kwargs == {}
     assert pristine_defaults.use_decoder_ids == []
     assert pristine_defaults.cls_token_regularizer_kwargs == {
-        "start": 0, "end": 1
+        "start": 0, "end": 1,
+        "train_type": "normal", "distil_type": "hard"
     }
 
     progressive_cross = DiffusionTransformer(depth=0, **base)

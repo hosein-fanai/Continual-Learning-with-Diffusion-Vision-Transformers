@@ -76,8 +76,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 ``decoder_separate_cond=True``. Any decoder timestep/label
                 embedding tables must cover the encoder's wrapper-visible ID
                 ranges. Feature-width merges and encoder features used as
-                cross-attention queries require matching encoder/decoder
-                class-token presence; attention values may differ in length.
+                cross-attention queries require matching encoder/decoder class
+                and distillation token settings; attention values may differ
+                in length.
                 Configure KL bottlenecks and token regularizers on the encoder,
                 because generic wrapper losses read the encoder metadata.
             build (bool): Build the four-input symbolic graph immediately.
@@ -305,8 +306,16 @@ class DiTEncoderDecoder(DiffusionTransformer):
             raise ValueError(
                 "decoder label embeddings must cover encoder labels."
             )
-        # Detect feature-width routes made unsafe by mismatched class-token presence.
-        if bool(self.cls_token_type) != bool(self.decoder.cls_token_type):
+        encoder_prefix_tokens = (
+            self.cls_token_type is not None, 
+            self.distil_token_type is not None, 
+        )
+        decoder_prefix_tokens = (
+            self.decoder.cls_token_type is not None, 
+            self.decoder.distil_token_type is not None, 
+        )
+        # Detect routed features whose prefix positions have different meanings.
+        if encoder_prefix_tokens != decoder_prefix_tokens:
             feature_routes_require_match = any(
                 self._handler_merges_feature_width(
                     self.decoder.connection_kwargs
@@ -335,7 +344,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
             if feature_routes_require_match or query_routes_require_match or \
             cross_connector_requires_match:
                 raise ValueError(
-                    "encoder and decoder class-token settings must match for "
+                    "encoder and decoder class/distillation token settings "
+                    "must match for "
                     "feature-width merges and cross-attention query routes."
                 )
         # Require the decoder's terminal token grid to match the image head.

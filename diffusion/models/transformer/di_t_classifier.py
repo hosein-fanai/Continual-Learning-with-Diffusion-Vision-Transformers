@@ -12,7 +12,11 @@ from copy import deepcopy
 
 from typing import Literal
 
-from . import CondType, TokenType, IdsType, IdsDictType, select_first_token
+from . import (
+    CondType, TokenType, IdsType, IdsDictType, 
+    select_first_token, select_second_token, 
+    remove_first_token, remove_second_token
+)
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
@@ -76,10 +80,12 @@ class DiTClassifier(DiffusionTransformer):
         cross_attention_aggregation_ids_dict: IdsDictType = {}, 
         cross_attention_aggregation_kwargs: dict = {}, 
         classifier_only_cls_token: bool = True, 
+        classifier_only_distil_token: bool = True, 
         clf_dim: int | None = None, 
         clf_dim_forced: bool = False, 
         clf_cond_type: CondType | None = "time_label", 
         clf_cls_token_type: TokenType | None = "new_weight", 
+        clf_distil_token_type: TokenType | None = None, 
         clf_depth: int = 1, 
         clf_connection_ids_dict: IdsDictType = {-1: (-1,)}, 
         clf_connection_kwargs: dict | None = None, 
@@ -139,6 +145,9 @@ class DiTClassifier(DiffusionTransformer):
             classifier_only_cls_token (bool): Give the classifier its own prefix
                 token and suppress the main branch's token.  False lets both
                 branches share the inherited main token behavior.
+            classifier_only_distil_token (bool): Give the classifier its own
+                distillation token and suppress the main branch's token. False
+                lets both branches share ``distil_token_type``.
             clf_dim (int | None): Nominal classifier width.  ``None`` is replaced
                 after aggregation by ``first_aggregated_dim``.
             clf_dim_forced (bool): Project feature merges/spatial width changes
@@ -149,6 +158,10 @@ class DiTClassifier(DiffusionTransformer):
             clf_cls_token_type (TokenType | None): Classifier token source:
                 ``"new_weight"`` (default), ``"time_label"``, ``"time"``,
                 ``"label"``, or None.  It does not inherit ``cls_token_type``.
+            clf_distil_token_type (TokenType | None): Classifier distillation-
+                token source with the same choices as ``clf_cls_token_type``.
+                ``None`` disables the classifier-only distillation token. It
+                does not inherit ``distil_token_type``.
             clf_depth (int): Number of classifier processing depths; default 1.
                 A terminal connector is created separately at depth
                 ``clf_depth + 1``.
@@ -220,26 +233,33 @@ class DiTClassifier(DiffusionTransformer):
                 ``activation_function`` values default to ``None`` and
                 ``"tanh"``, respectively.
             force_global_avg_pooling (bool): Average all final tokens even when
-                a class token is available.  Without a usable class token,
-                global average pooling is selected automatically.
+                a class token is available. The distillation token is always
+                excluded, but a class token remains in this average. Without a
+                usable class token, global average pooling is selected.
             classifier_mlp_ratio (int | None): Add a hidden classifier Dense
                 layer of ``final_width * ratio`` units when non-None.
             classifier_mlp_activation_func (str | callable): Hidden classifier
                 activation, default ``"tanh"``.
             dropout_rate (float): Classifier dropout rate; 0 omits dropout.
             build (bool): Build symbolic inputs and variables immediately.
-            **kwargs (object): All ``DiffusionTransformer`` constructor options plus
-                standard Keras model options.  Main-branch ``cls_token_type``
-                is intercepted according to ``classifier_only_cls_token``.
+            **kwargs (object): All ``DiffusionTransformer`` constructor options
+                plus standard Keras model options. Main-branch class and
+                distillation token types are intercepted by their respective
+                ``classifier_only_*`` switches.
 
         Returns:
             None: Both branches and the classifier head are initialized.
         """
 
-        temp_val = kwargs.pop("cls_token_type", None)
+        temp_val = (
+            kwargs.pop("cls_token_type", None), 
+            kwargs.pop("distil_token_type", None)
+        )
         super().__init__(
             cls_token_type=None if classifier_only_cls_token and \
-                        temp_val is not None else temp_val, 
+                        temp_val[0] is not None else temp_val[0], 
+            distil_token_type=None if classifier_only_distil_token and \
+                        temp_val[1] is not None else temp_val[1], 
             build=False, 
             **kwargs
         )
@@ -266,27 +286,50 @@ class DiTClassifier(DiffusionTransformer):
             must_be_same=True
         ) if not self.aggregate_from_noises else self.grid_size
         self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, (-1,))
+        self.clf_has_cls_token = self.clf_cls_token_type is not None if self.classifier_only_cls_token \
+                                else self.cls_token_type is not None
+        self.clf_has_distil_token = self.clf_distil_token_type is not None if self.classifier_only_distil_token \
+                                    else self.distil_token_type is not None
 
         self._create_clf_embedders()
-        self.cls_token = self._create_cls_token(
+        self.cls_token = self._create_single_token(
             self.first_aggregated_dim if self.aggregate_from_noises else self.clf_dim, 
             self.cls_token_pos_merger_type, 
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
             self.clf_cls_token_type, 
-            "clf_"
+            name=f"{self.name_prefix}clf_depth_0_cls_token"
         ) if self.classifier_only_cls_token else self.cls_token
+        self.distil_token = self._create_single_token(
+            self.first_aggregated_dim if self.aggregate_from_noises else self.clf_dim, 
+            self.distil_token_pos_merger_type, 
+            self.distil_token_freq_dim, 
+            self.distil_token_mlp_ratio, 
+            self.clf_distil_token_type, 
+            name=f"{self.name_prefix}clf_depth_0_distil_token"
+        ) if self.classifier_only_distil_token else self.distil_token
         self._create_clf_layers()
 
-        # Pool all tokens when requested or when no usable class token exists.
-        if self.force_global_avg_pooling or not (
-        (not self.classifier_only_cls_token and \
-        self.cls_token_type is not None) or \
-        (self.classifier_only_cls_token and \
-        self.clf_cls_token_type is not None)):
-            self.classifier_feature_extractor = layers.GlobalAveragePooling1D(
-                name=f"{self.name_prefix}classifier_feature_extractor"
-            )
+        # Pool all non-distillation tokens when requested or when no class
+        # token is available. Forced pooling deliberately retains a class token.
+        if self.force_global_avg_pooling or not self.clf_has_cls_token:
+            # Remove only the distillation position before averaging.
+            if self.clf_has_distil_token:
+                self.classifier_feature_extractor = models.Sequential([
+                    layers.Lambda(
+                        remove_second_token if self.clf_has_cls_token \
+                        else remove_first_token, 
+                        name=f"{self.name_prefix}remove_distil_token"
+                    ), 
+                    layers.GlobalAveragePooling1D(
+                        name=f"{self.name_prefix}global_average_pooling"
+                    )
+                ], name=f"{self.name_prefix}classifier_feature_extractor")
+            # Keep the established direct pooling layer without distillation.
+            else:
+                self.classifier_feature_extractor = layers.GlobalAveragePooling1D(
+                    name=f"{self.name_prefix}classifier_feature_extractor"
+                )
         # Otherwise classify from the first class-token position.
         else:
             self.classifier_feature_extractor = layers.Lambda(
@@ -294,31 +337,17 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
-        self.classifier = models.Sequential( # TODO: build it as a functional model
-            name=f"{self.name_prefix}classes"
+        self.distil_feature_extractor = layers.Lambda(
+            select_second_token if self.clf_has_cls_token else select_first_token, 
+            name=f"{self.name_prefix}distil_feature_extractor"
+        ) if self.clf_has_distil_token else None
+
+        self.classifier = self._create_classifier_head(
+            "classes"
         )
-        # Add the optional hidden classifier projection.
-        if self.classifier_mlp_ratio is not None:
-            self.classifier.add(layers.Dense(
-                self._get_unforced_total_dim(
-                    ids_set=[self.clf_depth], 
-                    layers_dicts=self.clf_layers_dicts, 
-                    base_dim=self.clf_dim, 
-                ) * self.classifier_mlp_ratio, 
-                activation=self.classifier_mlp_activation_func, 
-                name=f"{self.classifier.name}/first_layer"
-            ))
-        # Add classifier dropout only for a nonzero rate.
-        if self.dropout_rate > 0.:
-            self.classifier.add(layers.Dropout(
-                self.dropout_rate, 
-                name="dropout_layer"
-            ))
-        self.classifier.add(layers.Dense(
-            self.num_classes, 
-            activation="softmax", 
-            name=f"{self.classifier.name}/final_layer"
-        ))
+        self.distil_classifier = self._create_classifier_head(
+            "distil_classes"
+        ) if self.clf_has_distil_token else None
 
         # Materialize classifier and denoiser variables when requested.
         if self.build_:
@@ -348,7 +377,8 @@ class DiTClassifier(DiffusionTransformer):
                 "aggregate_from_noises requires use_unpatchify to be True."
 
         assert 1 in local_vars["feature_aggregation_ids_dict"] and \
-            "There must be at least one feature vector to connect to the classifier part."
+            "There must be at least one feature vector "\
+            "to connect to the classifier part."
         self._check_dict_assertions(
             local_vars, 
             "feature_aggregation_ids_dict", 
@@ -511,10 +541,25 @@ class DiTClassifier(DiffusionTransformer):
             allowed_keys=self.cls_token_regularizer_kwargs_allowed_vals, 
             check_values=False, 
         ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
+        # Validate the classifier-specific regularizer training modes when supplied.
+        if local_vars["clf_cls_token_regularizer_kwargs"] is not None:
+            regularizer_mlp_ratio = local_vars[
+                "clf_cls_token_regularizer_kwargs"
+            ].get("mlp_ratio", None)
+            assert regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
+                "classifier regularizer mlp_ratio must be None or positive."
+            assert local_vars["clf_cls_token_regularizer_kwargs"].get(
+                "train_type", "normal"
+            ) in ("normal", "distil", "both"), \
+                "classifier regularizer train_type must be normal, distil, or both."
+            assert local_vars["clf_cls_token_regularizer_kwargs"].get(
+                "distil_type", "hard"
+            ) in ("hard", "soft"), \
+                "classifier regularizer distil_type must be hard or soft."
 
-        assert local_vars["clf_cross_attention_plug_type"] \
-            in (None, "values", "queries"), \
-            "clf_cross_attention_plug_type can only be values or queries."
+        assert local_vars["clf_cross_attention_plug_type"] in (
+            None, "values", "queries"
+        ), "clf_cross_attention_plug_type can only be values or queries."
 
     def _set_defaults(self, local_vars: dict, 
                     exclude: list[str]=["clf_dim", "clf_cond_type", 
@@ -522,8 +567,9 @@ class DiTClassifier(DiffusionTransformer):
                         "clf_vit_block_ids", "clf_use_decoder_ids", 
                         "clf_local_mixer_ids", "clf_downsample_ids", 
                         "clf_upsample_ids", "clf_cls_token_type", 
-                        "clf_mha_key_dim", "clf_mha_value_dim", 
-                        "clf_ln_mlp_ratio", "clf_reshaper_ids_dict", 
+                        "clf_distil_token_type", "clf_mha_key_dim", 
+                        "clf_mha_value_dim", "clf_ln_mlp_ratio", 
+                        "clf_reshaper_ids_dict", 
                         "clf_cls_token_regularizer_ids"]) -> None:
         """Resolve inheritable ``clf_*`` values from main-branch attributes.
 
@@ -673,25 +719,38 @@ class DiTClassifier(DiffusionTransformer):
 
         self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None and not self.clf_ln_no_adaptation else []
         self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None else []
+        self._clf_distil_token_type = self.clf_distil_token_type \
+            if self.clf_distil_token_type is not None else []
 
-        clf_embed_times_flag = "time" in self._clf_cls_token_type or "time" in self._clf_cond_type
-        clf_embed_labels_flag = "label" in self._clf_cls_token_type or "label" in self._clf_cond_type
+        clf_embed_times_flag = "time" in self._clf_cls_token_type or \
+            "time" in self._clf_distil_token_type or "time" in self._clf_cond_type
+        clf_embed_labels_flag = "label" in self._clf_cls_token_type or \
+            "label" in self._clf_distil_token_type or "label" in self._clf_cond_type
         clf_conds_merger_flag = ("time" in self._clf_cls_token_type and "label" in self._clf_cls_token_type
-                                ) or ("time" in self._clf_cond_type and "label" in self._clf_cond_type)
+                                ) or ("time" in self._clf_distil_token_type and \
+                                "label" in self._clf_distil_token_type) or \
+                                ("time" in self._clf_cond_type and "label" in self._clf_cond_type)
 
         # Remove main-branch token dependencies used exclusively by the classifier.
         if self.classifier_only_cls_token:
             # Drop an otherwise unused main time embedder.
-            if flag1:=("time" in self._cls_token_type) and not clf_embed_times_flag:
+            if flag1:=("time" in self._cls_token_type or \
+            "time" in self._distil_token_type) and not clf_embed_times_flag:
                 self.time_embedder = None
+
             # Drop an otherwise unused main label embedder.
-            if flag2:=("label" in self._cls_token_type) and not clf_embed_labels_flag:
+            if flag2:=("label" in self._cls_token_type or \
+            "label" in self._distil_token_type) and not clf_embed_labels_flag:
                 self.label_embedder = None
+
             # Drop the main condition merger when both component embedders were removed.
             if flag1 and flag2 and not clf_conds_merger_flag:
                 self.conds_merger = None
+
             self.cls_token_type = None
             self._cls_token_type = []
+            self.distil_token_type = None
+            self._distil_token_type = []
 
         self.time_embedder = self._create_time_embedder(
             name_prefix="clf_"
@@ -707,13 +766,28 @@ class DiTClassifier(DiffusionTransformer):
         ) if clf_conds_merger_flag and self.conds_merger is None else self.conds_merger
 
         self.clf_labels_embed_reg = self._create_token_regularizer(
-            input_dim=self.cond_embedder_dim,
-            mlp_ratio=self.clf_cls_token_regularizer_kwargs.get("mlp_ratio"),
-            activation_function=self.clf_cls_token_regularizer_kwargs.get(
-                "activation_function", "tanh"
-            ),
+            i=-1, 
+            layers_dicts=[], 
+            layers_dict={}, 
+            base_dim=self.cond_embedder_dim,
+            kwargs=self.clf_cls_token_regularizer_kwargs, 
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
+
+    def _get_clf_prefix_tokens_num(self) -> int:
+        """Return the number of active classifier-side prefix tokens.
+
+        Returns:
+            int: Zero, one, or two for the active class and distillation token
+            configuration.
+        """
+
+        cls_token_type = self.clf_cls_token_type if self.classifier_only_cls_token \
+                        else self.cls_token_type
+        distil_token_type = self.clf_distil_token_type if self.classifier_only_distil_token \
+                        else self.distil_token_type
+
+        return int(cls_token_type is not None) + int(distil_token_type is not None)
 
     def _create_clf_layer_dict(
         self, 
@@ -742,8 +816,7 @@ class DiTClassifier(DiffusionTransformer):
             bypass_aggregator = self.aggregate_from_noises and key == 1
             layers_dict[self.FA] = self._create_feature_handler(
                 ids_set=self.feature_aggregation_ids_dict[key] 
-                        if not bypass_aggregator
-                        else [], 
+                        if not bypass_aggregator else [], 
                 layers_dicts=self.layers_dicts, 
                 base_dim=self.clf_dim, 
                 dim_forced=False if bypass_aggregator else self.clf_dim_forced, 
@@ -856,10 +929,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_cls_token=(self.classifier_only_cls_token and 
-                                    self.clf_cls_token_type is not None) or 
-                                    (not self.classifier_only_cls_token and 
-                                    self.cls_token_type is not None),
+                circumvent_tokens=self._get_clf_prefix_tokens_num(),
                 kwargs=self.clf_local_mixer_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
             )
@@ -876,10 +946,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_cls_token=(self.classifier_only_cls_token and \
-                                    self.clf_cls_token_type is not None) or \
-                                    (not self.classifier_only_cls_token and \
-                                    self.cls_token_type is not None),
+                circumvent_tokens=self._get_clf_prefix_tokens_num(),
                 kwargs=self.clf_downsample_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
             )
@@ -896,10 +963,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_cls_token=(self.classifier_only_cls_token and \
-                                    self.clf_cls_token_type is not None) or \
-                                    (not self.classifier_only_cls_token and \
-                                    self.cls_token_type is not None),
+                circumvent_tokens=self._get_clf_prefix_tokens_num(),
                 kwargs=self.clf_upsample_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
             )
@@ -911,10 +975,7 @@ class DiTClassifier(DiffusionTransformer):
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, base_dim=self.clf_dim, 
                 base_grid_size=self.clf_grid_size, 
-                grid_has_cls_token=(self.clf_cls_token_type is not None and 
-                                    self.classifier_only_cls_token) or 
-                                    (self.cls_token_type is not None and 
-                                    not self.classifier_only_cls_token), 
+                grid_has_tokens=self._get_clf_prefix_tokens_num(), 
                 kwargs=self.clf_reshaper_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
             )
@@ -948,6 +1009,48 @@ class DiTClassifier(DiffusionTransformer):
                 self._create_clf_layer_dict(i, self.clf_layers_dicts)
             )
 
+    def _create_classifier_head(self, name: str) -> models.Sequential:
+        """Create one class-probability head with the configured MLP/dropout.
+
+        Args:
+            name (str): Final component name, without ``name_prefix``.
+
+        Returns:
+            tf.keras.Sequential: A softmax head shared in structure by the
+            ordinary class/average path and the optional distillation path.
+        """
+
+        classifier = models.Sequential( # TODO: build it as a functional model
+            name=f"{self.name_prefix}{name}"
+        )
+
+        # Add the optional hidden classifier projection.
+        if self.classifier_mlp_ratio is not None:
+            classifier.add(layers.Dense(
+                self._get_unforced_total_dim(
+                    ids_set=[self.clf_depth], 
+                    layers_dicts=self.clf_layers_dicts, 
+                    base_dim=self.clf_dim, 
+                ) * self.classifier_mlp_ratio, 
+                activation=self.classifier_mlp_activation_func, 
+                name=f"{classifier.name}/first_layer"
+            ))
+
+        # Add classifier dropout only for a nonzero rate.
+        if self.dropout_rate > 0.:
+            classifier.add(layers.Dropout(
+                self.dropout_rate, 
+                name="dropout_layer"
+            ))
+
+        classifier.add(layers.Dense(
+            self.num_classes, 
+            activation="softmax", 
+            name=f"{classifier.name}/final_layer"
+        ))
+
+        return classifier
+
     def call(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
@@ -964,10 +1067,12 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             dict[str, object]: Always ``{"noises": [B,H,W,C], "classes":
-            [B,num_classes]}``.  With ``full_return=True``, also contains
-            ``cond``, ``features_list``, ``regs_list``, ``z_vals`` for the main
-            branch and ``clf_cond``, ``clf_features_list``, ``clf_regs_list``,
-            ``clf_z_vals`` for the classifier branch.
+            [B,num_classes]}``. With a distillation token it also contains
+            the independent ``"distil_classes"`` distribution in both training
+            and inference modes. With ``full_return=True``, it also contains
+            ``cond``, ``features_list``, ``regs_list``, and ``z_vals`` for the
+            main branch plus ``clf_cond``, ``clf_features_list``,
+            ``clf_regs_list``, and ``clf_z_vals`` for the classifier branch.
         """
 
         noises, cond, features_list, regs_list, z_vals = super().call(
@@ -984,6 +1089,7 @@ class DiTClassifier(DiffusionTransformer):
         )
         output_dict = {
             "noises": noises, 
+            "classes": outputs[0]
         }
 
         # Include intermediate classifier metadata only for full returns.
@@ -992,14 +1098,14 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["features_list"] = features_list
             output_dict["regs_list"] = regs_list
             output_dict["z_vals"] = z_vals
-            output_dict["classes"] = outputs[0]
             output_dict["clf_cond"] = outputs[1]
             output_dict["clf_features_list"] = outputs[2]
             output_dict["clf_regs_list"] = outputs[3]
             output_dict["clf_z_vals"] = outputs[4]
-        # Otherwise expose the classifier probabilities as the primary result.
-        else:
-            output_dict["classes"] = outputs[0]
+
+        # Expose both component distributions whenever distillation is active.
+        if len(outputs) > 5:
+            output_dict["distil_classes"] = outputs[5]
 
         return output_dict
 
@@ -1067,8 +1173,7 @@ class DiTClassifier(DiffusionTransformer):
         times: tf.Tensor, 
         labels: tf.Tensor, 
         training: bool | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
-        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+    ) -> tuple:
         """Compute class probabilities from main features or predicted noises.
 
         Args:
@@ -1082,10 +1187,11 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             tuple: ``(classes, clf_cond, clf_features_list, clf_regs_list,
-            clf_z_vals)``.  ``classes`` is float ``[B,num_classes]`` softmax;
-            features index 0 is classifier depth 0, regularizer entries may be
-            None, and latent statistics are ``(mean, log_variance)`` or
-            ``(None, None)``.
+            clf_z_vals)``. When distillation is active, ``distil_classes`` is
+            appended as the sixth value. Both probability distributions remain
+            independent in training and inference. Features index 0 is
+            classifier depth 0, regularizer entries may be None, and latent
+            statistics are ``(mean, log_variance)`` or ``(None, None)``.
         """
 
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
@@ -1110,6 +1216,7 @@ class DiTClassifier(DiffusionTransformer):
                 cond=clf_cond, 
                 training=training
             ) if self.FA in layers_dict else x
+
         # Initialize the classifier branch at its first depth.
             if i == 0:
             # Start from the denoiser's predicted image/noise when configured.
@@ -1131,16 +1238,35 @@ class DiTClassifier(DiffusionTransformer):
                             full_return=True, 
                             training=training
                         )
-                        x = self.prepend_cls_token(
-                            x, self.cls_token_type, 
+                        x = self.prepend_single_token(
+                            x, self.distil_token, 
+                            self.distil_token_type, 
                             time_embeds=main_time_embeds, 
                             label_embeds=main_label_embeds, 
                             times=times, labels=labels, 
                             training=training
-                        ) if self.cls_token_type is not None else x
+                        )
+                        x = self.prepend_single_token(
+                            x, self.cls_token, 
+                            self.cls_token_type, 
+                            time_embeds=main_time_embeds, 
+                            label_embeds=main_label_embeds, 
+                            times=times, labels=labels, 
+                            training=training
+                        )
 
-                x = self.prepend_cls_token(
-                    x, self.clf_cls_token_type, 
+                x = self.prepend_single_token(
+                    x, self.distil_token, 
+                    self.clf_distil_token_type, 
+                    time_embeds=time_embeds, 
+                    label_embeds=label_embeds, 
+                    times=times, labels=labels, 
+                    training=training
+                ) if self.classifier_only_distil_token and \
+                    self.clf_distil_token_type is not None else x
+                x = self.prepend_single_token(
+                    x, self.cls_token,
+                    self.clf_cls_token_type,
                     time_embeds=time_embeds, 
                     label_embeds=label_embeds, 
                     times=times, labels=labels, 
@@ -1212,16 +1338,34 @@ class DiTClassifier(DiffusionTransformer):
             ) if x_mean is not None and \
             self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else clf_z_vals
 
-        x = self.classifier_feature_extractor(
+        classes = self.classifier_feature_extractor(
             x, 
             training=training
         )
-        x = self.classifier(
-            x, 
+        classes = self.classifier(
+            classes, 
             training=training
         )
+        # Compute the parallel token head only when distillation is configured.
+        if self.distil_classifier is not None:
+            distil_classes = self.distil_feature_extractor(
+                x, 
+                training=training
+            )
+            distil_classes = self.distil_classifier(
+                distil_classes, 
+                training=training
+            )
 
-        return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
+            return (
+                classes, clf_cond, clf_features_list, 
+                clf_regs_list, clf_z_vals, distil_classes
+            )
+
+        return (
+            classes, clf_cond, clf_features_list, 
+            clf_regs_list, clf_z_vals
+        )
 
     def predict_class(
         self, 
@@ -1229,8 +1373,7 @@ class DiTClassifier(DiffusionTransformer):
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
         training: bool | None = None
-    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
-        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+    ) -> tf.Tensor | tuple:
         """Classify inputs while executing only the required main depths.
 
         Args:
@@ -1244,8 +1387,9 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             tf.Tensor | tuple: Class probabilities ``[B,num_classes]`` or, with
-            ``full_return=True``, ``(classes, clf_cond, clf_features_list,
-            clf_regs_list, clf_z_vals)``.
+            ``full_return=True``, the tuple documented by
+            :meth:`compute_class`, including the appended distillation
+            distribution when active.
         """
 
         max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
@@ -1259,7 +1403,7 @@ class DiTClassifier(DiffusionTransformer):
             (x, cond), 
             training=training
         ) if self.aggregate_from_noises else None
-        x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals = self.compute_class(
+        outputs = self.compute_class(
             features_list, 
             noises, 
             times=inputs[1], 
@@ -1269,8 +1413,8 @@ class DiTClassifier(DiffusionTransformer):
 
         # Return classifier features and auxiliary values only when requested.
         if full_return:
-            return x, clf_cond, clf_features_list, clf_regs_list, clf_z_vals
-        return x
+            return outputs
+        return outputs[0]
 
     def add_depths(
         self, 
@@ -1598,6 +1742,12 @@ class DiTClassifier(DiffusionTransformer):
 
         old_layer = self.classifier.layers[-1]
         old_kernel, old_bias = old_layer.get_weights()
+
+        old_distil_layer = self.distil_classifier.layers[-1] \
+                        if self.distil_classifier is not None else None
+        old_distil_weights = old_distil_layer.get_weights() \
+                        if old_distil_layer is not None else None
+
         super().add_class(source_network=source_network)
 
         self.clf_labels_embed_reg = self._expand_token_regularizer(
@@ -1633,6 +1783,35 @@ class DiTClassifier(DiffusionTransformer):
         new_layer.set_weights([new_kernel, new_bias])
         self.classifier.pop()
         self.classifier.add(new_layer)
+
+        # Expand the parallel distillation head with identical EMA semantics.
+        if old_distil_layer is not None:
+            old_distil_kernel, old_distil_bias = old_distil_weights
+            distil_layer_config = old_distil_layer.get_config()
+            distil_layer_config["units"] = self.num_classes
+
+            new_distil_layer = old_distil_layer.__class__.from_config(
+                distil_layer_config
+            )
+            new_distil_layer.build((None, old_distil_kernel.shape[0]))
+            new_distil_kernel, new_distil_bias = new_distil_layer.get_weights()
+            new_distil_kernel[..., :-1] = old_distil_kernel
+            new_distil_bias[:-1] = old_distil_bias
+
+            # Initialize the new EMA output from the expanded raw distil head.
+            if source_network is not None:
+                source_distil_kernel, source_distil_bias = (
+                    source_network.distil_classifier.layers[-1].get_weights()
+                )
+                new_distil_kernel[..., -1] = source_distil_kernel[..., -1]
+                new_distil_bias[-1] = source_distil_bias[-1]
+
+            new_distil_layer.set_weights([
+                new_distil_kernel, 
+                new_distil_bias
+            ])
+            self.distil_classifier.pop()
+            self.distil_classifier.add(new_distil_layer)
 
 
 def run_self_tests() -> dict[str, str]:

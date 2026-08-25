@@ -103,6 +103,14 @@ separates generator and classifier variable groups/optimizers. Their READMEs
 define the branch state, progressive-depth behavior, and variable-selection
 IDs.
 
+Transformer classifiers can also prepend a distillation token after the class
+token. `DiffusionClassifier` maps `tf.data.Dataset` batches through a frozen
+teacher, supports hard cross-entropy or soft KL targets, and reports the class,
+distillation, and coefficient-combined accuracies. See the
+[transformer token contract](diffusion/models/transformer/README.md#class-and-distillation-tokens)
+and [wrapper training contract](diffusion/models/wrapper/README.md#distillation-training)
+for the exact output keys, coefficients, and dataset limitations.
+
 ### Architectural depth and routed IDs
 
 For transformer models, depth `0` is the patch-embedded input before any stage.
@@ -177,6 +185,9 @@ print(result["results_path"])
 Generic model-specific constructor options live in `model.kwargs`; diffusion
 wrapper options live in `model.wrapper_kwargs`. Omitted fields keep defaults
 and unknown typed-section fields are rejected.
+Set `training.fit_method="fit_progressively"` with `training.stage_tasks` and
+the desired stage controls to use the diffusion wrapper's existing progressive
+trainer; the default `"fit"` path is unchanged.
 
 ## Hyperparameter optimization
 
@@ -193,6 +204,13 @@ study = run_hpo(
     n_trials=30,
     epochs=50,
     results_path="results/hpo",
+    fit_method="fit_progressively",
+    fit_kwargs={
+        "stage_tasks": "timesteps_only",
+        "stages_num": 4,
+        "stage_epochs": 5,
+        "final_epochs": 5,
+    },
 )
 ```
 
@@ -225,6 +243,10 @@ config = Config(
 )
 accuracies = continually_learn(config)
 ```
+
+Continual diffusion replay uses the same training selector and curriculum
+fields. The curriculum is applied to each replay-model task; ordinary
+classifier phases still use `training.epochs`.
 
 Direct mode remains useful with an existing classifier template or runtime
 model object:

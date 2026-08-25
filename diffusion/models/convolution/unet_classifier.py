@@ -1,4 +1,4 @@
-"""Convolutional U-Net with a feature-based classifier branch."""
+"""Convolutional U-Net with classifier and optional distillation heads."""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -23,7 +23,8 @@ class UNetClassifier(UNet):
     with residual convolution stacks, globally pools the final map, and emits
     float32 class probabilities. Its public attributes and return structures
     match the contracts consumed by ``DiffusionClassifier`` and
-    ``DiffusionClassifierV2``.
+    ``DiffusionClassifierV2``. Optional distillation uses a parallel head over
+    the same pooled convolutional feature.
     """
 
     STACK = "0_residual_conv_stack"
@@ -38,6 +39,7 @@ class UNetClassifier(UNet):
             1: (-1,), 
         }, 
         classifier_only_cls_token: bool = False, 
+        classifier_only_distil_token: bool = False,
         clf_dim: int | None = None, 
         clf_depth: int = 1, 
         clf_block_depth: int = 1, 
@@ -71,6 +73,8 @@ class UNetClassifier(UNet):
                 Classifier depth-to-U-Net feature routes.
             classifier_only_cls_token (bool): Compatibility flag controlling
                 ownership of the tracked classifier token placeholder.
+            classifier_only_distil_token (bool): Enable the tracked
+                distillation-token placeholder and its parallel softmax head.
             clf_dim (int | None): Positive classifier width; None uses the last
                 U-Net encoder width.
             clf_depth (int): Nonnegative number of classifier residual stages.
@@ -131,13 +135,18 @@ class UNetClassifier(UNet):
         self.clf_dim = default_clf_dim if self.clf_dim is None else self.clf_dim
         self.set_max_encoder_num()
 
-        # The convolutional classifier has no token. This empty tracked layer
-        # keeps the legacy V2 variable selector safe if the compatibility flag
-        # is explicitly enabled.
+        self.clf_has_cls_token = False
+        self.clf_has_distil_token = self.classifier_only_distil_token
+
+        # The convolutional classifier has no sequence token. Empty tracked
+        # layers keep the wrapper variable selectors compatible.
         if self.classifier_only_cls_token and getattr(self, "cls_token", None) is None:
             self.cls_token = LayerDict(
                 name=f"{self.name_prefix}clf_depth_0_cls_token",
             )
+        self.distil_token = LayerDict(
+            name=f"{self.name_prefix}clf_depth_0_distil_token",
+        ) if self.classifier_only_distil_token else None
 
         self.classifier_feature_extractor = (
             layers.GlobalAveragePooling2D(
@@ -154,7 +163,10 @@ class UNetClassifier(UNet):
             "clf_depth_0_cls_token_regularizer",
         ) if 0 in self.clf_cls_token_regularizer_ids else None
         self._create_classifier_layers()
-        self._create_classifier_head()
+        self.classifier = self._create_classifier_head("classes")
+        self.distil_classifier = self._create_classifier_head(
+            "distil_classes"
+        ) if self.clf_has_distil_token else None
 
         # Materialize classifier and denoiser variables when requested.
         if self.build_:
@@ -176,6 +188,9 @@ class UNetClassifier(UNet):
         # Require an explicit boolean for classifier-only token ownership.
         if not isinstance(local_vars["classifier_only_cls_token"], bool):
             raise ValueError("classifier_only_cls_token must be boolean.")
+        # Require an explicit boolean for classifier-only distillation ownership.
+        if not isinstance(local_vars["classifier_only_distil_token"], bool):
+            raise ValueError("classifier_only_distil_token must be boolean.")
         # Require an explicit boolean for the classifier pooling policy.
         if not isinstance(local_vars["force_global_avg_pooling"], bool):
             raise ValueError("force_global_avg_pooling must be boolean.")
@@ -327,37 +342,42 @@ class UNetClassifier(UNet):
 
         return stage
 
-    def _create_classifier_head(self) -> None:
-        """Create the optional hidden projection and final softmax.
+    def _create_classifier_head(self, name: str) -> models.Sequential:
+        """Create one optional hidden projection and final softmax.
+
+        Args:
+            name (str): Head name without ``name_prefix``.
 
         Returns:
-            None: ``classifier`` is assigned in place.
+            tf.keras.Sequential: Independent class-probability head.
         """
 
-        self.classifier = models.Sequential(
-            name=f"{self.name_prefix}classes",
+        classifier = models.Sequential(
+            name=f"{self.name_prefix}{name}",
         )
         # Add the optional hidden classifier projection.
         if self.classifier_mlp_ratio is not None:
-            self.classifier.add(layers.Dense(
+            classifier.add(layers.Dense(
                 max(1, int(self.clf_dim * self.classifier_mlp_ratio)),
                 activation=self.classifier_mlp_activation_func,
                 dtype=tf.float32,
-                name=f"{self.name_prefix}classes_first_layer",
+                name=f"{self.name_prefix}{name}_first_layer",
             ))
         # Add classifier dropout only for a nonzero rate.
         if self.dropout_rate > 0.0:
-            self.classifier.add(layers.Dropout(
+            classifier.add(layers.Dropout(
                 self.dropout_rate,
                 dtype=tf.float32,
-                name=f"{self.name_prefix}classes_dropout",
+                name=f"{self.name_prefix}{name}_dropout",
             ))
-        self.classifier.add(layers.Dense(
+        classifier.add(layers.Dense(
             self.num_classes,
             activation="softmax",
             dtype=tf.float32,
-            name=f"{self.name_prefix}classes_final_layer",
+            name=f"{self.name_prefix}{name}_final_layer",
         ))
+
+        return classifier
 
     def add_class(self, source_network: object | None = None) -> None:
         """Append one classifier output while preserving the existing head.
@@ -367,7 +387,8 @@ class UNetClassifier(UNet):
                 classifier whose new output initializes an EMA clone.
 
         Returns:
-            None: The label vocabulary and final classifier layer grow by one.
+            None: The label vocabulary and enabled classifier heads grow by
+            one.
         """
 
         old_layer = self.classifier.layers[-1]
@@ -407,6 +428,13 @@ class UNetClassifier(UNet):
         new_layer.set_weights([new_kernel, new_bias])
         self.classifier.pop()
         self.classifier.add(new_layer)
+
+        # Grow the optional distillation head with the same EMA semantics.
+        self.distil_classifier = self._expand_regularizer(
+            self.distil_classifier,
+            source_network.distil_classifier
+            if source_network is not None else None,
+        )
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None) -> None:
         """Set the greatest inherited feature depth needed for classification.
@@ -570,13 +598,7 @@ class UNetClassifier(UNet):
         labels: tf.Tensor, 
         cond: tf.Tensor | None = None, 
         training: bool | None = None
-    ) -> tuple[
-        tf.Tensor, 
-        tf.Tensor | None, 
-        list[tf.Tensor], 
-        list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None],
-    ]:
+    ) -> tuple:
         """Return class probabilities and classifier branch intermediates.
 
         Args:
@@ -591,7 +613,8 @@ class UNetClassifier(UNet):
             tuple[tf.Tensor, tf.Tensor | None, list[tf.Tensor],
             list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]]:
             Probabilities, condition, classifier features, auxiliary predictions,
-            and classifier latent mean/log variance.
+            and classifier latent mean/log variance. When distillation is
+            enabled, the independent distillation probabilities are appended.
         """
 
         del times, labels
@@ -662,6 +685,21 @@ class UNetClassifier(UNet):
             tf.float32
         )
 
+        # Append the independent parallel head only in distillation mode.
+        if self.distil_classifier is not None:
+            distil_classes = tf.cast(
+                self.distil_classifier(
+                    x,
+                    training=training
+                ),
+                tf.float32
+            )
+
+            return (
+                classes, cond, clf_features_list, clf_regs_list,
+                clf_z_vals, distil_classes
+            )
+
         return classes, cond, clf_features_list, clf_regs_list, clf_z_vals
 
     def call(
@@ -687,6 +725,7 @@ class UNetClassifier(UNet):
 
         Returns:
             dict[str, object] | tf.Tensor | tuple: Branch mapping at depth zero,
+            including independent ``classes`` and optional ``distil_classes``,
             or inherited U-Net tensor/full output when resuming a latent decode.
         """
 
@@ -705,7 +744,7 @@ class UNetClassifier(UNet):
             full_return=True, 
             training=training, 
         )
-        classes, clf_cond, clf_features, clf_regs, clf_z_vals = self.compute_class(
+        class_outputs = self.compute_class(
             features_list, 
             noises, 
             times=inputs[1], 
@@ -715,7 +754,7 @@ class UNetClassifier(UNet):
         )
         outputs = {
             "noises": noises, 
-            "classes": classes, 
+            "classes": class_outputs[0],
         }
 
         # Attach condition and intermediate metadata only for full returns.
@@ -725,11 +764,15 @@ class UNetClassifier(UNet):
                 "features_list": features_list, 
                 "regs_list": regs_list, 
                 "z_vals": z_vals, 
-                "clf_cond": clf_cond, 
-                "clf_features_list": clf_features, 
-                "clf_regs_list": clf_regs, 
-                "clf_z_vals": clf_z_vals, 
+                "clf_cond": class_outputs[1],
+                "clf_features_list": class_outputs[2],
+                "clf_regs_list": class_outputs[3],
+                "clf_z_vals": class_outputs[4],
             })
+        # Expose the independent distillation distribution in every mode.
+        if len(class_outputs) > 5:
+            outputs["distil_classes"] = class_outputs[5]
+
         return outputs
 
     def predict_noise(
@@ -761,10 +804,7 @@ class UNetClassifier(UNet):
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
         training: bool | None = None
-    ) -> tf.Tensor | tuple[
-        tf.Tensor, tf.Tensor | None, list[tf.Tensor],
-        list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]
-    ]:
+    ) -> tf.Tensor | tuple:
         """Classify inputs while executing selected encoder depths.
 
         Args:
@@ -777,7 +817,8 @@ class UNetClassifier(UNet):
         Returns:
             tf.Tensor | tuple: Float32 probabilities ``[B,num_classes]`` or
             probabilities plus classifier condition, features, regularizers,
-            and latent statistics.
+            and latent statistics. The optional distillation distribution is
+            appended only to the full return.
         """
 
         # Run the complete denoiser first when classification consumes its noise output.
@@ -1016,6 +1057,10 @@ def run_self_tests() -> dict[str, str]:
     assert outputs["noises"].shape == inputs[0].shape
     assert outputs["classes"].shape == (2, 2)
     assert outputs["classes"].dtype == tf.float32
+    assert model.clf_has_cls_token is False
+    assert model.clf_has_distil_token is False
+    assert model.distil_token is None
+    assert model.distil_classifier is None
     tf.debugging.assert_near(
         tf.reduce_sum(outputs["classes"], axis=-1), 
         tf.ones((2,)), 
@@ -1028,6 +1073,7 @@ def run_self_tests() -> dict[str, str]:
         **{**common, "num_classes": None},
         cls_token_regularizer_ids=[None],
         clf_cls_token_regularizer_ids=[None],
+        classifier_only_distil_token=True,
     )
     dynamic_regularized.add_class()
     dynamic_regularized.add_class()
@@ -1037,21 +1083,41 @@ def run_self_tests() -> dict[str, str]:
         training=False,
     )
     assert dynamic_outputs["classes"].shape == (2, 2)
+    assert dynamic_outputs["distil_classes"].shape == (2, 2)
     assert all(item.shape == (2, 2) for item in dynamic_outputs["regs_list"])
     assert all(
         item.shape == (2, 2)
         for item in dynamic_outputs["clf_regs_list"][:-1]
     )
 
+    distil_model = UNetClassifier(
+        **common,
+        classifier_only_distil_token=True,
+    )
+    distil_outputs = distil_model(inputs, full_return=True, training=False)
+    assert distil_model.clf_has_distil_token is True
+    assert distil_model.distil_token is not None
+    assert distil_model.distil_classifier is not None
+    assert distil_outputs["classes"].shape == (2, 2)
+    assert distil_outputs["distil_classes"].shape == (2, 2)
+    assert len(distil_model.predict_class(
+        inputs, full_return=True, training=False
+    )) == 6
+    assert distil_model.predict_class(inputs, training=False).shape == (2, 2)
+    distil_restored = UNetClassifier.from_config(distil_model.get_config())
+    assert distil_restored(inputs)["distil_classes"].shape == (2, 2)
+
     max_pooled = UNetClassifier(
         **common,
         force_global_avg_pooling=False,
+        classifier_only_distil_token=True,
     )
     assert isinstance(
         max_pooled.classifier_feature_extractor,
         layers.GlobalMaxPooling2D,
     )
     assert max_pooled.predict_class(inputs).shape == (2, 2)
+    assert max_pooled(inputs)["distil_classes"].shape == (2, 2)
 
     with tf.GradientTape() as tape:
         classes = model.predict_class(inputs, training=True)

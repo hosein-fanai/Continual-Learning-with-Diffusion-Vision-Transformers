@@ -30,14 +30,20 @@ def _all_depth_ids() -> list[int | None]:
     return [None]
 
 
-def _default_regularizer_range() -> dict[str, int]:
-    """Return the default normalized regularizer interval.
+def _default_regularizer_range() -> dict[str, object]:
+    """Return the default regularizer interval and training modes.
 
     Returns:
-        dict[str, int]: A new ``{"start": 0, "end": 1}`` mapping.
+        dict[str, object]: A new mapping selecting the first token, normal
+        labels, and hard teacher targets when distillation is requested.
     """
 
-    return {"start": 0, "end": 1}
+    return {
+        "start": 0,
+        "end": 1,
+        "train_type": "normal",
+        "distil_type": "hard",
+    }
 
 
 def _default_feature_aggregation() -> dict[int, list[int]]:
@@ -153,6 +159,10 @@ class DiffusionTransformerConfig(KwargsMixin):
     cls_token_freq_dim: int | None = None
     cls_token_mlp_ratio: float | None = None
     cls_token_pos_merger_type: str = "add"
+    distil_token_type: str | None = None
+    distil_token_freq_dim: int | None = None
+    distil_token_mlp_ratio: float | None = None
+    distil_token_pos_merger_type: str = "add"
     depth: int = 2
     connection_ids_dict: dict = field(default_factory=dict)
     connection_kwargs: dict = field(default_factory=dict)
@@ -204,10 +214,12 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     cross_attention_aggregation_ids_dict: dict = field(default_factory=dict)
     cross_attention_aggregation_kwargs: dict = field(default_factory=dict)
     classifier_only_cls_token: bool = True
+    classifier_only_distil_token: bool = True
     clf_dim: int | None = None
     clf_dim_forced: bool = False
     clf_cond_type: str | None = "time_label"
     clf_cls_token_type: str | None = "new_weight"
+    clf_distil_token_type: str | None = None
     clf_depth: int = 1
     clf_connection_ids_dict: dict = field(
         default_factory=_default_classifier_connection
@@ -321,6 +333,7 @@ class UNetClassifierConfig(UNetConfig):
         default_factory=_default_feature_aggregation
     )
     classifier_only_cls_token: bool = False
+    classifier_only_distil_token: bool = False
     clf_dim: int | None = None
     clf_depth: int = 1
     clf_block_depth: int = 1
@@ -353,6 +366,7 @@ class DiffusionModelConfig(KwargsMixin):
     test_steps: int = 50
     test_eta: float = 0.0
     noise_loss_coef: float = 1.0
+    show_separate_noise_losses: bool = False
     image_loss_coef: float = 0.0
     kl_loss_coef: float = 0.0
     ctr_loss_coef: float = 0.0
@@ -365,6 +379,7 @@ class DiffusionModelConfig(KwargsMixin):
     resize_method: str = "area"
     resize_antialias: bool = True
     swap_noise_image: bool = False
+    map_preprocess: bool = False
     seen_classes: dict[object, int] = field(default_factory=dict)
     seed: int | None = None
 
@@ -373,12 +388,17 @@ class DiffusionModelConfig(KwargsMixin):
 class DiffusionClassifierConfig(DiffusionModelConfig):
     """Arguments forwarded to ``DiffusionClassifier`` except ``network``."""
 
+    distil_type: str = "hard"
     mask_by_nulls: bool = True
     mask_by_t_threshold: bool = False
     mask_t_percentage: int = 70
     use_ensemble_loss_instead: bool = False
     clf_train_type: str = "cond"
     clf_loss_coef: float = 8.6e-3
+    distil_loss_coef: float = 0.0
+    clf_acc_coef: float = 0.5
+    distil_acc_coef: float = 0.5
+    ctr_acc_coef: float = 0.0
 
 
 @dataclass
@@ -660,6 +680,9 @@ class ContinuallyLearnConfig(KwargsMixin):
         train_classifier_separately (bool): Add the separate classifier phase
             required by ``DiffusionClassifierV2`` and optionally used by a
             ``VAEClassifier``.
+        use_distillation (bool): Require a runtime ``teacher_network`` for a
+            diffusion-classifier replay model. The teacher itself is never
+            stored in this YAML-safe section.
         evaluate_ensemble_accuracy (bool): Also evaluate diffusion-classifier
             ensemble accuracy after each continual task.
         ensemble_accuracy_kwargs (dict): Options forwarded to
@@ -682,6 +705,7 @@ class ContinuallyLearnConfig(KwargsMixin):
     )
     use_generative_model_classifier: bool = False
     train_classifier_separately: bool = False
+    use_distillation: bool = False
     evaluate_ensemble_accuracy: bool = False
     ensemble_accuracy_kwargs: dict[str, object] = field(default_factory=dict)
     return_details: bool = False
@@ -695,6 +719,38 @@ class TrainingConfig:
         project_tag (str | None): Optional result-run identifier passed to the
             image callback; ``None`` lets that callback choose one.
         epochs (int): Positive fit epoch count; defaults to 20.
+        fit_method (str): Select ``"fit"`` or ``"fit_progressively"``.
+            Progressive training uses the curriculum fields below instead of
+            forwarding ``epochs`` to the wrapper.
+        stage_tasks (list[object] | str | None): Ordered progressive stage
+            descriptions, a ``"timesteps_only"``, ``"resolutions_only"``, or
+            ``"depths_only"`` shorthand, or ``None`` outside progressive mode.
+            YAML lists may represent the method's tuple-like descriptions.
+        stages_num (int | None): Optional count used to generate shorthand
+            progressive stages when companion values do not determine it.
+        stages_verbose (bool): Print each resolved progressive stage.
+        stage_epochs (int): Maximum epochs allocated to every listed stage.
+        final_epochs (int | None): Epochs for the final full-task stage;
+            ``None`` uses ``stage_epochs`` and ``0`` disables that stage.
+        timestep_boundaries (list[list[int] | None] | None): Optional
+            stage-indexed lower/upper timestep pairs.
+        timestep_clustering_type (str): ``"uniform"`` or ``"log_snr"``
+            clustering used when timestep boundaries are generated.
+        resolutions (list[int | None] | None): Optional stage-indexed square
+            input resolutions.
+        depths (list[object | None] | None): Optional stage-indexed network
+            depth-growth specifications.
+        pacing_type (str): ``"fixed"`` or ``"plateau"`` stage pacing.
+        earlystopping_type (str): ``"batch_wise"`` or ``"epoch_wise"``
+            stopping used by plateau pacing.
+        progressive_monitor (str): Metric forwarded as ``monitor`` to
+            progressive plateau stopping.
+        progressive_patience (int): Value forwarded as ``patience`` to
+            progressive plateau stopping.
+        min_delta (float): Minimum progressive plateau improvement.
+        stopper_mode (str): Keras mode for epoch-wise progressive stopping.
+        fit_kwargs (dict[str, object]): Additional Keras fit arguments such as
+            step counts; each config instance owns an independent mapping.
         use_valset (bool): Build and pass validation data for the selected
             dataset; loaders without a split fall back to test rows.
         show_images (bool): Display callback sample grids during training.
@@ -722,6 +778,23 @@ class TrainingConfig:
 
     project_tag: str | None = None
     epochs: int = 20
+    fit_method: str = "fit"
+    stage_tasks: list[object] | str | None = None
+    stages_num: int | None = None
+    stages_verbose: bool = True
+    stage_epochs: int = 1
+    final_epochs: int | None = None
+    timestep_boundaries: list[list[int] | None] | None = None
+    timestep_clustering_type: str = "log_snr"
+    resolutions: list[int | None] | None = None
+    depths: list[object | None] | None = None
+    pacing_type: str = "fixed"
+    earlystopping_type: str = "epoch_wise"
+    progressive_monitor: str = "val_noise_loss"
+    progressive_patience: int = 10
+    min_delta: float = 1e-3
+    stopper_mode: str = "min"
+    fit_kwargs: dict[str, object] = field(default_factory=dict)
     use_valset: bool = True
     show_images: bool = False
     save_gifs: bool = True
@@ -961,6 +1034,13 @@ def run_self_tests() -> dict[str, str]:
     assert transformer_defaults.num_classes == 10
     assert transformer_defaults.timesteps == 1_000
     assert transformer_defaults.use_cfg is True
+    assert transformer_defaults.distil_token_type is None
+    assert transformer_defaults.cls_token_regularizer_kwargs == {
+        "start": 0,
+        "end": 1,
+        "train_type": "normal",
+        "distil_type": "hard",
+    }
     transformer_custom = DiffusionTransformerConfig(
         num_classes=0, 
         timesteps=1, 
@@ -1028,6 +1108,8 @@ def run_self_tests() -> dict[str, str]:
     assert isinstance(classifier_defaults, DiffusionTransformerConfig)
     assert classifier_defaults.aggregate_from_noises is False
     assert classifier_defaults.classifier_only_cls_token is True
+    assert classifier_defaults.classifier_only_distil_token is True
+    assert classifier_defaults.clf_distil_token_type is None
     classifier_custom = DiTClassifierConfig(
         num_classes=3, 
         aggregate_from_noises=True, 
@@ -1071,6 +1153,7 @@ def run_self_tests() -> dict[str, str]:
     unet_classifier_defaults = UNetClassifierConfig()
     assert isinstance(unet_classifier_defaults, UNetConfig)
     assert unet_classifier_defaults.feature_aggregation_ids_dict == {1: [-1]}
+    assert unet_classifier_defaults.classifier_only_distil_token is False
     unet_classifier_custom = UNetClassifierConfig(
         aggregate_from_noises=True,
         clf_depth=2,
@@ -1081,6 +1164,8 @@ def run_self_tests() -> dict[str, str]:
     diffusion_defaults = DiffusionModelConfig()
     assert diffusion_defaults.test_network_name == "ema"
     assert diffusion_defaults.swap_noise_image is False
+    assert diffusion_defaults.show_separate_noise_losses is False
+    assert diffusion_defaults.map_preprocess is False
     assert diffusion_defaults.seen_classes == {}
     diffusion_custom = DiffusionModelConfig(
         test_network_name="raw", 
@@ -1091,16 +1176,23 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         test_cfg_scale=1.0, 
         swap_noise_image=True, 
+        show_separate_noise_losses=True,
         seen_classes={4: 0},
     )
     assert diffusion_custom.kwargs() == asdict(diffusion_custom)
     assert diffusion_custom.modify_first_t and diffusion_custom.swap_noise_image
+    assert diffusion_custom.show_separate_noise_losses is True
     diffusion_defaults.seen_classes[9] = 0
     assert DiffusionModelConfig().seen_classes == {}
 
     diffusion_classifier_defaults = DiffusionClassifierConfig()
     assert isinstance(diffusion_classifier_defaults, DiffusionModelConfig)
     assert diffusion_classifier_defaults.mask_by_nulls is True
+    assert diffusion_classifier_defaults.distil_type == "hard"
+    assert diffusion_classifier_defaults.distil_loss_coef == 0.0
+    assert diffusion_classifier_defaults.clf_acc_coef == 0.5
+    assert diffusion_classifier_defaults.distil_acc_coef == 0.5
+    assert diffusion_classifier_defaults.ctr_acc_coef == 0.0
     diffusion_classifier_custom = DiffusionClassifierConfig(
         mask_by_nulls=False, 
         mask_by_t_threshold=True, 
@@ -1229,6 +1321,7 @@ def run_self_tests() -> dict[str, str]:
         buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
         plot_results=False,
         generative_model_kwargs={"train_num": -1, "samples_per_class": 2},
+        use_distillation=True,
         evaluate_ensemble_accuracy=True,
         ensemble_accuracy_kwargs={"weighted": True, "max_t": 2},
         return_details=True,
@@ -1238,6 +1331,8 @@ def run_self_tests() -> dict[str, str]:
     assert continually_learn_custom.class_num == 3
     assert continually_learn_custom.use_buffer is True
     assert continually_learn_defaults.evaluate_ensemble_accuracy is False
+    assert continually_learn_defaults.use_distillation is False
+    assert continually_learn_custom.use_distillation is True
     assert continually_learn_custom.ensemble_accuracy_kwargs["max_t"] == 2
     continually_learn_defaults.buffer_kwargs["maxlen"] = 1
     continually_learn_defaults.ensemble_accuracy_kwargs["max_t"] = 1
@@ -1248,6 +1343,26 @@ def run_self_tests() -> dict[str, str]:
     training_custom = TrainingConfig(
         project_tag="self-test", 
         epochs=1, 
+        fit_method="fit_progressively",
+        stage_tasks=[
+            {"timesteps": [1, 4], "resolution": 4},
+            ["depth", "vision_transformer_block"],
+        ],
+        stages_num=2,
+        stages_verbose=False,
+        stage_epochs=2,
+        final_epochs=0,
+        timestep_boundaries=[[1, 4], None],
+        timestep_clustering_type="uniform",
+        resolutions=[4, None],
+        depths=[None, "vision_transformer_block"],
+        pacing_type="plateau",
+        earlystopping_type="batch_wise",
+        progressive_monitor="noise_loss",
+        progressive_patience=3,
+        min_delta=0.0,
+        stopper_mode="max",
+        fit_kwargs={"steps_per_epoch": 1},
         use_valset=False, 
         show_images=True, 
         save_gifs=False, 
@@ -1255,7 +1370,43 @@ def run_self_tests() -> dict[str, str]:
         save_weights=False, 
     )
     assert training_defaults.use_valset is True and training_defaults.save_gifs is True
+    assert training_defaults.fit_method == "fit"
+    assert training_defaults.stage_tasks is None
+    assert training_defaults.stages_num is None
+    assert training_defaults.stages_verbose is True
+    assert training_defaults.stage_epochs == 1
+    assert training_defaults.final_epochs is None
+    assert training_defaults.timestep_boundaries is None
+    assert training_defaults.timestep_clustering_type == "log_snr"
+    assert training_defaults.resolutions is None
+    assert training_defaults.depths is None
+    assert training_defaults.pacing_type == "fixed"
+    assert training_defaults.earlystopping_type == "epoch_wise"
+    assert training_defaults.progressive_monitor == "val_noise_loss"
+    assert training_defaults.progressive_patience == 10
+    assert training_defaults.min_delta == 1e-3
+    assert training_defaults.stopper_mode == "min"
+    assert training_defaults.fit_kwargs == {}
     assert training_custom.show_images is True and training_custom.results_path is None
+    assert training_custom.fit_method == "fit_progressively"
+    assert training_custom.stage_tasks[0]["timesteps"] == [1, 4]
+    assert training_custom.stages_num == 2
+    assert training_custom.stages_verbose is False
+    assert training_custom.stage_epochs == 2
+    assert training_custom.final_epochs == 0
+    assert training_custom.timestep_boundaries == [[1, 4], None]
+    assert training_custom.timestep_clustering_type == "uniform"
+    assert training_custom.resolutions == [4, None]
+    assert training_custom.depths == [None, "vision_transformer_block"]
+    assert training_custom.pacing_type == "plateau"
+    assert training_custom.earlystopping_type == "batch_wise"
+    assert training_custom.progressive_monitor == "noise_loss"
+    assert training_custom.progressive_patience == 3
+    assert training_custom.min_delta == 0.0
+    assert training_custom.stopper_mode == "max"
+    assert training_custom.fit_kwargs == {"steps_per_epoch": 1}
+    training_defaults.fit_kwargs["steps_per_epoch"] = 2
+    assert TrainingConfig().fit_kwargs == {}
 
     reporting_defaults = ReportingConfig()
     reporting_custom = ReportingConfig(
@@ -1312,7 +1463,15 @@ def run_self_tests() -> dict[str, str]:
             "diffusion_transformer": {"depth": 0}
         }, 
         optimizer={"initial_learning_rate": 1e-4, "decay_steps": 3}, 
-        training={"epochs": 1, "save_weights": False}, 
+        training={
+            "epochs": 1,
+            "save_weights": False,
+            "fit_method": "fit_progressively",
+            "stage_tasks": [{"timesteps": [0, 1]}],
+            "stage_epochs": 2,
+            "final_epochs": 0,
+            "fit_kwargs": {"steps_per_epoch": 1},
+        },
         continually_learn={
             "class_num": 4,
             "plot_results": False,
@@ -1329,6 +1488,11 @@ def run_self_tests() -> dict[str, str]:
     assert mapped_config.model.diffusion_transformer.depth == 0
     assert mapped_config.optimizer.decay_steps == 3
     assert mapped_config.training.epochs == 1
+    assert mapped_config.training.fit_method == "fit_progressively"
+    assert mapped_config.training.stage_tasks == [{"timesteps": [0, 1]}]
+    assert mapped_config.training.stage_epochs == 2
+    assert mapped_config.training.final_epochs == 0
+    assert mapped_config.training.fit_kwargs == {"steps_per_epoch": 1}
     assert mapped_config.continually_learn.class_num == 4
     assert mapped_config.continually_learn.evaluate_ensemble_accuracy is True
     assert mapped_config.reporting.run_trainset_eval is False
@@ -1343,6 +1507,29 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Non-mapping configuration sections must fail.")
 
+    distillation_config = Config(
+        model={
+            "name": "unet_classifier",
+            "unet_classifier": {"classifier_only_distil_token": True},
+            "diffusion_classifier": {
+                "distil_type": "soft",
+                "distil_loss_coef": 0.25,
+                "ctr_acc_coef": 0.2,
+            },
+        },
+        training={
+            "task": "continual",
+            "fit_method": "fit_progressively",
+            "stage_tasks": "timesteps_only",
+            "stages_num": 2,
+        },
+        continually_learn={"use_distillation": True},
+    )
+    assert distillation_config.model.unet_classifier.classifier_only_distil_token
+    assert distillation_config.model.diffusion_classifier.distil_type == "soft"
+    assert distillation_config.training.fit_method == "fit_progressively"
+    assert distillation_config.continually_learn.use_distillation is True
+
     with TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         full_path = temp_path / "full.yaml"
@@ -1351,6 +1538,16 @@ def run_self_tests() -> dict[str, str]:
         assert full_text.index("dataset:") < full_text.index("training:")
         loaded_full = load_config(full_path)
         assert loaded_full == mapped_config
+        assert loaded_full.training.stage_tasks == [{"timesteps": [0, 1]}]
+        assert loaded_full.training.fit_kwargs == {"steps_per_epoch": 1}
+
+        distillation_path = temp_path / "distillation-progressive.yaml"
+        save_config(distillation_config, distillation_path)
+        loaded_distillation = load_config(distillation_path)
+        assert loaded_distillation == distillation_config
+        assert "teacher_network" not in distillation_path.read_text(
+            encoding="utf-8"
+        )
 
         partial_path = temp_path / "partial.yaml"
         partial_path.write_text(
@@ -1362,6 +1559,9 @@ def run_self_tests() -> dict[str, str]:
         assert loaded_partial.dataset.batch_size == 3
         assert loaded_partial.dataset.shuffle_buffer == 10_000
         assert loaded_partial.model.diffusion_model.scheduler_name == "linear"
+        assert loaded_partial.training.fit_method == "fit"
+        assert loaded_partial.training.stage_tasks is None
+        assert loaded_partial.training.fit_kwargs == {}
 
         invalid_yaml_path = temp_path / "invalid.yaml"
         invalid_yaml_path.write_text("dataset: [", encoding="utf-8")

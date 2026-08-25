@@ -38,6 +38,35 @@ from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifier
 from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
 
 
+def _plain_config_value(value: object) -> object:
+    """Convert tracked Keras containers into YAML-safe built-in containers.
+
+    Args:
+        value (object): One value from a model's serializable constructor
+            configuration.
+
+    Returns:
+        object: Recursively copied dictionaries/lists with scalar leaves.
+    """
+
+    # Convert TensorFlow dictionary wrappers and ordinary mappings alike.
+    if isinstance(value, Mapping):
+        return {
+            key: _plain_config_value(item)
+            for key, item in value.items()
+        }
+    # Give unordered constructor collections a plain YAML sequence form.
+    if isinstance(value, (set, frozenset)):
+        return [_plain_config_value(item) for item in value]
+    # Convert TensorFlow list wrappers, tuples, and ordinary sequences.
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [_plain_config_value(item) for item in value]
+
+    return value
+
+
 def train_model(
     config: Config | None = None, 
     model: tf.keras.Model | dict[str, object] | None = None, 
@@ -71,7 +100,10 @@ def train_model(
             ``save_weights``, and callback/artifact settings. ``fit_method``
             selects an alternate model method such as VAE ``"train"`` or V2
             ``"fit_generator"``/``"fit_discriminator"``; ``fit_kwargs`` is
-            shallow-copied and forwarded to that method. A continual model
+            shallow-copied and forwarded to that method. Configured runs use
+            ``training.fit_method`` and the progressive fields on
+            :class:`TrainingConfig`; ``fit_progressively`` uses stage/final
+            epochs instead of ``training.epochs``. A continual model
             bundle consumes ``continual_kwargs`` (the legacy spelling remains
             accepted in direct mode) and also accepts ``max_train_samples``,
             ``max_val_samples``, ``shuffle_buffer``, raw-image ``pad``, and 
@@ -91,6 +123,8 @@ def train_model(
         ``replay-model.weights.h5`` and is the selected model in that case.
         Dynamic diffusion saves also persist the current raw ``num_classes``
         and wrapper ``seen_classes`` in the mandatory paired ``config.yaml``.
+        Progressive weight saves likewise force a final config rewrite and
+        record the post-growth network constructor state.
         TensorBoard and HPO metadata are written when configured. Epoch
         trajectory sampling is limited to compatible diffusion wrappers. A
         continual model bundle is updated with its final classifier/replay
@@ -98,7 +132,11 @@ def train_model(
 
     Raises:
         TypeError: If ``model`` or ``trainset`` is omitted, or dynamic
-            diffusion weights are requested without a ``Config`` to save.
+            diffusion weights are requested without a ``Config`` to save, or
+            a direct ``fit_method`` is not a string.
+        ValueError: If configured fit selection/arguments conflict, a
+            progressive curriculum lacks ``stage_tasks``, or its target is not
+            a diffusion wrapper.
     """
 
     # Require both a model and training input for orchestration.
@@ -181,11 +219,92 @@ def train_model(
         classifier_compile_overrides = deepcopy(config.model.classifier_kwargs.get(
             "compile_args", {}
         ))
-        fit_method = "fit"
-        fit_kwargs = {}
+        fit_method = config.training.fit_method
+        fit_kwargs = dict(config.training.fit_kwargs)
+
+        # Restrict the typed selector to the two documented training methods.
+        if fit_method not in ("fit", "fit_progressively"):
+            raise ValueError(
+                "training.fit_method must be 'fit' or 'fit_progressively'."
+            )
+
+        orchestration_fit_keys = {
+            "x", "y", "epochs", "initial_epoch", "validation_data",
+            "callbacks", "verbose",
+        }
+        conflicting_fit_keys = sorted(
+            orchestration_fit_keys.intersection(fit_kwargs)
+        )
+        # Keep data, epoch, callback, and verbosity ownership unambiguous.
+        if conflicting_fit_keys:
+            raise ValueError(
+                "training.fit_kwargs cannot override train_model arguments: "
+                + str(conflicting_fit_keys)
+            )
+
+        # Assemble the existing progressive API from its typed config fields.
+        if fit_method == "fit_progressively":
+            # Require an explicit curriculum instead of inventing hidden stages.
+            if config.training.stage_tasks is None:
+                raise ValueError(
+                    "training.stage_tasks is required when "
+                    "fit_method='fit_progressively'."
+                )
+
+            progressive_fit_keys = {
+                "stage_tasks", "stages_num",
+                "stages_verbose", "stage_epochs", "final_epochs",
+                "timestep_boundaries", "timestep_clustering_type",
+                "resolutions", "depths", "pacing_type",
+                "earlystopping_type", "monitor", "patience", "min_delta",
+                "stopper_mode",
+            }
+            conflicting_fit_keys = sorted(
+                progressive_fit_keys.intersection(fit_kwargs)
+            )
+            # Keep named progressive arguments in their explicit config fields.
+            if conflicting_fit_keys:
+                raise ValueError(
+                    "training.fit_kwargs cannot override configured "
+                    "progressive arguments: "
+                    + str(conflicting_fit_keys)
+                )
+
+            fit_kwargs = {
+                "stage_tasks": config.training.stage_tasks,
+                "stages_num": config.training.stages_num,
+                "stages_verbose": config.training.stages_verbose,
+                "stage_epochs": config.training.stage_epochs,
+                "final_epochs": config.training.final_epochs,
+                "timestep_boundaries": config.training.timestep_boundaries,
+                "timestep_clustering_type": (
+                    config.training.timestep_clustering_type
+                ),
+                "resolutions": config.training.resolutions,
+                "depths": config.training.depths,
+                "pacing_type": config.training.pacing_type,
+                "earlystopping_type": config.training.earlystopping_type,
+                "monitor": config.training.progressive_monitor,
+                "patience": config.training.progressive_patience,
+                "min_delta": config.training.min_delta,
+                "stopper_mode": config.training.stopper_mode,
+                **fit_kwargs,
+            }
+
+    # Require a string before using the shared method-name convention.
+    if not isinstance(fit_method, str):
+        raise TypeError("fit_method must be a string.")
+
+    progressive_fit = fit_method.endswith("progressively")
 
     checkpoint_model = model.get("generative_model") \
         if isinstance(model, dict) else model
+    # Reject unsupported progressive targets before callbacks or files exist.
+    if progressive_fit and not isinstance(checkpoint_model, DiffusionModel):
+        raise ValueError(
+            "Progressive fitting requires a DiffusionModel wrapper."
+        )
+
     dynamic_diffusion_checkpoint = save_weights and isinstance(
         checkpoint_model, DiffusionModel
     ) and getattr(
@@ -199,6 +318,9 @@ def train_model(
         )
     # A reconstructable dynamic checkpoint always includes its paired YAML.
     if dynamic_diffusion_checkpoint:
+        save_config_ = True
+    # Persist the final serializable topology beside progressive weights.
+    if save_weights and progressive_fit and config is not None:
         save_config_ = True
 
     callbacks_list = [
@@ -218,7 +340,7 @@ def train_model(
         callbacks_list.append(image_callback)
 
     # Add ordinary early stopping outside continual bundle training.
-    if not isinstance(model, dict) and  patience > 0:
+    if not isinstance(model, dict) and patience > 0 and not progressive_fit:
         callbacks_list.append(callbacks.EarlyStopping(
             monitor=monitor or ("val_loss" if valset is not None else "loss"),
             mode=monitor_mode, 
@@ -315,7 +437,9 @@ def train_model(
             "initial_classifier", 
             "callback_patience", 
             "callback_monitor", 
-            "callback_monitor_mode"
+            "callback_monitor_mode",
+            "fit_method",
+            "fit_kwargs"
         ):
             continual_kwargs.pop(factory_owned_key, None)
 
@@ -364,6 +488,8 @@ def train_model(
             callback_patience=patience, 
             callback_monitor=monitor, 
             callback_monitor_mode=monitor_mode, 
+            fit_method=fit_method,
+            fit_kwargs=fit_kwargs,
             verbose=training_verbose, 
             **continual_kwargs
         )
@@ -378,13 +504,58 @@ def train_model(
                 "ensemble_accuracies"
             ]
         final_val_accuracy = [
-            task_history.get(
-                "val_accuracy", 
-                task_history.get("val_classifier_accuracy", [np.nan])
-            )[-1]
+            next((
+                task_history[name][-1]
+                for name in (
+                    "val_total_accuracy",
+                    "val_classifier_accuracy",
+                    "val_cls_token_accuracy",
+                    "val_avg_pooling_accuracy",
+                    "val_accuracy",
+                )
+                if task_history.get(name)
+            ), np.nan)
             for task_history in details["histories"]
         ]
         history["task_val_accuracy"] = final_val_accuracy
+    # Train V2's generator progressively, then retain its ordinary classifier
+    # phase so the configured selector mirrors the existing combined fit.
+    elif fit_method == "fit_progressively" and isinstance(
+        model, DiffusionClassifierV2
+    ):
+        generator_kwargs = {
+            "x": trainset,
+            "validation_data": valset,
+            "callbacks": callbacks_list,
+            "verbose": training_verbose,
+            **fit_kwargs,
+        }
+        discriminator_kwargs = dict(fit_kwargs)
+        # Remove curriculum-only values before the ordinary discriminator fit.
+        for name in (
+            "stage_tasks", "stages_num", "stages_verbose", "stage_epochs",
+            "final_epochs", "timestep_boundaries",
+            "timestep_clustering_type", "resolutions", "depths",
+            "pacing_type", "earlystopping_type", "monitor", "patience",
+            "min_delta", "stopper_mode",
+        ):
+            discriminator_kwargs.pop(name, None)
+
+        generator_history = model.fit_generator_progressively(
+            **generator_kwargs
+        ).history
+        discriminator_history = model.fit_discriminator(
+            x=trainset,
+            epochs=epochs,
+            validation_data=valset,
+            callbacks=callbacks_list,
+            verbose=training_verbose,
+            **discriminator_kwargs,
+        ).history
+        history = model._merge_result_dicts(
+            (generator_history, discriminator_history),
+            ("generator", "discriminator"),
+        )
     # Invoke a caller-selected training method when it is not standard fit.
     elif fit_method != "fit":
         method = getattr(model, fit_method)
@@ -400,6 +571,18 @@ def train_model(
             }
             trained = method(
                 trainset, 
+                **method_kwargs
+            )
+        # Progressive methods own their stage and final epoch budgets.
+        elif progressive_fit:
+            method_kwargs = {
+                "x": trainset,
+                "validation_data": valset,
+                "callbacks": callbacks_list,
+                "verbose": training_verbose,
+                **fit_kwargs
+            }
+            trained = method(
                 **method_kwargs
             )
         # Adapt shared arguments to other Keras-like training methods.
@@ -424,7 +607,8 @@ def train_model(
             "epochs": epochs, 
             "validation_data": valset, 
             "callbacks": callbacks_list, 
-            "verbose": training_verbose
+            "verbose": training_verbose,
+            **fit_kwargs
         }
         history = model.fit(
             gen_kwargs=fit_kwargs, 
@@ -437,7 +621,8 @@ def train_model(
             epochs=epochs, 
             validation_data=valset, 
             callbacks=callbacks_list, 
-            verbose=training_verbose
+            verbose=training_verbose,
+            **fit_kwargs
         ).history
 
     # Persist final trained weights when requested.
@@ -447,10 +632,39 @@ def train_model(
             "model.weights.h5"
         )
 
+        checkpoint_model = model.get("generative_model") \
+            if isinstance(model, dict) else model
+        # Store the final progressive network topology before saving weights.
+        if progressive_fit and config is not None and isinstance(
+            checkpoint_model, DiffusionModel
+        ):
+            network_config = dict(_plain_config_value(
+                checkpoint_model.network.get_config()
+            ))
+            configured_model_name = str(
+                config.model.name or (
+                    "dit_classifier" if config.model.with_classifier
+                    else "diffusion_transformer"
+                )
+            ).lower()
+
+            # Give a named model an exact constructor mapping on reload.
+            if config.model.name is not None:
+                config.model.kwargs = network_config
+            # Update only supported fields on the compact typed model section.
+            else:
+                raw_config = getattr(config.model, configured_model_name)
+                for name in raw_config.__dataclass_fields__:
+                    # Copy constructor values represented by the typed section.
+                    if name in network_config:
+                        setattr(
+                            raw_config,
+                            name,
+                            deepcopy(network_config[name]),
+                        )
+
         # Store the topology and label map required to reload dynamic weights.
         if dynamic_diffusion_checkpoint:
-            checkpoint_model = model.get("generative_model") \
-                if isinstance(model, dict) else model
             current_num_classes = checkpoint_model.network.num_classes or None
             configured_model_name = str(
                 config.model.name or (
@@ -906,6 +1120,7 @@ def report(
 
 def main(
     config: Config | None = None, 
+    teacher_network: tf.keras.Model | None = None,
     **kwargs: object
 ) -> dict[str, object]:
     """Run dataset setup, model construction, fitting, and final reporting.
@@ -913,6 +1128,9 @@ def main(
     Args:
         config (Config | None): Complete training configuration.  ``None``
             runs the same pipeline with information available in kwargs.
+        teacher_network (tf.keras.Model | None): Runtime-only teacher forwarded
+            to diffusion-classifier construction. It is not stored in config
+            YAML.
         **kwargs (object): Direct dataset, model, training, and reporting
             settings used when ``config`` is ``None``. Continual runs use
             ``task="continual"`` and ``continually_learn_kwargs``; calling
@@ -957,6 +1175,7 @@ def main(
 
     model = get_model(
         config, 
+        teacher_network=teacher_network,
         **kwargs
     )
 

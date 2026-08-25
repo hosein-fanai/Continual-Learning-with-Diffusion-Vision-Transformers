@@ -40,9 +40,10 @@ class Downsample(BaseEmbedding):
             ``"cnn_stride"``.
         cnn_activation_func: Keras activation for the strided convolution;
             ``"linear"`` leaves it unbounded.
-        circumvent_cls_token: Treat token 0 as a non-spatial class token,
-            exclude it from downsampling, project it when widths change, and
-            prepend it again.
+        circumvent_tokens: Number of leading non-spatial tokens excluded from
+            downsampling and projected when widths change. ``True`` preserves
+            one token. The legacy ``circumvent_cls_token`` keyword is accepted
+            as a one-token alias.
         **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size`` (at least 2). Positional keys include
             ``pos_embed_type``, ``pos_merger_type``, and
@@ -53,8 +54,9 @@ class Downsample(BaseEmbedding):
     Inputs:
         Pair ``(x, cond)``. ``x`` is floating ``[batch, tokens, dim]``. The
         spatial token count must be a perfect square; with
-        ``circumvent_cls_token=True``, ``tokens - 1`` must be square. ``cond``
-        is ``[batch, condition_dim]`` when adaptive normalization is active.
+        ``circumvent_tokens=N``, ``tokens - N`` must be square. ``True`` is
+        the original one-token mode. ``cond`` is ``[batch, condition_dim]``
+        when adaptive normalization is active.
 
     Outputs:
         Floating tensor ``[batch, reduced_tokens, output_dim]``. A leading
@@ -75,7 +77,7 @@ class Downsample(BaseEmbedding):
         cnn_dim_ratio: int = 1, 
         cnn_kernel_size: int = 3, 
         cnn_activation_func: str = "linear", 
-        circumvent_cls_token: bool = False, 
+        circumvent_tokens: bool | int = False, 
         **kwargs: Any
     ) -> None:
         """Create the selected scaler, positional table, and projections.
@@ -88,12 +90,18 @@ class Downsample(BaseEmbedding):
             cnn_dim_ratio (int): Positive convolutional channel multiplier.
             cnn_kernel_size (int): Positive convolution kernel size.
             cnn_activation_func (str): Keras convolution activation.
-            circumvent_cls_token (bool): Whether to preserve token zero.
+            circumvent_tokens (bool | int): Number of leading tokens to
+                preserve; ``True`` preserves one.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
         """
+
+        temp_val = kwargs.pop("circumvent_cls_token", None)
+        # Preserve legacy one-token configurations under the canonical option.
+        if temp_val is not None:
+            circumvent_tokens = temp_val
 
         super().__init__(
             use_layer_norm=use_layer_norm, 
@@ -101,23 +109,14 @@ class Downsample(BaseEmbedding):
         )
         self._save_init_args(locals())
 
-        # Require a spatial grid large enough to reduce.
-        if self.grid_size is None or self.grid_size < 2:
-            raise ValueError("grid_size must be at least 2 for downsampling.")
-        for name in ("strides", "cnn_dim_ratio", "cnn_kernel_size"):
-            value = getattr(self, name)
-            # Require positive integer stride and convolution dimensions.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
-        # Restrict padding to Keras's supported spatial modes.
-        if self.padding not in ("same", "valid"):
-            raise ValueError("padding must be 'same' or 'valid'.")
+        assert self.grid_size is not None and self.grid_size >= 2, \
+            "grid_size must be at least 2 for downsampling."
 
 
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
-                        else self.grid_size // self.strides
+        else self.grid_size // self.strides
 
         self.layer_norm = self._create_layer_norm(
             return_gate=False
@@ -130,8 +129,8 @@ class Downsample(BaseEmbedding):
             self.scaling_layer = layers.AveragePooling2D(
                 strides=self.strides, 
                 padding=self.padding, 
-                name=name,
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
+                name=name
             )
         # Preserve channels while reducing with max pooling.
         elif self.scaling_method == "max_pooling":
@@ -139,8 +138,8 @@ class Downsample(BaseEmbedding):
             self.scaling_layer = layers.MaxPooling2D(
                 strides=self.strides, 
                 padding=self.padding, 
-                name=name,
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
+                name=name
             )
         # Learn both spatial reduction and the configured channel expansion.
         elif self.scaling_method == "cnn_stride":
@@ -151,12 +150,14 @@ class Downsample(BaseEmbedding):
                 strides=self.strides, 
                 padding=self.padding, 
                 activation=self.cnn_activation_func, 
-                name=name,
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
+                name=name
             )
         # Reject any scaling strategy outside the implemented modes.
         else:
-            raise ValueError(f"pooling method can only be one of {ScalingMethod}.")
+            raise ValueError(
+                f"pooling method can only be one of {ScalingMethod}."
+            )
 
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
@@ -168,8 +169,8 @@ class Downsample(BaseEmbedding):
 
         self.token_projector = layers.Dense(
             self.output_dim, 
-            name=f"{self.name}/token_projector",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/token_projector"
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim
@@ -203,9 +204,11 @@ class Downsample(BaseEmbedding):
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else x
+        prefix_tokens_num = int(self.circumvent_tokens)
         x, token = (
-            x[:, 1:, :], x[:, 0: 1, :]
-        ) if self.circumvent_cls_token else (x, None)
+            x[:, prefix_tokens_num:, :], 
+            x[:, :prefix_tokens_num, :]
+        ) if self.circumvent_tokens else (x, None)
 
         x_shape = tf.shape(x)
         input_grid_size = tf.cast(
@@ -243,7 +246,7 @@ class Downsample(BaseEmbedding):
                 training=training
             ) if self.token_projector is not None else token, 
             x
-        ], axis=1) if self.circumvent_cls_token else x
+        ], axis=1) if self.circumvent_tokens else x
         x = self.mlp(
             x, 
             training=training
@@ -283,7 +286,7 @@ def run_self_tests() -> dict[str, str]:
                     cnn_dim_ratio=2, 
                     cnn_kernel_size=3, 
                     cnn_activation_func="relu", 
-                    circumvent_cls_token=circumvent_cls_token, 
+                    circumvent_tokens=circumvent_cls_token, 
                     use_layer_norm=use_layer_norm, 
                     pos_embed_type=None
                 )
@@ -334,7 +337,7 @@ def run_self_tests() -> dict[str, str]:
         cnn_dim_ratio=2, 
         use_layer_norm=True, 
         ln_no_adaptation=True, 
-        circumvent_cls_token=True, 
+        circumvent_tokens=True, 
         pos_embed_type="2d_sincos", 
         pos_merger_type="concat", 
         mlp_ratio=2, 
@@ -354,7 +357,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_grid in (0, 1):
         try:
             Downsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
-        except ValueError:
+        except (AssertionError, ValueError):
             pass
         else:
             raise AssertionError("Downsampling requires grid_size >= 2.")

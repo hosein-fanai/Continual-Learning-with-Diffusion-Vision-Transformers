@@ -91,8 +91,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 encoder unless ``decoder_separate_cond=True``; any decoder
                 timestep/label tables must cover the encoder ID ranges.
                 Feature-width merges and encoder features used as cross-
-                attention queries require matching encoder/decoder class-token
-                presence; attention values may differ in length.
+                attention queries require matching encoder/decoder class and
+                distillation token settings; attention values may differ in
+                length.
             build (bool): Build a four-input symbolic graph immediately.
                 ``False`` defers it until Keras first calls the model or until
                 :meth:`build` is invoked explicitly.
@@ -237,7 +238,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         Args:
             input_shape (tuple | None): Accepted for the Keras build protocol
-                but ignored; :meth:`build_model` derives shapes from the active
+                but ignored; :meth:`_build_model` derives shapes from the active
                 resolution.  Three- and four-input eager calls remain valid.
 
         Returns:
@@ -322,9 +323,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         Returns:
             tf.Tensor | dict[str, object]: At ``min_depth=0``, contains decoder
-            ``"noises"`` and classifier ``"classes"``. A non-full resumed
-            call returns only the decoder noise tensor for inherited VAE
-            sampling. Full return additionally contains
+            ``"noises"`` and classifier ``"classes"``. With distillation it
+            also contains the independent ``"distil_classes"`` distribution.
+            A non-full resumed call returns only the decoder noise tensor for
+            inherited VAE sampling. Full return additionally contains
             ``cond``, ``features_list``, ``regs_list``, ``z_vals``, all four
             ``clf_*`` fields, and the decoder's ``decoder_cond``,
             ``decoder_features_list``, ``encoder_cond``, and
@@ -356,18 +358,22 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         # Skip classifier recomputation for a resumed noise-only call.
         if min_depth > 0 and not full_return:
             return noises
-        classes, clf_cond, clf_features, clf_regs, clf_z = self.compute_class(
+        class_outputs = self.compute_class(
             encoder_features, 
             noises, 
             times, 
             labels, 
             training=training, 
         )
+        classes, clf_cond, clf_features, clf_regs, clf_z = class_outputs[:5]
 
         outputs = {
             "noises": noises, 
             "classes": classes, 
         }
+        # Expose the independent distillation head when configured.
+        if len(class_outputs) > 5:
+            outputs["distil_classes"] = class_outputs[5]
         # Attach encoder, decoder, and classifier metadata only for full returns.
         if full_return:
             outputs.update({
@@ -744,8 +750,9 @@ def run_self_tests() -> dict[str, str]:
     assert model.decoder.name_prefix == "decoder_model/"
 
     public_apis = {
-        "build", "build_model", "call", "set_current_resolution", 
+        "build", "_build_model", "call", "set_current_resolution", 
         "embed_conditions", "embed_inputs", "prepend_cls_token", 
+        "prepend_distil_token", 
         "slice_and_flatten_tokens", "encode", "add_depths", 
         "get_variables_names", "set_max_encoder_num", "predict_noise", 
         "compute_class", "predict_class", "get_config", "from_config", 
@@ -1023,7 +1030,7 @@ def run_self_tests() -> dict[str, str]:
         **encoder_kwargs,
     )
     assert deferred.built is False
-    deferred_shapes = deferred.build_model(call_model=False)
+    deferred_shapes = deferred._build_model(call_model=False)
     assert deferred_shapes == [
         tf.TensorShape([None, 4, 4, 1]), 
         tf.TensorShape([None]), 
