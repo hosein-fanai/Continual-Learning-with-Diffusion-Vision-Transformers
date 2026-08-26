@@ -28,8 +28,9 @@ state.
 
 ## `ImageGeneratorCallback`
 
-This callback reads `model.test_steps`, `model.test_cfg_scale`, and
-`model.test_eta`, calls `model.sample(...)` at epoch end, and renders the result.
+This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`,
+and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
+renders the result.
 The current validation permits two configurations.
 
 Display only:

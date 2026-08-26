@@ -380,6 +380,7 @@ class DiffusionModelConfig(KwargsMixin):
     resize_antialias: bool = True
     swap_noise_image: bool = False
     map_preprocess: bool = False
+    map_num_parallel_calls: int | None = 1
     seen_classes: dict[object, int] = field(default_factory=dict)
     seed: int | None = None
 
@@ -1166,6 +1167,9 @@ def run_self_tests() -> dict[str, str]:
     assert diffusion_defaults.swap_noise_image is False
     assert diffusion_defaults.show_separate_noise_losses is False
     assert diffusion_defaults.map_preprocess is False
+    assert diffusion_defaults.map_num_parallel_calls == 1
+    assert diffusion_defaults.train_noisified_max_timesteps is None
+    assert diffusion_defaults.test_noisified_max_timesteps is None
     assert diffusion_defaults.seen_classes == {}
     diffusion_custom = DiffusionModelConfig(
         test_network_name="raw", 
@@ -1559,9 +1563,29 @@ def run_self_tests() -> dict[str, str]:
         assert loaded_partial.dataset.batch_size == 3
         assert loaded_partial.dataset.shuffle_buffer == 10_000
         assert loaded_partial.model.diffusion_model.scheduler_name == "linear"
+        assert (
+            loaded_partial.model.diffusion_model.train_noisified_max_timesteps
+            is None
+        )
+        assert (
+            loaded_partial.model.diffusion_model.test_noisified_max_timesteps
+            is None
+        )
         assert loaded_partial.training.fit_method == "fit"
         assert loaded_partial.training.stage_tasks is None
         assert loaded_partial.training.fit_kwargs == {}
+
+        explicit_null_path = temp_path / "explicit-null.yaml"
+        explicit_null_path.write_text(
+            "model:\n  diffusion_model:\n"
+            "    train_noisified_max_timesteps: null\n"
+            "    test_noisified_max_timesteps: null\n",
+            encoding="utf-8",
+        )
+        loaded_explicit_null = load_config(explicit_null_path)
+        null_diffusion = loaded_explicit_null.model.diffusion_model
+        assert null_diffusion.train_noisified_max_timesteps is None
+        assert null_diffusion.test_noisified_max_timesteps is None
 
         invalid_yaml_path = temp_path / "invalid.yaml"
         invalid_yaml_path.write_text("dataset: [", encoding="utf-8")

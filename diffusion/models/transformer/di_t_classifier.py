@@ -597,7 +597,9 @@ class DiTClassifier(DiffusionTransformer):
             noise_part_value = getattr(self, noise_part_name)
             clf_part_value = noise_part_value if clf_part_value is None else clf_part_value
 
-            setattr(self, name, clf_part_value)
+            # Keep inherited and explicitly supplied mutable branch options
+            # independent from the main branch, caller objects, and defaults.
+            setattr(self, name, deepcopy(clf_part_value))
 
         # A forced classifier width requires an explicit target width.
         if self.clf_dim_forced:
@@ -1878,6 +1880,7 @@ def run_self_tests() -> dict[str, str]:
         "feature_aggregation_ids_dict"
     ].default
     public_connection_default = public_parameters["clf_connection_ids_dict"].default
+    public_reshaper_default = public_parameters["clf_reshaper_kwargs"].default
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
     public_default_first = DiTClassifier(**base)
@@ -1896,10 +1899,25 @@ def run_self_tests() -> dict[str, str]:
     )
     public_default_first.feature_aggregation_ids_dict[1].append(0)
     public_default_first.clf_connection_ids_dict[2].append(0)
+    public_default_first.clf_reshaper_kwargs["probe"] = True
     assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_second.clf_connection_ids_dict == {2: [1]}
+    assert public_default_second.clf_reshaper_kwargs == {}
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
+    assert public_reshaper_default == {}
+
+    supplied_reshaper_kwargs = {"add_kl": False}
+    supplied_options = make_model(
+        clf_reshaper_kwargs=supplied_reshaper_kwargs,
+        connection_kwargs={"connect_type": "concat"},
+        clf_connection_kwargs=None,
+    )
+    supplied_reshaper_kwargs["add_kl"] = True
+    assert supplied_options.clf_reshaper_kwargs == {"add_kl": False}
+    assert supplied_options.clf_connection_kwargs == {"connect_type": "concat"}
+    assert supplied_options.clf_connection_kwargs is not \
+        supplied_options.connection_kwargs
 
     model = make_model()
     outputs = model(inputs, full_return=True, training=False)

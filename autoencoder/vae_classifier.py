@@ -149,15 +149,20 @@ class VAEClassifier(VariationalAutoencoder):
         Returns:
             list[tf.keras.metrics.Metric]: Total, KL, reconstruction,
             classification-loss, and classification-accuracy trackers in that
-            order. Keras resets them between epochs/evaluations.
+            order, followed by configured reconstruction metrics. Keras resets
+            them between epochs/evaluations.
         """
+
+        compiled_metrics = self.compiled_metrics.metrics \
+            if self.compiled_metrics is not None else []
 
         return [
             self.total_loss_tracker, 
             self.kl_loss_tracker, 
             self.recon_loss_tracker, 
             self.clf_loss_tracker, 
-            self.clf_accuracy_tracker
+            self.clf_accuracy_tracker,
+            *compiled_metrics
         ]
 
     def call(
@@ -209,6 +214,7 @@ class VAEClassifier(VariationalAutoencoder):
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
+            Configured reconstruction metrics are included as additional keys.
         """
 
         x, y = inputs
@@ -246,14 +252,21 @@ class VAEClassifier(VariationalAutoencoder):
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
         self.clf_accuracy_tracker.update_state(y, y_pred)
+        self.compiled_metrics.update_state(x, x_recon)
 
-        return {
+        results = {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
             "clf_accuracy": self.clf_accuracy_tracker.result()
         }
+        results.update({
+            metric.name: metric.result()
+            for metric in self.compiled_metrics.metrics
+        })
+
+        return results
 
     def test_step(
         self: VAEClassifier, 
@@ -269,6 +282,7 @@ class VAEClassifier(VariationalAutoencoder):
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
+            Configured reconstruction metrics are included as additional keys.
         """
 
         x, y = inputs
@@ -302,14 +316,21 @@ class VAEClassifier(VariationalAutoencoder):
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
         self.clf_accuracy_tracker.update_state(y, y_pred)
+        self.compiled_metrics.update_state(x, x_recon)
 
-        return {
+        results = {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
             "clf_accuracy": self.clf_accuracy_tracker.result()
         }
+        results.update({
+            metric.name: metric.result()
+            for metric in self.compiled_metrics.metrics
+        })
+
+        return results
 
     def train(
         self: VAEClassifier, 
@@ -469,6 +490,9 @@ def run_self_tests() -> dict[str, str]:
         compile_args={
             "optimizer": tf.keras.optimizers.SGD(learning_rate=0.01), 
             "loss": "mean_squared_error", 
+            "metrics": [
+                tf.keras.metrics.MeanAbsoluteError(name="recon_mae")
+            ],
             "run_eagerly": True, 
         }, 
         name="vae_classifier", 
@@ -546,6 +570,7 @@ def run_self_tests() -> dict[str, str]:
         "recon_loss", 
         "clf_loss", 
         "clf_accuracy", 
+        "recon_mae",
     }
     assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
     assert any(
@@ -553,6 +578,8 @@ def run_self_tests() -> dict[str, str]:
         for before, after in zip(weights_before_train, 
                             model.trainable_weights)
     )
+    model.reset_metrics()
+    assert all(float(metric.result()) == 0.0 for metric in model.metrics)
 
     weights_before_test = [
         weight.numpy().copy() 

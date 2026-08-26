@@ -13,6 +13,7 @@ Pass a `DiffusionClassifier`-compatible wrapper, not a bare
 - `timesteps`;
 - `noisify(images, timesteps, seed=...)`;
 - `network` and, when selected, `ema_network`;
+- `get_network("raw" | "ema")`;
 - inner-network `predict_class((images, timesteps, labels), training=...)` and
   `num_classes`.
 

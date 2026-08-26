@@ -105,7 +105,15 @@ class ArgumentSaver:
         """
 
         config = super().get_config()
-        config.update(self._init_config)
+        saved_config = {
+            name: (
+                deepcopy(value)
+                if isinstance(value, (list, set, dict))
+                else value
+            )
+            for name, value in self._init_config.items()
+        }
+        config.update(saved_config)
 
         return config
 
@@ -259,12 +267,13 @@ def run_self_tests() -> dict[str, str]:
     assert layer_config["name"] == "argument_saver_layer_probe"
     assert layer_config["trainable"] is False
     assert layer_config["dtype"] == "float64"
+    layer_config["payload"]["items"].append(3)
+    assert layer._init_config["payload"] == {"items": [1, 2]}
+    assert layer.get_config()["payload"] == {"items": [1, 2]}
     layer_clone = layer_probe_type.from_config(layer_config)
     assert isinstance(layer_clone, ArgumentSaverLayer)
     assert layer_clone.value == 4
-    assert layer_clone.payload == {"items": [1, 2]}
-    layer_config["payload"]["items"].append(3)
-    assert layer_clone.payload == {"items": [1, 2]}
+    assert layer_clone.payload == {"items": [1, 2, 3]}
 
 
     def model_probe_init(

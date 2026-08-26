@@ -99,7 +99,12 @@ class DecoderAccuracyCallback(callbacks.Callback):
                 "Decoder accuracy requires at least one generated sample."
             )
 
-        y_pred = self.classifier(x_gen, training=False)
+        # Forward inference state to Keras classifiers.
+        if isinstance(self.classifier, tf.keras.layers.Layer):
+            y_pred = self.classifier(x_gen, training=False)
+        # Support generic callables that accept only the generated samples.
+        else:
+            y_pred = self.classifier(x_gen)
         y_pred = tf.argmax(y_pred, axis=1)
         y_true = tf.convert_to_tensor(y_true, dtype=y_pred.dtype)
         tf.debugging.assert_equal(
@@ -226,6 +231,28 @@ def run_self_tests() -> dict[str, str]:
     partial_logs = {"existing": 1}
     partial_callback.on_epoch_end(0, partial_logs)
     assert float(partial_logs["decoder_accuracy"]) == 0.5
+
+
+    def plain_classifier(inputs: tf.Tensor) -> tf.Tensor:
+        """Classify samples without accepting a Keras training argument.
+
+        Args:
+            inputs (tf.Tensor): Class-coded features shaped ``[batch, 1]``.
+
+        Returns:
+            tf.Tensor: Matching two-class one-hot scores.
+        """
+
+        return tf.one_hot(
+            tf.cast(inputs[:, 0], tf.int32), depth=2
+        )
+
+
+    plain_callback = DecoderAccuracyCallback(plain_classifier, 1)
+    plain_callback.set_model(SimpleNamespace(generate=generate))
+    plain_logs = {}
+    plain_callback.on_epoch_end(0, plain_logs)
+    assert float(plain_logs["decoder_accuracy"]) == 1.0
 
     empty_logs = {}
     callback.on_epoch_end(4, empty_logs)

@@ -30,9 +30,9 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify``, ``network``, and ``ema_network``. Weighted evaluation also
-    requires ``get_noise_and_signal_rates``. Each selected inner network must
-    expose ``num_classes`` and the project's five-or-six-value
+    ``noisify``, ``network``, ``ema_network``, and ``get_network``. Weighted
+    evaluation also requires ``get_noise_and_signal_rates``. Each selected inner
+    network must expose ``num_classes`` and the project's five-or-six-value
     ``predict_class(full_return=True)`` interface.
 
     Args:
@@ -89,7 +89,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         Args:
             diffusion_clf (Any): Diffusion-classifier wrapper exposing
-                ``timesteps``, ``noisify``, ``network``, and ``ema_network``.
+                ``timesteps``, ``noisify``, raw/EMA members, and ``get_network``.
             netwrok_name (NetworkName): ``"ema"`` or ``"raw"`` network selector.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
             weighted (bool): Whether timesteps use normalized SNR weights.
@@ -113,7 +113,9 @@ class EnsembleAccuracy(metrics.Metric):
             **kwargs
         )
 
-        required = ("timesteps", "noisify", "network", "ema_network")
+        required = (
+            "timesteps", "noisify", "network", "ema_network", "get_network"
+        )
         missing = [name for name in required if not hasattr(diffusion_clf, name)]
         # Require the wrapper protocol attributes used by this metric.
         if missing:
@@ -123,6 +125,9 @@ class EnsembleAccuracy(metrics.Metric):
         # Require a callable forward-noising operation.
         if not callable(diffusion_clf.noisify):
             raise TypeError("diffusion_clf.noisify must be callable.")
+        # Network selection is part of the wrapper protocol as well.
+        if not callable(diffusion_clf.get_network):
+            raise TypeError("diffusion_clf.get_network must be callable.")
         # SNR weighting uses the wrapper's existing schedule-rate lookup.
         if weighted and not callable(
             getattr(diffusion_clf, "get_noise_and_signal_rates", None)
@@ -175,7 +180,9 @@ class EnsembleAccuracy(metrics.Metric):
 
         self.diffusion_clf = diffusion_clf
         self.network = self.diffusion_clf.get_network(netwrok_name)
-        minimum_classes = 0 if self.network.dynamic_num_classes else 1
+        minimum_classes = 0 if getattr(
+            self.network, "dynamic_num_classes", False
+        ) else 1
 
         # Require the selected network's class-prediction interface.
         if self.network is None or not callable(

@@ -104,8 +104,9 @@ def train_model(
             ``training.fit_method`` and the progressive fields on
             :class:`TrainingConfig`; ``fit_progressively`` uses stage/final
             epochs instead of ``training.epochs``. A continual model
-            bundle consumes ``continual_kwargs`` (the legacy spelling remains
-            accepted in direct mode) and also accepts ``max_train_samples``,
+            bundle consumes ``continually_learn_kwargs`` (the legacy
+            ``continual_kwargs`` spelling remains accepted in direct mode) and
+            also accepts ``max_train_samples``,
             ``max_val_samples``, ``shuffle_buffer``, raw-image ``pad``, and 
             ``seed``.
 
@@ -158,7 +159,8 @@ def train_model(
         tensorboard_path = kwargs.get("tensorboard_path", None)
         hpo = kwargs.get("hpo", {})
         continual_kwargs = deepcopy(kwargs.get(
-            "continual_kwargs", {}
+            "continually_learn_kwargs",
+            kwargs.get("continual_kwargs", {}),
         ))
         dataset_name = kwargs.get("dataset_name", "mnist")
         loader_preprocess = kwargs.get("preprocess", "standardize")
@@ -1075,6 +1077,7 @@ def report(
     # Sample and save full denoising trajectories for GIF output.
     if save_final_gifs and not model.swap_noise_image:
         imgs, frames1, frames2 = model.sample(
+            network_name=model.test_network_name,
             scale=final_images_cfg_scale, 
             steps=final_images_steps, 
             return_x_ts=True, 

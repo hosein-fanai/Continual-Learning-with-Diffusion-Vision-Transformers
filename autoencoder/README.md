@@ -121,7 +121,8 @@ monitors `val_clf_accuracy` itself.
 `DecoderAccuracyCallback(classifier, samples_per_class=500)` is attached to a
 conditional VAE. At each epoch end it generates examples for every class in
 `model.seen_classes`, classifies them, and adds `decoder_accuracy` to Keras
-logs. The classifier must accept `classifier(x_gen, training=False)` and return
+logs. Keras layers/models receive `classifier(x_gen, training=False)`; a plain
+callable may accept only `classifier(x_gen)`. In either case it must return
 `[samples, class_num]` scores. `samples_per_class` must be positive, and at
 least one class must have been recorded before the callback runs.
 

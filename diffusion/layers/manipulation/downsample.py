@@ -113,10 +113,15 @@ class Downsample(BaseEmbedding):
             "grid_size must be at least 2 for downsampling."
 
 
+        # Mirror Keras's spatial output formula so later transformer stages
+        # receive the grid that this layer actually produces.
+        window_size = self.cnn_kernel_size \
+            if self.scaling_method == "cnn_stride" else 2
         self.output_grid_size = (
             self.grid_size + self.strides - 1
-        ) // self.strides if self.padding == "same" \
-        else self.grid_size // self.strides
+        ) // self.strides if self.padding == "same" else (
+            self.grid_size - window_size
+        ) // self.strides + 1
 
         self.layer_norm = self._create_layer_norm(
             return_gate=False
@@ -329,6 +334,7 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type=None
     )
     assert valid_convolution((tf.ones((1, 16, 2)), None)).shape == (1, 1, 2)
+    assert valid_convolution.output_grid_size == 1
 
     positioned = Downsample(
         dim=2, 

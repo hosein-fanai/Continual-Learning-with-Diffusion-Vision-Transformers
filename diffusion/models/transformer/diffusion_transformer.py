@@ -1575,7 +1575,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         }
         local_mixer_kwargs.update(kwargs)
 
-        flag1 = kwargs.get("pos_merger_type", "add") == "concat" and kwargs.get("pos_embed_type", None)
+        flag1 = kwargs.get("pos_merger_type", "add") == "concat" and \
+                kwargs.get("pos_embed_type", "new_weight") is not None
         flag2 = kwargs.get("depth_multiplier", 1) > 1 and not kwargs.get("use_pointwise", True)
         # Project mixer output back to the forced width after width-changing options.
         if dim_forced and (flag1 or flag2):
@@ -1647,10 +1648,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         }
         scaler_kwargs.update(kwargs)
 
-        flag1 = kwargs.get("pos_merger_type", "add") == "concat" and kwargs.get("pos_embed_type", None)
+        flag1 = kwargs.get("pos_merger_type", "add") == "concat" and \
+                kwargs.get("pos_embed_type", "new_weight") is not None
+        default_method = "avg_pooling" if scaler_type == "downsample" \
+                        else "cnn_transpose"
+        scaling_method = kwargs.get("scaling_method", default_method)
+        width_changing_methods = ("cnn_stride",) if scaler_type == "downsample" \
+                                else ("cnn_transpose", "cnn_interpolate")
         flag2 = kwargs.get("cnn_dim_ratio", 1) > 1 and \
-                (kwargs.get("scaling_method", "avg_pooling") in ("cnn_stride") or 
-                kwargs.get("scaling_method", "cnn_transpose") in ("cnn_transpose", "cnn_interpolate"))
+                scaling_method in width_changing_methods
         # Project scaler output back to the forced width after width-changing options.
         if dim_forced and (flag1 or flag2):
             scaler_kwargs["mlp_output_dim"] = scaler_kwargs["dim"]
@@ -2731,18 +2737,20 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 selected tokens.
 
         Returns:
-            tf.Tensor: Rank-2 tensor ``[B, (end-start)*D]``.
+            tf.Tensor: Rank-2 tensor. Rank-2 inputs are returned unchanged;
+            rank-3 inputs have their selected token interval flattened.
         """
 
-        # Slice token sequences directly; spatial inputs are pooled below.
-        if x.shape.rank == 3:
-            x = x[:, start: end, :]
+        # A variational flatten reshaper has already combined token and channel
+        # axes, so there is no token interval left to slice.
+        if x.shape.rank == 2:
+            return x
 
+        x = x[:, start: end, :]
         x_shape = tf.shape(x)
-
         x = tf.reshape(x, (
-            x_shape[0], 
-            x_shape[-1] * (end-start)
+            x_shape[0],
+            x_shape[-1] * (end-start),
         ))
 
         return x
@@ -2956,7 +2964,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Raises:
             ValueError: If a layer name is unknown or the appended sequence
-                changes the feature width expected by the existing output head.
+                changes the feature width or token grid expected by the
+                existing output head.
         """
 
         depth_specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
@@ -2982,6 +2991,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         metadata = {name: getattr(self, name) for name in metadata_names}
         old_dim = self._get_last_output_dim(
             old_depth-1, self.layers_dicts, self.dim
+        )
+        old_grid = self._get_last_grid_size(
+            old_depth-1, self.layers_dicts, self.grid_size
         )
         planned_layers = list(self.layers_dicts)
 
@@ -3090,6 +3102,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ) != old_dim:
                 raise ValueError(
                     "Added depths must preserve the output-head feature dimension."
+                )
+            # The existing image head must retain the same reconstruction size.
+            if self.use_unpatchify and self._get_last_grid_size(
+                len(planned_layers)-1,
+                planned_layers,
+                self.grid_size,
+            ) != old_grid:
+                raise ValueError(
+                    "Added depths must preserve the output-head token grid."
                 )
         except Exception:
             for name, value in metadata.items():
@@ -3401,6 +3422,18 @@ def run_self_tests() -> dict[str, str]:
     )
     assert local(inputs, training=False).shape == (2, 4, 4, 1)
 
+    forced_local_position = DiffusionTransformer(
+        depth=1,
+        vit_block_ids=[],
+        local_mixer_ids=[1],
+        local_mixer_kwargs={"pos_merger_type": "concat"},
+        **base,
+    )
+    assert forced_local_position.layers_dicts[0][
+        forced_local_position.LM
+    ].output_dim == 4
+    assert forced_local_position(inputs, training=False).shape == (2, 4, 4, 1)
+
     for method in ("avg_pooling", "max_pooling", "cnn_stride"):
         down = DiffusionTransformer(
             depth=1, 
@@ -3411,6 +3444,18 @@ def run_self_tests() -> dict[str, str]:
             **base, 
         )
         assert down(inputs, training=False).shape[1] == 1
+    pooled_ratio = DiffusionTransformer(
+        depth=1,
+        vit_block_ids=[],
+        downsample_ids=[1],
+        downsample_kwargs={
+            "cnn_dim_ratio": 2,
+            "pos_embed_type": None,
+        },
+        use_unpatchify=False,
+        **base,
+    )
+    assert pooled_ratio.layers_dicts[0][pooled_ratio.DS].mlp is None
     for method in ("cnn_transpose", "interpolate", "cnn_interpolate"):
         up = DiffusionTransformer(
             depth=1, 
@@ -3470,6 +3515,10 @@ def run_self_tests() -> dict[str, str]:
     assert isinstance(direct_regularizer.labels_embed_reg, layers.Dense)
     flat = regularized.slice_and_flatten_tokens(tf.ones((2, 3, 4)), 0, 2)
     assert flat.shape == (2, 8)
+    already_flat = tf.ones((2, 8))
+    assert regularized.slice_and_flatten_tokens(
+        already_flat, 0, 2
+    ) is already_flat
 
     for residual in (False, True):
         refined = DiffusionTransformer(
@@ -3659,6 +3708,15 @@ def run_self_tests() -> dict[str, str]:
         )
     assert progressive_rollback(inputs, training=False).shape == (2, 4, 4, 1)
 
+    grid_rollback = DiffusionTransformer(depth=0, **base)
+    try:
+        grid_rollback.add_depths("downsampler")
+    except ValueError as error:
+        assert "preserve the output-head token grid" in str(error)
+    else:
+        raise AssertionError("Incompatible progressive output grid must fail")
+    assert grid_rollback.depth == 0 and not grid_rollback.layers_dicts
+
     parser_rollback = DiffusionTransformer(depth=0, **base)
     parser_metadata = {
         name: getattr(parser_rollback, name).copy()
@@ -3841,10 +3899,11 @@ def run_self_tests() -> dict[str, str]:
     assert policy(inputs, training=False).dtype == tf.float32
     policy_config = policy.get_config()
     assert policy_config["name_prefix"] == "policy/"
-    assert "name" not in policy_config and "dtype" not in policy_config
+    assert policy_config["name"] == policy.name
+    assert policy_config["dtype"] == "float64"
     policy_clone = DiffusionTransformer.from_config(policy_config)
-    assert policy_clone.name != policy.name
-    assert policy_clone.dtype_policy.name == "float32"
+    assert policy_clone.name == policy.name
+    assert policy_clone.dtype_policy.name == "float64"
     assert policy_clone.patch_embedder.name.startswith("policy/")
 
     invalid_cases = (

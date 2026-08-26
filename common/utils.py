@@ -206,7 +206,7 @@ def plot_history(
 
         # Pair validation series with their requested training metric.
         if metric.startswith("val_") and \
-            metric.replace("val_", '') in metrics:
+            metric[4:] in metrics:
                 continue
 
         plotted_metrics.append(metric)

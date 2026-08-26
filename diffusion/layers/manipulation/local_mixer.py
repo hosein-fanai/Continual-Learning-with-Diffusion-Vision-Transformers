@@ -13,17 +13,18 @@ class LocalMixer(BaseEmbedding):
 
     The layer reshapes square spatial tokens to an image, applies a depthwise
     convolution and optional 1x1 pointwise projection, then flattens the result.
-    With ``strides == 1`` it adds the local correction to a residual path; with
-    larger strides it returns only the reduced local features. Position and MLP
-    processing occur after this mixing.
+    When stride and padding preserve the spatial grid, it adds the local
+    correction to a residual path; otherwise it returns only the resized local
+    features. Position and MLP processing occur after this mixing.
 
     Args:
         use_layer_norm: Whether to apply condition-adaptive normalization before
             convolution. Disabled normalization uses ``x`` and a scalar-one
             gate directly.
         kernel_size: Positive depthwise kernel side length.
-        strides: Positive depthwise stride. ``1`` enables a residual; larger
-            values spatially reduce the sequence.
+        strides: Positive depthwise stride. ``1`` enables a residual only when
+            the configured padding and kernel preserve the grid; larger values
+            spatially reduce the sequence.
         padding: Keras padding mode, normally ``"same"`` or ``"valid"``. A
             stride-one residual requires output and input token counts to match,
             so use ``"same"`` (or an effectively size-preserving kernel).
@@ -114,8 +115,9 @@ class LocalMixer(BaseEmbedding):
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
-        else self.grid_size // self.strides
-        self.add_residual = self.strides == 1
+        else (self.grid_size - self.kernel_size) // self.strides + 1
+        self.add_residual = self.strides == 1 and \
+                            self.output_grid_size == self.grid_size
 
         self.layer_norm = self._create_layer_norm(
             gate_dim=self.output_dim if self.add_residual else 0, 
@@ -344,6 +346,21 @@ def run_self_tests() -> dict[str, str]:
         zero_init=False
     )
     assert strided_valid((tf.ones((1, 16, 2)), None)).shape == (1, 1, 2)
+    assert strided_valid.output_grid_size == 1
+
+    stride_one_valid = LocalMixer(
+        dim=2,
+        grid_size=4,
+        kernel_size=3,
+        strides=1,
+        padding="valid",
+        pos_embed_type=None,
+        use_layer_norm=False,
+        zero_init=False,
+    )
+    assert stride_one_valid((tf.ones((1, 16, 2)), None)).shape == (1, 4, 2)
+    assert stride_one_valid.output_grid_size == 2
+    assert not stride_one_valid.add_residual
 
     positioned = LocalMixer(
         dim=2, 

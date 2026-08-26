@@ -400,14 +400,19 @@ class VariationalAutoencoder(models.Model):
         """Expose loss trackers that Keras resets between epochs/evaluations.
 
         Returns:
-            list[tf.keras.metrics.Mean]: Total, KL, and reconstruction trackers,
-            in that order.
+            list[tf.keras.metrics.Metric]: Total, KL, and reconstruction
+            trackers followed by any reconstruction metrics supplied to
+            :meth:`compile`.
         """
+
+        compiled_metrics = self.compiled_metrics.metrics \
+            if self.compiled_metrics is not None else []
 
         return [
             self.total_loss_tracker, 
             self.kl_loss_tracker, 
-            self.recon_loss_tracker
+            self.recon_loss_tracker,
+            *compiled_metrics
         ]
 
     def call(
@@ -458,7 +463,8 @@ class VariationalAutoencoder(models.Model):
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
-            ``kl_loss``, and ``recon_loss``.
+            ``kl_loss``, and ``recon_loss``, plus configured reconstruction
+            metrics.
         """
 
         # Extract reconstruction targets from conditional training pairs.
@@ -496,12 +502,19 @@ class VariationalAutoencoder(models.Model):
         self.kl_loss_tracker.update_state(
             kl_loss, sample_weight=batch_weight
         )
+        self.compiled_metrics.update_state(x, x_recon)
 
-        return {
+        results = {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result()
         }
+        results.update({
+            metric.name: metric.result()
+            for metric in self.compiled_metrics.metrics
+        })
+
+        return results
 
     def test_step(
         self: VariationalAutoencoder, 
@@ -515,7 +528,8 @@ class VariationalAutoencoder(models.Model):
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
-            ``kl_loss``, and ``recon_loss``.
+            ``kl_loss``, and ``recon_loss``, plus configured reconstruction
+            metrics.
         """
 
         # Extract reconstruction targets from conditional evaluation pairs.
@@ -545,12 +559,19 @@ class VariationalAutoencoder(models.Model):
         self.recon_loss_tracker.update_state(
             recon_loss, sample_weight=batch_weight
         )
+        self.compiled_metrics.update_state(x, x_recon)
 
-        return {
+        results = {
             "loss": self.total_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result()
         }
+        results.update({
+            metric.name: metric.result()
+            for metric in self.compiled_metrics.metrics
+        })
+
+        return results
 
     def generate(
         self: VariationalAutoencoder, 
@@ -949,6 +970,9 @@ def run_self_tests() -> dict[str, str]:
         compile_args={
             "optimizer": tf.keras.optimizers.SGD(learning_rate=0.01), 
             "loss": "mean_squared_error", 
+            "metrics": [
+                tf.keras.metrics.MeanAbsoluteError(name="recon_mae")
+            ],
             "run_eagerly": True, 
         },
         name="unconditional_vae",
@@ -1064,19 +1088,24 @@ def run_self_tests() -> dict[str, str]:
         for weight in unconditioned.trainable_weights
     ]
     train_result = unconditioned.train_step(x)
-    assert set(train_result) == {"loss", "kl_loss", "recon_loss"}
+    assert set(train_result) == {
+        "loss", "kl_loss", "recon_loss", "recon_mae"
+    }
+    assert [metric.name for metric in unconditioned.metrics][-1] == "recon_mae"
     assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
     assert any(
         not np.array_equal(before, after.numpy())
         for before, after in zip(weights_before_train, 
                                 unconditioned.trainable_weights)
     )
+    unconditioned.reset_metrics()
+    assert all(float(metric.result()) == 0.0 for metric in unconditioned.metrics)
     weights_before_test = [
         weight.numpy().copy() 
         for weight in unconditioned.trainable_weights
     ]
     test_result = unconditioned.test_step(x)
-    assert set(test_result) == {"loss", "kl_loss", "recon_loss"}
+    assert set(test_result) == set(train_result)
     assert all(bool(tf.math.is_finite(value)) for value in test_result.values())
     for before, after in zip(weights_before_test, 
                             unconditioned.trainable_weights):

@@ -15,8 +15,8 @@ class ImageGeneratorCallback(callbacks.Callback):
     """Generate qualitative diffusion samples after every training epoch.
 
     The callback expects a ``DiffusionModel``-compatible bound model exposing
-    ``test_steps``, ``test_cfg_scale``, ``test_eta``, and ``sample``. Valid
-    constructor combinations in the current implementation are:
+    ``test_steps``, ``test_cfg_scale``, ``test_eta``, ``test_network_name``, and
+    ``sample``. Valid constructor combinations in the current implementation are:
 
     * display only: ``show_images=True``, ``save_gifs=False``, and
       ``results_path=None``;
@@ -128,10 +128,12 @@ class ImageGeneratorCallback(callbacks.Callback):
         steps = self.model.test_steps
         cfg_scale = self.model.test_cfg_scale
         eta = self.model.test_eta
+        network_name = self.model.test_network_name
 
         # Request intermediate denoising frames when a GIF will be written.
         if self.save_gifs:
             imgs, frames1, frames2 = self.model.sample(
+                network_name=network_name,
                 steps=steps, 
                 scale=cfg_scale, 
                 eta=eta, 
@@ -152,6 +154,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         # Sample only final images when no GIF frames are needed.
         else:
             imgs = self.model.sample(
+                network_name=network_name,
                 steps=steps, 
                 scale=cfg_scale, 
                 eta=eta, 
@@ -210,11 +213,14 @@ def run_self_tests() -> dict[str, str]:
         test_steps=4, 
         test_cfg_scale=1.5, 
         test_eta=0.25, 
+        test_network_name="raw",
         sample=display_sample, 
     ))
     with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
-    display_sample.assert_called_once_with(steps=4, scale=1.5, eta=0.25)
+    display_sample.assert_called_once_with(
+        network_name="raw", steps=4, scale=1.5, eta=0.25
+    )
     plot_mock.assert_called_once_with("images")
 
     with tempfile.TemporaryDirectory() as png_directory:
@@ -245,6 +251,7 @@ def run_self_tests() -> dict[str, str]:
             test_steps=3, 
             test_cfg_scale=2.0, 
             test_eta=0.125, 
+            test_network_name="ema",
             sample=save_sample, 
         ))
         with patch.object(
@@ -254,6 +261,7 @@ def run_self_tests() -> dict[str, str]:
         ) as saved_plot_mock:
             assert saving_callback.on_epoch_end(1, None) is None
         save_sample.assert_called_once_with(
+            network_name="ema",
             steps=3, 
             scale=2.0, 
             eta=0.125, 
@@ -281,6 +289,7 @@ def run_self_tests() -> dict[str, str]:
             test_steps=1, 
             test_cfg_scale=1.0, 
             test_eta=0.0, 
+            test_network_name="raw",
             sample=shown_sample, 
         ))
         with patch.object(
@@ -290,6 +299,7 @@ def run_self_tests() -> dict[str, str]:
         ) as shown_plot_mock:
             shown_saving_callback.on_epoch_end(0)
         shown_sample.assert_called_once_with(
+            network_name="raw",
             steps=1, 
             scale=1.0, 
             eta=0.0, 

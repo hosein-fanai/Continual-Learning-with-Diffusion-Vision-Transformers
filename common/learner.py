@@ -1351,12 +1351,26 @@ def _continually_learn(
         )
         accuracy_source = generative_evaluations if use_generative_accuracy \
                         else classifier_evaluations
+        # Score the same raw/EMA network selected by the diffusion wrapper.
+        if use_diffusion_classifier:
+            selected_evaluation_name = (
+                "valset_ema_eval"
+                if generative_model.test_network_name == "ema"
+                else "valset_network_eval"
+            )
+            selected_evaluation = generative_evaluations.get(
+                selected_evaluation_name
+            )
+            # Fall back to the complete report when the selected entry is absent.
+            if isinstance(selected_evaluation, dict):
+                accuracy_source = selected_evaluation
+
         acc = reported_accuracy(accuracy_source)
         ensemble_acc = None
         # Read only the explicit ensemble metric from diffusion reports.
         if evaluate_ensemble_accuracy:
             ensemble_acc = reported_accuracy(
-                generative_evaluations, 
+                accuracy_source,
                 ensemble=True
             )
             # Fail clearly instead of silently substituting ordinary accuracy.

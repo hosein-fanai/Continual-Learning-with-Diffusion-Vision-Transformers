@@ -435,10 +435,11 @@ def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
         return alpha_bar
 
     alpha_bar = np.clip(_as_float64(alpha_bar), 1e-12, 1.0 - 1e-12)
-    snr = alpha_bar / np.maximum(1.0 - alpha_bar, 1e-12)
-    shifted = snr * np.exp(snr_shift)
+    log_snr = np.log(alpha_bar) - np.log1p(-alpha_bar)
+    shifted_log_snr = log_snr + snr_shift
 
-    return shifted / (1.0 + shifted)
+    # Evaluate sigmoid(shifted_log_snr) without overflowing for large shifts.
+    return np.exp(-np.logaddexp(0.0, -shifted_log_snr))
 
 
 def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
@@ -484,7 +485,7 @@ def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
     x = np.clip(t, 0.0, 1.0)
     z = k * (x - 0.5)
 
-    return 1.0 / (1.0 + np.exp(-z))
+    return np.exp(-np.logaddexp(0.0, -z))
 
 
 def generate_betas(config: ScheduleConfig) -> np.ndarray:
@@ -623,7 +624,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
     # Convert the centered logistic signal curve into discrete betas.
     if config.kind == ScheduleKind.LOGISTIC:
         # A smoother alternative used in editing work: alpha_bar = sigmoid(-k*(t-0.5)).
-        alpha_bar = 1.0 / (1.0 + np.exp(config.logistic_k * (t - 0.5)))
+        alpha_bar = _sigmoid01(1.0 - t, k=config.logistic_k)
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
         alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
 
@@ -1393,6 +1394,11 @@ def run_self_tests() -> dict[str, str]:
     assert _apply_snr_shift(base_alpha, 0.0) is base_alpha
     assert np.all(_apply_snr_shift(base_alpha, 1.0) > base_alpha)
     assert np.all(_apply_snr_shift(base_alpha, -1.0) < base_alpha)
+    assert np.all(np.isfinite(_apply_snr_shift(base_alpha, 1_000.0)))
+    assert np.all(np.isfinite(_apply_snr_shift(base_alpha, -1_000.0)))
+    assert np.all(np.isfinite(_sigmoid01(
+        np.asarray([0.0, 1.0]), k=1_000.0
+    )))
     np.testing.assert_allclose(_sigmoid01(np.array([-1.0, 0.5, 2.0]), 0.0), 0.5)
     cosine = _cosine_alpha_bar(np.linspace(0.0, 1.0, 5))
     assert cosine[0] == 1.0 and cosine[-1] < 1e-20

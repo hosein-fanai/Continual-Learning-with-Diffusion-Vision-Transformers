@@ -15,8 +15,9 @@ class MaskedLoss(losses.Loss):
     ``y_true[..., :N]``.  Thus a target of shape ``[batch, 10]`` and prediction
     of shape ``[batch, 4]`` uses only target columns ``0`` through ``3``.  Equal
     widths behave like the selected standard Keras loss. Both tensors must have
-    rank at least two, the prediction width must be positive, and the target's
-    last dimension cannot be narrower than the prediction's.
+    the same rank of at least two and matching dimensions except for the last;
+    the prediction width must be positive, and the target's last dimension
+    cannot be narrower than the prediction's.
 
     Attributes:
         loss (Callable): Elementwise ``tf.math.abs`` for ``"mae"`` or
@@ -80,12 +81,22 @@ class MaskedLoss(losses.Loss):
         Raises:
             ValueError: If a statically shaped tensor has rank below two.
             tf.errors.InvalidArgumentError: If a dynamically checked rank is
-                below two or the target's last dimension is narrower than the
-                prediction.
+                below two, the ranks or non-last dimensions differ, or the
+                target's last dimension is narrower than the prediction.
         """
 
         rank_true = tf.debugging.assert_rank_at_least(y_true, 2)
         rank_pred = tf.debugging.assert_rank_at_least(y_pred, 2)
+        same_rank = tf.debugging.assert_equal(
+            tf.rank(y_true),
+            tf.rank(y_pred),
+            message="y_true and y_pred must have the same rank.",
+        )
+        same_leading_shape = tf.debugging.assert_equal(
+            tf.shape(y_true)[:-1],
+            tf.shape(y_pred)[:-1],
+            message="y_true and y_pred must match outside the last dimension.",
+        )
         width_assertion = tf.debugging.assert_greater_equal(
             tf.shape(y_true)[-1],
             tf.shape(y_pred)[-1],
@@ -97,7 +108,12 @@ class MaskedLoss(losses.Loss):
         )
         assertions = [
             assertion for assertion in (
-                rank_true, rank_pred, width_assertion, positive_width
+                rank_true,
+                rank_pred,
+                same_rank,
+                same_leading_shape,
+                width_assertion,
+                positive_width,
             ) if assertion is not None
         ]
 
@@ -252,6 +268,26 @@ def run_self_tests() -> dict[str, str]:
         pass
     else:
         raise AssertionError("A zero-width prediction has no defined mean loss.")
+    try:
+        mae.call(tf.ones((1, 3)), tf.ones((2, 2)))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        raise AssertionError("Mismatched batch dimensions must not broadcast.")
+    try:
+        mae.call(tf.ones((1, 1, 3)), tf.ones((1, 2)))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        raise AssertionError("Mismatched target and prediction ranks must fail.")
+    try:
+        mae.call(tf.ones((2, 1, 3)), tf.ones((2, 2, 2)))
+    except tf.errors.InvalidArgumentError:
+        pass
+    else:
+        raise AssertionError(
+            "Mismatched intermediate dimensions must not broadcast."
+        )
 
     tf.debugging.assert_near(
         mae(tf.constant([[1, 2]], tf.int32), tf.constant([[0., 0.]])),

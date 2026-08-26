@@ -90,7 +90,7 @@ class DiffusionModel(ArgumentSaverModel):
         resize_antialias: bool = True, 
         swap_noise_image: bool = False, 
         map_preprocess: bool = False, 
-        map_num_parallel_calls: int | bool = 1, 
+        map_num_parallel_calls: int | None = 1, 
         seen_classes: dict[object, int] = {}, 
         seed: int | None = None, 
         **kwargs: object
@@ -164,8 +164,9 @@ class DiffusionModel(ArgumentSaverModel):
                 each progressive stage. Custom train/test steps then consume
                 the prepared tensors directly. The default false preserves
                 online preparation in the training device path.
-            map_num_parallel_calls (int | bool): Parallel-call value forwarded
-                to ``Dataset.map``. ``None`` selects ``tf.data.AUTOTUNE``.
+            map_num_parallel_calls (int | None): Positive parallel-call value
+                forwarded to ``Dataset.map``. ``None`` selects
+                ``tf.data.AUTOTUNE``.
             seen_classes (Mapping[object, int] | None): Saved real-label to
                 zero-based classifier-target mapping for a grown continual
                 model. ``None`` starts with no observed classes. A nonempty
@@ -187,7 +188,6 @@ class DiffusionModel(ArgumentSaverModel):
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
-        # Subclasses refresh their additional flags after saving their fields.
         DiffusionModel._refresh_loss_flags(self)
 
         self.network.build()
@@ -2296,7 +2296,7 @@ class DiffusionModel(ArgumentSaverModel):
                     encoder_cond=None, 
                     encoder_features_list=[None] * len(
                         network.encoder_feature_dims
-                    ), 
+                    ),
                     full_return=True, 
                     training=training
                 )
@@ -2910,31 +2910,35 @@ class DiffusionModel(ArgumentSaverModel):
             if return_x0s:
                 x0s.append(self.postprocess(x0).numpy())
 
-            alpha_bar_t = self.schedules["alpha_bar"][t]
-            alpha_bar_t_next = self.schedules["alpha_bar"][t_next]
-            x0_coef = tf.sqrt(alpha_bar_t_next)
-            sigma_t = tf.cast(
-                eta * tf.sqrt(
-                    (1. - alpha_bar_t_next) / (1. - alpha_bar_t)
-                ) * tf.sqrt(
-                    1. - alpha_bar_t / alpha_bar_t_next
-                ), 
-                dtype=tf.float32
-            )
-            eps_coeff = tf.cast(
-                tf.sqrt(tf.maximum(
-                        1. - alpha_bar_t_next - sigma_t ** 2, 0.0
-                )), 
-                dtype=tf.float32
-            )
-
-            x_t = x0_coef * x0 + eps_coeff * eps
-            # Add stochastic DDIM noise before nonterminal steps when eta is positive.
-            if eta > 0. and t_next > 0:
-                x_t += sigma_t * tf.random.normal(
-                    tf.shape(x_t), 
-                    seed=seed
+            # The final t=0 prediction is already the returned clean estimate.
+            # Skipping a redundant 0 -> 0 update also avoids 0/0 when timestep
+            # zero was explicitly made noiseless.
+            if i < steps - 1:
+                alpha_bar_t = self.schedules["alpha_bar"][t]
+                alpha_bar_t_next = self.schedules["alpha_bar"][t_next]
+                x0_coef = tf.sqrt(alpha_bar_t_next)
+                sigma_t = tf.cast(
+                    eta * tf.sqrt(
+                        (1. - alpha_bar_t_next) / (1. - alpha_bar_t)
+                    ) * tf.sqrt(
+                        1. - alpha_bar_t / alpha_bar_t_next
+                    ),
+                    dtype=tf.float32
                 )
+                eps_coeff = tf.cast(
+                    tf.sqrt(tf.maximum(
+                            1. - alpha_bar_t_next - sigma_t ** 2, 0.0
+                    )),
+                    dtype=tf.float32
+                )
+
+                x_t = x0_coef * x0 + eps_coeff * eps
+                # Add stochastic DDIM noise when eta is positive.
+                if eta > 0.:
+                    x_t += sigma_t * tf.random.normal(
+                        tf.shape(x_t),
+                        seed=seed
+                    )
 
         # Finish the in-place progress line after sampling.
         if verbose:
@@ -4132,6 +4136,8 @@ def run_self_tests() -> dict[str, str]:
         {"test_eta": -0.1}, 
         {"test_eta": 1.1}, 
         {"test_eta": float("nan")},
+        {"map_num_parallel_calls": False},
+        {"map_num_parallel_calls": 0},
         {"p_uncond": -0.25},
         {"p_uncond": 1.25},
         {"p_uncond": float("nan")},
