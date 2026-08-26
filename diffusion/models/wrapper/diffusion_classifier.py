@@ -85,9 +85,8 @@ class DiffusionClassifier(DiffusionModel):
                 0 percent selects no examples.
             use_ensemble_loss_instead (bool): Ignore the current forward pass's
                 class probabilities for classifier loss and use
-                ``EnsembleAccuracy(self, max_t=4).ensemble_predict_batched`` on
-                clean images instead.  The resulting ensemble probabilities are
-                also returned for accuracy.
+                a four-timestep raw-network ensemble on clean images instead.
+                The resulting probabilities are also returned for accuracy.
             clf_train_type (TrainType): ``"cond"`` uses predictions from the
                 conditional/possibly dropped-label pass; ``"uncond"`` uses the
                 explicit null-label pass and requires ``train_cfg_scale``.
@@ -121,6 +120,7 @@ class DiffusionClassifier(DiffusionModel):
 
         # Keep teacher variables outside optimization.
         if self.teacher_network is not None:
+            # Unwrap a diffusion wrapper to its raw classifier network.
             if getattr(self.teacher_network, "network", None) is not None:
                 self.teacher_network = self.teacher_network.network
 
@@ -237,7 +237,9 @@ class DiffusionClassifier(DiffusionModel):
         )
 
         self.use_teacher = self.use_distil_loss or self.use_distil_ctr_loss
-        self.use_total_accuracy = self.use_distil_loss or bool(
+        self.use_total_accuracy = bool(
+            self.use_distil_loss and self.distil_acc_coef > 0.
+        ) or bool(
             self.use_clf_ctr_loss and self.ctr_acc_coef > 0.
         )
 
@@ -348,8 +350,8 @@ class DiffusionClassifier(DiffusionModel):
 
         Returns:
             list[tf.keras.metrics.Metric]: Base diffusion trackers followed by
-            classifier loss/accuracy, classifier KL loss, classifier token loss,
-            and classifier token accuracy.  Available after :meth:`compile`.
+            classifier losses and classifier/combined/token accuracies.
+            Available after :meth:`compile`.
         """
 
         return [
@@ -382,7 +384,7 @@ class DiffusionClassifier(DiffusionModel):
         super().compile(**kwargs)
 
         self.ensemble_loss_fn = EnsembleAccuracy(
-            self, max_t=4
+            self, netwrok_name="raw", max_t=4
         ) if self.use_ensemble_loss_instead else None
         self.kld_loss_fn = losses.kullback_leibler_divergence
 
@@ -478,6 +480,8 @@ class DiffusionClassifier(DiffusionModel):
             (clf_regs_list_c, clf_regs_list_u),
             (clf_z_vals_c, clf_z_vals_u)) = forward_outputs[:7]
 
+            distil_pred_c = None
+            distil_pred_u = None
             # The transformer appends one independent distillation-head pair.
             if self.use_distil_loss:
                 distil_pred_c, distil_pred_u = forward_outputs[7]
@@ -521,6 +525,7 @@ class DiffusionClassifier(DiffusionModel):
             ctr_loss=ctr_loss1, 
             ctr_preds=ctr_preds1, 
             classes=classes, 
+            cond_labels=cfg_labels,
             use_total_loss=True
         )
         results.update(self.get_clf_results_dict(
@@ -559,7 +564,7 @@ class DiffusionClassifier(DiffusionModel):
         """
 
         prepared_inputs = self.prep_inputs(
-            inputs
+            inputs, use_label_dropout=False
         ) if not self.map_preprocess else inputs
         # Separate the mapped teacher target from the student input tensors.
         if self.use_teacher:
@@ -622,6 +627,7 @@ class DiffusionClassifier(DiffusionModel):
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
             teacher_labels=teacher_labels, 
+            x0=x0,
             training=False
         )
 
@@ -637,6 +643,7 @@ class DiffusionClassifier(DiffusionModel):
             ctr_loss=ctr_loss1, 
             ctr_preds=ctr_preds1, 
             classes=classes, 
+            cond_labels=cond_labels,
             use_image_loss=True
         )
         results.update(self.get_clf_results_dict(
@@ -645,7 +652,7 @@ class DiffusionClassifier(DiffusionModel):
             classes_pred, 
             clf_kl_loss=kl_loss2, 
             clf_ctr_loss=ctr_loss2, 
-            clf_distil_preds=distil_loss, 
+            clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds2, 
             clf_distil_preds=distil_preds, 
             use_total_loss=False
@@ -849,9 +856,21 @@ class DiffusionClassifier(DiffusionModel):
         clf_loss_mask: tf.Tensor | None = None, 
         x0: tf.Tensor | None = None, 
         training: bool | None = None
-    ):
-        """
-        
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Compute masked primary-head classification loss.
+
+        Args:
+            classes (tf.Tensor): Zero-based targets shaped ``[B]``.
+            classes_pred (tf.Tensor): Primary class probabilities shaped
+                ``[B,num_classes]``.
+            clf_loss_mask (tf.Tensor | None): Optional float sample weights
+                shaped ``[B]``.
+            x0 (tf.Tensor | None): Clean images required by ensemble loss.
+            training (bool | None): Mode forwarded to ensemble prediction.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: Scalar loss and the primary or
+            ensemble probabilities used to compute it.
         """
 
         # Use clean-image ensemble predictions when ensemble loss is enabled.
@@ -860,22 +879,12 @@ class DiffusionClassifier(DiffusionModel):
                 x0, 
                 training=training
             )
-            clf_loss = tf.reduce_mean(self.scce_loss_fn(
-                classes, 
-                classes_pred
-            ))
-        # Otherwise select the configured conditional or unconditional prediction.
-        else:
-            clf_loss = self.scce_loss_fn(
-                classes, 
-                classes_pred
-            )
-            clf_loss = tf.math.divide_no_nan(
-                tf.reduce_sum(
-                    clf_loss * clf_loss_mask
-                ), 
-                tf.reduce_sum(clf_loss_mask)
-            ) if clf_loss_mask is not None else tf.reduce_mean(clf_loss)
+
+        clf_loss = self.scce_loss_fn(classes, classes_pred)
+        clf_loss = tf.math.divide_no_nan(
+            tf.reduce_sum(clf_loss * clf_loss_mask),
+            tf.reduce_sum(clf_loss_mask)
+        ) if clf_loss_mask is not None else tf.reduce_mean(clf_loss)
 
         return clf_loss, classes_pred
 
@@ -885,7 +894,7 @@ class DiffusionClassifier(DiffusionModel):
         distil_preds: tf.Tensor,
         distil_type: Literal["hard", "soft"] | None = None, 
         distil_loss_mask: tf.Tensor | None = None
-    ) -> tf.Tensor:
+    ) -> tuple[tf.Tensor, tf.Tensor]:
         """Compute hard-label CE or soft-label KL distillation loss.
 
         Args:
@@ -895,13 +904,13 @@ class DiffusionClassifier(DiffusionModel):
                 same batch and class dimensions.
             distil_type (Literal["hard", "soft"] | None): Loss mode;
                 ``None`` uses the wrapper's token-distillation setting.
+            distil_loss_mask (tf.Tensor | None): Optional float sample weights
+                shaped ``[B]``.
 
         Returns:
-            tf.Tensor: Scalar unweighted distillation loss.
+            tuple[tf.Tensor, tf.Tensor]: Scalar unweighted distillation loss
+            and the unchanged student probabilities.
         """
-
-        if not self.use_distil_loss:
-            return 0.
 
         distil_type = self.distil_type if distil_type is None else distil_type
 
@@ -960,9 +969,19 @@ class DiffusionClassifier(DiffusionModel):
         classes: tf.Tensor, 
         classes_pred_list: list[tf.Tensor], 
         teacher_labels: tf.Tensor | None = None
-    ):
-        """
-        
+    ) -> tuple[tf.Tensor | float, tf.Tensor | float]:
+        """Compute ordinary or teacher-targeted token regularizer loss.
+
+        Args:
+            classes (tf.Tensor): Zero-based dataset targets shaped ``[B]``.
+            classes_pred_list (list[tf.Tensor]): Available regularizer class
+                probabilities.
+            teacher_labels (tf.Tensor | None): Frozen teacher probabilities
+                used by ``"distil"`` and ``"both"`` training modes.
+
+        Returns:
+            tuple[tf.Tensor | float, tf.Tensor | float]: Regularizer loss and
+            averaged regularizer probabilities, or zeros when disabled.
         """
 
         clf_ctr_loss, clf_ctr_preds = self.compute_ctr_loss(
@@ -970,6 +989,7 @@ class DiffusionClassifier(DiffusionModel):
             classes_pred_list
         ) if self.use_clf_ctr_loss else (0., 0.)
 
+        # Retain ordinary regularizer targets when distillation is inactive.
         if not self.use_distil_ctr_loss:
             return clf_ctr_loss, clf_ctr_preds
 
@@ -1016,7 +1036,7 @@ class DiffusionClassifier(DiffusionModel):
         training: bool | None = None
     ) -> tuple[
         tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
-        tf.Tensor, tf.Tensor | float
+        tf.Tensor | float, tf.Tensor, tf.Tensor | float, tf.Tensor | None
     ]:
         """Compute weighted classifier, classifier-KL, and token objectives.
 
@@ -1028,11 +1048,15 @@ class DiffusionClassifier(DiffusionModel):
                 classifier latent mean/log variance.
             clf_regs_list_c (list[tf.Tensor | None] | None): Conditional
                 classifier token predictions.
+            distil_pred_c (tf.Tensor | None): Conditional distillation-head
+                probabilities.
             classes_pred_u (tf.Tensor | None): Unconditional probabilities.
             clf_z_vals_u (tuple[tf.Tensor, tf.Tensor] | None): Unconditional
                 classifier latent statistics.
             clf_regs_list_u (list[tf.Tensor | None] | None): Unconditional token
                 predictions.
+            distil_pred_u (tf.Tensor | None): Unconditional distillation-head
+                probabilities.
             clf_loss_mask (tf.Tensor | None): Float per-example mask ``[B]``;
                 None averages all cross-entropies.
             clf_train_type (TrainType | None): Probability source; None uses the
@@ -1048,9 +1072,10 @@ class DiffusionClassifier(DiffusionModel):
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
-            tf.Tensor, tf.Tensor | float]: Weighted classifier total, raw
-            classifier loss, classifier KL loss, classifier token loss,
-            selected/ensemble probabilities, and averaged token probabilities.
+            tf.Tensor | float, tf.Tensor, tf.Tensor | float, tf.Tensor | None]:
+            Weighted classifier total, raw classifier loss, classifier KL loss,
+            classifier token loss, distillation loss, selected probabilities,
+            averaged token probabilities, and distillation probabilities.
         """
 
         clf_train_type = self.clf_train_type if clf_train_type is None else clf_train_type
@@ -1073,11 +1098,18 @@ class DiffusionClassifier(DiffusionModel):
             classes_pred_list=clf_regs_list_c if ctr_train_type == "cond" else clf_regs_list_u, 
             teacher_labels=teacher_labels
         )
-        clf_distil_loss, distil_preds = self.compute_distil_loss(
-            teacher_labels, 
-            distil_preds=distil_pred_c if self.clf_train_type == "cond" else distil_pred_u, 
-            clf_loss_mask=clf_loss_mask
-        )
+        # Compute the independent distillation-token objective when enabled.
+        if self.use_distil_loss:
+            clf_distil_loss, distil_preds = self.compute_distil_loss(
+                teacher_labels,
+                distil_preds=(
+                    distil_pred_c if clf_train_type == "cond" else distil_pred_u
+                ),
+                distil_loss_mask=clf_loss_mask,
+            )
+        # Keep disabled distillation outputs explicit for metric dispatch.
+        else:
+            clf_distil_loss, distil_preds = 0., None
 
         loss = (
             clf_loss * self.clf_loss_coef + 
@@ -1120,15 +1152,20 @@ class DiffusionClassifier(DiffusionModel):
             classes (tf.Tensor): Zero-based targets ``[B]``.
             classes_pred (tf.Tensor): Class probabilities ``[B,num_classes]``.
             clf_acc_mask (tf.Tensor | None): Boolean selector ``[B]`` for
-                accuracy only; None selects all samples.
+                masked loss and accuracy tracking; None selects all samples.
             total_loss (tf.Tensor | None): Required when total tracking is on.
             clf_kl_loss (tf.Tensor | None): Required when classifier KL is on.
             clf_ctr_loss (tf.Tensor | None): Required when token loss is on.
+            clf_distil_loss (tf.Tensor | None): Required when distillation is
+                active.
             clf_ctr_preds (tf.Tensor | None): Token probabilities for accuracy.
+            clf_distil_preds (tf.Tensor | None): Distillation-head class
+                probabilities.
             use_total_loss (bool | None): Explicit total tracker switch; None
                 enables it for classifier KL/token auxiliaries.
             use_kl_loss (bool | None): Classifier KL tracker override.
             use_ctr_loss (bool | None): Classifier token tracker override.
+            use_distil_loss (bool | None): Distillation tracker override.
 
         Returns:
             dict[str, tf.Tensor]: Current classifier metrics keyed by name.
@@ -1137,27 +1174,40 @@ class DiffusionClassifier(DiffusionModel):
             AssertionError: If a requested optional metric lacks its input.
         """
 
-        clf_acc_mask = slice(
-            None
-        ) if clf_acc_mask is None else clf_acc_mask
+        batch_weight = tf.cast(tf.shape(classes)[0], tf.float32)
+        selected_weight = batch_weight if clf_acc_mask is None else tf.reduce_sum(
+            tf.cast(clf_acc_mask, tf.float32)
+        )
+        clf_acc_mask = slice(None) if clf_acc_mask is None else clf_acc_mask
         use_kl_loss = self.use_clf_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_clf_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_distil_loss = self.use_distil_loss if use_distil_loss is None else use_distil_loss
         use_total_loss = use_kl_loss or use_ctr_loss or use_distil_loss if use_total_loss is None else use_total_loss
 
-        # TensorFlow 2.10 misreads a one-column prediction as binary output.
-        for preds in ( # fix this!!!
-            classes_pred, clf_ctr_preds, 
-            clf_distil_preds
-        ):
-            if self.network.dynamic_num_classes and \
-            classes_pred.shape[-1] == 1 and preds is not None:
-                preds = tf.concat([
-                    preds, 
-                    tf.zeros_like(preds)
+        # TensorFlow 2.10 misreads one-column predictions as binary outputs.
+        if self.network.dynamic_num_classes:
+            # Pad the primary prediction while the dynamic head has one class.
+            if classes_pred.shape[-1] == 1:
+                classes_pred = tf.concat([
+                    classes_pred,
+                    tf.zeros_like(classes_pred),
+                ], axis=-1)
+            # Apply the same compatibility padding to token predictions.
+            if clf_ctr_preds is not None and clf_ctr_preds.shape[-1] == 1:
+                clf_ctr_preds = tf.concat([
+                    clf_ctr_preds,
+                    tf.zeros_like(clf_ctr_preds),
+                ], axis=-1)
+            # Apply the same compatibility padding to distillation predictions.
+            if clf_distil_preds is not None and clf_distil_preds.shape[-1] == 1:
+                clf_distil_preds = tf.concat([
+                    clf_distil_preds,
+                    tf.zeros_like(clf_distil_preds),
                 ], axis=-1)
 
-        self.clf_loss_tracker.update_state(clf_loss)
+        self.clf_loss_tracker.update_state(
+            clf_loss, sample_weight=selected_weight
+        )
         self.accuracy_tracker.update_state(
             classes[clf_acc_mask], 
             classes_pred[clf_acc_mask]
@@ -1171,7 +1221,9 @@ class DiffusionClassifier(DiffusionModel):
                 "When use_total_loss is True, total_loss cannot be None."
 
 
-            self.total_loss_tracker.update_state(total_loss)
+            self.total_loss_tracker.update_state(
+                total_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.total_loss_tracker.name: 
                 self.total_loss_tracker.result()
@@ -1188,7 +1240,9 @@ class DiffusionClassifier(DiffusionModel):
                 "When use_kl_loss is True, kl_loss cannot be None."
 
 
-            self.clf_kl_loss_tracker.update_state(clf_kl_loss)
+            self.clf_kl_loss_tracker.update_state(
+                clf_kl_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.clf_kl_loss_tracker.name: 
                 self.clf_kl_loss_tracker.result()
@@ -1202,7 +1256,9 @@ class DiffusionClassifier(DiffusionModel):
                 "clf_ctr_loss and clf_ctr_preds cannot be None."
 
 
-            self.clf_ctr_loss_tracker.update_state(clf_ctr_loss)
+            self.clf_ctr_loss_tracker.update_state(
+                clf_ctr_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.clf_ctr_loss_tracker.name: 
                 self.clf_ctr_loss_tracker.result()
@@ -1224,31 +1280,51 @@ class DiffusionClassifier(DiffusionModel):
                 self.clf_ctr_accuracy_tracker.result()
             })
 
+        # Combine every enabled auxiliary prediction into total accuracy.
+        if (use_ctr_loss and self.ctr_acc_coef > 0.) or (
+            use_distil_loss and self.distil_acc_coef > 0.
+        ):
+            total_preds = classes_pred[clf_acc_mask] * self.clf_acc_coef
+            # Add classifier-regularizer predictions when weighted in.
+            if use_ctr_loss and self.ctr_acc_coef > 0.:
+                assert clf_ctr_preds is not None, \
+                    "ctr_acc_coef > 0 requires clf_ctr_preds."
+                total_preds += (
+                    clf_ctr_preds[clf_acc_mask] * self.ctr_acc_coef
+                )
+            # Add independent distillation-head predictions when weighted in.
+            if use_distil_loss and self.distil_acc_coef > 0.:
+                assert clf_distil_preds is not None, \
+                    "distil_acc_coef > 0 requires clf_distil_preds."
+                total_preds += (
+                    clf_distil_preds[clf_acc_mask] * self.distil_acc_coef
+                )
+
+            self.total_accuracy_tracker.update_state(
+                classes[clf_acc_mask],
+                total_preds,
+            )
+            results.update({
+                self.total_accuracy_tracker.name:
+                self.total_accuracy_tracker.result(),
+            })
+
+        # Track the independent distillation objective and prediction accuracy.
         if use_distil_loss:
             assert clf_distil_loss is not None \
             and clf_distil_preds is not None, \
                 "When use_distil_loss is True, "\
                 "clf_distil_loss and clf_distil_preds cannot be None."
 
-
-            total_preds = (
-                classes_pred[clf_acc_mask] * self.clf_acc_coef + 
-                clf_distil_preds[clf_acc_mask] * self.distil_acc_coef
+            self.distil_loss_tracker.update_state(
+                clf_distil_loss, sample_weight=selected_weight
             )
-            self.total_accuracy_tracker.update_state(
-                classes[clf_acc_mask], 
-                total_preds
-            )
-
-            self.distil_loss_tracker.update_state(clf_distil_loss)
             self.distil_accuracy_tracker.update_state(
                 classes[clf_acc_mask], 
-                clf_distil_preds
+                clf_distil_preds[clf_acc_mask]
             )
 
             results.update({
-                self.total_accuracy_tracker.name:
-                self.total_accuracy_tracker.result(), 
                 self.distil_loss_tracker.name:
                 self.distil_loss_tracker.result(), 
                 self.distil_accuracy_tracker.name:
@@ -1346,9 +1422,10 @@ def run_self_tests() -> dict[str, str]:
     assert wrapper.use_clf_kl_loss is False
     assert wrapper.use_clf_ctr_loss is False
     assert wrapper.ensemble_loss_fn is None
-    assert [metric.name for metric in wrapper.metrics][-5:] == [
-        "classifier_loss", "classifier_accuracy", "clf_kl_loss",
-        "clf_ctr_loss", "clf_ctr_accuracy",
+    assert [metric.name for metric in wrapper.metrics][-8:] == [
+        "classifier_loss", "clf_kl_loss", "clf_ctr_loss", "distil_loss",
+        "total_accuracy", "classifier_accuracy", "clf_ctr_accuracy",
+        "distil_token_accuracy",
     ]
 
     threshold_only = make_wrapper(
@@ -1403,7 +1480,7 @@ def run_self_tests() -> dict[str, str]:
         clf_loss_mask=mask, 
         clf_train_type="cond", 
     )
-    assert len(clf_values) == 6 and float(clf_values[1]) >= 0.0
+    assert len(clf_values) == 8 and float(clf_values[1]) >= 0.0
     empty_values = wrapper.compute_clf_kl_ctr_distil_loss(
         classes, 
         both[3][0], both[5][0], both[4][0], 
@@ -1463,17 +1540,19 @@ def run_self_tests() -> dict[str, str]:
         mask_by_nulls=False, 
     )
     assert ensemble.ensemble_loss_fn is not None
+    assert ensemble.ensemble_loss_fn.network is ensemble.network
     ensemble_predictions = ensemble.compute_clf_kl_ctr_distil_loss(
         classes, 
         both[3][0], both[5][0], both[4][0], 
         x0=images, 
         training=False, 
-    )[4]
+    )[5]
     assert ensemble_predictions.shape == (2, 2)
     tf.debugging.assert_near(
         tf.reduce_sum(ensemble_predictions, axis=-1), 
         tf.ones((2,)), atol=1e-5
     )
+    assert "classifier_loss" in ensemble.test_step((images, classes))
 
     auxiliary_network = make_network(
         clf_depth=2, 
@@ -1505,11 +1584,11 @@ def run_self_tests() -> dict[str, str]:
     assert float(auxiliary_losses[3]) >= 0.0
     auxiliary_metrics = auxiliary.get_clf_results_dict(
         auxiliary_losses[1], classes, 
-        auxiliary_losses[4], 
+        auxiliary_losses[5],
         total_loss=auxiliary_losses[0], 
         clf_kl_loss=auxiliary_losses[2], 
         clf_ctr_loss=auxiliary_losses[3], 
-        clf_ctr_preds=auxiliary_losses[5], 
+        clf_ctr_preds=auxiliary_losses[6],
     )
     assert {"clf_kl_loss", "clf_ctr_loss", "clf_ctr_accuracy"} <= set(
         auxiliary_metrics

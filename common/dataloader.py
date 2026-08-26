@@ -24,12 +24,18 @@ DatasetArrays = tuple[
 DatasetLoader = Callable[..., DatasetArrays]
 
 
-def _pad_images(x: np.ndarray, pad: int) -> np.ndarray:
-    """Apply symmetric numeric-zero padding to a NumPy image batch.
+def _pad_images(
+    x: np.ndarray,
+    pad: int,
+    value: float | int = 0,
+) -> np.ndarray:
+    """Apply symmetric constant padding to a NumPy image batch.
 
     Args:
         x (numpy.ndarray): Images shaped ``[N, H, W]`` or ``[N, H, W, C]``.
         pad (int): Non-boolean, nonnegative padding width.
+        value (float | int): Constant border value in the array's current
+            preprocessing space.
 
     Returns:
         numpy.ndarray: Padded images with unchanged dtype and leading/channel
@@ -57,7 +63,11 @@ def _pad_images(x: np.ndarray, pad: int) -> np.ndarray:
     spatial_padding = ((0, 0), (int(pad), int(pad)), (int(pad), int(pad)))
     channel_padding = ((0, 0),) if x.ndim == 4 else ()
 
-    return np.pad(x, spatial_padding + channel_padding)
+    return np.pad(
+        x,
+        spatial_padding + channel_padding,
+        constant_values=value,
+    )
 
 
 def _limit_samples(
@@ -920,6 +930,8 @@ def get_datasets(
         Config mode records ``dataset.trainset_len``. A missing preprocessing
         mode is also resolved to ``"standardize"`` for diffusion families so
         the returned continual loader receives the same effective setting.
+        Direct pretrained calls default to raw images because Xception owns
+        their rescaling; other direct families retain standardization.
 
     Raises:
         TypeError: If ``pad`` is not a non-boolean integer.
@@ -930,8 +942,14 @@ def get_datasets(
     # Resolve settings from direct keyword arguments.
     if config is None:
         dataset_name = kwargs.get("dataset_name", "mnist")
-        model_name = kwargs.get("model_name", "diffusion_transformer")
-        preprocess = kwargs.get("preprocess", "standardize")
+        model_name = kwargs.get(
+            "model_name",
+            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer")),
+        )
+        # Pretrained classifiers own raw-image scaling inside their model.
+        default_preprocess = None if str(model_name).lower() == "pretrained" \
+                             else "standardize"
+        preprocess = kwargs.get("preprocess", default_preprocess)
         indices = kwargs.get("indices")
         validation_ratio = kwargs.get("validation_ratio", 0.)
         return_features = kwargs.get("return_features", False)
@@ -1073,8 +1091,11 @@ def get_datasets(
 
     # Pad raw images before any dense-model flattening.
     if pad > 0:
-        x_train = _pad_images(np.asarray(x_train), pad)
-        x_eval = _pad_images(np.asarray(x_eval), pad)
+        pad_value = -1. if str(preprocess).lower() in (
+            "standardize", "diffusion"
+        ) else 0.
+        x_train = _pad_images(np.asarray(x_train), pad, value=pad_value)
+        x_eval = _pad_images(np.asarray(x_eval), pad, value=pad_value)
 
     # Flatten inputs for dense classifiers and autoencoders.
     if model_name in (
@@ -1092,7 +1113,7 @@ def get_datasets(
         pad=0, 
         shuffle_buffer=shuffle_buffer, 
         batch_size=batch_size, 
-        drop_remainder=task != "continual", 
+        drop_remainder=(task != "continual" and len(x_train) >= batch_size), 
         seed=seed
     )
 

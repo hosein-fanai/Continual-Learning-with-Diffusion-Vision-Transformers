@@ -44,7 +44,7 @@ _OPTIMIZATION = {
     "learning_rate": "log-uniform; model-family-specific bounds", 
     "learning_rate_schedule": "cosine decay or constant", 
     "optimizer": "SGD, RMSprop, Adam, AdamW, or Nadam", 
-    "weight_decay": "log-uniform 1e-6 to 1e-3 for every optimizer"
+    "weight_decay": "AdamW-only log-uniform value from 1e-6 to 1e-3"
 }
 _DIT = {
     **_OPTIMIZATION, 
@@ -393,9 +393,10 @@ def _suggest_optimizer(
         "sgd", "rmsprop", "adam", 
         "adamw", "nadam"
     ])
+    # TensorFlow 2.10 exposes weight decay only through AdamW here.
     weight_decay = trial.suggest_float(
         "weight_decay", 1e-6, 1e-3, log=True
-    )
+    ) if optimizer == "adamw" else None
     schedule = trial.suggest_categorical(
         "learning_rate_schedule", ["cosine", "constant"]
     )
@@ -741,7 +742,6 @@ def _suggest_joint(
                 )
             })
             # Select the existing decoder block for the decoder variant.
-            
             if classifier_architecture == "cross_attention_decoder":
                 kwargs["clf_use_decoder_ids"] = [2]
         # Cross-attend directly to the main transformer's input feature.
@@ -961,7 +961,7 @@ def _suggest_classifier(
             "dropout", 0., 0.5, step=0.1
         ), 
         "num_last_not_frozen": trial.suggest_categorical(
-            "unfrozen", [1, 5, 20, 0]
+            "unfrozen", [1, 5, 20, None]
         )
     }
 
@@ -1335,7 +1335,8 @@ def _build_trial_config(
             "preprocess": preprocess, 
             "features_path": features_path, 
             "return_features": return_features, 
-            "onehot_labels": onehot_labels
+            "onehot_labels": onehot_labels,
+            "validation_ratio": 0.2,
         }, 
         model={
             "name": model_name, 

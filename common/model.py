@@ -265,7 +265,7 @@ def _get_classifier_model(
     model_type: str = "CNN", 
     model_path: str = "", 
     dropout_rate: float = 0., 
-    num_last_not_frozen: int = 3, 
+    num_last_not_frozen: int | None = 3,
     resize: tuple[int, int] = (299, 299), 
     compile_args: Mapping[str, object] | None = None, 
     use_loaded_opt: bool = False, 
@@ -285,9 +285,9 @@ def _get_classifier_model(
             ``"hp-tuned"`` and ignored by other model types.
         dropout_rate (float): Fraction dropped before the final classifier;
             normally in ``[0, 1)``.
-        num_last_not_frozen (int): For Xception, the number of trailing layers
-            left trainable.  Earlier layers are frozen.  A value of ``0``
-            freezes none because Python's ``layers[:-0]`` slice is empty.
+        num_last_not_frozen (int | None): For Xception, the number of trailing
+            layers left trainable. Earlier layers are frozen; ``0`` freezes the
+            complete convolutional base and ``None`` leaves the base trainable.
         resize (tuple[int, int]): ``(height, width)`` used to resize images and
             define Xception's input size.  Xception imposes its own minimum-size
             requirements.
@@ -343,10 +343,15 @@ def _get_classifier_model(
     # Keep dropout probability within its mathematical domain.
     if not 0. <= dropout_rate < 1.:
         raise ValueError("dropout_rate must lie in [0, 1).")
-    # Require a nonnegative integral fine-tuning depth.
-    if not isinstance(num_last_not_frozen, Integral) \
-    or isinstance(num_last_not_frozen, bool) or num_last_not_frozen < 0:
-        raise ValueError("num_last_not_frozen must be a nonnegative integer.")
+    # Require a nonnegative fine-tuning depth, or None for the complete base.
+    if num_last_not_frozen is not None and (
+        not isinstance(num_last_not_frozen, Integral)
+        or isinstance(num_last_not_frozen, bool)
+        or num_last_not_frozen < 0
+    ):
+        raise ValueError(
+            "num_last_not_frozen must be a nonnegative integer or None."
+        )
     # Require two positive resize dimensions.
     if not isinstance(resize, Sequence) or len(resize) != 2 or any(
         not isinstance(size, Integral) or isinstance(size, bool) or size <= 0
@@ -356,7 +361,9 @@ def _get_classifier_model(
 
     class_num = int(class_num)
     dropout_rate = float(dropout_rate)
-    num_last_not_frozen = int(num_last_not_frozen)
+    # Preserve None as the explicit all-trainable Xception setting.
+    if num_last_not_frozen is not None:
+        num_last_not_frozen = int(num_last_not_frozen)
     resize = tuple(int(size) for size in resize)
 
     compile_args_default = get_compile_args()
@@ -381,7 +388,10 @@ def _get_classifier_model(
             include_top=False, 
             input_shape=(resize[0], resize[1], 3)
         )
-        for layer in conv_base.layers[:-num_last_not_frozen]:
+        frozen_layers = 0 if num_last_not_frozen is None else (
+            len(conv_base.layers) - num_last_not_frozen
+        )
+        for layer in conv_base.layers[:max(0, frozen_layers)]:
             layer.trainable = False
 
         model = models.Sequential([
@@ -824,6 +834,13 @@ def get_model(
     # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
         raise ValueError("pad is not supported for saved feature inputs.")
+    # Reject saved features for families whose constructors require images.
+    if return_features and str(model_name).lower() in (
+        _DIFFUSION_MODELS | {"cnn", "pretrained"}
+    ):
+        raise ValueError(
+            f"return_features is not supported for model {model_name!r}."
+        )
     # Keep pretrained image geometry unchanged.
     if pad and model_name.lower() in {"pretrained", "hp-tuned"}:
         raise ValueError("pad is not supported for pretrained/hp-tuned models.")
@@ -846,6 +863,11 @@ def get_model(
 
     optimizer_options = dict(kwargs)
     optimizer_options.pop("trainset_len", None)
+    # Separate the model-family alias from the optimizer's own name field.
+    optimizer_options.pop("name", None)
+    optimizer_options["name"] = kwargs.get(
+        "optimizer_name", kwargs.get("optimizer", "adam")
+    )
 
 
     def build_classifier(

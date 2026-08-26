@@ -425,8 +425,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 depth used to validate values.
             check_values (bool): Interpret each mapping value as an ID iterable
                 and validate its items.
-            id_less_than_key (bool): Require each raw source ID to be less than
-                its target key.  This is disabled for cross-branch aggregation.
+            id_less_than_key (bool): Require each normalized source ID to be
+                less than its target key. This is disabled for cross-branch
+                aggregation.
             allowed_values (tuple[object, ...]): Explicit item whitelist.  Empty
                 permits the source-depth numeric range.
             none_is_filler (bool): Permit ``None`` as the expand-all sentinel.
@@ -467,7 +468,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 for id_ in value:
                     # Prevent a connection from reading its own or a future depth.
                     if id_less_than_key:
-                        assert (none_is_filler and id_ is None) or id_ < key, \
+                        normalized_id = id_ + local_vars[
+                            second_depth_name
+                        ] + 1 if id_ is not None and id_ < 0 else id_
+                        assert (none_is_filler and id_ is None) or \
+                            normalized_id < key, \
                             f"The ids in each set of {dict_name} can only be less than their key."
 
                     # Use the full source-depth range when no explicit set was given.
@@ -2372,6 +2377,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             call_model=True
         ) if input_shape is None else input_shape
 
+        # Mark the Keras model built only after its symbolic graph exists.
         if not self.built:
             super().build(input_shape)
 
@@ -3847,6 +3853,7 @@ def run_self_tests() -> dict[str, str]:
         {"cls_token_type": "unknown"}, 
         {"cross_attention_plug_type": "unknown"}, 
         {"connection_ids_dict": {2: [0]}, "depth": 1}, 
+        {"connection_ids_dict": {1: [-1]}, "depth": 2},
         {"connection_kwargs": {"unknown": 1}}, 
         {"cross_attention_kwargs": {"unknown": 1}}, 
         {"local_mixer_kwargs": {"unknown": 1}}, 

@@ -54,6 +54,16 @@ intentionally empty in version control.
        # Diffusion-classifier joint/continual studies only:
        use_ensemble_accuracy=False,
        ensemble_accuracy_kwargs={"weighted": True, "max_t": 128},
+       # Optional runtime-only teacher for the same classifier families:
+       # teacher_network=teacher,
+       # Optional diffusion curriculum:
+       fit_method="fit_progressively",
+       fit_kwargs={
+           "stage_tasks": "timesteps_only",
+           "stages_num": 4,
+           "stage_epochs": 5,
+           "final_epochs": 5,
+       },
    )
    ```
 
@@ -69,12 +79,66 @@ config and TensorBoard text summary. Compact logs live below
 `results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
 gives a study-level table.
 
+DiT classifier studies sample `classifier_architecture` from `linear`,
+`local_mixer`, `connection`, `cross_attention`, `cross_attention_decoder`,
+`cross_attention_aggregation`, `u_shape`, and `u_vae`. Each choice uses the
+model's existing classifier-layer arguments; `u_vae` additionally samples a
+positive `kl_loss_coef` for its KL-enabled variational bottleneck.
+
+The zero-inclusive `ctr_loss_coef` search applies to joint DiT and U-Net
+classifiers. A positive value adds a regularizer at the final classifier depth.
+It uses normal labels without a teacher; teacher-backed studies can select
+`normal`, `distil`, or `both`, with hard or soft teacher targets for the latter
+two modes. Accuracy coefficients are balanced across the active classifier,
+distillation, and regularizer predictions through `clf_acc_coef`,
+`distil_acc_coef`, and `ctr_acc_coef`.
+
+For V2 DiT classifiers, `clf_vars_embedding_recipe` independently selects
+`none`, `label`, `conditions`, `core`, or `notebook`, while
+`clf_vars_noise_recipe` selects `none`, `first`, `last`, or `last_two`. These
+map to embedding IDs `[]`, `[2]`, `[1, 2]`, `[0, 1, 2]`, `[0, 1, 2, 3]` and
+noise-part IDs `[]`, `[1]`, `[-1]`, `[-2, -1]`, respectively. Negative final
+IDs continue to refer to the final stages when progressive fitting grows the
+network.
+
 For joint or continual `dit_classifier`,
 `dit_encoder_decoder_classifier`, and `unet_classifier` studies, set
 `use_ensemble_accuracy=True` to use validation/task ensemble accuracy as the
 Optuna feedback signal. Ordinary accuracy is still reported. These trials use
 an `ensemble_accuracy` subdirectory so they cannot mix with an existing normal
 accuracy study.
+
+Set `fit_method="fit_progressively"` only for diffusion model families and
+provide `stage_tasks` in `fit_kwargs`. The mapping accepts the existing
+`DiffusionModel.fit_progressively` controls: stage count and verbosity, stage
+and final epoch budgets, timestep boundaries and clustering, resolutions,
+depths, pacing and early-stopping settings. Remaining Keras keys such as
+`steps_per_epoch` and `validation_steps` are forwarded unchanged. Progressive
+`DiffusionClassifierV2` trials apply the curriculum to the generator and then
+run their existing ordinary discriminator phase. Values must be YAML-safe
+because every trial config is serialized and reloaded before training.
+
+Progressive studies use a `fit_progressively` subdirectory and a separate
+SQLite study name, so resuming them cannot mix their trials with ordinary-fit
+studies. As with other HPO settings such as epoch count, use a different
+`results_path` when comparing different progressive curricula.
+
+Passing `teacher_network` enables conditional hard/soft distillation sampling
+for joint or continual `dit_classifier`, `dit_encoder_decoder_classifier`, and
+`unet_classifier` studies. The student token/head and wrapper loss settings are
+written to each trial config, while the live teacher is passed directly to
+`main` and never serialized. Distillation trials use their own `distillation`
+study directory/name and prefer `total_accuracy`; they can also use
+`fit_progressively`.
+
+With ordinary `fit`, `epochs` is the per-fit budget. With progressive fitting,
+the diffusion budget is the epochs actually run across all curriculum stages:
+at most `stage_epochs * number_of_stages + final_epochs` under fixed pacing.
+The `epochs` argument remains the budget for ordinary classifier phases in a
+continual study and must therefore still be positive. It also retains the
+existing role of sizing a sampled cosine learning-rate schedule; set the HPO
+epoch value to a progressive budget representative of the curriculum when
+cosine decay is enabled.
 
 For fair comparisons, keep the dataset, seed, trial count, epoch budget, and
 continual replay-budget candidate set fixed across competing model families. Diffusion and

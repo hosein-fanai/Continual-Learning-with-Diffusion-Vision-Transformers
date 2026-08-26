@@ -4,6 +4,24 @@
 input preparation, model orchestration, continual learning, replay, Keras
 serialization, losses, callbacks, plotting, and artifact persistence.
 
+## Recommended entry points
+
+| Goal | Public API | Result |
+| --- | --- | --- |
+| Run a complete experiment | `common.train.main(config)` | Model, history, evaluations, and result path |
+| Prepare data only | `common.dataloader.get_datasets(config)` | Training and validation inputs |
+| Build a model only | `common.model.get_model(config)` | Compiled model or continual model bundle |
+| Fit an existing model | `common.train.train_model(...)` | Metric-history mapping |
+| Report an existing run | `common.train.report(...)` | Evaluation mapping and requested artifacts |
+| Run continual learning | `common.learner.continually_learn(config)` | Task accuracies or full details |
+| Tune a supported family | `common.hpo.run_hpo(...)` | Optuna study and saved trial artifacts |
+
+For new code, prefer a `Config` and `main(config)`. The separate factory and
+training functions are useful when a notebook needs to inspect or replace one
+stage. Direct keyword calls remain available for legacy experiments. Configured
+`continually_learn` now reuses `main`, so dataset creation, model construction,
+training, and reporting have one orchestration path.
+
 ## Training architecture
 
 Raw diffusion networks perform one denoising pass. Their wrappers own the noise

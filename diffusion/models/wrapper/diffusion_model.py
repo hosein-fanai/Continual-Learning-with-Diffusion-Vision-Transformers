@@ -164,6 +164,8 @@ class DiffusionModel(ArgumentSaverModel):
                 each progressive stage. Custom train/test steps then consume
                 the prepared tensors directly. The default false preserves
                 online preparation in the training device path.
+            map_num_parallel_calls (int | bool): Parallel-call value forwarded
+                to ``Dataset.map``. ``None`` selects ``tf.data.AUTOTUNE``.
             seen_classes (Mapping[object, int] | None): Saved real-label to
                 zero-based classifier-target mapping for a grown continual
                 model. ``None`` starts with no observed classes. A nonempty
@@ -185,7 +187,8 @@ class DiffusionModel(ArgumentSaverModel):
         super().__init__(**kwargs)
         self._check_assertions(locals())
         self._save_init_args(locals())
-        self._refresh_loss_flags()
+        # Subclasses refresh their additional flags after saving their fields.
+        DiffusionModel._refresh_loss_flags(self)
 
         self.network.build()
         # Clone and initialize the EMA network when EMA tracking is enabled.
@@ -258,7 +261,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         self.load_schedules()
         self.set_timestep_bounds()
-        self.set_current_resolution()
+        # Avoid subclass resolution hooks until subclass fields are initialized.
+        DiffusionModel.set_current_resolution(self)
         self.build(())
 
     def _check_assertions(self, local_vars: dict[str, object]) -> None:
@@ -715,16 +719,24 @@ class DiffusionModel(ArgumentSaverModel):
             accuracy tracker. They exist after :meth:`compile`.
         """
 
-        return [
+        metric_trackers = [
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
-            self.cond_noise_loss_tracker,
-            self.uncond_noise_loss_tracker,
+        ]
+        # Expose split trackers only when split-noise reporting is enabled.
+        if self.show_separate_noise_losses:
+            metric_trackers.extend([
+                self.cond_noise_loss_tracker,
+                self.uncond_noise_loss_tracker,
+            ])
+        metric_trackers.extend([
             self.image_loss_tracker, 
             self.kl_loss_tracker, 
             self.ctr_loss_tracker, 
             self.ctr_accuracy_tracker
-        ]
+        ])
+
+        return metric_trackers
 
     def compile(
         self, 
@@ -990,7 +1002,8 @@ class DiffusionModel(ArgumentSaverModel):
             kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
-            classes=classes
+            classes=classes,
+            cond_labels=cfg_labels,
         )
 
         return results
@@ -1011,7 +1024,7 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         prepared_inputs = self.prep_inputs(
-            inputs
+            inputs, use_label_dropout=False
         ) if not self.map_preprocess else inputs
         (x0, noises, t, x_t, cond_labels, 
         uncond_labels, classes) = prepared_inputs
@@ -1039,6 +1052,7 @@ class DiffusionModel(ArgumentSaverModel):
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes, 
+            cond_labels=cond_labels,
             use_image_loss=True
         )
 
@@ -1254,14 +1268,13 @@ class DiffusionModel(ArgumentSaverModel):
             f"pacing_type must be one of {vals} but not {pacing_type}."
         assert earlystopping_type in (vals:=("batch_wise", "epoch_wise")), \
             f"earlystopping_type must be one of {vals} but not {earlystopping_type}."
-        assert monitor.removeprefix("val_") in (vals:=self.metrics_names), \
-            f"monitor must be one of {vals} (or with val_) but not {monitor}."
-
 
         # Follow the opt-in aggregate metric rename for progressive callbacks.
         if self.show_separate_noise_losses and \
         monitor.removeprefix("val_") == "noise_loss":
             monitor = monitor.replace("noise_loss", "total_noise_loss")
+        assert monitor.removeprefix("val_") in (vals:=self.metrics_names), \
+            f"monitor must be one of {vals} (or with val_) but not {monitor}."
 
         only_task = stage_tasks if stage_tasks in (
             "timesteps_only", "resolutions_only", "depths_only"
@@ -1389,7 +1402,7 @@ class DiffusionModel(ArgumentSaverModel):
                 # Monitor progress per batch with the project callback.
                 elif earlystopping_type == "batch_wise":
                     stage_callbacks.append(BatchLossPlateau(
-                        monitor=monitor, 
+                        monitor=monitor.removeprefix("val_"), 
                         patience=patience, 
                         min_delta=min_delta, 
                         # mode=stopper_mode
@@ -2025,14 +2038,32 @@ class DiffusionModel(ArgumentSaverModel):
             :meth:`prep_inputs`.
         """
 
-        return self.prep_inputs((x0, labels))
+        return self.prep_inputs(
+            (x0, labels),
+            use_label_dropout=self._preprocess_training is not False
+        )
 
     def compute_separate_noise_losses(
         self, 
-        noises, 
-        noises_pred, 
-        cond_labels
-    ):
+        noises: tf.Tensor, 
+        noises_pred: tf.Tensor, 
+        cond_labels: tf.Tensor | None
+    ) -> tuple[tf.Tensor | None, tf.Tensor | None]:
+        """Compute reporting-only noise losses for conditional/null rows.
+
+        Args:
+            noises (tf.Tensor): Noise targets shaped like the model output.
+            noises_pred (tf.Tensor): Predicted noise shaped like ``noises``.
+            cond_labels (tf.Tensor | None): Post-dropout condition IDs. Null ID
+                zero marks unconditional rows when CFG is enabled.
+
+        Returns:
+            tuple[tf.Tensor | None, tf.Tensor | None]: Conditional and
+            unconditional scalar losses, or two ``None`` values when split
+            reporting is disabled. An empty side has a finite zero loss; its
+            metric receives zero sample weight in :meth:`get_results_dict`.
+        """
+
         # Compute reporting-only conditional losses without changing `loss`.
         if self.show_separate_noise_losses:
             assert cond_labels is not None, \
@@ -2049,14 +2080,27 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_mask = tf.logical_not(cond_mask)
             noises_pred = tf.stop_gradient(noises_pred)
 
+            cond_has_rows = tf.reduce_any(cond_mask)
             cond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, cond_mask), 
-                tf.boolean_mask(noises_pred, cond_mask)
+                tf.boolean_mask(noises, cond_mask),
+                tf.boolean_mask(noises_pred, cond_mask),
             )
+            cond_noise_loss = tf.where(
+                cond_has_rows,
+                cond_noise_loss,
+                tf.zeros_like(cond_noise_loss),
+            )
+            uncond_has_rows = tf.reduce_any(uncond_mask)
             uncond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, uncond_mask), 
-                tf.boolean_mask(noises_pred, uncond_mask)
+                tf.boolean_mask(noises, uncond_mask),
+                tf.boolean_mask(noises_pred, uncond_mask),
             )
+            uncond_noise_loss = tf.where(
+                uncond_has_rows,
+                uncond_noise_loss,
+                tf.zeros_like(uncond_noise_loss),
+            )
+        # Leave both reporting losses absent when the feature is disabled.
         else:
             cond_noise_loss = None
             uncond_noise_loss = None
@@ -2118,7 +2162,10 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         cond_labels: tf.Tensor | None = None
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[
+        tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
+        tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor
+    ]:
         """Compute and weight diffusion, reconstruction, KL, and token losses.
 
         Args:
@@ -2145,9 +2192,11 @@ class DiffusionModel(ArgumentSaverModel):
                 IDs ``[B]`` used only for optional split-noise reporting.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
-            tf.Tensor | float, tf.Tensor]: Weighted total, raw noise loss, raw
-            image loss, KL loss, class-token loss, and averaged token predictions.
+            tuple[tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
+            tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor]:
+            Weighted total, raw noise loss, optional conditional/unconditional
+            noise losses, image loss, KL loss, class-token loss, and averaged
+            token predictions.
         """
 
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
@@ -2413,8 +2462,8 @@ class DiffusionModel(ArgumentSaverModel):
         use_image_loss: bool | None = None, 
         training: bool | None = None
     ) -> tuple[
-        tf.Tensor, tf.Tensor, tf.Tensor | float, tf.Tensor | float,
-        tf.Tensor | float, tf.Tensor
+        tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
+        tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor
     ]:
         """Run the diffusion forward prediction and compute all enabled losses.
 
@@ -2434,8 +2483,9 @@ class DiffusionModel(ArgumentSaverModel):
             training (bool | None): Keras training mode.
 
         Returns:
-            tuple: Weighted total, noise, image, KL, and class-token losses plus
-            averaged token class probabilities, in that order.
+            tuple[tf.Tensor, ...]: Weighted total, noise, optional split-noise,
+            image, KL, and class-token losses plus averaged token class
+            probabilities, in that order.
         """
 
         x0_pred, noises_pred, *others = self.forward(
@@ -2472,6 +2522,7 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_loss: tf.Tensor | None = None, 
         ctr_preds: tf.Tensor | None = None, 
         classes: tf.Tensor | None = None, 
+        cond_labels: tf.Tensor | None = None,
         use_total_loss: bool | None = None, 
         use_image_loss: bool | None = None, 
         use_kl_loss: bool | None = None, 
@@ -2481,12 +2532,19 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             noise_loss (tf.Tensor): Required scalar noise loss.
+            cond_noise_loss (tf.Tensor | None): Conditional-row noise loss for
+                optional split reporting.
+            uncond_noise_loss (tf.Tensor | None): Null-row noise loss for
+                optional split reporting.
             total_loss (tf.Tensor | None): Required when total tracking is on.
             image_loss (tf.Tensor | None): Required when image tracking is on.
             kl_loss (tf.Tensor | None): Required when KL tracking is on.
             ctr_loss (tf.Tensor | None): Required when token tracking is on.
             ctr_preds (tf.Tensor | None): ``[B,num_classes]`` token predictions.
             classes (tf.Tensor | None): Ground-truth classes ``[B]``.
+            cond_labels (tf.Tensor | None): Post-dropout condition IDs used to
+                weight split-noise means by their numbers of rows. When
+                omitted, each supplied split loss receives unit weight.
             use_total_loss (bool | None): Explicit total tracker switch; None
                 enables it when any auxiliary loss is enabled.
             use_image_loss (bool | None): Explicit image tracker switch.
@@ -2506,6 +2564,8 @@ class DiffusionModel(ArgumentSaverModel):
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss \
                         if use_total_loss is None else use_total_loss
+        batch_weight = tf.cast(tf.shape(classes)[0], tf.float32) \
+                       if classes is not None else 1.
 
         results = {}
 
@@ -2515,21 +2575,42 @@ class DiffusionModel(ArgumentSaverModel):
                 "When use_total_loss is True, total_loss cannot be None."
 
 
-            self.total_loss_tracker.update_state(total_loss)
+            self.total_loss_tracker.update_state(
+                total_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.total_loss_tracker.name: 
                 self.total_loss_tracker.result()
             })
 
-        self.noise_loss_tracker.update_state(noise_loss)
+        self.noise_loss_tracker.update_state(
+            noise_loss, sample_weight=batch_weight
+        )
         results.update({
             self.noise_loss_tracker.name: 
             self.noise_loss_tracker.result(), 
         })       
 
+        # Update optional split means using sample counts rather than batches.
         if cond_noise_loss is not None and uncond_noise_loss is not None:
-            self.cond_noise_loss_tracker.update_state(cond_noise_loss)
-            self.uncond_noise_loss_tracker.update_state(uncond_noise_loss)
+            cond_weight = 1.
+            uncond_weight = 1.
+            # Derive conditional/null population sizes when labels are available.
+            if cond_labels is not None:
+                cond_mask = cond_labels != 0 if self.use_cfg else tf.ones_like(
+                    cond_labels, dtype=tf.bool
+                )
+                cond_weight = tf.reduce_sum(tf.cast(cond_mask, tf.float32))
+                uncond_weight = tf.reduce_sum(tf.cast(
+                    tf.logical_not(cond_mask), tf.float32
+                ))
+
+            self.cond_noise_loss_tracker.update_state(
+                cond_noise_loss, sample_weight=cond_weight
+            )
+            self.uncond_noise_loss_tracker.update_state(
+                uncond_noise_loss, sample_weight=uncond_weight
+            )
             results.update({
                 self.cond_noise_loss_tracker.name:
                 self.cond_noise_loss_tracker.result(), 
@@ -2543,7 +2624,9 @@ class DiffusionModel(ArgumentSaverModel):
                 "When use_image_loss is True, image_loss cannot be None."
 
 
-            self.image_loss_tracker.update_state(image_loss)
+            self.image_loss_tracker.update_state(
+                image_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.image_loss_tracker.name: 
                 self.image_loss_tracker.result()
@@ -2555,7 +2638,9 @@ class DiffusionModel(ArgumentSaverModel):
                 "When use_kl_loss is True, kl_loss cannot be None."
 
 
-            self.kl_loss_tracker.update_state(kl_loss)
+            self.kl_loss_tracker.update_state(
+                kl_loss, sample_weight=batch_weight
+            )
             results.update({
                 self.kl_loss_tracker.name: 
                 self.kl_loss_tracker.result(), 
@@ -2568,7 +2653,9 @@ class DiffusionModel(ArgumentSaverModel):
                 "ctr_loss, ctr_preds, and classes cannot be None."
 
 
-            self.ctr_loss_tracker.update_state(ctr_loss)
+            self.ctr_loss_tracker.update_state(
+                ctr_loss, sample_weight=batch_weight
+            )
             self.ctr_accuracy_tracker.update_state(
                 classes, 
                 ctr_preds
@@ -2714,9 +2801,8 @@ class DiffusionModel(ArgumentSaverModel):
             labels (tf.Tensor | list[int] | None): Network condition IDs. In
                 dynamic mode, None shifts observed zero-based targets to
                 condition IDs and excludes the CFG null label. Fixed-width
-                mode samples every
-                ``range(network.num_labels)`` ID as before. The number of labels
-                is the batch size.
+                mode samples every ``range(network.num_labels)`` ID as before. 
+                The number of labels is the batch size.
             x_t (tf.Tensor | None): Initial Gaussian state ``[B,H,W,C]``.  None
                 draws it at the active resolution.  In ``swap_noise_image`` VAE
                 mode this argument is instead passed to ``sample_vae`` as ``z``.
@@ -3137,7 +3223,10 @@ def run_self_tests() -> dict[str, str]:
         cond_labels=tf.constant([1, 0], dtype=tf.uint8),
     )
     split_results = separate_noise_wrapper.get_results_dict(
-        split_losses[1]
+        split_losses[1],
+        cond_noise_loss=split_losses[2],
+        uncond_noise_loss=split_losses[3],
+        cond_labels=tf.constant([1, 0], dtype=tf.uint8),
     )
     assert set(split_results) == {
         "total_noise_loss", "cond_noise_loss", "uncond_noise_loss"
@@ -3172,7 +3261,10 @@ def run_self_tests() -> dict[str, str]:
         )
     )
     no_cfg_split_results = no_cfg_separate_noise_wrapper.get_results_dict(
-        no_cfg_split_losses[1]
+        no_cfg_split_losses[1],
+        cond_noise_loss=no_cfg_split_losses[2],
+        uncond_noise_loss=no_cfg_split_losses[3],
+        cond_labels=classes,
     )
     tf.debugging.assert_near(no_cfg_split_results["cond_noise_loss"], 10.)
     tf.debugging.assert_near(no_cfg_split_results["uncond_noise_loss"], 0.)
@@ -3269,8 +3361,11 @@ def run_self_tests() -> dict[str, str]:
         "raw", images, noises, fixed_t, x_t, cfg_labels, nulls, classes,
         cfg_scale=None, use_image_loss=True, training=False,
     )
-    assert len(losses_tuple) == 6
-    assert all(bool(tf.reduce_all(tf.math.is_finite(value))) for value in losses_tuple[:5])
+    assert len(losses_tuple) == 8
+    assert all(
+        value is None or bool(tf.reduce_all(tf.math.is_finite(value)))
+        for value in losses_tuple[:7]
+    )
 
     weighted = make_wrapper(
         noise_loss_coef=0.5, 
@@ -3323,7 +3418,7 @@ def run_self_tests() -> dict[str, str]:
     )
     tf.debugging.assert_near(
         weighted_losses[0], 
-        0.5 * weighted_losses[1] + 0.25 * weighted_losses[2], 
+        0.5 * weighted_losses[1] + 0.25 * weighted_losses[4], 
         atol=1e-5, 
     )
     weighted.set_current_resolution(8)
@@ -3408,6 +3503,19 @@ def run_self_tests() -> dict[str, str]:
     assert "noise_loss" in training_results
     testing_results = wrapper.test_step((images, classes))
     assert {"loss", "noise_loss", "image_loss"} <= set(testing_results)
+    eval_dropout = make_wrapper(
+        p_uncond=1.0, show_separate_noise_losses=True
+    )
+    eval_dropout_results = eval_dropout.test_step((images, classes))
+    assert float(eval_dropout_results["cond_noise_loss"]) > 0.
+    assert float(eval_dropout_results["uncond_noise_loss"]) == 0.
+    eval_dropout._preprocess_training = True
+    mapped_training = eval_dropout.prep_inputs_map(images, classes)
+    tf.debugging.assert_equal(mapped_training[4], tf.zeros_like(shifted))
+    eval_dropout._preprocess_training = False
+    mapped_eval = eval_dropout.prep_inputs_map(images, classes)
+    tf.debugging.assert_equal(mapped_eval[4], shifted)
+    eval_dropout._preprocess_training = None
     dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
     history = wrapper.fit(dataset, epochs=1, verbose=0)
     assert len(history.history["noise_loss"]) == 1
@@ -3459,7 +3567,7 @@ def run_self_tests() -> dict[str, str]:
     all_label_sample = wrapper.sample(
         network_name="raw", labels=None, steps=2, eta=0.0, seed=29
     )
-    assert all_label_sample.shape == (wrapper.network.num_labels, 4, 4, 1)
+    assert all_label_sample.shape == (wrapper.network.num_classes, 4, 4, 1)
     supplied_state = tf.zeros((1, 4, 4, 1), dtype=tf.float32)
     supplied_sample = wrapper.sample(
         network_name="raw", labels=[1], x_t=supplied_state,
@@ -3589,7 +3697,7 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=None, seed=53
     )
     assert default_label_vae_images.shape == (
-        variational_cond.network.num_labels, 4, 4, 1
+        variational_cond.network.num_classes, 4, 4, 1
     )
     try:
         variational_cond.sample_vae(
@@ -3933,12 +4041,12 @@ def run_self_tests() -> dict[str, str]:
         network=SimpleNamespace(
             weights=raw_count_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            _build_model=Mock(return_value=None),
+            build=Mock(return_value=None),
         ), 
         ema_network=SimpleNamespace(
             weights=ema_count_weights, 
             add_depths=Mock(return_value={"network": {"added": 0}}), 
-            _build_model=Mock(return_value=None),
+            build=Mock(return_value=None),
         )
     )
     try:
@@ -3964,12 +4072,12 @@ def run_self_tests() -> dict[str, str]:
         network=SimpleNamespace(
             weights=raw_shape_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            _build_model=Mock(return_value=None),
+            build=Mock(return_value=None),
         ), 
         ema_network=SimpleNamespace(
             weights=ema_shape_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            _build_model=Mock(return_value=None),
+            build=Mock(return_value=None),
         ), 
     )
     try:

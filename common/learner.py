@@ -900,13 +900,22 @@ def _continually_learn(
                     rng
                 )
 
-            # Pad raw images once before task selection and flattening.
+            # Pad raw images once in the same coordinate space as the loader.
             if pad > 0:
-                all_x_train = _pad_images(np.asarray(all_x_train), pad)
-                all_x_test = _pad_images(np.asarray(all_x_test), pad)
+                pad_value = -1. if str(
+                    load_dataset_fn_kwargs["preprocess"]
+                ).lower() in ("standardize", "diffusion") else 0.
+                all_x_train = _pad_images(
+                    np.asarray(all_x_train), pad, value=pad_value
+                )
+                all_x_test = _pad_images(
+                    np.asarray(all_x_test), pad, value=pad_value
+                )
                 # Apply matching padding to an available validation split.
                 if all_x_val is not None:
-                    all_x_val = _pad_images(np.asarray(all_x_val), pad)
+                    all_x_val = _pad_images(
+                        np.asarray(all_x_val), pad, value=pad_value
+                    )
 
             # Truncate one-hot labels to the configured continual class width.
             if load_dataset_fn_kwargs["onehot_labels"]:
@@ -1289,8 +1298,9 @@ def _continually_learn(
                         "val_total_accuracy" if generative_valset is not None
                         else "total_accuracy"
                     ) if generative_model.use_total_accuracy else (
-                        "val_classifier_accuracy" if generative_valset is not None
-                        else "classifier_accuracy"
+                        "val_" + generative_model.accuracy_tracker.name
+                        if generative_valset is not None
+                        else generative_model.accuracy_tracker.name
                     ),
                     legacy_patience=5
                 )
@@ -1604,37 +1614,19 @@ def continually_learn(
         )
 
 
-    from common.dataloader import get_datasets
-    from common.model import get_model
-    from common.train import train_model, report
+    # Reuse the shared project pipeline instead of duplicating its four stages.
+    from common.train import main
 
 
-    # Seed Keras-supported generators for reproducible configured runs.
-    if config.training.seed is not None:
-        tf.keras.utils.set_random_seed(config.training.seed)
+    run = main(config, teacher_network=teacher_network)
+    model = run["model"]
+    history = run["history"]
 
-    trainset, valset = get_datasets(config)
-    model = get_model(config, teacher_network=teacher_network)
-
-    # Require the loader and model bundle produced for continual tasks.
-    if not callable(trainset) or not isinstance(model, dict):
+    # Require the model bundle produced for continual tasks.
+    if not isinstance(model, dict):
         raise TypeError(
-            "A continual config must create a dataset loader and model bundle."
+            "A continual config must create a model bundle."
         )
-
-    history = train_model(
-        config, 
-        model, 
-        trainset, 
-        valset=valset
-    )
-    evaluations = report(
-        config, 
-        history, 
-        model, 
-        trainset, 
-        valset=valset
-    )
 
     details = model.get("continual_details")
     # Normalize legacy accuracy-list results into a detail mapping.
@@ -1651,7 +1643,7 @@ def continually_learn(
             "model": model.get("classifier"), 
             "generative_model": model.get("generative_model")
         }
-    details["evaluations"] = evaluations
+    details["evaluations"] = run["evaluations"]
 
     # Return full task details only when configured by the caller.
     if config.continually_learn.return_details:

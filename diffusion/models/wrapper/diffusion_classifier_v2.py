@@ -380,6 +380,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self.clf_trainable_variables
         )
 
+        # Refresh the active phase reference after rebuilding variable groups.
+        if self._train_part == "generator":
+            self._active_trainable_variables = self.gen_trainable_variables
+        # Keep discriminator growth aligned with its refreshed variable group.
+        elif self._train_part == "discriminator":
+            self._active_trainable_variables = self.clf_trainable_variables
+
     @property
     def clf_vars_names(self) -> list[str]:
         """Return TensorFlow names assigned to classifier optimization.
@@ -438,28 +445,43 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.clf_optimizer = optimizers.deserialize(
             optimizers.serialize(self.optimizer)
         )
-        self.optimizer = None
 
     def apply_grads(
         self, 
         tape: tf.GradientTape, 
         loss: tf.Tensor, 
-        variables: list[tf.Variable]| None = None
+        variables: list[tf.Variable] | None = None
     ) -> None:
-        if variables is None:
-            variables = self._active_trainable_variables
+        """Apply one phase's gradients to its selected variable group.
 
-        super().apply_grads(
-            tape,  
-            loss, 
-            variables
-        )
+        Args:
+            tape (tf.GradientTape): Tape that recorded ``loss``.
+            loss (tf.Tensor): Scalar phase objective.
+            variables (list[tf.Variable] | None): Explicit variables, or the
+                currently active generator/discriminator group.
+
+        Returns:
+            None: Gradients are applied through the active phase optimizer.
+        """
+
+        # Fall back to generator variables for direct generator-step calls.
+        if variables is None:
+            variables = self._active_trainable_variables \
+                        or self.gen_trainable_variables
+
+        optimizer = self.clf_optimizer if (
+            self._train_part == "discriminator"
+            or variables is self.clf_trainable_variables
+        ) else self.gen_optimizer
+        grads = tape.gradient(loss, variables)
+        optimizer.apply_gradients(zip(grads, variables))
 
     def prep_clfv2_inputs(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor], 
-        noisified_max_timesteps: int | None
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        noisified_max_timesteps: int | None,
+        return_x0: bool = False
+    ) -> tuple[tf.Tensor, ...]:
         """Prepare clean or bounded-noise inputs for a classifier-only phase.
 
         Args:
@@ -468,11 +490,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             noisified_max_timesteps (int | None): Exclusive noising upper bound.
                 A number draws timesteps from the active minimum to this bound;
                 None leaves images clean and sets all times to 0.
+            return_x0 (bool): Append the resized clean images for an ensemble
+                loss that performs its own noising.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]: Integer timesteps
-            ``[B]``, clean/noisy images at active resolution, uint8 null labels
-            ``[B]``, and original zero-based classes ``[B]``.
+            tuple[tf.Tensor, ...]: Integer timesteps ``[B]``, clean/noisy images
+            at active resolution, uint8 null labels ``[B]``, and original
+            zero-based classes ``[B]``. Resized clean images are appended when
+            ``return_x0=True``.
         """
 
         x0, labels = inputs
@@ -501,7 +526,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             x_t = x0
             t = tf.zeros_like(labels, dtype=tf.int32)
 
-        return t, x_t, uncond_labels, classes
+        outputs = (t, x_t, uncond_labels, classes)
+
+        return (*outputs, x0) if return_x0 else outputs
 
     def prep_inputs_map(
         self, 
@@ -515,12 +542,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
             labels (tf.Tensor): Dataset class labels.
         Returns:
             tuple[tf.Tensor, ...]: Seven diffusion tensors for the generator,
-            or four classifier tensors with optional teacher probabilities for
-            the discriminator.
+            or five classifier tensors (including clean images) with optional
+            teacher probabilities for the discriminator.
         """
 
-            # Generator mapping performs only the inherited diffusion prep.
-        
+        # Generator mapping performs only the inherited diffusion prep.
         if self._test_part != "discriminator":
             return DiffusionModel.prep_inputs_map(self, x0, labels)
 
@@ -529,7 +555,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
                         else self.clf_train_noisified_max_timesteps
         prepared_inputs = self.prep_clfv2_inputs(
             (x0, labels), 
-            max_timesteps
+            max_timesteps,
+            return_x0=True
         )
 
         # Preserve the ordinary discriminator batch without teacher targets.
@@ -544,6 +571,56 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return (*prepared_inputs, teacher_labels)
 
+    def _fit_selected_part(
+        self,
+        part_name: str,
+        progressive: bool,
+        fit_kwargs: dict[str, object],
+    ) -> callbacks.History:
+        """Fit one optimizer phase and always restore neutral wrapper state.
+
+        Args:
+            part_name (str): ``"generator"`` or ``"discriminator"``.
+            progressive (bool): Use the progressive curriculum trainer when
+                true, otherwise use ordinary Keras fitting.
+            fit_kwargs (dict[str, object]): Arguments for the selected fit API.
+
+        Returns:
+            tf.keras.callbacks.History: History returned by the selected fit.
+
+        Raises:
+            ValueError: If ``part_name`` is not a supported optimizer phase.
+        """
+
+        # Select the optimizer and live variable group for the requested phase.
+        if part_name == "generator":
+            optimizer = self.gen_optimizer
+            variables = self.gen_trainable_variables
+        # Select the independently cloned classifier optimizer.
+        elif part_name == "discriminator":
+            optimizer = self.clf_optimizer
+            variables = self.clf_trainable_variables
+        # Reject internal phase names that would silently skip optimization.
+        else:
+            raise ValueError("part_name must be 'generator' or 'discriminator'.")
+
+        self._switch_train_part(part_name)
+        self._switch_test_part(part_name)
+        self.optimizer = optimizer
+        self._active_trainable_variables = variables
+
+        try:
+            # Route curriculum arguments to the actual progressive trainer.
+            if progressive:
+                return super().fit_progressively(**fit_kwargs)
+
+            return super().fit(**fit_kwargs)
+        finally:
+            self._switch_train_part("")
+            self._switch_test_part("")
+            self.optimizer = self.gen_optimizer
+            self._active_trainable_variables = None
+
     def fit_generator(self, **kwargs: object) -> callbacks.History:
         """Fit only the generator variable group with diffusion objectives.
 
@@ -557,20 +634,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             tf.keras.callbacks.History: Generator-phase Keras history.
         """
 
-        active_part_name = "generator"
-        self._switch_train_part(active_part_name)
-        self._switch_test_part(active_part_name)
-        self.optimizer = self.gen_optimizer
-        self._active_trainable_variables = self.gen_trainable_variables
-
-        history = super().fit(**kwargs)
-
-        self._switch_train_part("")
-        self._switch_test_part("")
-        self.optimizer = None
-        self._active_trainable_variables = None
-
-        return history
+        return self._fit_selected_part("generator", False, dict(kwargs))
 
     def fit_generator_progressively(self, **kwargs: object) -> callbacks.History:
         """Progressively train only the generative diffusion objective.
@@ -591,20 +655,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             tf.keras.callbacks.History: Merged progressive generator history.
         """
 
-        active_part_name = "generator"
-        self._switch_train_part(active_part_name)
-        self._switch_test_part(active_part_name)
-        self.optimizer = self.gen_optimizer
-        self._active_trainable_variables = self.gen_trainable_variables
-
-        history = super().fit(**kwargs)
-        
-        self._switch_train_part("")
-        self._switch_test_part("")
-        self.optimizer = None
-        self._active_trainable_variables = None
-
-        return history
+        return self._fit_selected_part("generator", True, dict(kwargs))
         
     def fit_discriminator(self, **kwargs: object) -> callbacks.History:
         """Fit only classifier-owned variables with classifier objectives.
@@ -619,20 +670,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             tf.keras.callbacks.History: Discriminator-phase Keras history.
         """
 
-        active_part_name = "discriminator"
-        self._switch_train_part(active_part_name)
-        self._switch_test_part(active_part_name)
-        self.optimizer = self.clf_optimizer
-        self._active_trainable_variables = self.clf_trainable_variables
-
-        history = super().fit(**kwargs)
-        
-        self._switch_train_part("")
-        self._switch_test_part("")
-        self.optimizer = None
-        self._active_trainable_variables = None
-
-        return history
+        return self._fit_selected_part("discriminator", False, dict(kwargs))
         
     def fit_discriminator_progressively(self, **kwargs: object) -> callbacks.History:
         """Progressively train only the discriminator diffusion objective.
@@ -648,20 +686,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             tf.keras.callbacks.History: Merged progressive discriminator history.
         """
 
-        active_part_name = "discriminator"
-        self._switch_train_part(active_part_name)
-        self._switch_test_part(active_part_name)
-        self.optimizer = self.clf_optimizer
-        self._active_trainable_variables = self.clf_trainable_variables
-
-        history = super().fit(**kwargs)
-        
-        self._switch_train_part("")
-        self._switch_test_part("")
-        self.optimizer = None
-        self._active_trainable_variables = None
-
-        return history
+        return self._fit_selected_part("discriminator", True, dict(kwargs))
         
     def fit(
         self, 
@@ -773,8 +798,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor]
     ) -> dict[str, tf.Tensor]:
-        """
-        
+        """Run the inherited diffusion update for the generator phase.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean images and class labels,
+                or the prepared diffusion tuple when mapping is enabled.
+
+        Returns:
+            dict[str, tf.Tensor]: Running generator loss metrics.
         """
 
         return DiffusionModel.train_step(self, inputs)
@@ -783,8 +814,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor]
     ) -> dict[str, tf.Tensor]:
-        """
+        """Run the inherited diffusion evaluation for the generator phase.
 
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor]): Clean images and class labels,
+                or the prepared diffusion tuple when mapping is enabled.
+
+        Returns:
+            dict[str, tf.Tensor]: Running generator evaluation metrics.
         """
 
         return DiffusionModel.test_step(self, inputs)
@@ -807,7 +844,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         prepared_inputs =  self.prep_clfv2_inputs(
             inputs, 
-            self.clf_train_noisified_max_timesteps
+            self.clf_train_noisified_max_timesteps,
+            return_x0=True
         ) if not self.map_preprocess else inputs
         # Separate the mapped teacher target from discriminator inputs.
         if self.use_teacher:
@@ -817,7 +855,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # Keep ordinary discriminator training teacher-free.
         else:
             teacher_labels = None
-        t, x_t, uncond_labels, classes = prepared_inputs
+        t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
         with tf.GradientTape() as tape:
             class_outputs = self.network.predict_class(
@@ -828,6 +866,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             classes_pred = class_outputs[0]
             clf_regs_list = class_outputs[3]
             clf_z_vals = class_outputs[4]
+            distil_preds = None
+            # Read the independent distillation head when it is active.
             if self.use_distil_loss:
                 distil_preds = class_outputs[5]
 
@@ -840,8 +880,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 clf_regs_list, distil_preds, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
-                ctr_train_type="uncond", 
-                teacher_labels=teacher_labels, 
+                ctr_train_type="uncond",
+                teacher_labels=teacher_labels,
+                x0=x0,
                 training=True
             )
 
@@ -877,7 +918,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         prepared_inputs =  self.prep_clfv2_inputs(
             inputs, 
-            self.clf_test_noisified_max_timesteps
+            self.clf_test_noisified_max_timesteps,
+            return_x0=True
         ) if not self.map_preprocess else inputs
         # Separate the mapped teacher target from discriminator inputs.
         if self.use_teacher:
@@ -887,7 +929,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # Keep ordinary discriminator evaluation teacher-free.
         else:
             teacher_labels = None
-        t, x_t, uncond_labels, classes = prepared_inputs
+        t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
         class_outputs = self.get_network(self.test_network_name).predict_class(
             (x_t, t, uncond_labels), 
@@ -897,6 +939,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
         clf_z_vals = class_outputs[4]
+        distil_preds = None
+        # Read the independent distillation head when it is active.
         if self.use_distil_loss:
             distil_preds = class_outputs[5]
 
@@ -911,6 +955,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
             teacher_labels=teacher_labels,
+            x0=x0,
             training=False
         )
 
@@ -1190,6 +1235,11 @@ def run_self_tests() -> dict[str, str]:
     noisy_t, noisy_x, _, _ = wrapper.prep_clfv2_inputs((images, classes), 2)
     assert noisy_x.shape == images.shape
     assert bool(tf.reduce_all((0 <= noisy_t) & (noisy_t < 2)))
+    prepared_with_clean = wrapper.prep_clfv2_inputs(
+        (images, classes), 2, return_x0=True
+    )
+    assert len(prepared_with_clean) == 5
+    tf.debugging.assert_near(prepared_with_clean[-1], images)
 
     capped = make_wrapper(
         clf_train_noisified_max_timesteps=2, 
@@ -1201,6 +1251,12 @@ def run_self_tests() -> dict[str, str]:
     capped._switch_test_part("discriminator")
     assert "classifier_loss" in capped.train_step((images, classes))
     assert "classifier_accuracy" in capped.test_step((images, classes))
+
+    ensemble = make_wrapper(use_ensemble_loss_instead=True)
+    ensemble._switch_train_part("discriminator")
+    ensemble._switch_test_part("discriminator")
+    assert "classifier_loss" in ensemble.train_step((images, classes))
+    assert "classifier_loss" in ensemble.test_step((images, classes))
 
     wrapper._switch_train_part("generator")
     wrapper._switch_test_part("generator")

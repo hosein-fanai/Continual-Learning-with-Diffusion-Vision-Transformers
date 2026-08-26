@@ -144,8 +144,8 @@ def plot_history(
 
     Args:
         history (Mapping[str, Sequence[float]]): Metric names mapped to
-            per-epoch values, typically ``History.history``.  Series should
-            have equal, nonzero lengths and validation values should be lists.
+            per-epoch values, typically ``History.history``. Series may have
+            different lengths, but each training/validation pair must align.
         range_ (tuple[int | None, ...]): Two or three arguments expanded into
             ``slice(*range_)``.  ``(0, None)`` plots all epochs, ``(5, 20)``
             plots zero-based entries 5--19, and ``(None, None, 2)`` plots every
@@ -167,7 +167,8 @@ def plot_history(
         show_plots (bool): Display the figure; false closes it after saving.
         plot_path (str | os.PathLike | None): Optional image destination.
         csv_path (str | os.PathLike | None): Optional CSV destination containing
-            an added one-based ``epoch`` column and all unsliced history keys.
+            an added one-based ``epoch`` column and all unsliced history keys;
+            shorter series are padded with missing values.
 
     Returns:
         None.
@@ -300,7 +301,10 @@ def plot_history(
 
     # Export aligned history series when a CSV path is supplied.
     if csv_path:
-        history_df = pd.DataFrame(history)
+        # Preserve unequal generator/discriminator history lengths with NaN.
+        history_df = pd.DataFrame({
+            name: pd.Series(values) for name, values in history.items()
+        })
         history_df.insert(0, "epoch", range(1, len(history_df) + 1))
         history_df.to_csv(csv_path, index=False)
 
