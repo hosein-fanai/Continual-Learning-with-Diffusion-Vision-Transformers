@@ -16,11 +16,11 @@ The root CLI loads a YAML configuration without training by default, or runs
 the configured experiment with `--train`:
 
 ```powershell
-python __main__.py configs/my-run.yaml
-python __main__.py --train configs/my-run.yaml
+python . configs/my-run.yaml
+python . --train configs/my-run.yaml
 ```
 
-Use `python __main__.py --help` for the complete command contract. Because the
+Use `python . --help` for the complete command contract. Because the
 repository has no root package initializer, `python -m <package>` and relative
 imports from the root entry point are intentionally not used.
 
