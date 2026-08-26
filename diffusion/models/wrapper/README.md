@@ -279,9 +279,17 @@ same inherited `map_preprocess` path when `ctr_loss_coef > 0` and their
 `train_type` is `distil` or `both`. Pass a
 compatible raw classifier, or another wrapper whose `.network` is that
 classifier, as the programmatic teacher. The teacher is deliberately not a
-YAML/dataclass field because it is a live Keras object. The wrapper makes both
-the supplied object and its effective raw network non-trainable, calls it with
-`training=False`, and stops gradients through its probabilities.
+YAML/dataclass field because it is a live Keras object. The wrapper unwraps and
+freezes the effective raw network, calls it with `training=False`, and stops
+gradients through its probabilities.
+
+Continual learning can instead construct the teacher automatically. With
+`defer_teacher=True`, task one is allowed to run without a teacher;
+`snapshot_teacher_network("raw")` makes an independent frozen copy of the
+completed student and `set_teacher_network(...)` activates it for the next
+task. The continual API performs both calls before discovering and adding the
+new class. A supplied task-one teacher is replaced by the first student
+snapshot. Runtime teachers are excluded from wrapper configuration.
 
 ```python
 teacher = DiTClassifier(
@@ -325,9 +333,11 @@ selected from mappings. The custom train/test steps consume the prepared tuple
 without noising or shifting it a second time. Array inputs, separate `x`/`y`,
 validation tuples, and already-prepared datasets are not automatically adapted
 by this path. Progressive resolution changes are mirrored to compatible
-teachers. When continual growth gives teacher and student different class
-widths, teacher probabilities are restricted or zero-padded to the student's
-current width and normalized before either loss is computed.
+teachers. For a narrower past teacher, old conditional IDs are retained and a
+new-task ID is replaced by the safe zero/null condition before lookup. When continual
+growth gives teacher and student different class widths, teacher probabilities
+are restricted or zero-padded to the student's current width and normalized
+before either loss is computed.
 
 `distil_type="hard"` takes `argmax(teacher_labels)` and applies sparse
 categorical cross-entropy. `"soft"` applies KL divergence in the
@@ -366,7 +376,7 @@ trackers live on `DiffusionClassifier` and are inherited by V2.
 head to the classifier variable group and applies distillation only in the
 discriminator train/test phase. Its generator map returns only the ordinary
 seven prepared diffusion tensors and never calls the teacher. Its discriminator
-map returns `(t, x_t, null_labels, classes, teacher_labels)`, so the teacher and
+map returns `(t, x_t, null_labels, classes, x0, teacher_labels)`, so the teacher and
 student see the same clean or bounded-noise phase-specific input.
 
 ## Split generator/discriminator training

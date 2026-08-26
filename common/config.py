@@ -8,7 +8,15 @@ class-incremental runs while the other sections remain reusable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import (
+    MISSING,
+    Field,
+    asdict,
+    dataclass,
+    field,
+    fields,
+    is_dataclass,
+)
 from typing import Any, TypeVar
 from collections.abc import Mapping
 
@@ -681,8 +689,10 @@ class ContinuallyLearnConfig(KwargsMixin):
         train_classifier_separately (bool): Add the separate classifier phase
             required by ``DiffusionClassifierV2`` and optionally used by a
             ``VAEClassifier``.
-        use_distillation (bool): Require a runtime ``teacher_network`` for a
-            diffusion-classifier replay model. The teacher itself is never
+        use_distillation (bool): Use each completed diffusion-classifier raw
+            student as the next continual task's frozen teacher. The model must
+            provide a distillation token and a positive teacher objective. An
+            optional runtime teacher may initialize task one but is never
             stored in this YAML-safe section.
         evaluate_ensemble_accuracy (bool): Also evaluate diffusion-classifier
             ensemble accuracy after each continual task.
@@ -966,16 +976,124 @@ def load_config(
     return Config(**data)
 
 
+def _declared_default(config_field: Field[Any]) -> tuple[bool, object]:
+    """Return a fresh declared default for one dataclass field.
+
+    Args:
+        config_field (Field[Any]): Field whose ``default`` or
+            ``default_factory`` should be inspected.
+
+    Returns:
+        tuple[bool, object]: Whether a default exists and its value. Factories
+        are invoked for each comparison so mutable defaults remain isolated.
+    """
+
+    # Reuse immutable and explicitly declared field defaults directly.
+    if config_field.default is not MISSING:
+        return True, config_field.default
+
+    # Create a fresh list, mapping, or nested config for factory defaults.
+    if config_field.default_factory is not MISSING:
+        return True, config_field.default_factory()
+
+    return False, None
+
+
+def _equals_default(value: object, default: object) -> bool:
+    """Return whether a serializable field value equals its declared default.
+
+    Args:
+        value (object): Current field value.
+        default (object): Fresh declared default value.
+
+    Returns:
+        bool: ``True`` only when equality produces one unambiguous truth value.
+    """
+
+    try:
+        return bool(value == default)
+    except (TypeError, ValueError):
+        # Preserve unusual values whose equality cannot be reduced to one bool.
+        return False
+
+
+def _shortened_dataclass(
+    value: object, 
+    serialized: Mapping[str, object], 
+    baseline: object = MISSING, 
+) -> dict[str, object]:
+    """Return changed dataclass fields while preserving their nested shape.
+
+    Args:
+        value (object): Dataclass instance being compared.
+        serialized (Mapping[str, object]): Its recursively converted ``asdict``
+            representation, used to retain normal deep-copy behavior.
+        baseline (object): Optional parent-field default instance. ``MISSING``
+            compares fields with their own declarations.
+
+    Returns:
+        dict[str, object]: Recursive mapping containing only nondefault fields.
+    """
+
+    shortened: dict[str, object] = {}
+    for config_field in fields(value):
+        current_value = getattr(value, config_field.name)
+
+        # Nested baselines preserve defaults supplied by a parent factory.
+        if baseline is not MISSING:
+            has_default = True
+            default_value = getattr(baseline, config_field.name)
+        # Fall back to this dataclass type's field declarations at the root.
+        else:
+            has_default, default_value = _declared_default(config_field)
+
+        current_is_dataclass = (
+            is_dataclass(current_value) and not isinstance(current_value, type)
+        )
+        default_is_dataclass = (
+            has_default
+            and is_dataclass(default_value)
+            and not isinstance(default_value, type)
+        )
+
+        # Recurse so one changed leaf retains all required section keys.
+        if current_is_dataclass:
+            child_baseline = default_value if default_is_dataclass else MISSING
+            child_serialized = serialized[config_field.name]
+            child_shortened = _shortened_dataclass(
+                current_value,
+                child_serialized,
+                child_baseline,
+            )
+            # Omit an unchanged optional nested section.
+            if has_default and not child_shortened:
+                continue
+            shortened[config_field.name] = child_shortened
+            continue
+
+        # Omit scalar and container values equal to fresh declared defaults.
+        if has_default and _equals_default(current_value, default_value):
+            continue
+        shortened[config_field.name] = serialized[config_field.name]
+
+    return shortened
+
+
 def save_config(
     config: Config, 
-    config_path: str | os.PathLike[str]
+    config_path: str | os.PathLike[str],
+    shorten: bool = True
 ) -> None:
-    """Serialize a config dataclass tree to sorted YAML.
+    """Serialize a full or default-pruned config dataclass tree to YAML.
 
     Args:
         config (Config): Dataclass root to convert recursively with ``asdict``.
         config_path (str | os.PathLike): Destination file.  Existing content is
             overwritten; parent directories must already exist.
+        shorten (bool): When ``False``, save every field exactly as before.
+            When ``True``, recursively omit values equal to their declared
+            dataclass defaults. Nonempty plain mappings such as ``hpo`` remain
+            intact because their entries have no declared field defaults.
 
     Returns:
         None.
@@ -986,8 +1104,19 @@ def save_config(
         OSError: If the destination cannot be opened or written.
     """
 
+    # Preserve the original open, conversion, and dump order for full saves.
+    if not shorten:
+        with open(config_path, "w", encoding="utf-8") as file:
+            yaml.safe_dump(asdict(config), file, sort_keys=True)
+        return
+
+    serialized = asdict(config)
     with open(config_path, "w", encoding="utf-8") as file:
-        yaml.safe_dump(asdict(config), file, sort_keys=True)
+        yaml.safe_dump(
+            _shortened_dataclass(config, serialized),
+            file,
+            sort_keys=True,
+        )
 
 
 def run_self_tests() -> dict[str, str]:
@@ -995,8 +1124,9 @@ def run_self_tests() -> dict[str, str]:
 
     The suite checks defaults and complementary overrides, inheritance,
     recursive ``kwargs`` copying, mapping-to-dataclass normalization, distinct
-    default factories, YAML full and partial round trips, and representative
-    invalid mappings/files.  Temporary files are removed automatically.
+    default factories, YAML full, shortened, and partial round trips, and
+    representative invalid mappings/files. Temporary files are removed
+    automatically.
 
     Args:
         None.
@@ -1486,6 +1616,10 @@ def run_self_tests() -> dict[str, str]:
             "run_valset_eval": False,
             "ensemble_accuracy_kwargs": {"max_t": 4}
         },
+        hpo={
+            "study_name": "short-save-probe",
+            "sampled": {"dropout_rate": 0.0},
+        },
     )
     assert mapped_config.dataset.batch_size == 2
     assert mapped_config.model.loss_function == "mae"
@@ -1501,6 +1635,7 @@ def run_self_tests() -> dict[str, str]:
     assert mapped_config.continually_learn.evaluate_ensemble_accuracy is True
     assert mapped_config.reporting.run_trainset_eval is False
     assert mapped_config.reporting.ensemble_accuracy_kwargs["max_t"] == 4
+    assert mapped_config.hpo["sampled"]["dropout_rate"] == 0.0
     assert _section(mapped_config.dataset, DatasetConfig) is mapped_config.dataset
     assert _section({"batch_size": 4}, DatasetConfig).batch_size == 4
     for invalid_value in (None, 1, "dataset"):
@@ -1539,11 +1674,63 @@ def run_self_tests() -> dict[str, str]:
         full_path = temp_path / "full.yaml"
         save_config(mapped_config, full_path)
         full_text = full_path.read_text(encoding="utf-8")
+        assert full_text == yaml.safe_dump(asdict(mapped_config), sort_keys=True)
         assert full_text.index("dataset:") < full_text.index("training:")
         loaded_full = load_config(full_path)
         assert loaded_full == mapped_config
         assert loaded_full.training.stage_tasks == [{"timesteps": [0, 1]}]
         assert loaded_full.training.fit_kwargs == {"steps_per_epoch": 1}
+
+        shortened_path = temp_path / "shortened.yaml"
+        save_config(mapped_config, shortened_path, shorten=True)
+        shortened_data = yaml.safe_load(
+            shortened_path.read_text(encoding="utf-8")
+        )
+        assert shortened_data == {
+            "dataset": {"batch_size": 2, "shuffle_buffer": 0},
+            "model": {
+                "with_classifier": False,
+                "loss_function": "mae",
+                "diffusion_transformer": {"depth": 0},
+            },
+            "optimizer": {
+                "initial_learning_rate": 1e-4,
+                "decay_steps": 3,
+            },
+            "training": {
+                "epochs": 1,
+                "fit_method": "fit_progressively",
+                "stage_tasks": [{"timesteps": [0, 1]}],
+                "stage_epochs": 2,
+                "final_epochs": 0,
+                "fit_kwargs": {"steps_per_epoch": 1},
+                "save_weights": False,
+            },
+            "continually_learn": {
+                "class_num": 4,
+                "plot_results": False,
+                "evaluate_ensemble_accuracy": True,
+            },
+            "reporting": {
+                "run_trainset_eval": False,
+                "run_valset_eval": False,
+                "ensemble_accuracy_kwargs": {"max_t": 4},
+            },
+            "hpo": {
+                "study_name": "short-save-probe",
+                "sampled": {"dropout_rate": 0.0},
+            },
+        }
+        assert load_config(shortened_path) == mapped_config
+
+        default_shortened_path = temp_path / "default-shortened.yaml"
+        default_before_save = asdict(default_config_a)
+        save_config(default_config_a, default_shortened_path, shorten=True)
+        assert yaml.safe_load(
+            default_shortened_path.read_text(encoding="utf-8")
+        ) == {}
+        assert asdict(default_config_a) == default_before_save
+        assert load_config(default_shortened_path) == Config()
 
         distillation_path = temp_path / "distillation-progressive.yaml"
         save_config(distillation_config, distillation_path)

@@ -173,6 +173,22 @@ all-in-one helper reports a VP beta-equivalent curve.
 end-to-end model family used by the project. Set `model.name` for the generic
 path; leave it `null` to retain the original DiT/DiT-classifier behavior.
 
+The public orchestration surface is intentionally small:
+
+| Stage | API |
+| --- | --- |
+| Data | `common.dataloader.get_datasets(config)` |
+| Model | `common.model.get_model(config)` |
+| Training | `common.train.train_model(config, model, trainset, valset)` |
+| Reporting | `common.train.report(config, history, model, trainset, valset)` |
+| All stages | `common.train.main(config)` |
+| Continual learning | `common.learner.continually_learn(config)` |
+| HPO | `common.hpo.run_hpo(...)` |
+
+See [`common/README.md`](common/README.md) for the concise API guide. Exact
+configuration fields and compatibility keywords remain documented in the
+corresponding dataclasses and function docstrings.
+
 ```python
 from common.config import load_config
 from common.train import main
@@ -247,6 +263,12 @@ accuracies = continually_learn(config)
 Continual diffusion replay uses the same training selector and curriculum
 fields. The curriculum is applied to each replay-model task; ordinary
 classifier phases still use `training.epochs`.
+
+When `continually_learn.use_distillation=True`, a diffusion classifier with a
+distillation token trains task one as the student, then uses an independent
+frozen snapshot of each completed raw student as the next task's teacher. This
+works with ordinary or progressive fitting and with both V1 and V2 wrappers;
+HPO enables the same lifecycle with `run_hpo(..., use_distillation=True)`.
 
 Direct mode remains useful with an existing classifier template or runtime
 model object:

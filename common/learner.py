@@ -20,29 +20,350 @@ from common.dataloader import get_dataset, _limit_samples, _pad_images
 from autoencoder import VariationalAutoencoder, VAEClassifier
 
 from diffusion import (
-    DiffusionModel, 
-    DiffusionClassifier, 
-    DiffusionClassifierV2, 
-    DiffusionTransformer, 
-    DiTClassifier, 
-    DiTDecoder, 
-    DiTEncoderDecoder, 
-    DiTEncoderDecoderClassifier, 
-    UNet, 
+    DiffusionModel,
+    DiffusionClassifier,
+    DiffusionClassifierV2,
+    DiffusionTransformer,
+    DiTClassifier,
+    DiTDecoder,
+    DiTEncoderDecoder,
+    DiTEncoderDecoderClassifier,
+    UNet,
     UNetClassifier
 )
 
 
 DatasetArrays = tuple[
-    np.ndarray, np.ndarray, np.ndarray | None, 
+    np.ndarray, np.ndarray, np.ndarray | None,
     np.ndarray | None, np.ndarray, np.ndarray
 ]
 DatasetLoader = Callable[..., DatasetArrays]
 
 
-def _continually_learn(
-    class_num: int, 
-    load_dataset_fn: DatasetLoader, 
+def _prepare_diffusion_x(
+    x: np.ndarray,
+    data_min: float,
+    data_range: float
+) -> np.ndarray:
+    """Map a supported loader representation to diffusion model space.
+
+    Args:
+        x (numpy.ndarray): Preprocessed image batch ``[samples, H, W, C]``.
+        data_min (float): Minimum of the shared real training input.
+        data_range (float): Nonzero maximum-minus-minimum training range.
+
+    Returns:
+        numpy.ndarray: Float32 inputs mapped so the training extrema are
+        ``-1`` and ``1``. Held-out values are not clipped.
+    """
+
+    x = np.asarray(x, dtype="float32")
+
+    return ((x - data_min) / data_range * 2.) - 1.
+
+
+def _select_classes(
+    x: np.ndarray,
+    y: np.ndarray,
+    classes: Sequence[int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select rows for class IDs without changing preprocessing space.
+
+    Args:
+        x (numpy.ndarray): Preprocessed samples shaped ``[samples, ...]``.
+        y (numpy.ndarray): Sparse or one-hot labels for ``x``.
+        classes (Sequence[int]): Integer class IDs to retain.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: Filtered sample and label arrays
+        in their original dtypes and preprocessing coordinates.
+    """
+
+    labels = np.asarray(y)
+    # Decode one-hot or probability rows into class identifiers.
+    if labels.ndim > 1 and labels.shape[-1] > 1:
+        label_ids = np.argmax(labels, axis=-1)
+    # Flatten sparse scalar or column-shaped labels.
+    else:
+        label_ids = labels.reshape(-1)
+
+    selected = np.isin(label_ids, classes)
+
+    return np.asarray(x)[selected], labels[selected]
+
+
+def _predict_diffusion_classes(
+    model: DiffusionClassifier,
+    x: np.ndarray,
+    y: np.ndarray,
+    data_min: float,
+    data_range: float,
+    batch_size: int
+) -> np.ndarray:
+    """Predict class scores from a diffusion classifier in data batches.
+
+    Args:
+        model (DiffusionClassifier): Trained diffusion classifier wrapper.
+        x (numpy.ndarray): Preprocessed images ``[samples, H, W, C]``.
+        y (numpy.ndarray): Integer labels ``[samples]`` used by V2 noising.
+        data_min (float): Current task training-input minimum.
+        data_range (float): Current nonzero training-input range.
+        batch_size (int): Positive prediction batch size.
+
+    Returns:
+        numpy.ndarray: Class scores shaped ``[samples, class_num]``.
+    """
+
+    x = _prepare_diffusion_x(x, data_min, data_range)
+    y = np.asarray(y).reshape(-1)
+    network = model.get_network(model.test_network_name)
+    predictions = []
+
+    for start in range(0, len(x), batch_size):
+        end = start + batch_size
+        x_batch = x[start:end]
+
+        # Build V2's configured noisy classifier input.
+        if isinstance(model, DiffusionClassifierV2):
+            t_batch, x_batch, null_labels, _ = model.prep_clfv2_inputs(
+                (x_batch, y[start: end]),
+                model.clf_test_noisified_max_timesteps
+            )
+        # Evaluate standard diffusion classifiers at clean timestep zero.
+        else:
+            t_batch = np.zeros((len(x_batch),), dtype="int32")
+            null_labels = np.zeros((len(x_batch),), dtype="uint8")
+
+        predictions.append(network.predict_class(
+            (x_batch, t_batch, null_labels),
+            training=False
+        ).numpy())
+
+    return np.concatenate(predictions, axis=0)
+
+
+def _reported_accuracy(
+    evaluations: object,
+    ensemble: bool = False
+) -> float | None:
+    """Find a classifier accuracy value in nested report output.
+
+    Args:
+        evaluations (object): Possibly nested report result.
+        ensemble (bool): Search only for the exact
+            ``"ensemble_accuracy"`` key when true.
+
+    Returns:
+        float | None: First recognized scalar accuracy, if present.
+    """
+
+    # Treat nonmapping evaluation output as unavailable for named lookup.
+    if not isinstance(evaluations, dict):
+        return None
+
+    preferred = ("ensemble_accuracy",) if ensemble else (
+        "total_accuracy",
+        "accuracy",
+        "classifier_accuracy",
+        "cls_token_accuracy",
+        "avg_pooling_accuracy",
+        "clf_accuracy",
+        "discriminator_accuracy"
+    )
+
+    for name in preferred:
+        # Prefer explicitly named accuracy metrics in priority order.
+        if name in evaluations:
+            return float(evaluations[name])
+
+    # Preserve the broad legacy fallback only for ordinary accuracy.
+    if not ensemble:
+        for name, value in evaluations.items():
+            # Fall back to any scalar metric whose name denotes accuracy.
+            if "accuracy" in name.lower() and np.isscalar(value):
+                return float(value)
+
+    for value in evaluations.values():
+        accuracy = _reported_accuracy(value, ensemble=ensemble)
+        # Return the first usable nested accuracy value.
+        if accuracy is not None:
+            return accuracy
+
+    return None
+
+
+def _copy_classifier_prefix(
+    source_model: tf.keras.Model,
+    target_model: tf.keras.Model
+) -> None:
+    """Copy shared weights and the target-width classifier head prefix.
+
+    Args:
+        source_model (tf.keras.Model): Built full-width source classifier.
+        target_model (tf.keras.Model): Built task-width target classifier.
+
+    Returns:
+        None: ``target_model`` is updated in place.
+    """
+
+    # Require matching layer structures before copying a classifier prefix.
+    if len(source_model.layers) != len(target_model.layers):
+        raise ValueError(
+            "Initial and continual classifiers must have matching layers."
+        )
+
+    for source_layer, target_layer in zip(
+        source_model.layers[:-1],
+        target_model.layers[:-1]
+    ):
+        target_layer.set_weights(source_layer.get_weights())
+
+    source_kernel, source_bias = source_model.layers[-1].get_weights()
+    target_kernel, target_bias = target_model.layers[-1].get_weights()
+    target_width = target_bias.shape[0]
+
+    # Require the source head to cover every target output column.
+    if source_bias.shape[0] < target_width:
+        raise ValueError(
+            "Initial classifier output is narrower than a continual task."
+        )
+
+    target_kernel[...] = source_kernel[..., :target_width]
+    target_bias[...] = source_bias[:target_width]
+    target_model.layers[-1].set_weights([target_kernel, target_bias])
+
+
+def _has_positive_distillation_objective(
+    model: DiffusionClassifier
+) -> bool:
+    """Return whether a diffusion classifier has an active teacher objective.
+
+    Args:
+        model (DiffusionClassifier): Wrapper whose token and regularizer losses
+            are inspected before the first continual task.
+
+    Returns:
+        bool: True when token distillation or a teacher-backed classifier-token
+        regularizer has a positive coefficient.
+    """
+
+    distil_loss_coef = float(tf.keras.backend.get_value(
+        model.distil_loss_coef
+    ))
+    ctr_loss_coef = float(tf.keras.backend.get_value(model.ctr_loss_coef))
+    regularizer_kwargs = getattr(
+        model.network, "clf_cls_token_regularizer_kwargs", None
+    )
+    # U-Net classifiers keep the same metadata on the inherited attribute.
+    if regularizer_kwargs is None:
+        regularizer_kwargs = getattr(
+            model.network, "cls_token_regularizer_kwargs", {}
+        )
+
+    uses_teacher_regularizer = (
+        ctr_loss_coef > 0.
+        and regularizer_kwargs.get("train_type", "normal") in (
+            "distil", "both"
+        )
+    )
+    return distil_loss_coef > 0. or uses_teacher_regularizer
+
+
+def _load_continual_arrays(
+    load_dataset_fn: DatasetLoader,
+    class_num: int,
+    return_features: bool,
+    load_dataset_fn_kwargs: dict[str, object],
+    max_train_samples: int | None,
+    max_val_samples: int | None,
+    pad: int,
+    dataset_seed: int | None
+) -> tuple[DatasetArrays, np.random.Generator]:
+    """Load and prepare the shared array view used by every task.
+
+    Args:
+        load_dataset_fn (DatasetLoader): Full-array dataset loader.
+        class_num (int): Number of leading classes used by the run.
+        return_features (bool): Whether the loader should return saved features.
+        load_dataset_fn_kwargs (dict[str, object]): Loader preprocessing options.
+        max_train_samples (int | None): Optional shared training-row limit.
+        max_val_samples (int | None): Optional validation/test-row limit.
+        pad (int): Symmetric image padding width.
+        dataset_seed (int | None): Seed for limiting and later task sampling.
+
+    Returns:
+        tuple[DatasetArrays, numpy.random.Generator]: Prepared arrays and the
+        run-local generator after shared sample limiting.
+    """
+
+    (all_x_train, all_y_train, all_x_val, all_y_val,
+     all_x_test, all_y_test) = load_dataset_fn(
+        indices=list(range(class_num)),
+        return_features=return_features,
+        **load_dataset_fn_kwargs,
+        verbose=0
+    )
+
+    rng = np.random.default_rng(dataset_seed)
+    all_x_train, all_y_train = _limit_samples(
+        all_x_train,
+        all_y_train,
+        max_train_samples,
+        rng
+    )
+    # Limit the validation split once in the shared preprocessing space.
+    if all_x_val is not None:
+        all_x_val, all_y_val = _limit_samples(
+            all_x_val,
+            all_y_val,
+            max_val_samples,
+            rng
+        )
+    # Otherwise limit test data used as the evaluation fallback.
+    else:
+        all_x_test, all_y_test = _limit_samples(
+            all_x_test,
+            all_y_test,
+            max_val_samples,
+            rng
+        )
+
+    # Pad raw images once in the same coordinate space as the loader.
+    if pad > 0:
+        pad_value = -1. if str(
+            load_dataset_fn_kwargs["preprocess"]
+        ).lower() in ("standardize", "diffusion") else 0.
+        all_x_train = _pad_images(
+            np.asarray(all_x_train), pad, value=pad_value
+        )
+        all_x_test = _pad_images(
+            np.asarray(all_x_test), pad, value=pad_value
+        )
+        # Apply matching padding to an available validation split.
+        if all_x_val is not None:
+            all_x_val = _pad_images(
+                np.asarray(all_x_val), pad, value=pad_value
+            )
+
+    # Truncate one-hot labels to the configured continual class width.
+    if load_dataset_fn_kwargs["onehot_labels"]:
+        all_y_train = all_y_train[..., :class_num]
+        all_y_val = all_y_val[..., :class_num] \
+                    if all_y_val is not None else None
+        all_y_test = all_y_test[..., :class_num]
+
+    return (
+        (
+            all_x_train, all_y_train, all_x_val, all_y_val,
+            all_x_test, all_y_test
+        ),
+        rng
+    )
+
+
+def _run_continual_tasks(
+    class_num: int,
+    load_dataset_fn: DatasetLoader,
     load_dataset_fn_kwargs: dict[str, object] | None = None, 
     remove_prev_classes: bool = True, 
     keep_same_model: bool = True, 
@@ -169,8 +490,9 @@ def _continually_learn(
             data, requires a network initialized with ``num_classes=None``, and
             accepts every loader preprocessing value.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher
-            used when a raw diffusion classifier is wrapped. An already-created
-            wrapper must have received its teacher during initialization.
+            used for the first task when a diffusion classifier is wrapped.
+            Automatic continual distillation replaces it with the completed
+            task-one student before task two.
         generative_model_compile_args (dict[str, object] | None): Compilation
             values used when this function wraps a raw diffusion network.
             Values override ``{"optimizer": "adam", "loss": "mse"}``.
@@ -195,9 +517,13 @@ def _continually_learn(
             ``DiffusionClassifierV2`` because V2 separates its generator and
             classifier variables. It has no effect when
             ``use_generative_model_classifier`` is false.
-        use_distillation (bool): Require the diffusion-classifier replay model
-            to have a runtime teacher. The teacher object remains outside
-            serializable configuration.
+        use_distillation (bool): Use an independent frozen snapshot of each
+            completed raw student as the next task's teacher. The replay model
+            must be a diffusion classifier with a distillation token and a
+            positive teacher objective. Task one is teacher-free unless
+            ``teacher_network`` is supplied explicitly. A raw classifier
+            network receives the wrapper's established ``8.6e-3`` classifier
+            coefficient for its distillation objective.
         evaluate_ensemble_accuracy (bool): Also evaluate the attached
             diffusion classifier by ensembling predictions across timesteps
             after every task. Ordinary task accuracy is still retained.
@@ -286,109 +612,6 @@ def _continually_learn(
     from common.train import report, train_model
 
 
-    def prepare_diffusion_x(
-        x: np.ndarray, 
-        data_min: float, 
-        data_range: float
-    ) -> np.ndarray:
-        """Map any supported loader representation to diffusion model space.
-
-        Args:
-            x (numpy.ndarray): Preprocessed image batch ``[samples, H, W, C]``.
-            data_min (float): Minimum of the shared real training input.
-            data_range (float): Nonzero maximum-minus-minimum range of that
-                training input.
-
-        Returns:
-            numpy.ndarray: Float32 image data mapped with training extrema at
-            ``-1`` and ``1``. Held-out values are not clipped and may exceed
-            that interval.
-        """
-
-        x = np.asarray(x, dtype="float32")
-        x = ((x - data_min) / data_range * 2.) - 1.
-
-        return x
-
-
-    def select_classes(
-        x: np.ndarray, 
-        y: np.ndarray, 
-        classes: Sequence[int]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Select rows for class IDs without changing preprocessing space.
-
-        Args:
-            x (numpy.ndarray): Preprocessed samples shaped ``[samples, ...]``.
-            y (numpy.ndarray): Sparse or one-hot labels for ``x``.
-            classes (Sequence[int]): Integer class IDs to retain.
-
-        Returns:
-            tuple[numpy.ndarray, numpy.ndarray]: Filtered sample and label
-            arrays in their original dtypes and preprocessing coordinates.
-        """
-
-        labels = np.asarray(y)
-        # Decode one-hot or probability rows into class identifiers.
-        if labels.ndim > 1 and labels.shape[-1] > 1:
-            label_ids = np.argmax(labels, axis=-1)
-        # Flatten sparse scalar or column-shaped labels.
-        else:
-            label_ids = labels.reshape(-1)
-
-        selected = np.isin(label_ids, classes)
-
-        return np.asarray(x)[selected], labels[selected]
-
-
-    def predict_diffusion_classes(
-        model: "DiffusionClassifier", 
-        x: np.ndarray, 
-        y: np.ndarray, 
-        data_min: float, 
-        data_range: float
-    ) -> np.ndarray:
-        """Predict class scores from a diffusion classifier in data batches.
-
-        Args:
-            model (DiffusionClassifier): Trained diffusion classifier wrapper.
-            x (numpy.ndarray): Preprocessed images ``[samples, H, W, C]``.
-            y (numpy.ndarray): Integer labels ``[samples]`` used by V2 noising.
-            data_min (float): Current task training-input minimum.
-            data_range (float): Current nonzero training-input range.
-
-        Returns:
-            numpy.ndarray: Class scores shaped ``[samples, class_num]``.
-        """
-
-        x = prepare_diffusion_x(x, data_min, data_range)
-        y = np.asarray(y).reshape(-1)
-        network = model.get_network(model.test_network_name)
-        predictions = []
-
-        for start in range(0, len(x), batch_size):
-            end = start + batch_size
-            x_batch = x[start:end]
-
-            # Build V2's configured noisy classifier input.
-            if isinstance(model, DiffusionClassifierV2):
-                t_batch, x_batch, null_labels, _ = model.prep_clfv2_inputs(
-                    (x_batch, y[start: end]), 
-                    model.clf_test_noisified_max_timesteps
-                )
-            # Evaluate standard diffusion classifiers at clean timestep zero.
-            else:
-                t_batch = np.zeros((len(x_batch),), dtype="int32")
-                null_labels = np.zeros((len(x_batch),), dtype="uint8")
-
-            predictions.append(network.predict_class(
-                (x_batch, t_batch, null_labels), 
-                training=False
-            ).numpy())
-
-        return np.concatenate(predictions, axis=0)
-
-
     def train_task_model(
         model: tf.keras.Model, 
         trainset: object, 
@@ -473,99 +696,6 @@ def _continually_learn(
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
             verbose=verbose
         )
-
-
-    def reported_accuracy(
-        evaluations: object, 
-        ensemble: bool = False
-    ) -> float | None:
-        """Find a classifier accuracy value in nested report output.
-
-        Args:
-            evaluations (object): Possibly nested report result.
-            ensemble (bool): Search only for the exact
-                ``"ensemble_accuracy"`` key when true.
-
-        Returns:
-            float | None: First recognized scalar accuracy, if present.
-        """
-
-        # Treat nonmapping evaluation output as unavailable for named lookup.
-        if not isinstance(evaluations, dict):
-            return None
-
-        preferred = ("ensemble_accuracy",) if ensemble else (
-            "total_accuracy",
-            "accuracy", 
-            "classifier_accuracy", 
-            "cls_token_accuracy",
-            "avg_pooling_accuracy",
-            "clf_accuracy", 
-            "discriminator_accuracy"
-        )
-
-        for name in preferred:
-            # Prefer explicitly named accuracy metrics in priority order.
-            if name in evaluations:
-                return float(evaluations[name])
-
-        # Preserve the broad legacy fallback only for ordinary accuracy.
-        if not ensemble:
-            for name, value in evaluations.items():
-                # Fall back to any scalar metric whose name denotes accuracy.
-                if "accuracy" in name.lower() and np.isscalar(value):
-                    return float(value)
-
-        for value in evaluations.values():
-            accuracy = reported_accuracy(value, ensemble=ensemble)
-            # Return the first usable nested accuracy value.
-            if accuracy is not None:
-                return accuracy
-
-        return None
-
-
-    def copy_classifier_prefix(
-        source_model: tf.keras.Model, 
-        target_model: tf.keras.Model
-    ) -> None:
-        """Copy shared weights and the target-width classifier head prefix.
-
-        Args:
-            source_model (tf.keras.Model): Built full-width source classifier.
-            target_model (tf.keras.Model): Built task-width target classifier.
-
-        Returns:
-            None: ``target_model`` is updated in place.
-        """
-
-        # Require matching layer structures before copying a classifier prefix.
-        if len(source_model.layers) != len(target_model.layers):
-            raise ValueError(
-                "Initial and continual classifiers must have matching layers."
-            )
-
-        for source_layer, target_layer in zip(
-            source_model.layers[:-1], 
-            target_model.layers[:-1]
-        ):
-            target_layer.set_weights(
-                source_layer.get_weights()
-            )
-
-        source_kernel, source_bias = source_model.layers[-1].get_weights()
-        target_kernel, target_bias = target_model.layers[-1].get_weights()
-        target_width = target_bias.shape[0]
-
-        # Require the source head to cover every target output column.
-        if source_bias.shape[0] < target_width:
-            raise ValueError(
-                "Initial classifier output is narrower than a continual task."
-            )
-
-        target_kernel[...] = source_kernel[..., :target_width]
-        target_bias[...] = source_bias[:target_width]
-        target_model.layers[-1].set_weights([target_kernel, target_bias])
 
 
     def phase_callbacks(
@@ -667,6 +797,8 @@ def _continually_learn(
         generative_model = DiffusionClassifier(
             network=generative_model, 
             teacher_network=teacher_network,
+            defer_teacher=use_distillation,
+            distil_loss_coef=8.6e-3 if use_distillation else 0.,
             mask_by_nulls=generative_model.use_cfg, 
             test_steps=min(50, generative_model.timesteps)
         )
@@ -686,14 +818,11 @@ def _continually_learn(
         )
         generative_model.compile(**generative_model_compile_args)
 
-    # A prebuilt wrapper must decide teacher preprocessing during construction.
+    # Install an optional first-task teacher on an existing wrapper.
     elif teacher_network is not None and isinstance(
         generative_model, DiffusionClassifier
     ) and getattr(generative_model, "teacher_network", None) is not teacher_network:
-        raise ValueError(
-            "An existing diffusion classifier must receive teacher_network "
-            "during its initialization."
-        )
+        generative_model.set_teacher_network(teacher_network)
     # Reject unsupported replay-model types before task construction.
     elif generative_model is not None and not isinstance(
         generative_model, 
@@ -712,14 +841,27 @@ def _continually_learn(
             "teacher_network requires a diffusion classifier generative_model."
         )
 
-    # Enforce configured distillation intent after raw networks are wrapped.
-    if use_distillation and (
-        not isinstance(generative_model, DiffusionClassifier)
-        or getattr(generative_model, "teacher_network", None) is None
+    # Restrict automatic self-distillation to classifier diffusion wrappers.
+    if use_distillation and not isinstance(
+        generative_model, DiffusionClassifier
     ):
         raise ValueError(
-            "use_distillation requires a diffusion classifier and a runtime "
-            "teacher_network."
+            "use_distillation requires a diffusion classifier generative_model."
+        )
+    # Require an independent student head for continual self-distillation.
+    if use_distillation and getattr(
+        generative_model.network, "distil_token", None
+    ) is None:
+        raise ValueError(
+            "use_distillation requires the diffusion classifier to have a "
+            "distil_token."
+        )
+    # Avoid retaining snapshots when no configured objective can consume them.
+    if use_distillation and not _has_positive_distillation_objective(
+        generative_model
+    ):
+        raise ValueError(
+            "use_distillation requires a positive distillation objective."
         )
 
     # Prevent a progressive selector from being silently ignored by VAE,
@@ -749,7 +891,8 @@ def _continually_learn(
             "or DiffusionClassifierV2 generative_model."
         )
 
-    use_diffusion_classifier = use_generative_model_classifier and isinstance(
+    uses_attached_classifier = use_generative_model_classifier
+    use_diffusion_classifier = uses_attached_classifier and isinstance(
         generative_model, DiffusionClassifier
     )
     # Force image inputs for diffusion classifier branches.
@@ -771,7 +914,7 @@ def _continually_learn(
             raise ValueError("Diffusion replay requires image data.")
 
     # Require a supported classifier-bearing replay model when selected.
-    if use_generative_model_classifier and not isinstance(
+    if uses_attached_classifier and not isinstance(
         generative_model, 
         (VAEClassifier, DiffusionClassifier)
     ): # Validate requests to reuse a generator-attached classifier.
@@ -799,7 +942,7 @@ def _continually_learn(
 
         prev_model = generative_model.network.classifier
     # Select and validate a VAE classifier head.
-    elif use_generative_model_classifier:
+    elif uses_attached_classifier:
         # Require a Keras classifier when a separate fit phase is requested.
         if not isinstance(generative_model.classifier, tf.keras.Model):
             raise TypeError(
@@ -827,6 +970,13 @@ def _continually_learn(
             verbose=0
         )
 
+    train_direct_classifier = not uses_attached_classifier or (
+        train_classifier_separately and not use_diffusion_classifier
+    )
+    score_from_generator = use_diffusion_classifier or (
+        uses_attached_classifier and not train_classifier_separately
+    )
+
     acc_list = []
     ensemble_acc_list = []
     histories = []
@@ -839,11 +989,18 @@ def _continually_learn(
         if verbose:
             print(75*'-'+" Classes:", list(range(i+2)))
 
+        # Freeze the preceding student before the next class can expand it.
+        if use_distillation and i > 0:
+            previous_teacher = generative_model.snapshot_teacher_network(
+                network_name="raw"
+            )
+            generative_model.set_teacher_network(previous_teacher)
+
         # Reuse the diffusion wrapper's classifier.
         if use_diffusion_classifier:
             new_model = generative_model.network.classifier
         # Reuse the VAE's classifier.
-        elif use_generative_model_classifier:
+        elif uses_attached_classifier:
             new_model = generative_model.classifier
         # Build a classifier head sized for all classes seen in this task.
         else:
@@ -859,7 +1016,7 @@ def _continually_learn(
             if initial_classifier is not None and (
                 i == 0 or not keep_same_model
             ):
-                copy_classifier_prefix(initial_classifier, new_model)
+                _copy_classifier_prefix(initial_classifier, new_model)
 
             # Carry learned trunk weights and visible head columns forward.
             elif keep_same_model:
@@ -867,69 +1024,18 @@ def _continually_learn(
 
         # Fit one shared preprocessing space for all continual tasks.
         if dataset_arrays is None:
-            dataset_arrays = load_dataset_fn(
-                indices=list(range(class_num)), 
-                return_features=return_features, 
-                **load_dataset_fn_kwargs, 
-                verbose=0
-            )
-            (all_x_train, all_y_train, all_x_val, 
-            all_y_val, all_x_test, all_y_test) = dataset_arrays
-
-            rng = np.random.default_rng(dataset_seed)
-            all_x_train, all_y_train = _limit_samples(
-                all_x_train, 
-                all_y_train, 
-                max_train_samples, 
-                rng
-            )
-            # Limit the validation split once in the shared preprocessing space.
-            if all_x_val is not None:
-                all_x_val, all_y_val = _limit_samples(
-                    all_x_val, 
-                    all_y_val, 
-                    max_val_samples, 
-                    rng
-                )
-            # Otherwise limit test data used as the evaluation fallback.
-            else:
-                all_x_test, all_y_test = _limit_samples(
-                    all_x_test, 
-                    all_y_test, 
-                    max_val_samples, 
-                    rng
-                )
-
-            # Pad raw images once in the same coordinate space as the loader.
-            if pad > 0:
-                pad_value = -1. if str(
-                    load_dataset_fn_kwargs["preprocess"]
-                ).lower() in ("standardize", "diffusion") else 0.
-                all_x_train = _pad_images(
-                    np.asarray(all_x_train), pad, value=pad_value
-                )
-                all_x_test = _pad_images(
-                    np.asarray(all_x_test), pad, value=pad_value
-                )
-                # Apply matching padding to an available validation split.
-                if all_x_val is not None:
-                    all_x_val = _pad_images(
-                        np.asarray(all_x_val), pad, value=pad_value
-                    )
-
-            # Truncate one-hot labels to the configured continual class width.
-            if load_dataset_fn_kwargs["onehot_labels"]:
-                all_y_train = all_y_train[..., :class_num]
-                all_y_val = all_y_val[..., :class_num] \
-                            if all_y_val is not None else None
-                all_y_test = all_y_test[..., :class_num]
-
-            dataset_arrays = (
-                all_x_train, all_y_train, all_x_val, all_y_val, 
-                all_x_test, all_y_test
+            dataset_arrays, rng = _load_continual_arrays(
+                load_dataset_fn,
+                class_num,
+                return_features,
+                load_dataset_fn_kwargs,
+                max_train_samples,
+                max_val_samples,
+                pad,
+                dataset_seed
             )
 
-        (all_x_train, all_y_train, all_x_val, 
+        (all_x_train, all_y_train, all_x_val,
         all_y_val, all_x_test, all_y_test) = dataset_arrays
         seen_classes = list(range(i + 2))
 
@@ -940,19 +1046,19 @@ def _continually_learn(
         else:
             train_classes = seen_classes
 
-        x_train, y_train = select_classes(
+        x_train, y_train = _select_classes(
             all_x_train, 
             all_y_train, 
             train_classes
         )
-        x_test, y_test = select_classes(
+        x_test, y_test = _select_classes(
             all_x_test, 
             all_y_test, 
             seen_classes
         )
         # Select seen validation rows in the shared space.
         if all_x_val is not None and all_y_val is not None:
-            x_val, y_val = select_classes(
+            x_val, y_val = _select_classes(
                 all_x_val, 
                 all_y_val, 
                 seen_classes
@@ -1085,7 +1191,7 @@ def _continually_learn(
                 classifier_y_val = np.argmax(y_val, axis=-1) if y_val is not None else None
                 classifier_y_test = np.argmax(y_test, axis=-1)
             # Trim one-hot targets to a newly expanded standalone head.
-            elif not use_generative_model_classifier:
+            elif not uses_attached_classifier:
                 classifier_y_train = y_train[..., :i + 2]
                 classifier_y_val = y_val[..., :i + 2] if y_val is not None else None
                 classifier_y_test = y_test[..., :i + 2]
@@ -1116,10 +1222,7 @@ def _continually_learn(
 
         history = {}
         # Attach standalone-classifier callbacks only when that fit phase runs.
-        if not use_generative_model_classifier or (
-            train_classifier_separately and 
-            not use_diffusion_classifier
-        ): # Run the standalone or separately trained classifier phase.
+        if train_direct_classifier:
             task_callbacks = phase_callbacks(
                 "val_accuracy" if valset is not None else "accuracy", 
                 legacy_patience=5,
@@ -1210,7 +1313,7 @@ def _continually_learn(
             )
         # Train diffusion replay from fresh task datasets.
         elif isinstance(generative_model, DiffusionModel):
-            generative_x = prepare_diffusion_x(
+            generative_x = _prepare_diffusion_x(
                 x_train, 
                 diffusion_data_min, 
                 diffusion_data_range
@@ -1244,7 +1347,7 @@ def _continually_learn(
                             and y_val is not None else np.asarray(y_val).reshape(-1) \
                             if y_val is not None else None
             generative_valset = get_dataset(
-                prepare_diffusion_x(
+                _prepare_diffusion_x(
                     x_val, 
                     diffusion_data_min, 
                     diffusion_data_range
@@ -1258,7 +1361,7 @@ def _continually_learn(
                                 else np.asarray(y_test).reshape(-1)
 
             generative_testset = get_dataset(
-                prepare_diffusion_x(
+                _prepare_diffusion_x(
                     x_test, 
                     diffusion_data_min, 
                     diffusion_data_range
@@ -1338,7 +1441,7 @@ def _continually_learn(
         classifier_report_history = history or generative_history
         # Evaluate a separately fitted standalone classifier when available.
         if not use_diffusion_classifier and classifier_report_history \
-        and (not use_generative_model_classifier or train_classifier_separately):
+        and train_direct_classifier:
             classifier_evaluations = report_task_model(
                 classifier_report_history, 
                 new_model, 
@@ -1346,10 +1449,7 @@ def _continually_learn(
                 testset
             )
 
-        use_generative_accuracy = use_diffusion_classifier or (
-            use_generative_model_classifier and not train_classifier_separately
-        )
-        accuracy_source = generative_evaluations if use_generative_accuracy \
+        accuracy_source = generative_evaluations if score_from_generator \
                         else classifier_evaluations
         # Score the same raw/EMA network selected by the diffusion wrapper.
         if use_diffusion_classifier:
@@ -1365,11 +1465,11 @@ def _continually_learn(
             if isinstance(selected_evaluation, dict):
                 accuracy_source = selected_evaluation
 
-        acc = reported_accuracy(accuracy_source)
+        acc = _reported_accuracy(accuracy_source)
         ensemble_acc = None
         # Read only the explicit ensemble metric from diffusion reports.
         if evaluate_ensemble_accuracy:
-            ensemble_acc = reported_accuracy(
+            ensemble_acc = _reported_accuracy(
                 accuracy_source,
                 ensemble=True
             )
@@ -1386,15 +1486,16 @@ def _continually_learn(
         if acc is None:
             # Obtain class predictions through the diffusion classifier wrapper.
             if use_diffusion_classifier:
-                preds = predict_diffusion_classes(
-                    generative_model, 
-                    x_test, 
-                    y_test_ids, 
-                    diffusion_data_min, 
-                    diffusion_data_range
+                preds = _predict_diffusion_classes(
+                    generative_model,
+                    x_test,
+                    y_test_ids,
+                    diffusion_data_min,
+                    diffusion_data_range,
+                    batch_size
                 )
             # Evaluate joint-only VAE classification on reconstructed inputs.
-            elif use_generative_model_classifier \
+            elif uses_attached_classifier \
             and not train_classifier_separately:
                 _, _, preds = generative_model(
                     (x_test, y_test),
@@ -1411,7 +1512,7 @@ def _continually_learn(
             acc = accuracy_score(y_test_ids, preds)
 
         # Expose joint generative history as task history when no separate fit ran.
-        if use_generative_model_classifier and not history \
+        if uses_attached_classifier and not history \
         and generative_history is not None:
             history = generative_history
 
@@ -1472,8 +1573,9 @@ def continually_learn(
         config (Config | dict[str, object] | None): Optional complete project
             configuration. A mapping is normalized with ``Config(**config)``.
         teacher_network (tf.keras.Model | None): Runtime-only teacher passed to
-            a newly constructed diffusion classifier. It is never stored in
-            the serializable configuration.
+            a newly constructed diffusion classifier for task one. Automatic
+            continual distillation replaces it after that task. It is never
+            stored in the serializable configuration.
         **kwargs (object): Direct-mode inputs, used only when ``config`` is
             ``None``. The possible keys are:
 
@@ -1531,8 +1633,9 @@ def continually_learn(
             - ``train_classifier_separately`` (bool, default ``False``): Add a
               classifier phase for ``VAEClassifier``; it must be true for
               ``DiffusionClassifierV2`` and false for ``DiffusionClassifier``.
-            - ``use_distillation`` (bool, default ``False``): Require a
-              diffusion-classifier replay model with a runtime teacher.
+            - ``use_distillation`` (bool, default ``False``): Snapshot each
+              completed diffusion-classifier student for use as the next
+              task's teacher; requires a token and positive teacher objective.
             - ``evaluate_ensemble_accuracy`` (bool, default ``False``): Also
               evaluate timestep-ensembled accuracy for a diffusion-classifier
               replay model after every task.
@@ -1608,7 +1711,7 @@ def continually_learn(
                 "Missing required continually_learn options: " + str(missing)
             )
 
-        return _continually_learn(
+        return _run_continual_tasks(
             teacher_network=teacher_network,
             **{**defaults, **options}
         )

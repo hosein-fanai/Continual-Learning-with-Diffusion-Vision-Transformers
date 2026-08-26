@@ -131,8 +131,8 @@ _JOINT_NOTE = {
         "V1 only: 35, 50, 70, or 90 when timestep masking is used"
     ), 
     "distillation": (
-        "with a runtime teacher: hard or soft targets and log-uniform "
-        "distil_loss_coef"
+        "with a runtime or previous-task teacher: hard or soft targets and "
+        "log-uniform distil_loss_coef"
     ), 
     "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
@@ -275,6 +275,38 @@ _MODEL_TAGS = {
     "dnn": "d", 
     "pretrained": "p"
 }
+_FIT_METHODS = {"fit", "fit_progressively"}
+
+
+def _validate_fit_request(
+    model_name: str,
+    fit_method: str,
+    fit_kwargs: Mapping[str, object],
+) -> None:
+    """Validate the training-method part of an HPO request.
+
+    Args:
+        model_name (str): Normalized model family name.
+        fit_method (str): Ordinary or progressive fit selector.
+        fit_kwargs (Mapping[str, object]): Selected-method arguments.
+
+    Returns:
+        None: The request is compatible with the selected model family.
+
+    Raises:
+        ValueError: If the method is unsupported or a progressive request is
+            incompatible with the model or lacks ``stage_tasks``.
+    """
+
+    # Restrict HPO orchestration to its two public training methods.
+    if fit_method not in _FIT_METHODS:
+        raise ValueError("fit_method must be 'fit' or 'fit_progressively'.")
+    # Progressive curricula are implemented only by diffusion wrappers.
+    if fit_method == "fit_progressively" and model_name not in _DIFFUSION_MODELS:
+        raise ValueError("fit_progressively requires a diffusion model family.")
+    # Require the curriculum property changed by every progressive stage.
+    if fit_method == "fit_progressively" and fit_kwargs.get("stage_tasks") is None:
+        raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
 
 
 def _value_tag(value: object) -> str:
@@ -651,7 +683,7 @@ def _suggest_joint(
         wrapper_kwargs (dict[str, object]): Wrapper options updated in place.
         tune_masking (bool): Suggest V1 classifier masking options when true.
         use_distillation (bool): Add a student distillation head and suggest
-            teacher-loss settings when a runtime teacher is available.
+            teacher-loss settings for a runtime or continual snapshot teacher.
 
     Returns:
         None.
@@ -996,8 +1028,8 @@ def _build_trial_config(
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         use_distillation (bool): Configure a student distillation head and
-            teacher objective. The runtime teacher is supplied separately by
-            :func:`run_hpo` and is never serialized.
+            teacher objective. Continual trials create teachers from completed
+            task snapshots; joint trials receive a runtime teacher separately.
         fit_method (str): ``"fit"`` for ordinary Keras training or
             ``"fit_progressively"`` for a diffusion curriculum.
         fit_kwargs (Mapping[str, object] | None): Selected-method arguments.
@@ -1019,15 +1051,7 @@ def _build_trial_config(
     # Reject datasets outside the four supported HPO families.
     if dataset_name not in ("fmnist", "mnist", "cifar10", "cifar100"):
         raise ValueError("dataset_name must be FMNIST, MNIST, CIFAR10, or CIFAR100.")
-    # Restrict HPO orchestration to its two supported training methods.
-    if fit_method not in ("fit", "fit_progressively"):
-        raise ValueError("fit_method must be 'fit' or 'fit_progressively'.")
-    # Progressive curricula are implemented only by diffusion wrappers.
-    if fit_method == "fit_progressively" and model_name not in _DIFFUSION_MODELS:
-        raise ValueError("fit_progressively requires a diffusion model family.")
-    # A progressive curriculum cannot infer which property should change.
-    if fit_method == "fit_progressively" and fit_kwargs.get("stage_tasks") is None:
-        raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
+    _validate_fit_request(model_name, fit_method, fit_kwargs)
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
     if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
         raise ValueError("The Xception classifier requires three-channel CIFAR data.")
@@ -1566,7 +1590,8 @@ def run_hpo(
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
     fit_method: str = "fit", 
     fit_kwargs: Mapping[str, object] | None = None, 
-    teacher_network: tf.keras.Model | None = None
+    teacher_network: tf.keras.Model | None = None,
+    use_distillation: bool = False
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -1596,9 +1621,13 @@ def run_hpo(
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher.
-            Supplying it enables hard/soft distillation suggestions for a
-            supported joint or continual diffusion-classifier study. The
-            object is never written to trial YAML.
+            Supplying it enables hard/soft distillation suggestions and gives
+            continual task one an optional initial teacher. The object is never
+            written to trial YAML.
+        use_distillation (bool): Enable the distillation search space. Without
+            ``teacher_network`` this is supported for continual diffusion
+            classifiers, whose later tasks use the immediately preceding raw
+            student snapshot as their teacher.
         fit_method (str): ``"fit"`` for the ordinary epoch loop or
             ``"fit_progressively"`` for diffusion curriculum training.
         fit_kwargs (Mapping[str, object] | None): YAML-safe arguments for the
@@ -1628,19 +1657,14 @@ def run_hpo(
     task = task.lower()
     model_name = model_name.lower()
     fit_kwargs = dict(fit_kwargs or {})
+    effective_distillation = bool(
+        use_distillation or teacher_network is not None
+    )
 
     # Require a supported task/model search-space pairing.
     if task not in SEARCH_SPACES or model_name not in SEARCH_SPACES[task]:
         raise ValueError(f"Unsupported task/model pair: {task}/{model_name}")
-    # Restrict public HPO dispatch to the two config-supported fit methods.
-    if fit_method not in ("fit", "fit_progressively"):
-        raise ValueError("fit_method must be 'fit' or 'fit_progressively'.")
-    # Progressive curricula are available only for diffusion model families.
-    if fit_method == "fit_progressively" and model_name not in _DIFFUSION_MODELS:
-        raise ValueError("fit_progressively requires a diffusion model family.")
-    # Require an explicit curriculum description before creating the study.
-    if fit_method == "fit_progressively" and fit_kwargs.get("stage_tasks") is None:
-        raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
+    _validate_fit_request(model_name, fit_method, fit_kwargs)
     # Restrict ensemble feedback to supported diffusion-classifier studies.
     if use_ensemble_accuracy and not (
         task in ("joint", "continual")
@@ -1659,6 +1683,15 @@ def run_hpo(
             "teacher_network requires a joint or "
             "continual diffusion classifier study."
         )
+    # Teacher-free distillation relies on the continual previous-task snapshot.
+    if use_distillation and teacher_network is None and not (
+        task == "continual"
+        and model_name in _DIFFUSION_CLASSIFIER_MODELS
+    ):
+        raise ValueError(
+            "Teacher-free use_distillation requires a continual diffusion "
+            "classifier study."
+        )
     # Require positive trial and epoch budgets.
     if n_trials <= 0 or epochs <= 0:
         raise ValueError("n_trials and epochs must be positive.")
@@ -1669,7 +1702,7 @@ def run_hpo(
     if use_ensemble_accuracy:
         study_root /= "ensemble_accuracy"
     # Isolate the conditional distillation search space from ordinary trials.
-    if teacher_network is not None:
+    if effective_distillation:
         study_root /= "distillation"
     # Keep progressive trials separate from resumable ordinary-fit studies.
     if fit_method == "fit_progressively":
@@ -1682,7 +1715,7 @@ def run_hpo(
         "-ensemble-accuracy" if use_ensemble_accuracy else ""
     )
     # Give distillation trials an independent persistent study identity.
-    if teacher_network is not None:
+    if effective_distillation:
         study_name += "-distillation"
     # Give progressive studies an independent SQLite study identity.
     if fit_method == "fit_progressively":
@@ -1729,7 +1762,7 @@ def run_hpo(
             results_path=root, 
             use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
-            use_distillation=teacher_network is not None, 
+            use_distillation=effective_distillation,
             fit_method=fit_method, 
             fit_kwargs=fit_kwargs
         )

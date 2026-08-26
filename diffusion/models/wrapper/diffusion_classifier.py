@@ -12,7 +12,7 @@ from math import ceil
 
 from typing import get_args, Literal
 
-from . import NetworkName, TrainType
+from . import NetworkName, TrainType, copy_network_weights_by_layer
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -62,6 +62,7 @@ class DiffusionClassifier(DiffusionModel):
         clf_acc_coef: float = .5, 
         ctr_acc_coef: float = 0., 
         distil_acc_coef: float = .5, 
+        defer_teacher: bool = False, 
         **kwargs: object
     ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
@@ -101,6 +102,11 @@ class DiffusionClassifier(DiffusionModel):
                 for the wrapper's ``total_accuracy`` prediction.
             ctr_acc_coef (float): Classifier-regularizer coefficient used only
                 for the wrapper's ``total_accuracy`` prediction.
+            defer_teacher (bool): Allow a configured teacher objective to start
+                without a teacher. This is intended for continual learning,
+                where task 1 has no past model and later tasks call
+                :meth:`set_teacher_network` with a frozen snapshot. The default
+                keeps the ordinary constructor's strict teacher requirement.
             **kwargs (object): Arguments forwarded to ``DiffusionModel``.  Required in
                 normal use is ``network=DiTClassifier(...)``; supported wrapper
                 keys include EMA/scheduler/CFG settings, all four diffusion loss
@@ -116,20 +122,11 @@ class DiffusionClassifier(DiffusionModel):
         super().__init__(**kwargs)
         self._check_clf_assertions(locals())
         self._save_init_args(locals())
-        self._refresh_loss_flags()
 
-        # Keep teacher variables outside optimization.
-        if self.teacher_network is not None:
-            # Unwrap a diffusion wrapper to its raw classifier network.
-            if getattr(self.teacher_network, "network", None) is not None:
-                self.teacher_network = self.teacher_network.network
-
-            self.teacher_network.trainable = False
-            self.set_current_resolution(
-                self._current_resolution
-            )
-
-            self.map_preprocess = True
+        # Runtime teachers must never become part of serialized model config.
+        self._init_config.pop("teacher_network", None)
+        self._map_preprocess_without_teacher = bool(self.map_preprocess)
+        self.set_teacher_network(self.teacher_network)
 
         self.clf_loss_coef = tf.constant(
             self.clf_loss_coef, 
@@ -178,8 +175,10 @@ class DiffusionClassifier(DiffusionModel):
         ) or getattr(self.network, "cls_token_regularizer_kwargs", {})
         ).get("train_type", "normal") in ("distil", "both")
         ):
-            assert local_vars["teacher_network"] is not None, \
-                "teacher_network is required for distillation training."
+            assert local_vars["teacher_network"] is not None \
+                or local_vars["defer_teacher"], \
+                "teacher_network is required for distillation " \
+                "training unless defer_teacher=True."
 
         # The four-step ensemble requires at least four available timesteps.
         if local_vars["use_ensemble_loss_instead"]:
@@ -279,70 +278,36 @@ class DiffusionClassifier(DiffusionModel):
 
         return tf.stop_gradient(teacher_labels)
 
-    def prep_inputs_map(
+    def _mask_unknown_teacher_labels(
         self, 
-        x0: tf.Tensor, 
         labels: tf.Tensor
-    ) -> tuple[tf.Tensor, ...]:
-        """Prepare one input-pipeline batch and optional teacher targets.
+    ) -> tf.Tensor:
+        """Replace condition IDs outside the past teacher vocabulary with null.
 
         Args:
-            x0 (tf.Tensor): Clean image batch.
-            labels (tf.Tensor): Dataset class labels.
+            labels (tf.Tensor): Prepared student condition IDs. Existing past
+                class IDs remain unchanged; newly introduced IDs may exceed the
+                teacher's embedding table.
 
         Returns:
-            tuple[tf.Tensor, ...]: The seven values from :meth:`prep_inputs`
-            and, during distillation, frozen teacher probabilities.
+            tf.Tensor: Condition IDs safe for the teacher. Teachers without
+            ``num_labels`` retain the supplied labels for compatibility.
         """
 
-        prepared_inputs = super().prep_inputs_map(x0, labels)
-
-        # Preserve the ordinary mapped batch when no teacher target is used.
-        if not self.use_teacher:
-            return prepared_inputs
-
-        # Evaluate validation teachers on the established clean-input path.
-        if self._preprocess_training is False:
-            teacher_x = prepared_inputs[0] # x0
-            teacher_t = tf.zeros_like(prepared_inputs[2])
-            teacher_labels_in = prepared_inputs[5] # uncond_labels
-        # Match training teachers to the student's noisified classifier path.
-        else:
-            teacher_x = prepared_inputs[3] # x_t
-            teacher_t = prepared_inputs[2] # t
-            teacher_labels_in = prepared_inputs[
-                4 if self.clf_train_type == "cond" else 5
-            ] # cfg_labels or uncond_labels
-
-        teacher_labels = self._predict_teacher_labels(
-            teacher_x, 
-            teacher_t, 
-            teacher_labels_in
+        teacher_num_labels = getattr(
+            self.teacher_network, 
+            "num_labels"
         )
 
-        return (*prepared_inputs, teacher_labels)
+        # Preserve external teacher semantics when vocabulary metadata is absent.
+        if teacher_num_labels is None:
+            return labels
 
-    def set_current_resolution(self, resolution: int | None = None) -> None:
-        """Set the active student and compatible teacher resolution.
-
-        Args:
-            resolution (int | None): Square input size, or ``None`` for the
-                student's constructor size.
-
-        Returns:
-            None: Student, EMA, and a compatible frozen teacher are updated.
-        """
-
-        resolution = self.image_size if resolution is None else resolution
-        super().set_current_resolution(resolution)
-
-        # Keep compatible teacher positional embeddings aligned with the student.
-        if self.teacher_network is not None and hasattr(
-            self.teacher_network, "set_current_resolution"
-        ):
-            self.teacher_network.set_current_resolution(
-                resolution
-            )
+        return tf.where(
+            labels < tf.cast(teacher_num_labels, labels.dtype), 
+            labels, 
+            tf.zeros_like(labels)
+        )
 
     @property
     def metrics(self) -> list[metrics.Metric]:
@@ -388,7 +353,7 @@ class DiffusionClassifier(DiffusionModel):
         ) if self.use_ensemble_loss_instead else None
         self.kld_loss_fn = losses.kullback_leibler_divergence
 
-        primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token \
+        primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token\
                                 else "avg_pooling_accuracy"
 
         self.clf_loss_tracker = metrics.Mean(name="classifier_loss")
@@ -778,6 +743,183 @@ class DiffusionClassifier(DiffusionModel):
         )
 
         return float(accuracy_value)
+
+    def prep_inputs_map(
+        self, 
+        x0: tf.Tensor, 
+        labels: tf.Tensor
+    ) -> tuple[tf.Tensor, ...]:
+        """Prepare one input-pipeline batch and optional teacher targets.
+
+        Args:
+            x0 (tf.Tensor): Clean image batch.
+            labels (tf.Tensor): Dataset class labels.
+
+        Returns:
+            tuple[tf.Tensor, ...]: The seven values from :meth:`prep_inputs`
+            and, during distillation, frozen teacher probabilities.
+        """
+
+        prepared_inputs = super().prep_inputs_map(x0, labels)
+
+        # Preserve the ordinary mapped batch when no teacher target is used.
+        if not self.use_teacher:
+            return prepared_inputs
+
+        # Evaluate validation teachers on the established clean-input path.
+        if self._preprocess_training is False:
+            teacher_x = prepared_inputs[0] # x0
+            teacher_t = tf.zeros_like(prepared_inputs[2])
+            teacher_labels_in = prepared_inputs[5] # uncond_labels
+        # Match training teachers to the student's noisified classifier path.
+        else:
+            teacher_x = prepared_inputs[3] # x_t
+            teacher_t = prepared_inputs[2] # t
+            teacher_labels_in = prepared_inputs[
+                4 if self.clf_train_type == "cond" else 5
+            ] # cfg_labels or uncond_labels
+
+        # Map only unseen condition IDs to null for narrower past teachers.
+        teacher_labels_in = self._mask_unknown_teacher_labels(
+            teacher_labels_in
+        )
+
+        teacher_labels = self._predict_teacher_labels(
+            teacher_x, 
+            teacher_t, 
+            teacher_labels_in
+        )
+
+        return (*prepared_inputs, teacher_labels)
+
+    def set_current_resolution(self, resolution: int | None = None) -> None:
+        """Set the active student and compatible teacher resolution.
+
+        Args:
+            resolution (int | None): Square input size, or ``None`` for the
+                student's constructor size.
+
+        Returns:
+            None: Student, EMA, and a compatible frozen teacher are updated.
+        """
+
+        resolution = self.image_size if resolution is None else resolution
+        super().set_current_resolution(resolution)
+
+        # Keep compatible teacher positional embeddings aligned with the student.
+        if self.teacher_network is not None and hasattr(
+            self.teacher_network, "set_current_resolution"
+        ):
+            self.teacher_network.set_current_resolution(
+                resolution
+            )
+
+    def set_teacher_network(
+        self, 
+        teacher_network: tf.keras.Model | None
+    ) -> None:
+        """Attach or clear the frozen runtime teacher used for distillation.
+
+        Args:
+            teacher_network (tf.keras.Model | None): A compatible raw
+                classifier, a diffusion-classifier wrapper, or ``None``. A
+                wrapper is reduced to its raw network. Clearing a required
+                teacher is allowed only when ``defer_teacher=True``.
+
+        Returns:
+            None: Teacher loss flags, input mapping, active resolution, and
+            cached Keras execution functions are updated in place.
+
+        Raises:
+            ValueError: If a required teacher is cleared without deferred mode,
+            or the student/its live EMA network is supplied as its own teacher.
+        """
+
+        # Unwrap a diffusion wrapper to its effective raw classifier network.
+        if teacher_network is not None and getattr(
+            teacher_network, "network", None
+        ) is not None:
+            teacher_network = teacher_network.network
+
+        # A live student branch is not a frozen snapshot and would be disabled.
+        if teacher_network is not None and (
+            teacher_network is self.network
+            or teacher_network is self.ema_network
+        ):
+            raise ValueError(
+                "teacher_network must be an independent frozen snapshot."
+            )
+
+        # Preserve strict ordinary construction while allowing task-1 deferral.
+        if teacher_network is None and \
+        (self.use_distil_loss or self.use_distil_ctr_loss) \
+        and not self.defer_teacher:
+            raise ValueError(
+                "A configured distillation objective requires teacher_network; "
+                "set defer_teacher=True only when it will be attached later."
+            )
+
+        # Runtime teachers are external targets, not checkpoint-owned submodels.
+        object.__setattr__(self, "teacher_network", teacher_network)
+
+        # Keep teacher variables outside optimization and align image geometry.
+        if self.teacher_network is not None:
+            self.teacher_network.trainable = False
+            self.map_preprocess = True
+
+            # Mirror progressive resolution on compatible classifier networks.
+            if hasattr(self.teacher_network, "set_current_resolution"):
+                self.teacher_network.set_current_resolution(
+                    self._current_resolution
+                )
+        # Restore the caller's original mapping choice after teacher removal.
+        else:
+            self.map_preprocess = self._map_preprocess_without_teacher
+
+        self._refresh_loss_flags()
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
+
+    def snapshot_teacher_network(
+        self, 
+        network_name: NetworkName = "raw"
+    ) -> tf.keras.Model:
+        """Clone one current classifier branch as an independent frozen teacher.
+
+        The clone uses the selected raw/EMA network's current serialized
+        topology. This retains dynamic class width and progressive depth, then
+        copies its weights and active resolution without optimizer state.
+
+        Args:
+            network_name (NetworkName): ``"raw"`` or ``"ema"``. ``"ema"``
+                falls back to raw when EMA tracking is disabled, matching
+                :meth:`get_network`.
+
+        Returns:
+            tf.keras.Model: A built, non-trainable classifier network whose
+            variables are independent from the student.
+        """
+
+        source_network = self.get_network(network_name)
+        teacher_network = source_network.__class__.from_config(
+            source_network.get_config()
+        )
+        teacher_network.build()
+
+        # Reproduce the active progressive resolution after base construction.
+        if hasattr(teacher_network, "set_current_resolution"):
+            teacher_network.set_current_resolution(
+                self._current_resolution
+            )
+
+        copy_network_weights_by_layer(
+            source_network, 
+            teacher_network
+        )
+        teacher_network.trainable = False
+
+        return teacher_network
 
     def call_network(
         self, 
@@ -1193,13 +1335,14 @@ class DiffusionClassifier(DiffusionModel):
                     tf.zeros_like(classes_pred),
                 ], axis=-1)
             # Apply the same compatibility padding to token predictions.
-            if clf_ctr_preds is not None and clf_ctr_preds.shape[-1] == 1:
+            if tf.is_tensor(clf_ctr_preds) and clf_ctr_preds.shape[-1] == 1:
                 clf_ctr_preds = tf.concat([
                     clf_ctr_preds,
                     tf.zeros_like(clf_ctr_preds),
                 ], axis=-1)
             # Apply the same compatibility padding to distillation predictions.
-            if clf_distil_preds is not None and clf_distil_preds.shape[-1] == 1:
+            if tf.is_tensor(clf_distil_preds) \
+            and clf_distil_preds.shape[-1] == 1:
                 clf_distil_preds = tf.concat([
                     clf_distil_preds,
                     tf.zeros_like(clf_distil_preds),
@@ -1521,6 +1664,206 @@ def run_self_tests() -> dict[str, str]:
     )
     assert "classifier_accuracy" in evaluation
 
+    try:
+        DiffusionClassifier(
+            network=make_network(clf_distil_token_type="new_weight"),
+            distil_loss_coef=1.0,
+            mask_by_nulls=False,
+            p_uncond=0.0,
+            use_ema=False,
+            test_network_name="raw",
+            test_steps=2,
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(
+            "A configured token objective requires a teacher by default."
+        )
+
+    positional_teacher = make_network()
+    positional_compatibility = DiffusionClassifier(
+        positional_teacher,
+        "soft",
+        False,
+        network=make_network(),
+        use_ema=False,
+        test_network_name="raw",
+        test_steps=2,
+    )
+    assert positional_compatibility.teacher_network is positional_teacher
+    assert positional_compatibility.distil_type == "soft"
+    assert positional_compatibility.mask_by_nulls is False
+    assert positional_compatibility.defer_teacher is False
+
+    continual_student = make_wrapper(
+        network=make_network(
+            num_classes=None,
+            clf_distil_token_type="new_weight",
+        ),
+        defer_teacher=True,
+        distil_loss_coef=1.0,
+        mask_by_nulls=False,
+        p_uncond=0.0,
+    )
+    assert continual_student.teacher_network is None
+    assert continual_student.use_distil_loss is False
+    assert continual_student.map_preprocess is False
+    assert continual_student.accuracy_tracker.name == "cls_token_accuracy"
+    assert continual_student.get_config()["defer_teacher"] is True
+    assert "teacher_network" not in continual_student.get_config()
+
+    continual_student._check_new_labels(y=classes, verbose=False)
+    continual_student._add_depths({
+        "classifier": "vision_transformer_block"
+    })
+    continual_student.set_current_resolution(8)
+    teacher = continual_student.snapshot_teacher_network("ema")
+    assert teacher is not continual_student.ema_network
+    assert teacher.num_classes == 2
+    assert teacher.clf_depth == continual_student.network.clf_depth == 2
+    assert teacher._current_resolution == 8
+    assert teacher.trainable is False and not teacher.trainable_weights
+    assert {
+        id(weight) for weight in teacher.weights
+    }.isdisjoint({
+        id(weight) for weight in continual_student.ema_network.weights
+    })
+
+    snapshot_images = tf.image.resize(images, (8, 8))
+    snapshot_times = tf.zeros((2,), dtype=tf.int32)
+    snapshot_labels = tf.constant([1, 2], dtype=tf.uint8)
+    source_outputs = continual_student.ema_network(
+        (snapshot_images, snapshot_times, snapshot_labels),
+        training=False,
+    )
+    teacher_outputs = teacher(
+        (snapshot_images, snapshot_times, snapshot_labels),
+        training=False,
+    )
+    for output_name in ("noises", "classes", "distil_classes"):
+        tf.debugging.assert_near(
+            source_outputs[output_name],
+            teacher_outputs[output_name],
+        )
+
+    continual_student._check_new_labels(
+        y=tf.constant([2], dtype=tf.uint8),
+        verbose=False,
+    )
+    student_weight_ids = {
+        id(weight) for weight in continual_student.weights
+    }
+    continual_student.train_function = object()
+    continual_student.test_function = object()
+    continual_student.set_teacher_network(teacher)
+    assert {
+        id(weight) for weight in continual_student.weights
+    } == student_weight_ids
+    assert student_weight_ids.isdisjoint({
+        id(weight) for weight in teacher.weights
+    })
+    tf.debugging.assert_equal(
+        continual_student._mask_unknown_teacher_labels(
+            tf.constant([1, 3], dtype=tf.uint8)
+        ),
+        tf.constant([1, 0], dtype=tf.uint8),
+    )
+    assert continual_student.use_distil_loss
+    assert continual_student.use_teacher
+    assert continual_student.map_preprocess
+    assert continual_student.train_function is None
+    assert continual_student.test_function is None
+
+    new_task_images = images[:1]
+    new_task_classes = tf.constant([2], dtype=tf.uint8)
+    prepared_distillation = continual_student.prep_inputs_map(
+        new_task_images,
+        new_task_classes,
+    )
+    assert len(prepared_distillation) == 8
+    assert prepared_distillation[-1].shape == (1, 2)
+    distil_step = continual_student.train_step(prepared_distillation)
+    assert {"distil_loss", "distil_token_accuracy"} <= set(distil_step)
+
+    new_task_dataset = tf.data.Dataset.from_tensor_slices((
+        new_task_images,
+        new_task_classes,
+    )).batch(1)
+    distil_progressive = continual_student.fit_progressively(
+        stage_tasks=[{"resolution": 8}],
+        x=new_task_dataset,
+        stages_verbose=False,
+        stage_epochs=1,
+        final_epochs=0,
+        verbose=0,
+    )
+    assert len(distil_progressive.progressive_stages) == 1
+    continual_student.set_teacher_network(None)
+    assert continual_student.teacher_network is None
+    assert continual_student.use_distil_loss is False
+    assert continual_student.map_preprocess is False
+
+    from diffusion.models.transformer.di_t_encoder_decoder_classifier import (
+        DiTEncoderDecoderClassifier,
+    )
+    composite_network = DiTEncoderDecoderClassifier(
+        encoder_kwargs={
+            "num_classes": None,
+            "use_cfg": True,
+            "timesteps": 4,
+            "image_size": 4,
+            "channels": 1,
+            "patch_size": 2,
+            "dim": 4,
+            "depth": 0,
+            "mha_num_heads": 1,
+            "vit_block_mlp_ratio": 1.0,
+            "feature_aggregation_ids_dict": {1: (-1,)},
+            "clf_connection_ids_dict": {-1: (-1,)},
+            "clf_distil_token_type": "new_weight",
+        },
+        decoder_kwargs={
+            "depth": 0,
+            "shift_inputs": False,
+            "use_unpatchify": True,
+        },
+    )
+    composite_student = make_wrapper(
+        network=composite_network,
+        defer_teacher=True,
+        distil_loss_coef=1.0,
+        mask_by_nulls=False,
+        p_uncond=0.0,
+        use_ema=False,
+        test_network_name="raw",
+    )
+    composite_student._check_new_labels(y=classes, verbose=False)
+    # Reproduce a valid clone whose nested decoder has a different runtime name.
+    composite_student.network.decoder._name = "past_runtime_decoder"
+    composite_teacher = composite_student.snapshot_teacher_network("raw")
+    assert len(composite_teacher.weights) == len(
+        composite_student.network.weights
+    )
+    composite_inputs = (
+        images,
+        tf.zeros((2,), dtype=tf.int32),
+        tf.constant([1, 2], dtype=tf.uint8),
+    )
+    composite_source_outputs = composite_student.network(
+        composite_inputs,
+        training=False,
+    )
+    composite_teacher_outputs = composite_teacher(
+        composite_inputs,
+        training=False,
+    )
+    for output_name in ("noises", "classes", "distil_classes"):
+        tf.debugging.assert_near(
+            composite_source_outputs[output_name],
+            composite_teacher_outputs[output_name],
+        )
+
     unmasked = make_wrapper(
         mask_by_nulls=False, 
         mask_by_t_threshold=False, 
@@ -1672,7 +2015,9 @@ def run_self_tests() -> dict[str, str]:
     assert policy.dtype_policy.name == "float64"
     policy_config = policy.get_config()
     assert policy_config["mask_t_percentage"] == 70
-    assert "name" not in policy_config and "dtype" not in policy_config
+    assert policy_config["name"] == "policy_classifier_wrapper"
+    assert policy_config["trainable"] is False
+    assert policy_config["dtype"] == "float64"
     try:
         DiffusionClassifier.from_config(policy_config)
     except (TypeError, ValueError):

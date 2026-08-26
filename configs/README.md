@@ -43,6 +43,10 @@ save_config(config, "results/resolved-config.yaml")
 config = load_config("results/resolved-config.yaml")
 ```
 
+`save_config` keeps its full-output behavior by default. Pass `shorten=True` to
+write only values that differ from their dataclass defaults; omitted values are
+restored normally by `load_config`.
+
 Diffusion wrappers can use their existing progressive trainer directly from
 the same config tree:
 
@@ -127,11 +131,14 @@ UNet classifier sets `classifier_only_distil_token: true`. Set
 `ctr_acc_coef` in its diffusion-classifier wrapper.
 Token regularizer mappings accept `train_type: normal|distil|both` and
 `distil_type: hard|soft`. Continual configs additionally set
-`continually_learn.use_distillation: true`. A teacher is a live Keras model, so
-it is never placed in YAML; supply it with
+`continually_learn.use_distillation: true`. Task one trains without a teacher by
+default. Before each later task, the completed raw student is copied into an
+independent frozen teacher, then the student is allowed to grow for the new
+class. An optional live teacher can initialize task one through
 `continually_learn(config, teacher_network=teacher)` or
-`main(config, teacher_network=teacher)`. These settings work with either fit
-method, including one progressive curriculum per continual task.
+`main(config, teacher_network=teacher)`; it is never placed in YAML. The same
+lifecycle works with ordinary and progressive fitting and with both diffusion
+classifier wrappers.
 
 Nested model dataclasses expose `kwargs() -> dict[str, Any]`; those dictionaries
 are forwarded to the corresponding transformer or wrapper constructor. Use the

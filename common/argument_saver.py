@@ -105,6 +105,11 @@ class ArgumentSaver:
         """
 
         config = super().get_config()
+        # TensorFlow 2.10 omits these fields for subclassed Model instances.
+        config.setdefault("name", self.name)
+        config.setdefault("trainable", self.trainable)
+        config.setdefault("dtype", self.dtype_policy.name)
+        config.setdefault("dynamic", self.dynamic)
         saved_config = {
             name: (
                 deepcopy(value)
@@ -309,18 +314,20 @@ def run_self_tests() -> dict[str, str]:
         metadata={"labels": {1, 2}}, 
         name="argument_saver_model_probe", 
         trainable=True, 
+        dynamic=True,
     )
     model_config = model.get_config()
     assert model_config["width"] == 8
     assert model_config["metadata"] == {"labels": {1, 2}}
-    assert "name" not in model_config, (
-        "TensorFlow 2.10's subclassed Model.get_config does not include the "
-        "base name, unlike Layer.get_config."
-    )
+    assert model_config["name"] == "argument_saver_model_probe"
+    assert model_config["trainable"] is True
+    assert model_config["dtype"] == "float32"
+    assert model_config["dynamic"] is True
     model_clone = model_probe_type.from_config(model_config)
     assert isinstance(model_clone, ArgumentSaverModel)
     assert model_clone.width == 8
     assert model_clone.metadata == {"labels": {1, 2}}
+    assert model_clone.dynamic is True
     assert model_clone is not model
 
     return {

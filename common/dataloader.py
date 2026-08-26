@@ -7,7 +7,7 @@ from tensorflow.keras import models
 
 import numpy as np
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from numbers import Integral, Real
 
 from .config import Config
@@ -22,6 +22,14 @@ DatasetArrays = tuple[
     np.ndarray
 ]
 DatasetLoader = Callable[..., DatasetArrays]
+
+
+_DIFFUSION_MODELS = {
+    "diffusion_transformer", "dit_classifier", "dit_decoder",
+    "dit_encoder_decoder", "dit_encoder_decoder_classifier",
+    "unet", "unet_classifier"
+}
+_DENSE_MODELS = {"vae", "variational_autoencoder", "vae_classifier", "dnn"}
 
 
 def _pad_images(
@@ -134,6 +142,54 @@ def _limit_samples(
     rng.shuffle(selected)
 
     return x[selected], y[selected]
+
+
+def _map_inputs(
+    dataset: tf.data.Dataset,
+    transform: Callable[[tf.Tensor], tf.Tensor],
+    paired: bool,
+    num_parallel_calls: object,
+) -> tf.data.Dataset:
+    """Apply one input transform while preserving optional labels.
+
+    Args:
+        dataset (tf.data.Dataset): Batched input-only or supervised pipeline.
+        transform (Callable[[tf.Tensor], tf.Tensor]): Input transformation.
+        paired (bool): Whether dataset elements are ``(inputs, labels)`` pairs.
+        num_parallel_calls (object): Value forwarded to ``Dataset.map``.
+
+    Returns:
+        tf.data.Dataset: Dataset with transformed inputs and unchanged labels.
+    """
+
+    def transform_pair(
+        inputs: tf.Tensor,
+        labels: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Transform paired inputs without changing their labels.
+
+        Args:
+            inputs (tf.Tensor): One batched input tensor.
+            labels (tf.Tensor): Labels paired with the input batch.
+
+        Returns:
+            tuple[tf.Tensor, tf.Tensor]: Transformed inputs and original labels.
+        """
+
+        return transform(inputs), labels
+
+
+    # Preserve labels for supervised and conditional pipelines.
+    if paired:
+        return dataset.map(
+            transform_pair,
+            num_parallel_calls=num_parallel_calls,
+        )
+
+    return dataset.map(
+        transform,
+        num_parallel_calls=num_parallel_calls,
+    )
 
 
 def get_dataset_spec(
@@ -752,146 +808,118 @@ def get_dataset(
     # Add spatial zero padding when requested.
     if pad > 0:
         padder = layers.ZeroPadding2D((pad, pad))
-
-
-        def pad_inputs(inputs: tf.Tensor) -> tf.Tensor:
-            """Pad one input-only batch.
-
-            Args:
-                inputs (tf.Tensor): Batched images.
-
-            Returns:
-                tf.Tensor: Spatially padded images.
-            """
-
-            return padder(inputs)
-
-
-        def pad_pair(
-            inputs: tf.Tensor, 
-            labels: tf.Tensor
-        ) -> tuple[tf.Tensor, tf.Tensor]:
-            """Pad inputs while preserving paired labels.
-
-            Args:
-                inputs (tf.Tensor): Batched images.
-                labels (tf.Tensor): Aligned batched labels.
-
-            Returns:
-                tuple[tf.Tensor, tf.Tensor]: Padded inputs and unchanged labels.
-            """
-
-            return padder(inputs), labels
-
-
-        # Pad elements from an input-only pipeline.
-        if y is None:
-            dataset = dataset.map(
-                pad_inputs, 
-                num_parallel_calls=num_parallel_calls
-            )
-        # Preserve labels while padding paired inputs.
-        else:
-            dataset = dataset.map(
-                pad_pair, 
-                num_parallel_calls=num_parallel_calls
-            )
+        dataset = _map_inputs(
+            dataset,
+            padder,
+            paired=y is not None,
+            num_parallel_calls=num_parallel_calls,
+        )
 
     # Apply the configured input augmentation.
     if augment_fn is not None:
-        def augment_inputs(inputs: tf.Tensor) -> tf.Tensor:
-            """Apply augmentation to one input-only batch.
-
-            Args:
-                inputs (tf.Tensor): Batched inputs.
-
-            Returns:
-                tf.Tensor: Augmented inputs.
-            """
-
-            return augment_fn(inputs)
-
-
-        def augment_pair(
-            inputs: tf.Tensor, 
-            labels: tf.Tensor
-        ) -> tuple[tf.Tensor, tf.Tensor]:
-            """Augment inputs while preserving paired labels.
-
-            Args:
-                inputs (tf.Tensor): Batched inputs.
-                labels (tf.Tensor): Aligned batched labels.
-
-            Returns:
-                tuple[tf.Tensor, tf.Tensor]: Augmented inputs and labels.
-            """
-
-            return augment_fn(inputs), labels
-
-
-        # Augment elements from an input-only pipeline.
-        if y is None:
-            dataset = dataset.map(
-                augment_inputs, 
-                num_parallel_calls=num_parallel_calls
-            )
-        # Preserve labels while augmenting paired inputs.
-        else:
-            dataset = dataset.map(
-                augment_pair, 
-                num_parallel_calls=num_parallel_calls
-            )
+        dataset = _map_inputs(
+            dataset,
+            augment_fn,
+            paired=y is not None,
+            num_parallel_calls=num_parallel_calls,
+        )
 
     # Extract fixed features from every input batch.
     if conv_base is not None:
         def extract_inputs(inputs: tf.Tensor) -> tf.Tensor:
-            """Extract inference-mode features from an input-only batch.
+            """Run the configured feature extractor in inference mode.
 
             Args:
-                inputs (tf.Tensor): Batched model inputs.
+                inputs (tf.Tensor): One batched model input tensor.
 
             Returns:
-                tf.Tensor: Extracted features.
+                tf.Tensor: Extracted feature tensor.
             """
 
             return conv_base(inputs, training=False)
 
 
-        def extract_pair(
-            inputs: tf.Tensor, 
-            labels: tf.Tensor
-        ) -> tuple[tf.Tensor, tf.Tensor]:
-            """Extract input features while preserving labels.
-
-            Args:
-                inputs (tf.Tensor): Batched model inputs.
-                labels (tf.Tensor): Aligned batched labels.
-
-            Returns:
-                tuple[tf.Tensor, tf.Tensor]: Extracted features and labels.
-            """
-
-            return conv_base(inputs, training=False), labels
-
-
-        # Extract features from an input-only pipeline.
-        if y is None:
-            dataset = dataset.map(
-                extract_inputs, 
-                num_parallel_calls=num_parallel_calls
-            )
-        # Preserve labels while transforming paired inputs.
-        else:
-            dataset = dataset.map(
-                extract_pair, 
-                num_parallel_calls=num_parallel_calls
-            )
+        dataset = _map_inputs(
+            dataset,
+            extract_inputs,
+            paired=y is not None,
+            num_parallel_calls=num_parallel_calls,
+        )
 
     # Overlap input preparation with model execution when requested.
     if prefetch:
         dataset = dataset.prefetch(num_parallel_calls)
 
     return dataset
+
+
+def _resolve_dataset_options(
+    config: Config | None,
+    kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    """Resolve direct or configured dataset orchestration values once.
+
+    Args:
+        config (Config | None): Typed project configuration, when supplied.
+        kwargs (Mapping[str, object]): Direct-mode dataset options.
+
+    Returns:
+        dict[str, object]: Flat values consumed by :func:`get_datasets`.
+    """
+
+    # Keep the legacy direct defaults when no typed configuration is supplied.
+    if config is None:
+        model_name = kwargs.get(
+            "model_name",
+            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer")),
+        )
+        model_name = str(model_name).lower()
+        default_preprocess = None if model_name == "pretrained" \
+                             else "standardize"
+
+        return {
+            "dataset_name": kwargs.get("dataset_name", "mnist"),
+            "model_name": model_name,
+            "preprocess": kwargs.get("preprocess", default_preprocess),
+            "indices": kwargs.get("indices"),
+            "validation_ratio": kwargs.get("validation_ratio", 0.),
+            "return_features": kwargs.get("return_features", False),
+            "features_path": kwargs.get("features_path", ""),
+            "onehot_labels": kwargs.get("onehot_labels", False),
+            "batch_size": kwargs.get("batch_size", 128),
+            "shuffle_buffer": kwargs.get("shuffle_buffer", 10_000),
+            "pad": kwargs.get("pad", 0),
+            "max_train_samples": kwargs.get("max_train_samples"),
+            "max_val_samples": kwargs.get("max_val_samples"),
+            "use_valset": kwargs.get("use_valset", True),
+            "seed": kwargs.get("seed"),
+            "task": kwargs.get("task", "legacy"),
+        }
+
+    model_name = config.model.name or (
+        "dit_classifier" if config.model.with_classifier
+        else "diffusion_transformer"
+    )
+    model_name = str(model_name).lower()
+
+    return {
+        "dataset_name": config.dataset.name,
+        "model_name": model_name,
+        "preprocess": config.dataset.preprocess,
+        "indices": config.dataset.indices,
+        "validation_ratio": config.dataset.validation_ratio,
+        "return_features": config.dataset.return_features,
+        "features_path": config.dataset.features_path,
+        "onehot_labels": config.dataset.onehot_labels,
+        "batch_size": config.dataset.batch_size,
+        "shuffle_buffer": config.dataset.shuffle_buffer,
+        "pad": config.dataset.pad,
+        "max_train_samples": config.dataset.max_train_samples,
+        "max_val_samples": config.dataset.max_val_samples,
+        "use_valset": config.training.use_valset,
+        "seed": config.training.seed,
+        "task": config.training.task,
+    }
 
 
 def get_datasets(
@@ -939,56 +967,23 @@ def get_datasets(
             or a pretrained image model.
     """
 
-    # Resolve settings from direct keyword arguments.
-    if config is None:
-        dataset_name = kwargs.get("dataset_name", "mnist")
-        model_name = kwargs.get(
-            "model_name",
-            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer")),
-        )
-        # Pretrained classifiers own raw-image scaling inside their model.
-        default_preprocess = None if str(model_name).lower() == "pretrained" \
-                             else "standardize"
-        preprocess = kwargs.get("preprocess", default_preprocess)
-        indices = kwargs.get("indices")
-        validation_ratio = kwargs.get("validation_ratio", 0.)
-        return_features = kwargs.get("return_features", False)
-        features_path = kwargs.get("features_path", "")
-        onehot_labels = kwargs.get("onehot_labels", False)
-        batch_size = kwargs.get("batch_size", 128)
-        shuffle_buffer = kwargs.get("shuffle_buffer", 10_000)
-        pad = kwargs.get("pad", 0)
-        max_train_samples = kwargs.get("max_train_samples")
-        max_val_samples = kwargs.get("max_val_samples")
-        use_valset = kwargs.get("use_valset", True)
-        seed = kwargs.get("seed")
-        task = kwargs.get("task", "legacy")
-    # Resolve settings from the typed configuration.
-    else:
-        dataset_name = config.dataset.name
-        model_name = config.model.name
-        # Derive the legacy diffusion family from its classifier switch.
-        if model_name is None:
-            # Select the classifier-capable legacy network.
-            if config.model.with_classifier:
-                model_name = "dit_classifier"
-            # Select the generator-only legacy network.
-            else:
-                model_name = "diffusion_transformer"
-        preprocess = config.dataset.preprocess
-        indices = config.dataset.indices
-        validation_ratio = config.dataset.validation_ratio
-        return_features = config.dataset.return_features
-        features_path = config.dataset.features_path
-        onehot_labels = config.dataset.onehot_labels
-        batch_size = config.dataset.batch_size
-        shuffle_buffer = config.dataset.shuffle_buffer
-        pad = config.dataset.pad
-        max_train_samples = config.dataset.max_train_samples
-        max_val_samples = config.dataset.max_val_samples
-        use_valset = config.training.use_valset
-        seed = config.training.seed
-        task = config.training.task
+    options = _resolve_dataset_options(config, kwargs)
+    dataset_name = options["dataset_name"]
+    model_name = options["model_name"]
+    preprocess = options["preprocess"]
+    indices = options["indices"]
+    validation_ratio = options["validation_ratio"]
+    return_features = options["return_features"]
+    features_path = options["features_path"]
+    onehot_labels = options["onehot_labels"]
+    batch_size = options["batch_size"]
+    shuffle_buffer = options["shuffle_buffer"]
+    pad = options["pad"]
+    max_train_samples = options["max_train_samples"]
+    max_val_samples = options["max_val_samples"]
+    use_valset = options["use_valset"]
+    seed = options["seed"]
+    task = options["task"]
 
     # Reject booleans and non-integral padding widths before loading data.
     if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
@@ -1017,11 +1012,7 @@ def get_datasets(
         )
 
     # Supply diffusion-safe scaling when no preprocessing mode was chosen.
-    if preprocess is None and model_name in { 
-        "diffusion_transformer", "dit_classifier", "dit_decoder", 
-        "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
-        "unet", "unet_classifier"
-    }: # Supply diffusion-safe scaling by default.
+    if preprocess is None and model_name in _DIFFUSION_MODELS:
         preprocess = "standardize"
         # Record the resolved preprocessing mode in typed configuration.
         if config is not None:
@@ -1098,12 +1089,7 @@ def get_datasets(
         x_eval = _pad_images(np.asarray(x_eval), pad, value=pad_value)
 
     # Flatten inputs for dense classifiers and autoencoders.
-    if model_name in (
-        "vae", 
-        "variational_autoencoder", 
-        "vae_classifier", 
-        "dnn"
-    ): # Flatten dense-model inputs.
+    if model_name in _DENSE_MODELS:
         x_train = x_train.reshape((len(x_train), -1))
         x_eval = x_eval.reshape((len(x_eval), -1))
 

@@ -25,6 +25,21 @@ _DIFFUSION_CLASSIFIER_MODELS = {
     "dit_classifier", "dit_encoder_decoder_classifier", "unet_classifier"
 }
 _VAE_MODELS = {"vae", "variational_autoencoder", "vae_classifier"}
+_MODEL_SECTION_NAMES = {
+    "diffusion_transformer": "diffusion_transformer",
+    "dit_classifier": "dit_classifier",
+    "dit_decoder": "dit_decoder",
+    "dit_encoder_decoder": "dit_encoder_decoder",
+    "dit_encoder_decoder_classifier": "dit_encoder_decoder_classifier",
+    "unet": "unet",
+    "unet_classifier": "unet_classifier",
+    "vae": "variational_autoencoder",
+    "variational_autoencoder": "variational_autoencoder",
+    "vae_classifier": "vae_classifier",
+}
+_DIFFUSION_CLASSIFIER_WRAPPERS = {
+    "diffusion_classifier", "diffusion_classifier_v2"
+}
 
 
 def get_compile_args(
@@ -276,9 +291,10 @@ def _get_classifier_model(
 
     Args:
         class_num (int): Positive output class count and final softmax width.
-        model_type (str): Exactly one of ``"pretrained"``, ``"hp-tuned"``,
-            ``"CNN"``, or ``"DNN"``.  ``pretrained`` resizes ``32x32x3`` images
-            and uses Xception; ``CNN`` consumes ``32x32x3`` images; ``DNN``
+        model_type (str): Case-insensitive ``"pretrained"``, ``"hp-tuned"``,
+            ``"CNN"``, or ``"DNN"`` selection. ``pretrained`` resizes
+            ``32x32x3`` images and uses Xception; ``CNN`` consumes
+            ``32x32x3`` images; ``DNN``
             consumes 2,048-element feature vectors; ``hp-tuned`` clones a saved
             model's architecture except for its original output layer.
         model_path (str | os.PathLike): Keras model path required by
@@ -360,6 +376,7 @@ def _get_classifier_model(
         raise ValueError("resize must contain two positive integers.")
 
     class_num = int(class_num)
+    model_type = str(model_type).lower()
     dropout_rate = float(dropout_rate)
     # Preserve None as the explicit all-trainable Xception setting.
     if num_last_not_frozen is not None:
@@ -423,7 +440,7 @@ def _get_classifier_model(
             layers.Dense(class_num, activation="softmax")
         ])
     # Build a configurable convolutional classifier.
-    elif model_type == "CNN":
+    elif model_type == "cnn":
         # Preserve the compact legacy CNN when no architecture is supplied.
         if not architecture_kwargs:
             model = models.Sequential([
@@ -510,7 +527,7 @@ def _get_classifier_model(
             ])
             model = models.Sequential(model_layers)
     # Build a configurable dense classifier.
-    elif model_type == "DNN":
+    elif model_type == "dnn":
         # Preserve the compact legacy DNN when no architecture is supplied.
         if not architecture_kwargs:
             model = models.Sequential([
@@ -595,8 +612,10 @@ def get_model(
             legacy positional class count, compatible root mapping, or ``None``
             for direct keywords.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher
-            forwarded to a diffusion-classifier wrapper. It is deliberately
-            separate from ``Config`` so YAML serialization remains safe.
+            forwarded to a diffusion-classifier wrapper. In automatic
+            continual distillation it is optional and applies only to task one.
+            It is deliberately separate from ``Config`` so YAML serialization
+            remains safe.
         **kwargs (object): Direct selections such as ``model_name``/``name``,
             ``model_kwargs``, ``wrapper_name``, ``wrapper_kwargs``,
             ``classifier_name``, ``classifier_kwargs``, dataset shape/count
@@ -658,9 +677,6 @@ def get_model(
                 )
             legacy_kwargs = dict(kwargs)
             class_num = legacy_kwargs.pop("class_num")
-            legacy_kwargs["model_type"] = _classifier_name(
-                legacy_kwargs.get("model_type", "CNN")
-            )
 
             return _get_classifier_model(class_num, **legacy_kwargs)
 
@@ -687,9 +703,9 @@ def get_model(
         default_model_name = "dit_classifier" if kwargs.get(
             "with_classifier", True
         ) else "diffusion_transformer"
-        model_name = kwargs.get(
+        model_name = str(kwargs.get(
             "model_name", kwargs.get("model_type", kwargs.get("name"))
-        ) or default_model_name
+        ) or default_model_name).lower()
         dataset_name = kwargs.get("dataset_name", "mnist")
         return_features = kwargs.get("return_features", False)
         pad = kwargs.get("pad", 0)
@@ -767,28 +783,14 @@ def get_model(
                 wrapper_kwargs = config.model.diffusion_model.kwargs()
         # Resolve an explicitly named configured model family.
         else:
-            model_name = config.model.name
+            model_name = str(config.model.name).lower()
             wrapper_name = config.model.wrapper_name
             # Give generic model options precedence when explicitly supplied.
             if config.model.kwargs:
                 model_kwargs = deepcopy(config.model.kwargs)
             # Otherwise obtain options from the matching typed model section.
             else:
-                section_names = {
-                    "diffusion_transformer": "diffusion_transformer",
-                    "dit_classifier": "dit_classifier",
-                    "dit_decoder": "dit_decoder",
-                    "dit_encoder_decoder": "dit_encoder_decoder",
-                    "dit_encoder_decoder_classifier": (
-                        "dit_encoder_decoder_classifier"
-                    ),
-                    "unet": "unet",
-                    "unet_classifier": "unet_classifier",
-                    "vae": "variational_autoencoder",
-                    "variational_autoencoder": "variational_autoencoder",
-                    "vae_classifier": "vae_classifier",
-                }
-                section_name = section_names.get(str(model_name).lower())
+                section_name = _MODEL_SECTION_NAMES.get(model_name)
                 using_typed_model_config = section_name is not None
                 model_kwargs = getattr(config.model, section_name).kwargs() \
                     if section_name is not None else {}
@@ -798,20 +800,21 @@ def get_model(
                 wrapper_kwargs = deepcopy(config.model.wrapper_kwargs)
             # Otherwise obtain options from the matching typed wrapper section.
             else:
-                normalized_name = str(model_name).lower()
-                default_wrapper_name = "diffusion_classifier" if normalized_name in {
-                    "dit_classifier",
-                    "dit_encoder_decoder_classifier",
-                    "unet_classifier",
-                } else "diffusion_model"
+                default_wrapper_name = "diffusion_classifier" \
+                    if model_name in _DIFFUSION_CLASSIFIER_MODELS \
+                    else "diffusion_model"
                 wrapper_section_name = str(
                     wrapper_name or default_wrapper_name
-                ).lower() if normalized_name in _DIFFUSION_MODELS else None
+                ).lower() if model_name in _DIFFUSION_MODELS else None
                 wrapper_section = getattr(
                     config.model, wrapper_section_name, None
                 ) if wrapper_section_name is not None else None
                 wrapper_kwargs = wrapper_section.kwargs() \
                     if wrapper_section is not None else {}
+
+    wrapper_name = None if wrapper_name is None else str(wrapper_name).lower()
+    classifier_name = None if classifier_name is None \
+        else str(classifier_name).lower()
 
     # Reject booleans and non-integral padding widths before shape changes.
     if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
@@ -820,29 +823,40 @@ def get_model(
     if pad < 0:
         raise ValueError("pad must be nonnegative.")
 
-    task = task.lower()
-
-    # Require the runtime half of configured continual distillation.
-    if config is not None and task == "continual" \
-    and config.continually_learn.use_distillation \
-    and teacher_network is None:
-        raise ValueError(
-            "continually_learn.use_distillation requires a runtime "
-            "teacher_network."
+    task = str(task).lower()
+    # Resolve the automatic previous-task teacher mode for continual wrappers.
+    if config is not None:
+        continual_self_distillation = bool(
+            task == "continual"
+            and config.continually_learn.use_distillation
+        )
+    # Direct mode keeps continual-only options in its nested compatibility map.
+    else:
+        continual_options = kwargs.get(
+            "continually_learn_kwargs",
+            kwargs.get("continual_kwargs", {}),
+        )
+        continual_options = continual_options \
+            if isinstance(continual_options, Mapping) else {}
+        continual_self_distillation = bool(
+            task == "continual" and (
+                kwargs.get("use_distillation", False)
+                or continual_options.get("use_distillation", False)
+            )
         )
 
     # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
         raise ValueError("pad is not supported for saved feature inputs.")
     # Reject saved features for families whose constructors require images.
-    if return_features and str(model_name).lower() in (
+    if return_features and model_name in (
         _DIFFUSION_MODELS | {"cnn", "pretrained"}
     ):
         raise ValueError(
             f"return_features is not supported for model {model_name!r}."
         )
     # Keep pretrained image geometry unchanged.
-    if pad and model_name.lower() in {"pretrained", "hp-tuned"}:
+    if pad and model_name in {"pretrained", "hp-tuned"}:
         raise ValueError("pad is not supported for pretrained/hp-tuned models.")
     # Propagate raw-image padding into model input dimensions.
     if pad > 0:
@@ -853,7 +867,6 @@ def get_model(
         )
         flat_dim = image_shape[0] * image_shape[1] * image_shape[2]
 
-    model_name = model_name.lower()
     # Restrict runtime teachers to raw families with classifier wrappers.
     if teacher_network is not None and \
     model_name not in _DIFFUSION_CLASSIFIER_MODELS:
@@ -935,7 +948,7 @@ def get_model(
 
         return _get_classifier_model(
             class_num, 
-            model_type=_classifier_name(name), 
+            model_type=name,
             model_path=model_path, 
             dropout_rate=dropout_rate, 
             num_last_not_frozen=num_last_not_frozen, 
@@ -967,8 +980,39 @@ def get_model(
             trainset_len=trainset_len, 
             **optimizer_options
         )
-        # Construct the plain variational-autoencoder family.
-        if name in ("vae", "variational_autoencoder"):
+        # Prepare the common VAE dimensions and compilation settings.
+        if name in _VAE_MODELS:
+            selected_kwargs.pop("class_num", None)
+            selected_kwargs.pop("compile", None)
+            # Make dataset-derived width authoritative for typed sections.
+            if using_typed_model_config:
+                selected_kwargs["data_dim"] = flat_dim
+            # Preserve a direct data width while providing a dataset default.
+            else:
+                selected_kwargs.setdefault("data_dim", flat_dim)
+
+            vae_compile_args = {
+                "optimizer": optimizer,
+                "loss": loss_function,
+                **deepcopy(selected_kwargs.pop("compile_args", {}) or {})
+            }
+
+            # Construct the joint VAE-classifier family.
+            if name == "vae_classifier":
+                selected_kwargs.pop("conditioned", None)
+                selected_classifier_name = classifier_name or "dnn"
+                classifier = build_classifier(
+                    selected_classifier_name,
+                    classifier_kwargs
+                )
+
+                return VAEClassifier(
+                    class_num=class_num,
+                    classifier=classifier,
+                    compile_args=vae_compile_args,
+                    **selected_kwargs
+                )
+
             conditioned = selected_kwargs.pop("conditioned", True)
             # Require class conditioning for generative replay.
             if task == "continual" and not conditioned:
@@ -979,66 +1023,15 @@ def get_model(
                 else:
                     raise ValueError("Continual VAE replay requires conditioned=True.")
 
-            selected_kwargs.pop("class_num", None)
-            selected_kwargs.pop("compile", None)
-            vae_compile_args = deepcopy(
-                selected_kwargs.pop("compile_args", {}) or {}
-            )
-
-            # Make dataset-derived width authoritative for typed sections.
-            if using_typed_model_config:
-                selected_kwargs["data_dim"] = flat_dim
-            # Preserve a direct data width while providing a dataset default.
-            else:
-                selected_kwargs.setdefault("data_dim", flat_dim)
-
             model = VariationalAutoencoder(
                 conditioned=conditioned, 
                 class_num=class_num if conditioned else None, 
                 compile=False, 
                 **selected_kwargs
             )
-            model.compile(**{
-                "optimizer": optimizer, 
-                "loss": loss_function, 
-                **vae_compile_args
-            })
+            model.compile(**vae_compile_args)
 
             return model
-
-        # Construct the joint VAE-classifier family.
-        if name == "vae_classifier":
-            selected_kwargs.pop("conditioned", None)
-            selected_kwargs.pop("class_num", None)
-            selected_kwargs.pop("compile", None)
-
-            # Make dataset-derived width authoritative for typed sections.
-            if using_typed_model_config:
-                selected_kwargs["data_dim"] = flat_dim
-            # Preserve a direct data width while providing a dataset default.
-            else:
-                selected_kwargs.setdefault("data_dim", flat_dim)
-
-            vae_compile_args = deepcopy(
-                selected_kwargs.pop("compile_args", {}) or {}
-            )
-            vae_compile_args = {
-                "optimizer": optimizer, 
-                "loss": loss_function, 
-                **vae_compile_args
-            }
-            selected_classifier_name = classifier_name or "dnn"
-            classifier = build_classifier(
-                selected_classifier_name.lower(), 
-                classifier_kwargs
-            )
-
-            return VAEClassifier(
-                class_num=class_num, 
-                classifier=classifier, 
-                compile_args=vae_compile_args, 
-                **selected_kwargs
-            )
 
         # Reject model names outside classifier, VAE, and diffusion families.
         if name not in _DIFFUSION_MODELS:
@@ -1074,14 +1067,8 @@ def get_model(
                     "num_classes"
                 ]
 
-        # Construct the base diffusion transformer.
-        if name == "diffusion_transformer":
-            network = DiffusionTransformer(**selected_kwargs)
-        # Construct a classification-capable diffusion transformer.
-        elif name == "dit_classifier":
-            network = DiTClassifier(**selected_kwargs)
-        # Construct a standalone decoder with inferred encoder geometry.
-        elif name == "dit_decoder":
+        # Infer the geometry required by a standalone decoder.
+        if name == "dit_decoder":
             # Reject encoder aggregation options without an attached encoder.
             if selected_kwargs.get("feature_aggregation_ids_dict") or \
             selected_kwargs.get("cross_attention_aggregation_ids_dict"):
@@ -1114,25 +1101,24 @@ def get_model(
                 selected_kwargs.setdefault("decoder_separate_cond", True)
                 selected_kwargs.setdefault("shift_inputs", False)
                 selected_kwargs.setdefault("use_causal_mask", False)
-            network = DiTDecoder(**selected_kwargs)
-        # Construct the joint DiT encoder-decoder generator.
-        elif name == "dit_encoder_decoder":
+        # Keep attached decoders on the existing non-shifted default.
+        elif name in {
+            "dit_encoder_decoder", "dit_encoder_decoder_classifier"
+        }:
             decoder_kwargs = selected_kwargs.get("decoder_kwargs") or {}
             decoder_kwargs.setdefault("shift_inputs", False)
             selected_kwargs["decoder_kwargs"] = decoder_kwargs
-            network = DiTEncoderDecoder(**selected_kwargs)
-        # Construct the classified DiT encoder-decoder network.
-        elif name == "dit_encoder_decoder_classifier":
-            decoder_kwargs = selected_kwargs.get("decoder_kwargs") or {}
-            decoder_kwargs.setdefault("shift_inputs", False)
-            selected_kwargs["decoder_kwargs"] = decoder_kwargs
-            network = DiTEncoderDecoderClassifier(**selected_kwargs)
-        # Construct the generator-only U-Net.
-        elif name == "unet":
-            network = UNet(**selected_kwargs)
-        # Construct the remaining supported U-Net classifier family.
-        else:
-            network = UNetClassifier(**selected_kwargs)
+
+        network_types = {
+            "diffusion_transformer": DiffusionTransformer,
+            "dit_classifier": DiTClassifier,
+            "dit_decoder": DiTDecoder,
+            "dit_encoder_decoder": DiTEncoderDecoder,
+            "dit_encoder_decoder_classifier": DiTEncoderDecoderClassifier,
+            "unet": UNet,
+            "unet_classifier": UNetClassifier,
+        }
+        network = network_types[name](**selected_kwargs)
 
         selected_wrapper_name = wrapper_name
         selected_wrapper_kwargs = deepcopy(wrapper_kwargs)
@@ -1144,14 +1130,9 @@ def get_model(
         if selected_wrapper_name is None:
             selected_wrapper_name = "diffusion_classifier" \
                 if name in _DIFFUSION_CLASSIFIER_MODELS else "diffusion_model"
-        # Normalize an explicitly requested wrapper name.
-        else:
-            selected_wrapper_name = str(selected_wrapper_name).lower()
-
         # Prevent classifier wrappers from receiving generator-only networks.
-        if selected_wrapper_name in {
-            "diffusion_classifier", "diffusion_classifier_v2"
-        } and name not in _DIFFUSION_CLASSIFIER_MODELS:
+        if selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
+        and name not in _DIFFUSION_CLASSIFIER_MODELS:
             raise ValueError(
                 f"Wrapper {selected_wrapper_name!r} requires a classifier network."
             )
@@ -1159,45 +1140,39 @@ def get_model(
         # Keep live teacher objects out of serializable wrapper configuration.
         if teacher_network is not None:
             # Require a wrapper that implements teacher preprocessing/losses.
-            if selected_wrapper_name not in {
-                "diffusion_classifier", "diffusion_classifier_v2"
-            }:
+            if selected_wrapper_name not in _DIFFUSION_CLASSIFIER_WRAPPERS:
                 raise ValueError(
                     "teacher_network requires a diffusion classifier wrapper."
                 )
             selected_wrapper_kwargs["teacher_network"] = teacher_network
 
-        # Wrap the network with joint diffusion classification behavior.
-        if selected_wrapper_name == "diffusion_classifier":
+        # Permit task one to train before an automatic past-version teacher exists.
+        if continual_self_distillation \
+        and selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS:
+            selected_wrapper_kwargs["defer_teacher"] = True
+
+        # Classifier wrappers use the network's CFG masking convention.
+        if selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS:
             selected_wrapper_kwargs.setdefault(
                 "mask_by_nulls", 
                 bool(network.use_cfg)
             )
-            model = DiffusionClassifier(
-                network=network, 
-                **selected_wrapper_kwargs
-            )
-        # Wrap the network with separately optimized V2 classification behavior.
-        elif selected_wrapper_name == "diffusion_classifier_v2":
-            selected_wrapper_kwargs.setdefault(
-                "mask_by_nulls", 
-                bool(network.use_cfg)
-            )
-            model = DiffusionClassifierV2(
-                network=network, 
-                **selected_wrapper_kwargs
-            )
-        # Wrap a generator network with diffusion training and sampling.
-        elif selected_wrapper_name == "diffusion_model":
-            model = DiffusionModel(
-                network=network, 
-                **selected_wrapper_kwargs
-            )
+
+        wrapper_types = {
+            "diffusion_classifier": DiffusionClassifier,
+            "diffusion_classifier_v2": DiffusionClassifierV2,
+            "diffusion_model": DiffusionModel,
+        }
+        wrapper_type = wrapper_types.get(selected_wrapper_name)
         # Reject wrapper names outside the three supported implementations.
-        else:
+        if wrapper_type is None:
             raise ValueError(
                 "Unsupported model wrapper: " + str(selected_wrapper_name)
             )
+        model = wrapper_type(
+            network=network,
+            **selected_wrapper_kwargs
+        )
 
         model.compile(**{
             "optimizer": optimizer, 
@@ -1272,7 +1247,6 @@ def get_model(
         selected_classifier_name = classifier_name or (
             "dnn" if model_name in _VAE_MODELS else "cnn"
         )
-        selected_classifier_name = selected_classifier_name.lower()
         # Keep continual pretrained classifiers on their required geometry.
         if pad and selected_classifier_name in {"pretrained", "hp-tuned"}:
             raise ValueError(
@@ -1308,21 +1282,6 @@ def get_model(
         }
 
     return finalize_selected(build_selected(model_name))
-
-
-def _classifier_name(name: object) -> str:
-    """Return the legacy classifier spelling expected by its builder.
-
-    Args:
-        name (object): Classifier name convertible to text.
-
-    Returns:
-        str: Uppercase ``CNN``/``DNN`` or a lowercase remaining name.
-    """
-
-    name = str(name).lower()
-
-    return name.upper() if name in ("cnn", "dnn") else name
 
 
 def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=False

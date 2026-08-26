@@ -1298,6 +1298,38 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("An unset test phase must fail")
 
     dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
+    continual_v2 = make_wrapper(
+        network=make_network(
+            num_classes=None,
+            clf_distil_token_type="new_weight",
+        ),
+        defer_teacher=True,
+        distil_loss_coef=1.0,
+    )
+    assert continual_v2.teacher_network is None
+    assert continual_v2.use_distil_loss is False
+    continual_v2._check_new_labels(y=classes, verbose=False)
+    v2_teacher = continual_v2.snapshot_teacher_network("raw")
+    continual_v2._check_new_labels(
+        y=tf.constant([2], dtype=tf.uint8),
+        verbose=False,
+    )
+    continual_v2.set_teacher_network(v2_teacher)
+    assert continual_v2.use_distil_loss
+    assert continual_v2.map_preprocess
+    assert v2_teacher.num_classes == 2
+    assert continual_v2.network.num_classes == 3
+    new_v2_dataset = tf.data.Dataset.from_tensor_slices((
+        images[:1],
+        tf.constant([2], dtype=tf.uint8),
+    )).batch(1)
+    continual_v2_history = continual_v2.fit_discriminator(
+        x=new_v2_dataset,
+        epochs=1,
+        verbose=0,
+    )
+    assert "distil_loss" in continual_v2_history.history
+
     gen_history = wrapper.fit_generator(x=dataset, epochs=1, verbose=0)
     clf_history = wrapper.fit_discriminator(x=dataset, epochs=1, verbose=0)
     assert "noise_loss" in gen_history.history
@@ -1371,7 +1403,9 @@ def run_self_tests() -> dict[str, str]:
     assert policy_config["clf_loss_coef"] == 1.0
     assert policy_config["clf_train_noisified_max_timesteps"] is None
     assert policy_config["clf_test_noisified_max_timesteps"] is None
-    assert "name" not in policy_config and "dtype" not in policy_config
+    assert policy_config["name"] == "policy_classifier_v2"
+    assert policy_config["trainable"] is False
+    assert policy_config["dtype"] == "float64"
     try:
         DiffusionClassifierV2.from_config(policy_config)
     except (TypeError, ValueError):

@@ -28,7 +28,7 @@ from common.lr_logger_callback import LrLoggerCallback
 from common.config import Config, load_config, save_config
 from common.dataloader import get_datasets, get_dataset_spec
 from common.model import get_model
-from common.learner import _continually_learn
+from common.learner import _run_continual_tasks
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -36,6 +36,244 @@ from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
+
+
+_PROGRESSIVE_FIT_KEYS = frozenset({
+    "stage_tasks", "stages_num", "stages_verbose", "stage_epochs",
+    "final_epochs", "timestep_boundaries", "timestep_clustering_type",
+    "resolutions", "depths", "pacing_type", "earlystopping_type",
+    "monitor", "patience", "min_delta", "stopper_mode",
+})
+"""Arguments owned by the progressive diffusion training API."""
+
+
+def _resolve_training_options(
+    config: Config | None,
+    model: tf.keras.Model | dict[str, object],
+    kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    """Resolve direct and configured training values into one flat mapping.
+
+    Args:
+        config (Config | None): Optional typed project configuration.
+        model (tf.keras.Model | dict[str, object]): Selected training target.
+        kwargs (Mapping[str, object]): Direct-mode keyword arguments.
+
+    Returns:
+        dict[str, object]: Independent mutable values consumed by
+        :func:`train_model`.
+    """
+
+    # Preserve the established direct-mode defaults and legacy alias.
+    if config is None:
+        return {
+            "show_images": kwargs.get("show_images", True),
+            "save_gifs": kwargs.get("save_gifs", False),
+            "results_path": kwargs.get("results_path", "./results"),
+            "project_tag": kwargs.get("project_tag", ""),
+            "report_every_epoch": kwargs.get("report_every_epoch", True),
+            "patience": kwargs.get("patience", 0),
+            "monitor": kwargs.get("monitor"),
+            "monitor_mode": kwargs.get("monitor_mode", "auto"),
+            "use_tensorboard": kwargs.get("tensorboard", False),
+            "tensorboard_run_name": kwargs.get("tensorboard_run_name"),
+            "tensorboard_path": kwargs.get("tensorboard_path"),
+            "hpo": kwargs.get("hpo", {}),
+            "continual_kwargs": deepcopy(kwargs.get(
+                "continually_learn_kwargs",
+                kwargs.get("continual_kwargs", {}),
+            )),
+            "dataset_name": kwargs.get("dataset_name", "mnist"),
+            "loader_preprocess": kwargs.get("preprocess", "standardize"),
+            "features_path": kwargs.get("features_path", ""),
+            "onehot_labels": kwargs.get("onehot_labels", False),
+            "validation_ratio": kwargs.get("validation_ratio", 0.),
+            "use_valset": kwargs.get("use_valset", True),
+            "seed": kwargs.get("seed"),
+            "training_verbose": kwargs.get("verbose", 1),
+            "epochs": kwargs.get("epochs", 20),
+            "batch_size": kwargs.get("batch_size", 128),
+            "continual_return_features": kwargs.get("return_features"),
+            "continual_max_train_samples": kwargs.get("max_train_samples"),
+            "continual_max_val_samples": kwargs.get("max_val_samples"),
+            "continual_shuffle_buffer": kwargs.get("shuffle_buffer"),
+            "continual_pad": kwargs.get("pad", 0),
+            "initial_classifier": kwargs.get("initial_classifier"),
+            "save_weights": kwargs.get("save_weights", False),
+            "classifier_compile_overrides": deepcopy(
+                kwargs.get("classifier_kwargs", {}).get("compile_args", {})
+            ),
+            "fit_method": kwargs.get("fit_method", "fit"),
+            "fit_kwargs": dict(kwargs.get("fit_kwargs", {})),
+        }
+
+    initial_classifier = None
+    # Resume the standalone continual classifier when no replay model exists.
+    if isinstance(model, dict) \
+    and model.get("generative_model") is None \
+    and config.model.weights_path is not None:
+        initial_classifier = model.get("classifier")
+
+    return {
+        "show_images": config.training.show_images,
+        "save_gifs": config.training.save_gifs,
+        "results_path": config.training.results_path,
+        "project_tag": config.training.project_tag,
+        "report_every_epoch": config.training.report_every_epoch,
+        "patience": config.training.patience,
+        "monitor": config.training.monitor,
+        "monitor_mode": config.training.monitor_mode,
+        "use_tensorboard": config.training.tensorboard,
+        "tensorboard_run_name": config.training.tensorboard_run_name,
+        "tensorboard_path": config.training.tensorboard_path,
+        "hpo": config.hpo,
+        "continual_kwargs": config.continually_learn.kwargs(),
+        "dataset_name": config.dataset.name,
+        "loader_preprocess": config.dataset.preprocess,
+        "features_path": config.dataset.features_path,
+        "onehot_labels": config.dataset.onehot_labels,
+        "validation_ratio": config.dataset.validation_ratio,
+        "use_valset": config.training.use_valset,
+        "seed": config.training.seed,
+        "training_verbose": config.training.verbose,
+        "epochs": config.training.epochs,
+        "batch_size": config.dataset.batch_size,
+        "continual_return_features": config.dataset.return_features,
+        "continual_max_train_samples": config.dataset.max_train_samples,
+        "continual_max_val_samples": config.dataset.max_val_samples,
+        "continual_shuffle_buffer": config.dataset.shuffle_buffer,
+        "continual_pad": config.dataset.pad,
+        "initial_classifier": initial_classifier,
+        "save_weights": config.training.save_weights,
+        "classifier_compile_overrides": deepcopy(
+            config.model.classifier_kwargs.get("compile_args", {})
+        ),
+        "fit_method": config.training.fit_method,
+        "fit_kwargs": dict(config.training.fit_kwargs),
+    }
+
+
+def _resolve_reporting_options(
+    config: Config | None,
+    kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    """Resolve direct and configured reporting values into one flat mapping.
+
+    Args:
+        config (Config | None): Optional typed project configuration.
+        kwargs (Mapping[str, object]): Direct-mode keyword arguments.
+
+    Returns:
+        dict[str, object]: Independent reporting options consumed by
+        :func:`report`.
+    """
+
+    # Preserve the interactive defaults used by direct notebook calls.
+    if config is None:
+        return {
+            "results_path": kwargs.get("results_path", "./results"),
+            "save_history_plot": kwargs.get("save_history_plot", False),
+            "save_csv": kwargs.get("save_csv", False),
+            "show_history_plot": kwargs.get("show_history_plot", True),
+            "plot_without_20percent": kwargs.get(
+                "plot_without_20percent", True
+            ),
+            "run_trainset_eval": kwargs.get("run_trainset_eval", True),
+            "verbose": kwargs.get(
+                "verbose", kwargs.get("training_verbose", True)
+            ),
+            "run_valset_eval": kwargs.get("run_valset_eval", True),
+            "evaluate_ensemble_accuracy": kwargs.get(
+                "evaluate_ensemble_accuracy", False
+            ),
+            "ensemble_accuracy_kwargs": dict(
+                kwargs.get("ensemble_accuracy_kwargs") or {}
+            ),
+            "dataset_name": kwargs.get("dataset_name", "mnist"),
+            "save_final_images": kwargs.get("save_final_images", False),
+            "show_final_images": kwargs.get("show_final_images", True),
+            "final_images_steps": kwargs.get("final_images_steps", 1_000),
+            "final_images_cfg_scale": kwargs.get(
+                "final_images_cfg_scale", 3.0
+            ),
+            "save_final_gifs": kwargs.get("save_final_gifs", False),
+        }
+
+    return {
+        "results_path": config.training.results_path,
+        "save_history_plot": config.reporting.save_history_plot,
+        "save_csv": config.reporting.save_csv,
+        "show_history_plot": config.reporting.show_history_plot,
+        "plot_without_20percent": config.reporting.plot_without_20percent,
+        "run_trainset_eval": config.reporting.run_trainset_eval,
+        "verbose": config.training.verbose,
+        "run_valset_eval": config.reporting.run_valset_eval,
+        "evaluate_ensemble_accuracy": (
+            config.reporting.evaluate_ensemble_accuracy
+        ),
+        "ensemble_accuracy_kwargs": dict(
+            config.reporting.ensemble_accuracy_kwargs or {}
+        ),
+        "dataset_name": config.dataset.name,
+        "save_final_images": config.reporting.save_final_images,
+        "show_final_images": config.reporting.show_final_images,
+        "final_images_steps": config.reporting.final_images_steps,
+        "final_images_cfg_scale": config.reporting.final_images_cfg_scale,
+        "save_final_gifs": config.reporting.save_final_gifs,
+    }
+
+
+def _evaluate_diffusion(
+    model: DiffusionModel,
+    dataset: tf.data.Dataset,
+    network_name: str,
+    verbose: int | bool,
+    evaluate_ensemble_accuracy: bool,
+    ensemble_accuracy_kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    """Evaluate one raw or EMA diffusion network on one dataset.
+
+    Args:
+        model (DiffusionModel): Diffusion wrapper selected for evaluation.
+        dataset (tf.data.Dataset): Batched evaluation input.
+        network_name (str): ``"raw"`` or ``"ema"`` network selector.
+        verbose (int | bool): Keras evaluation verbosity.
+        evaluate_ensemble_accuracy (bool): Add timestep-ensemble accuracy.
+        ensemble_accuracy_kwargs (Mapping[str, object]): Ensemble options.
+
+    Returns:
+        dict[str, object]: Wrapper metrics with optional ensemble accuracy.
+    """
+
+    # Ask V2 wrappers to evaluate generator and classifier together.
+    if isinstance(model, DiffusionClassifierV2):
+        results = model.evaluate(
+            eval_both=True,
+            x=dataset,
+            network_name=network_name,
+            verbose=verbose,
+        )
+    # Use the standard wrapper evaluation path for other diffusion models.
+    else:
+        results = model.evaluate(
+            dataset,
+            network_name=network_name,
+            return_dict=True,
+            verbose=verbose,
+        )
+
+    # Add ensemble accuracy beside the ordinary evaluation metrics.
+    if evaluate_ensemble_accuracy and isinstance(
+        model, DiffusionClassifier
+    ):
+        selected_kwargs = dict(ensemble_accuracy_kwargs)
+        selected_kwargs["netwrok_name"] = network_name
+        selected_kwargs.setdefault("verbose", bool(verbose))
+        results["ensemble_accuracy"] = model.evaluate_ensemble_accuracy(
+            dataset, **selected_kwargs
+        )
+
+    return results
 
 
 def _plain_config_value(value: object) -> object:
@@ -144,86 +382,52 @@ def train_model(
     if model is None or trainset is None:
         raise TypeError("model and trainset are required.")
 
-    # Resolve training settings from direct keyword arguments.
-    if config is None:
-        show_images = kwargs.get("show_images", True)
-        save_gifs = kwargs.get("save_gifs", False)
-        results_path = kwargs.get("results_path", "./results")
-        project_tag = kwargs.get("project_tag", "")
-        report_every_epoch = kwargs.get("report_every_epoch", True)
-        patience = kwargs.get("patience", 0)
-        monitor = kwargs.get("monitor")
-        monitor_mode = kwargs.get("monitor_mode", "auto")
-        use_tensorboard = kwargs.get("tensorboard", False)
-        tensorboard_run_name = kwargs.get("tensorboard_run_name", None)
-        tensorboard_path = kwargs.get("tensorboard_path", None)
-        hpo = kwargs.get("hpo", {})
-        continual_kwargs = deepcopy(kwargs.get(
-            "continually_learn_kwargs",
-            kwargs.get("continual_kwargs", {}),
-        ))
-        dataset_name = kwargs.get("dataset_name", "mnist")
-        loader_preprocess = kwargs.get("preprocess", "standardize")
-        features_path = kwargs.get("features_path", "")
-        onehot_labels = kwargs.get("onehot_labels", False)
-        validation_ratio = kwargs.get("validation_ratio", 0.)
-        use_valset = kwargs.get("use_valset", True)
-        seed = kwargs.get("seed")
-        training_verbose = kwargs.get("verbose", 1)
-        epochs = kwargs.get("epochs", 20)
-        batch_size = kwargs.get("batch_size", 128)
-        continual_return_features = kwargs.get("return_features")
-        continual_max_train_samples = kwargs.get("max_train_samples")
-        continual_max_val_samples = kwargs.get("max_val_samples")
-        continual_shuffle_buffer = kwargs.get("shuffle_buffer")
-        continual_pad = kwargs.get("pad", 0)
-        initial_classifier = kwargs.get("initial_classifier")
-        save_weights = kwargs.get("save_weights", False)
-        classifier_compile_overrides = deepcopy(
-            kwargs.get("classifier_kwargs", {}).get("compile_args", {})
-        )
-        fit_method = kwargs.get("fit_method", "fit")
-        fit_kwargs = dict(kwargs.get("fit_kwargs", {}))
-    # Resolve training settings from typed project configuration.
-    else:
-        show_images = config.training.show_images
-        save_gifs = config.training.save_gifs
-        results_path = config.training.results_path
-        project_tag = config.training.project_tag
-        report_every_epoch = config.training.report_every_epoch
-        patience = config.training.patience
-        monitor = config.training.monitor
-        monitor_mode = config.training.monitor_mode
-        use_tensorboard = config.training.tensorboard
-        tensorboard_run_name = config.training.tensorboard_run_name
-        tensorboard_path = config.training.tensorboard_path
-        hpo = config.hpo
-        continual_kwargs = config.continually_learn.kwargs()
-        dataset_name = config.dataset.name
-        loader_preprocess = config.dataset.preprocess
-        features_path = config.dataset.features_path
-        onehot_labels = config.dataset.onehot_labels
-        validation_ratio = config.dataset.validation_ratio
-        use_valset = config.training.use_valset
-        seed = config.training.seed
-        training_verbose = config.training.verbose
-        epochs = config.training.epochs
-        batch_size = config.dataset.batch_size
-        continual_return_features = config.dataset.return_features
-        continual_max_train_samples = config.dataset.max_train_samples
-        continual_max_val_samples = config.dataset.max_val_samples
-        continual_shuffle_buffer = config.dataset.shuffle_buffer
-        continual_pad = config.dataset.pad
-        initial_classifier = model.get("classifier") if isinstance(model, dict) \
-                            and model.get("generative_model") is None \
-                            and config.model.weights_path is not None else None
-        save_weights = config.training.save_weights
-        classifier_compile_overrides = deepcopy(config.model.classifier_kwargs.get(
-            "compile_args", {}
-        ))
-        fit_method = config.training.fit_method
-        fit_kwargs = dict(config.training.fit_kwargs)
+    training_options = _resolve_training_options(config, model, kwargs)
+    show_images = training_options["show_images"]
+    save_gifs = training_options["save_gifs"]
+    results_path = training_options["results_path"]
+    project_tag = training_options["project_tag"]
+    report_every_epoch = training_options["report_every_epoch"]
+    patience = training_options["patience"]
+    monitor = training_options["monitor"]
+    monitor_mode = training_options["monitor_mode"]
+    use_tensorboard = training_options["use_tensorboard"]
+    tensorboard_run_name = training_options["tensorboard_run_name"]
+    tensorboard_path = training_options["tensorboard_path"]
+    hpo = training_options["hpo"]
+    continual_kwargs = training_options["continual_kwargs"]
+    dataset_name = training_options["dataset_name"]
+    loader_preprocess = training_options["loader_preprocess"]
+    features_path = training_options["features_path"]
+    onehot_labels = training_options["onehot_labels"]
+    validation_ratio = training_options["validation_ratio"]
+    use_valset = training_options["use_valset"]
+    seed = training_options["seed"]
+    training_verbose = training_options["training_verbose"]
+    epochs = training_options["epochs"]
+    batch_size = training_options["batch_size"]
+    continual_return_features = training_options[
+        "continual_return_features"
+    ]
+    continual_max_train_samples = training_options[
+        "continual_max_train_samples"
+    ]
+    continual_max_val_samples = training_options[
+        "continual_max_val_samples"
+    ]
+    continual_shuffle_buffer = training_options["continual_shuffle_buffer"]
+    continual_pad = training_options["continual_pad"]
+    initial_classifier = training_options["initial_classifier"]
+    save_weights = training_options["save_weights"]
+    classifier_compile_overrides = training_options[
+        "classifier_compile_overrides"
+    ]
+    fit_method = training_options["fit_method"]
+    fit_kwargs = training_options["fit_kwargs"]
+    is_continual = isinstance(model, dict)
 
+    # Apply stricter selector and fit-ownership checks to typed configurations.
+    if config is not None:
         # Restrict the typed selector to the two documented training methods.
         if fit_method not in ("fit", "fit_progressively"):
             raise ValueError(
@@ -253,16 +457,8 @@ def train_model(
                     "fit_method='fit_progressively'."
                 )
 
-            progressive_fit_keys = {
-                "stage_tasks", "stages_num",
-                "stages_verbose", "stage_epochs", "final_epochs",
-                "timestep_boundaries", "timestep_clustering_type",
-                "resolutions", "depths", "pacing_type",
-                "earlystopping_type", "monitor", "patience", "min_delta",
-                "stopper_mode",
-            }
             conflicting_fit_keys = sorted(
-                progressive_fit_keys.intersection(fit_kwargs)
+                _PROGRESSIVE_FIT_KEYS.intersection(fit_kwargs)
             )
             # Keep named progressive arguments in their explicit config fields.
             if conflicting_fit_keys:
@@ -300,7 +496,7 @@ def train_model(
     progressive_fit = fit_method.endswith("progressively")
 
     checkpoint_model = model.get("generative_model") \
-        if isinstance(model, dict) else model
+        if is_continual else model
     # Reject unsupported progressive targets before callbacks or files exist.
     if progressive_fit and not isinstance(checkpoint_model, DiffusionModel):
         raise ValueError(
@@ -325,10 +521,12 @@ def train_model(
     if save_weights and progressive_fit and config is not None:
         save_config_ = True
 
-    callbacks_list = [
+    base_callbacks = [
         LrLoggerCallback(), 
         callbacks.ProgbarLogger(count_mode="steps")
     ]
+    callbacks_list = list(base_callbacks)
+    forwarded_callbacks = []
 
     image_callback = ImageGeneratorCallback(
         show_images=show_images, 
@@ -342,7 +540,7 @@ def train_model(
         callbacks_list.append(image_callback)
 
     # Add ordinary early stopping outside continual bundle training.
-    if not isinstance(model, dict) and patience > 0 and not progressive_fit:
+    if not is_continual and patience > 0 and not progressive_fit:
         callbacks_list.append(callbacks.EarlyStopping(
             monitor=monitor or ("val_loss" if valset is not None else "loss"),
             mode=monitor_mode, 
@@ -366,11 +564,13 @@ def train_model(
             project_tag or "run"
         )
 
-        callbacks_list.append(callbacks.TensorBoard(
+        tensorboard_callback = callbacks.TensorBoard(
             log_dir=tensorboard_path, 
             histogram_freq=0, 
             write_graph=False
-        ))
+        )
+        callbacks_list.append(tensorboard_callback)
+        forwarded_callbacks.append(tensorboard_callback)
 
         writer = tf.summary.create_file_writer(
             tensorboard_path, 
@@ -386,7 +586,9 @@ def train_model(
 
     # Append caller-provided callbacks after the shared defaults.
     if extra_callbacks is not None:
-        callbacks_list += list(extra_callbacks)
+        extra_callbacks = list(extra_callbacks)
+        callbacks_list += extra_callbacks
+        forwarded_callbacks += extra_callbacks
 
     # Write the resolved configuration before training when requested.
     if save_config_ and config is not None:
@@ -396,8 +598,24 @@ def train_model(
         )
         save_config(config, config_path)
 
+    progressive_call_kwargs = {
+        "x": trainset,
+        "validation_data": valset,
+        "callbacks": callbacks_list,
+        "verbose": training_verbose,
+        **fit_kwargs,
+    }
+    standard_fit_kwargs = {
+        "x": trainset,
+        "epochs": epochs,
+        "validation_data": valset,
+        "callbacks": callbacks_list,
+        "verbose": training_verbose,
+        **fit_kwargs,
+    }
+
     # Delegate continual bundles to the incremental-learning workflow.
-    if isinstance(model, dict):
+    if is_continual:
         classifier_name = model["classifier_name"]
         template_path = os.path.join(
             image_callback.results_path, 
@@ -468,7 +686,7 @@ def train_model(
             "seed": seed
         }
 
-        details = _continually_learn(
+        details = _run_continual_tasks(
             class_num=class_num, 
             load_dataset_fn=trainset, 
             load_dataset_fn_kwargs=loader_kwargs, 
@@ -478,7 +696,7 @@ def train_model(
             epochs=epochs, 
             generative_model=None if use_buffer else model["generative_model"], 
             generative_model_kwargs=generative_kwargs, 
-            callbacks_list=callbacks_list[2:], 
+            callbacks_list=forwarded_callbacks,
             return_details=True, 
             return_features=continual_return_features, 
             max_train_samples=continual_max_train_samples, 
@@ -525,26 +743,13 @@ def train_model(
     elif fit_method == "fit_progressively" and isinstance(
         model, DiffusionClassifierV2
     ):
-        generator_kwargs = {
-            "x": trainset,
-            "validation_data": valset,
-            "callbacks": callbacks_list,
-            "verbose": training_verbose,
-            **fit_kwargs,
-        }
         discriminator_kwargs = dict(fit_kwargs)
         # Remove curriculum-only values before the ordinary discriminator fit.
-        for name in (
-            "stage_tasks", "stages_num", "stages_verbose", "stage_epochs",
-            "final_epochs", "timestep_boundaries",
-            "timestep_clustering_type", "resolutions", "depths",
-            "pacing_type", "earlystopping_type", "monitor", "patience",
-            "min_delta", "stopper_mode",
-        ):
+        for name in _PROGRESSIVE_FIT_KEYS:
             discriminator_kwargs.pop(name, None)
 
         generator_history = model.fit_generator_progressively(
-            **generator_kwargs
+            **progressive_call_kwargs
         ).history
         discriminator_history = model.fit_discriminator(
             x=trainset,
@@ -577,55 +782,25 @@ def train_model(
             )
         # Progressive methods own their stage and final epoch budgets.
         elif progressive_fit:
-            method_kwargs = {
-                "x": trainset,
-                "validation_data": valset,
-                "callbacks": callbacks_list,
-                "verbose": training_verbose,
-                **fit_kwargs
-            }
             trained = method(
-                **method_kwargs
+                **progressive_call_kwargs
             )
         # Adapt shared arguments to other Keras-like training methods.
         else:
-            method_kwargs = {
-                "x": trainset, 
-                "epochs": epochs, 
-                "validation_data": valset, 
-                "callbacks": callbacks_list, 
-                "verbose": training_verbose, 
-                **fit_kwargs
-            }
             trained = method(
-                **method_kwargs
+                **standard_fit_kwargs
             )
 
         history = getattr(trained, "history", trained)
     # Train V2 generator and classifier phases with separate fit mappings.
     elif isinstance(model, DiffusionClassifierV2):
-        fit_kwargs = {
-            "x": trainset, 
-            "epochs": epochs, 
-            "validation_data": valset, 
-            "callbacks": callbacks_list, 
-            "verbose": training_verbose,
-            **fit_kwargs
-        }
         history = model.fit(
-            gen_kwargs=fit_kwargs, 
-            clf_kwargs={**fit_kwargs}, 
+            gen_kwargs=standard_fit_kwargs,
+            clf_kwargs=dict(standard_fit_kwargs),
         )
     # Use ordinary Keras fit for remaining model families.
     else:
-        history = model.fit(
-            trainset, 
-            epochs=epochs, 
-            validation_data=valset, 
-            callbacks=callbacks_list, 
-            verbose=training_verbose,
-            **fit_kwargs
-        ).history
+        history = model.fit(**standard_fit_kwargs).history
 
     # Persist final trained weights when requested.
     if save_weights:
@@ -635,7 +810,7 @@ def train_model(
         )
 
         checkpoint_model = model.get("generative_model") \
-            if isinstance(model, dict) else model
+            if is_continual else model
         # Store the final progressive network topology before saving weights.
         if progressive_fit and config is not None and isinstance(
             checkpoint_model, DiffusionModel
@@ -708,7 +883,7 @@ def train_model(
                 ).seen_classes = saved_seen_classes
 
         # Save continual classifier and optional replay-model weights separately.
-        if isinstance(model, dict):
+        if is_continual:
             model["classifier"].save_weights(weights_path)
             replay_weights_path = os.path.join(
                 image_callback.results_path, 
@@ -786,50 +961,28 @@ def report(
     if history is None or model is None or trainset is None:
         raise TypeError("history, model, and trainset are required.")
 
-    # Resolve reporting settings from direct keyword arguments.
-    if config is None:
-        results_path = kwargs.get("results_path", "./results")
-        save_history_plot = kwargs.get("save_history_plot", False)
-        save_csv = kwargs.get("save_csv", False)
-        show_history_plot = kwargs.get("show_history_plot", True)
-        plot_without_20percent = kwargs.get("plot_without_20percent", True)
-        run_trainset_eval = kwargs.get("run_trainset_eval", True)
-        verbose = kwargs.get("verbose", kwargs.get("training_verbose", True))
-        run_valset_eval = kwargs.get("run_valset_eval", True)
-        evaluate_ensemble_accuracy = kwargs.get(
-            "evaluate_ensemble_accuracy", False
-        )
-        ensemble_accuracy_kwargs = dict(
-            kwargs.get("ensemble_accuracy_kwargs") or {}
-        )
-        dataset_name = kwargs.get("dataset_name", "mnist")
-        save_final_images = kwargs.get("save_final_images", False)
-        show_final_images = kwargs.get("show_final_images", True)
-        final_images_steps = kwargs.get("final_images_steps", 1_000)
-        final_images_cfg_scale = kwargs.get("final_images_cfg_scale", 3.0)
-        save_final_gifs = kwargs.get("save_final_gifs", False)
-    # Resolve reporting settings from typed project configuration.
-    else:
-        results_path = config.training.results_path
-        save_history_plot = config.reporting.save_history_plot
-        save_csv = config.reporting.save_csv
-        show_history_plot = config.reporting.show_history_plot
-        plot_without_20percent = config.reporting.plot_without_20percent
-        run_trainset_eval = config.reporting.run_trainset_eval
-        verbose = config.training.verbose
-        run_valset_eval = config.reporting.run_valset_eval
-        evaluate_ensemble_accuracy = (
-            config.reporting.evaluate_ensemble_accuracy
-        )
-        ensemble_accuracy_kwargs = dict(
-            config.reporting.ensemble_accuracy_kwargs or {}
-        )
-        dataset_name = config.dataset.name
-        save_final_images = config.reporting.save_final_images
-        show_final_images = config.reporting.show_final_images
-        final_images_steps = config.reporting.final_images_steps
-        final_images_cfg_scale = config.reporting.final_images_cfg_scale
-        save_final_gifs = config.reporting.save_final_gifs
+    reporting_options = _resolve_reporting_options(config, kwargs)
+    results_path = reporting_options["results_path"]
+    save_history_plot = reporting_options["save_history_plot"]
+    save_csv = reporting_options["save_csv"]
+    show_history_plot = reporting_options["show_history_plot"]
+    plot_without_20percent = reporting_options["plot_without_20percent"]
+    run_trainset_eval = reporting_options["run_trainset_eval"]
+    verbose = reporting_options["verbose"]
+    run_valset_eval = reporting_options["run_valset_eval"]
+    evaluate_ensemble_accuracy = reporting_options[
+        "evaluate_ensemble_accuracy"
+    ]
+    ensemble_accuracy_kwargs = reporting_options[
+        "ensemble_accuracy_kwargs"
+    ]
+    dataset_name = reporting_options["dataset_name"]
+    save_final_images = reporting_options["save_final_images"]
+    show_final_images = reporting_options["show_final_images"]
+    final_images_steps = reporting_options["final_images_steps"]
+    final_images_cfg_scale = reporting_options["final_images_cfg_scale"]
+    save_final_gifs = reporting_options["save_final_gifs"]
+    is_continual = isinstance(model, dict)
 
     # Restrict ensemble evaluation to wrappers that expose the classifier API.
     if evaluate_ensemble_accuracy and not isinstance(
@@ -888,7 +1041,7 @@ def report(
             )
 
     # Summarize continual bundles from their recorded task accuracies.
-    if isinstance(model, dict):
+    if is_continual:
         eval_results = {
             "average_accuracy": float(np.nanmean(
                 history["continual_accuracy"]
@@ -979,81 +1132,37 @@ def report(
 
         return eval_results
 
+    evaluation_datasets = []
+    # Include training data when its evaluation is enabled.
+    if run_trainset_eval:
+        evaluation_datasets.append(("Trainset", "trainset", trainset))
+    # Include available validation data when its evaluation is enabled.
+    if run_valset_eval and valset is not None:
+        evaluation_datasets.append(("Valset", "valset", valset))
 
-    def evaluate_diffusion(
-        dataset: tf.data.Dataset,
-        network_name: str,
-    ) -> dict[str, object]:
-        """Evaluate one diffusion network on one prepared dataset.
-
-        Args:
-            dataset (tf.data.Dataset): Batched evaluation input.
-            network_name (str): ``"raw"`` or ``"ema"`` network selector.
-
-        Returns:
-            dict[str, object]: Wrapper-specific evaluation metrics.
-        """
-
-        # Ask V2 wrappers to evaluate generator and classifier together.
-        if isinstance(model, DiffusionClassifierV2):
-            results = model.evaluate(
-                eval_both=True, 
-                x=dataset, 
-                network_name=network_name, 
-                verbose=verbose
-            )
-        # Use the standard wrapper evaluation path for every other diffusion model.
-        else:
-            results = model.evaluate(
-                dataset,
-                network_name=network_name,
-                return_dict=True,
-                verbose=verbose
-            )
-
-        # Add ensemble accuracy without replacing the ordinary evaluation metrics.
-        if evaluate_ensemble_accuracy and isinstance(
-            model, DiffusionClassifier
-        ):
-            selected_kwargs = dict(ensemble_accuracy_kwargs)
-            selected_kwargs["netwrok_name"] = network_name
-            selected_kwargs.setdefault("verbose", bool(verbose))
-            results["ensemble_accuracy"] = model.evaluate_ensemble_accuracy(
-                dataset, **selected_kwargs
-            )
-
-        return results
-
+    network_evaluations = []
+    # Evaluate EMA first to preserve the established report order.
+    if model.use_ema:
+        network_evaluations.append(("EMA", "ema", "ema_eval"))
+    network_evaluations.append(("Raw", "raw", "network_eval"))
 
     eval_results = {}
-
-    # Evaluate raw and optional EMA networks on training data.
-    if run_trainset_eval:
-        print("Trainset evaluation:")
-
-        # Include the EMA network when the wrapper maintains one.
-        if model.use_ema:
-            print("EMA Network:")
-            trainset_ema_eval = evaluate_diffusion(trainset, "ema")
-            eval_results["trainset_ema_eval"] = trainset_ema_eval
-
-        print("Raw Network:")
-        trainset_network_eval = evaluate_diffusion(trainset, "raw")
-        eval_results["trainset_network_eval"] = trainset_network_eval
-
-    # Evaluate raw and optional EMA networks on validation data.
-    if run_valset_eval and valset is not None:
-        print("Valset evaluation:")
-
-        # Include the EMA network when the wrapper maintains one.
-        if model.use_ema:
-            print("EMA Network:")
-            valset_ema_eval = evaluate_diffusion(valset, "ema")
-            eval_results["valset_ema_eval"] = valset_ema_eval
-
-        print("Raw Network:")
-        valset_network_eval = evaluate_diffusion(valset, "raw")
-        eval_results["valset_network_eval"] = valset_network_eval
+    # Evaluate each requested dataset using each available network copy.
+    for dataset_title, dataset_key, dataset in evaluation_datasets:
+        print(f"{dataset_title} evaluation:")
+        # Keep network labels and result-key suffixes aligned.
+        for network_title, network_name, result_suffix in network_evaluations:
+            print(f"{network_title} Network:")
+            eval_results[f"{dataset_key}_{result_suffix}"] = (
+                _evaluate_diffusion(
+                    model,
+                    dataset,
+                    network_name,
+                    verbose,
+                    evaluate_ensemble_accuracy,
+                    ensemble_accuracy_kwargs,
+                )
+            )
 
     # Persist nonempty diffusion evaluations when requested.
     if len(eval_results) > 0 and save_csv:
