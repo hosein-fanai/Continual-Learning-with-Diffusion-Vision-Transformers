@@ -70,7 +70,7 @@ class VAEClassifier(VariationalAutoencoder):
         Raises:
             TypeError: If ``conditioned`` or ``class_num`` is included in
                 ``kwargs``, or another unsupported key is supplied.
-            ValueError: If ``alpha`` is negative.
+            ValueError: If ``alpha`` is non-finite or negative.
         """
 
         # Keep conditioning and class width controlled by this wrapper.
@@ -82,9 +82,9 @@ class VAEClassifier(VariationalAutoencoder):
         # Reject booleans and nonnumeric classification-loss weights.
         if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, Real):
             raise TypeError("alpha must be a real number.")
-        # Keep the classification-loss coefficient nonnegative.
-        if alpha < 0.:
-            raise ValueError("alpha must be nonnegative.")
+        # Keep the classification-loss coefficient finite and nonnegative.
+        if not np.isfinite(alpha) or alpha < 0.:
+            raise ValueError("alpha must be finite and nonnegative.")
 
         compile_model = kwargs.pop("compile", True)
         # Require an explicit boolean compilation switch.
@@ -447,7 +447,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert compile_args_none._is_compiled is False
 
-    for invalid_alpha in (True, "1", -0.1):
+    for invalid_alpha in (True, "1", -0.1, float("nan"), float("inf")):
         try:
             VAEClassifier(
                 3,

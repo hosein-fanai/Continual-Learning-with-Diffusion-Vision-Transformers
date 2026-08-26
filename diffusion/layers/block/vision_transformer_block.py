@@ -129,6 +129,7 @@ class VisionTransformerBlock(BaseLayer):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
+            output_shape=self.query_dim if self.gate_query_flag else self.dim,
             name="mha",
             dtype=self.dtype_policy
         )
@@ -234,6 +235,10 @@ class VisionTransformerBlock(BaseLayer):
             ``tf.Tensor`` shaped ``[batch, tokens, mlp_output_dim]``.
         """
 
+        x = self.mha_residual_projector(
+            x,
+            training=training
+        ) if x.shape[-1] != self.query_dim else x
         h, gate = self.mlp_layer_norm(
             (x, cond), 
             training=training
@@ -373,6 +378,23 @@ def run_self_tests() -> dict[str, str]:
         training=False
     )
     assert external_queries.shape == x.shape
+
+    resized_self_attention = VisionTransformerBlock(
+        dim=4,
+        query_dim=6,
+        num_heads=2,
+        mlp_output_dim=6,
+    )
+    assert resized_self_attention((x, condition)).shape == (2, 3, 6)
+
+    resized_dim_gated_attention = VisionTransformerBlock(
+        dim=4,
+        query_dim=6,
+        num_heads=2,
+        gate_query_flag=False,
+        mlp_output_dim=6,
+    )
+    assert resized_dim_gated_attention((x, condition)).shape == (2, 3, 6)
 
     stochastic = VisionTransformerBlock(
         dim=4, 

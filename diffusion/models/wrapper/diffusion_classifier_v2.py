@@ -8,7 +8,7 @@ from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 
 class DiffusionClassifierV2(DiffusionClassifier):
-    """Split a ``DiTClassifier`` variable set across two optimizers.
+    """Split a classifier-capable diffusion network across two optimizers.
 
     The generator phase optimizes diffusion losses over all raw-network
     variables not assigned to the classifier group.  The discriminator phase
@@ -33,7 +33,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
     ) -> None:
         """Configure separate generator and classifier optimization.
 
-        This classifier variant assigns selected embedding and transformer
+        This classifier variant assigns selected embedding and main-network
         depths to the classifier optimizer while the remaining variables use
         the generator optimizer. After progressive network growth, the original
         transformer ID specification is resolved again so negative IDs still
@@ -48,20 +48,22 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 expands to IDs 0..4; optional absent layers are skipped.
                 Default ``[]`` selects no shared embedding explicitly; a
                 classifier-only token is always included automatically.
-            clf_vars_noise_part_ids (list[int]): Transformer depth IDs assigned to the
+            clf_vars_noise_part_ids (list[int]): Main-network depth IDs assigned to the
                 classifier optimizer.  For network depth N, explicit positives
                 are 1..N; negatives are ``-N..-1`` and normalize by
                 ``id + N + 1`` (so ``-1`` selects final depth N).  Zero is
                 invalid.  Negative IDs are re-resolved after progressive growth.
             clf_train_noisified_max_timesteps (int | None): Optional exclusive timestep cap
                 used while fitting the classifier part.  ``None`` trains its
-                classifier on clean images at timestep 0.
+                classifier on clean images at timestep 0 and -1 is at self.timesteps.
             clf_test_noisified_max_timesteps (int | None): Optional exclusive timestep cap
                 used while evaluating the classifier part.  ``None`` evaluates
-                clean images at timestep 0.
+                clean images at timestep 0 and -1 is at self.timesteps.
             **kwargs (object): Constructor arguments forwarded to
                 ``DiffusionClassifier`` and ``DiffusionModel``.  These include
-                ``network=DiTClassifier(...)``, classifier mask/train settings,
+                ``network=DiTClassifier(...)``,
+                ``DiTEncoderDecoderClassifier(...)``, or
+                ``UNetClassifier(...)``, classifier mask/train settings,
                 EMA/schedule/CFG/loss/timestep/resize options, and Keras model
                 keys ``name``, ``trainable``, ``dtype``, and ``dynamic``.
 
@@ -94,13 +96,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *self.clf_vars_noise_part_ids
         ]))
 
-        # Reuse the training cap when the test cap was omitted.
-        if self.clf_train_noisified_max_timesteps is not None \
-        and self.clf_test_noisified_max_timesteps is None:
-            self.clf_test_noisified_max_timesteps = int(
-                self.clf_train_noisified_max_timesteps
-            )
-
+        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
+                                                else self.self.clf_train_noisified_max_timesteps
+        self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
+                                                else self.self.clf_train_noisified_max_timesteps
+        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
+                                                else self.self.clf_test_noisified_max_timesteps
+        self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
+                                                else self.self.clf_test_noisified_max_timesteps
         self.clf_trainable_variables = None
         self.gen_trainable_variables = None
         self._active_trainable_variables = None
@@ -144,7 +147,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
     def _set_clf_variables(self) -> None:
         """Assemble variables owned by the classifier optimizer.
 
-        Selected shared embeddings and main-transformer stages are added first,
+        Selected shared embeddings and main-network stages are added first,
         followed by every existing classifier depth, classifier-specific
         regularizer/token, and classifier-head variable.  Variables are kept in
         discovery order and deduplicated by object identity so overlapping
@@ -516,7 +519,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         uncond_labels = tf.zeros_like(labels, dtype=tf.uint8)
 
         # Noisify classifier inputs within the configured timestep cap.
-        if noisified_max_timesteps is not None:
+        if noisified_max_timesteps is not None and \
+        noisified_max_timesteps != 0:
             x_t, _, t = self.noisify(
                 x0, 
                 max_timesteps=noisified_max_timesteps
@@ -524,7 +528,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # Use clean inputs at timestep zero when None selects clean-only mode.
         else:
             x_t = x0
-            t = tf.zeros_like(labels, dtype=tf.int32)
+            t = tf.zeros_like(
+                labels, 
+                dtype=tf.int32
+            )
 
         outputs = (t, x_t, uncond_labels, classes)
 
@@ -844,7 +851,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         prepared_inputs =  self.prep_clfv2_inputs(
             inputs, 
-            self.clf_train_noisified_max_timesteps,
+            self.clf_train_noisified_max_timesteps, 
             return_x0=True
         ) if not self.map_preprocess else inputs
         # Separate the mapped teacher target from discriminator inputs.

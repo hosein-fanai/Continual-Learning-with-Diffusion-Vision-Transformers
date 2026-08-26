@@ -154,11 +154,6 @@ class LocalMixer(BaseEmbedding):
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
-        self.token_projector = layers.Dense(
-            self.output_dim, 
-            dtype=self.dtype_policy, 
-            name=f"{self.name}/token_projector"
-        ) if self.dim != self.output_dim else None
         self.residual_token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -196,10 +191,7 @@ class LocalMixer(BaseEmbedding):
             training=training
         ) if self.layer_norm is not None else (x, 1.)
         prefix_tokens_num = int(self.circumvent_tokens)
-        h, h_token = (
-            h[:, prefix_tokens_num:, :], 
-            h[:, :prefix_tokens_num, :]
-        ) if self.circumvent_tokens else (h, None)
+        h = h[:, prefix_tokens_num:, :] if self.circumvent_tokens else h
 
         h_shape = tf.shape(h)
         input_grid_size = tf.cast(
@@ -246,14 +238,11 @@ class LocalMixer(BaseEmbedding):
             training=training
         )
         x_token = self.residual_token_projector(
-            x_token, 
+            x_token,
             training=training
         ) if self.residual_token_projector is not None else x_token
         x = tf.concat([
-            (x_token + self.token_projector(
-                h_token, 
-                training=training
-            )) if self.token_projector is not None else (x_token + h_token), 
+            x_token,
             x
         ], axis=1) if self.circumvent_tokens else x
         x = self.mlp(
@@ -312,9 +301,10 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type=None, 
         use_layer_norm=False, 
         use_pointwise=True, 
-        zero_init=True
+        zero_init=True,
+        circumvent_tokens=True
     )
-    identity_input = tf.random.normal((2, 16, 2))
+    identity_input = tf.random.normal((2, 17, 2))
     np.testing.assert_allclose(
         identity_layer((identity_input, None), training=False).numpy(), 
         identity_input.numpy(), 

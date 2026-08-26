@@ -361,6 +361,8 @@ class DiffusionModelConfig(KwargsMixin):
     mapping. On a continual reload, the raw constructor still receives
     ``num_classes=None``
     and the wrapper uses this mapping to restore the grown topology.
+    ``test_steps=None`` lets the model factory cap the default at the raw
+    network's timestep count.
     """
 
     use_ema: bool = True
@@ -371,7 +373,7 @@ class DiffusionModelConfig(KwargsMixin):
     p_uncond: float = 0.1
     train_cfg_scale: float | None = None
     test_cfg_scale: float = 4.0
-    test_steps: int = 50
+    test_steps: int | None = None
     test_eta: float = 0.0
     noise_loss_coef: float = 1.0
     show_separate_noise_losses: bool = False
@@ -395,10 +397,14 @@ class DiffusionModelConfig(KwargsMixin):
 
 @dataclass
 class DiffusionClassifierConfig(DiffusionModelConfig):
-    """Arguments forwarded to ``DiffusionClassifier`` except ``network``."""
+    """Arguments forwarded to ``DiffusionClassifier`` except ``network``.
+
+    ``mask_by_nulls=None`` lets the model factory match the raw network's CFG
+    setting. An explicit boolean is forwarded unchanged.
+    """
 
     distil_type: str = "hard"
-    mask_by_nulls: bool = True
+    mask_by_nulls: bool | None = None
     mask_by_t_threshold: bool = False
     mask_t_percentage: int = 70
     use_ensemble_loss_instead: bool = False
@@ -459,7 +465,8 @@ class DatasetConfig:
         name (str): ``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
             ``"cifar100"``.
         preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or no scaling.
+            ``"standardize"``/``"diffusion"``, or no scaling. ``None`` is
+            resolved automatically for diffusion and VAE model families.
         indices (list[int] | None): Class IDs retained by ordinary dataset
             construction. The continual loop introduces the zero-based prefix
             selected by ``continually_learn.class_num``.
@@ -1082,7 +1089,7 @@ def _shortened_dataclass(
 def save_config(
     config: Config, 
     config_path: str | os.PathLike[str],
-    shorten: bool = True
+    shorten: bool = False
 ) -> None:
     """Serialize a full or default-pruned config dataclass tree to YAML.
 
@@ -1090,10 +1097,11 @@ def save_config(
         config (Config): Dataclass root to convert recursively with ``asdict``.
         config_path (str | os.PathLike): Destination file.  Existing content is
             overwritten; parent directories must already exist.
-        shorten (bool): When ``False``, save every field exactly as before.
-            When ``True``, recursively omit values equal to their declared
-            dataclass defaults. Nonempty plain mappings such as ``hpo`` remain
-            intact because their entries have no declared field defaults.
+        shorten (bool): When ``False`` (the default), save every field exactly
+            as before. When ``True``, recursively omit values equal to their
+            declared dataclass defaults. Nonempty plain mappings such as
+            ``hpo`` remain intact because their entries have no declared field
+            defaults.
 
     Returns:
         None.
@@ -1294,6 +1302,7 @@ def run_self_tests() -> dict[str, str]:
 
     diffusion_defaults = DiffusionModelConfig()
     assert diffusion_defaults.test_network_name == "ema"
+    assert diffusion_defaults.test_steps is None
     assert diffusion_defaults.swap_noise_image is False
     assert diffusion_defaults.show_separate_noise_losses is False
     assert diffusion_defaults.map_preprocess is False
@@ -1321,7 +1330,7 @@ def run_self_tests() -> dict[str, str]:
 
     diffusion_classifier_defaults = DiffusionClassifierConfig()
     assert isinstance(diffusion_classifier_defaults, DiffusionModelConfig)
-    assert diffusion_classifier_defaults.mask_by_nulls is True
+    assert diffusion_classifier_defaults.mask_by_nulls is None
     assert diffusion_classifier_defaults.distil_type == "hard"
     assert diffusion_classifier_defaults.distil_loss_coef == 0.0
     assert diffusion_classifier_defaults.clf_acc_coef == 0.5

@@ -8,7 +8,10 @@ metrics, EMA use, timestep masking, and Keras train/test steps.
 import tensorflow as tf
 from tensorflow.keras import callbacks, metrics, losses
 
+import numpy as np
+
 from math import ceil
+from numbers import Integral, Real
 
 from typing import get_args, Literal
 
@@ -161,8 +164,19 @@ class DiffusionClassifier(DiffusionModel):
             assert self.p_uncond > 0., \
                 "mask_by_nulls is not campatible with p_uncond = 0."
 
-        assert 0 <= local_vars["mask_t_percentage"] <= 100, \
+        assert isinstance(local_vars["mask_t_percentage"], Integral) and \
+            not isinstance(local_vars["mask_t_percentage"], bool) and \
+            0 <= local_vars["mask_t_percentage"] <= 100, \
             "mask_t_percentage must be an integer in [0, 100]."
+
+        for name in (
+            "clf_loss_coef", "distil_loss_coef", "clf_acc_coef",
+            "ctr_acc_coef", "distil_acc_coef"
+        ):
+            value = local_vars[name]
+            assert isinstance(value, Real) and not isinstance(value, bool) and \
+                np.isfinite(value) and value >= 0., \
+                f"{name} must be a finite nonnegative number."
 
         assert local_vars["distil_type"] in ("hard", "soft"), \
             "distil_type must be either 'hard' or 'soft'."
@@ -296,7 +310,8 @@ class DiffusionClassifier(DiffusionModel):
 
         teacher_num_labels = getattr(
             self.teacher_network, 
-            "num_labels"
+            "num_labels",
+            None
         )
 
         # Preserve external teacher semantics when vocabulary metadata is absent.
@@ -355,6 +370,9 @@ class DiffusionClassifier(DiffusionModel):
 
         primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token\
                                 else "avg_pooling_accuracy"
+        configured_distillation = bool(
+            self.distil_loss_coef > 0. and self.network.distil_token is not None
+        )
 
         self.clf_loss_tracker = metrics.Mean(name="classifier_loss")
         self.clf_kl_loss_tracker = metrics.Mean(name="clf_kl_loss")
@@ -364,7 +382,7 @@ class DiffusionClassifier(DiffusionModel):
             name="total_accuracy"
         )
         self.accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            name=primary_accuracy_name if self.use_distil_loss \
+            name=primary_accuracy_name if configured_distillation \
                 else "classifier_accuracy"
         )
         self.clf_ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
@@ -852,7 +870,8 @@ class DiffusionClassifier(DiffusionModel):
 
         # Preserve strict ordinary construction while allowing task-1 deferral.
         if teacher_network is None and \
-        (self.use_distil_loss or self.use_distil_ctr_loss) \
+        (getattr(self, "use_distil_loss", False) or
+         getattr(self, "use_distil_ctr_loss", False)) \
         and not self.defer_teacher:
             raise ValueError(
                 "A configured distillation objective requires teacher_network; "
@@ -1713,6 +1732,14 @@ def run_self_tests() -> dict[str, str]:
     assert continual_student.get_config()["defer_teacher"] is True
     assert "teacher_network" not in continual_student.get_config()
 
+    external_teacher = tf.keras.Sequential()
+    continual_student.set_teacher_network(external_teacher)
+    tf.debugging.assert_equal(
+        continual_student._mask_unknown_teacher_labels(classes),
+        classes,
+    )
+    continual_student.set_teacher_network(None)
+
     continual_student._check_new_labels(y=classes, verbose=False)
     continual_student._add_depths({
         "classifier": "vision_transformer_block"
@@ -1771,6 +1798,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert continual_student.use_distil_loss
     assert continual_student.use_teacher
+    assert continual_student.accuracy_tracker.name == "cls_token_accuracy"
     assert continual_student.map_preprocess
     assert continual_student.train_function is None
     assert continual_student.test_function is None
@@ -2031,6 +2059,10 @@ def run_self_tests() -> dict[str, str]:
         {"mask_by_nulls": True, "p_uncond": 0.0},
         {"mask_t_percentage": -1, "mask_by_nulls": False},
         {"mask_t_percentage": 101, "mask_by_nulls": False},
+        {"mask_t_percentage": True, "mask_by_nulls": False},
+        {"clf_loss_coef": -1., "mask_by_nulls": False},
+        {"distil_loss_coef": float("nan"), "mask_by_nulls": False},
+        {"clf_acc_coef": -1., "mask_by_nulls": False},
         {"clf_train_type": "unknown", "mask_by_nulls": False},
         {
             "clf_train_type": "uncond", "train_cfg_scale": None,

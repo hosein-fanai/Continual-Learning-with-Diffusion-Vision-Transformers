@@ -94,7 +94,7 @@ class PatchEmbedding(BaseEmbedding):
         if self.patchify_with_cnn:
             self.patch_projector = models.Sequential([
                 layers.Conv2D(
-                    self.hidden_dim // 2, 
+                    max(1, self.hidden_dim // 2),
                     kernel_size=3, 
                     strides=1, 
                     padding="same", 
@@ -230,6 +230,16 @@ def run_self_tests() -> dict[str, str]:
     cnn_tokens = cnn(images[:, :7, :7, :], training=True)
     assert cnn_tokens.shape == (2, 16, 4)
     assert len(cnn.patch_projector.layers) == 2
+
+    narrow_cnn = PatchEmbedding(
+        dim=2,
+        grid_size=4,
+        patch_size=2,
+        patchify_with_cnn=True,
+        pos_embed_type="2d_sincos",
+        pos_merger_type="concat",
+    )
+    assert narrow_cnn(images[:1]).shape == (1, 16, 2)
 
     no_position = PatchEmbedding(
         dim=3, 

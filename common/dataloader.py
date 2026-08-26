@@ -956,10 +956,13 @@ def get_datasets(
 
     Side Effects:
         Config mode records ``dataset.trainset_len``. A missing preprocessing
-        mode is also resolved to ``"standardize"`` for diffusion families so
-        the returned continual loader receives the same effective setting.
-        Direct pretrained calls default to raw images because Xception owns
-        their rescaling; other direct families retain standardization.
+        mode is resolved to ``"standardize"`` for diffusion families. For VAE
+        families it follows the reconstruction activation: ``tanh`` uses
+        ``"standardize"``, ``sigmoid`` uses ``"min-max"``, and linear/``None``
+        uses ``"normalize"``. The returned continual loader receives the same
+        recorded setting. Direct pretrained calls default to raw images because
+        Xception owns their rescaling; other direct families retain
+        standardization.
 
     Raises:
         TypeError: If ``pad`` is not a non-boolean integer.
@@ -1016,6 +1019,35 @@ def get_datasets(
         preprocess = "standardize"
         # Record the resolved preprocessing mode in typed configuration.
         if config is not None:
+            config.dataset.preprocess = preprocess
+
+    # Match an unspecified VAE input space to its effective output activation.
+    if preprocess is None and model_name in {
+        "vae", "variational_autoencoder", "vae_classifier"
+    }:
+        vae_activation = "tanh"
+        # Respect generic model options before the typed family section.
+        if config is not None:
+            typed_vae_config = config.model.vae_classifier \
+                if model_name == "vae_classifier" \
+                else config.model.variational_autoencoder
+            vae_activation = config.model.kwargs.get(
+                "last_activation", "tanh"
+            ) if config.model.kwargs else typed_vae_config.last_activation
+
+        activation_name = getattr(
+            vae_activation, "__name__", vae_activation
+        )
+        activation_name = str(activation_name).lower() \
+            if activation_name is not None else None
+        preprocess = {
+            "tanh": "standardize",
+            "sigmoid": "min-max",
+            "linear": "normalize",
+            None: "normalize",
+        }.get(activation_name)
+        # Record a recognized activation's resolved preprocessing mode.
+        if config is not None and preprocess is not None:
             config.dataset.preprocess = preprocess
 
     class_num, _, _ = get_dataset_spec(

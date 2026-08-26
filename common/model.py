@@ -1122,10 +1122,9 @@ def get_model(
 
         selected_wrapper_name = wrapper_name
         selected_wrapper_kwargs = deepcopy(wrapper_kwargs)
-        selected_wrapper_kwargs.setdefault(
-            "test_steps", 
-            min(50, network.timesteps)
-        )
+        # Resolve the typed automatic value after the raw timestep count is known.
+        if selected_wrapper_kwargs.get("test_steps") is None:
+            selected_wrapper_kwargs["test_steps"] = min(50, network.timesteps)
         # Select the wrapper implied by the raw network family.
         if selected_wrapper_name is None:
             selected_wrapper_name = "diffusion_classifier" \
@@ -1151,12 +1150,10 @@ def get_model(
         and selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS:
             selected_wrapper_kwargs["defer_teacher"] = True
 
-        # Classifier wrappers use the network's CFG masking convention.
-        if selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS:
-            selected_wrapper_kwargs.setdefault(
-                "mask_by_nulls", 
-                bool(network.use_cfg)
-            )
+        # Resolve automatic null masking from the raw network's CFG convention.
+        if selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
+        and selected_wrapper_kwargs.get("mask_by_nulls") is None:
+            selected_wrapper_kwargs["mask_by_nulls"] = bool(network.use_cfg)
 
         wrapper_types = {
             "diffusion_classifier": DiffusionClassifier,
@@ -1274,6 +1271,18 @@ def get_model(
         # Otherwise apply configured weights to the replay model.
         else:
             generative_model = finalize_selected(generative_model)
+
+            classifier_weights_path = config.hpo.get(
+                "classifier_weights_path"
+            ) if config is not None else None
+            use_replay_classifier = (
+                config.continually_learn.use_generative_model_classifier
+                if config is not None
+                else bool(kwargs.get("use_generative_model_classifier", False))
+            )
+            # Restore the separately trained classifier paired with replay weights.
+            if classifier_weights_path is not None and not use_replay_classifier:
+                classifier.load_weights(classifier_weights_path)
 
         return {
             "classifier": classifier, 

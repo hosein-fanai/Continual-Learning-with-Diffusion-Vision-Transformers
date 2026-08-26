@@ -1,11 +1,12 @@
 # Diffusion model wrappers
 
 This directory contains the stateful training and sampling layer around the raw
-networks in [`diffusion.models.transformer`](../transformer/README.md).
+networks in [`diffusion.models.transformer`](../transformer/README.md) and
+[`diffusion.models.convolution`](../convolution/README.md).
 
 The division of responsibility is intentional:
 
-| Transformer package | Wrapper package |
+| Raw-network packages | Wrapper package |
 | --- | --- |
 | Patch/condition embeddings | Forward noising and timestep sampling |
 | Attention, feature routing, spatial layers | Loss composition and metrics |
@@ -21,7 +22,7 @@ directly when you specifically need its tensor/intermediate-feature API.
 - `DiffusionModel`: general denoising wrapper with raw/EMA networks, DDIM/DDPM
   sampling, VAE bottleneck sampling, and progressive curricula.
 - `DiffusionClassifier`: joint denoising/classification wrapper for
-  `DiTClassifier`.
+  `DiTClassifier`, `DiTEncoderDecoderClassifier`, and `UNetClassifier`.
 - `DiffusionClassifierV2`: alternating generator/discriminator variant with two
   optimizer states and explicit variable ownership.
 
@@ -122,7 +123,8 @@ Important constructor controls are:
 - `kl_train_type` and `ctr_train_type`: choose conditional or unconditional
   branch values for auxiliary losses;
 - `*_noisified_min_timesteps` / `*_noisified_max_timesteps`: half-open train and
-  test ranges `[minimum, maximum)`;
+  test ranges `[minimum, maximum)`; a base-wrapper maximum of `None` or `-1`
+  uses the network's full timestep count;
 - `resize_method`, `resize_antialias`: active-resolution input resizing;
 - `map_preprocess=False`: keep `prep_inputs` in the train/test step. When true,
   `fit`, `evaluate`, validation, and progressive stages map each
@@ -242,8 +244,9 @@ model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 
 `mask_by_nulls=True` selects only examples whose dropped CFG label equals 0 for
 classifier loss and accuracy. `mask_by_t_threshold=True` intersects that mask
-with `t <= int(mask_t_percentage / 100 * timesteps)`. Set either switch false to
-remove that selection criterion. `clf_train_type="uncond"` requires a numeric
+with `t <= ceil(mask_t_percentage / 100 * timesteps) - 1`; zero percent selects
+no timesteps. Set either switch false to remove that selection criterion.
+`clf_train_type="uncond"` requires a numeric
 `train_cfg_scale` because it needs the explicit unconditional pass.
 
 Use `model.evaluate_ensemble_accuracy(dataset, weighted=True)` to
@@ -391,7 +394,7 @@ use these IDs:
 | `2` | Label embedder |
 | `3` | Main depth-0 label regularizer |
 | `4` | Shared main class token when present |
-| `clf_vars_noise_part_ids=-1` | Final main-transformer depth |
+| `clf_vars_noise_part_ids=-1` | Final main-network depth |
 | positive/other negative depth IDs | Absolute/relative main depths as detailed in `__init__` |
 
 All classifier stages, its token/regularizer, and its final head are always in

@@ -1093,6 +1093,7 @@ def _run_continual_tasks(
 
         # Add fixed-buffer samples from earlier tasks.
         if use_buffer:
+            current_x_train, current_y_train = x_train, y_train
             x_buffer, y_buffer = buffer.sample_buffer_and_prepare_dataset(
                 buffer_kwargs["sample_num"]
             )
@@ -1240,7 +1241,7 @@ def _run_continual_tasks(
         # Retain completed-task examples for future fixed-buffer replay.
         if use_buffer:
             buffer.sample_dataset_and_extend_buffer(
-                (x_train, y_train), 
+                (current_x_train, current_y_train),
                 buffer_kwargs["insert_num"]
             )
 

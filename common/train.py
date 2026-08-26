@@ -108,10 +108,17 @@ def _resolve_training_options(
         }
 
     initial_classifier = None
-    # Resume the standalone continual classifier when no replay model exists.
-    if isinstance(model, dict) \
-    and model.get("generative_model") is None \
-    and config.model.weights_path is not None:
+    paired_classifier_path = config.hpo.get("classifier_weights_path")
+    uses_replay_classifier = config.continually_learn.\
+        use_generative_model_classifier
+    resume_classifier = (
+        model.get("generative_model") is None
+        and config.model.weights_path is not None
+        or paired_classifier_path is not None
+        and not uses_replay_classifier
+    ) if isinstance(model, dict) else False
+    # Seed task heads from any restored standalone continual classifier.
+    if resume_classifier:
         initial_classifier = model.get("classifier")
 
     return {
@@ -359,7 +366,8 @@ def train_model(
         ``ImageGeneratorCallback.results_path``. If weight saving is enabled,
         writes ``model.weights.h5`` and sets ``config.model.weights_path`` to
         the selected model's weights. A continual replay model is saved as
-        ``replay-model.weights.h5`` and is the selected model in that case.
+        ``replay-model.weights.h5`` and is the selected model in that case;
+        the paired classifier path is retained in configuration metadata.
         Dynamic diffusion saves also persist the current raw ``num_classes``
         and wrapper ``seen_classes`` in the mandatory paired ``config.yaml``.
         Progressive weight saves likewise force a final config rewrite and
@@ -896,7 +904,6 @@ def train_model(
                 # Record both continual artifact paths in configuration metadata.
                 if config is not None:
                     config.model.weights_path = replay_weights_path
-                    config.hpo["replay_weights_path"] = replay_weights_path
                     config.hpo["classifier_weights_path"] = weights_path
             # Record classifier weights when no replay model exists.
             elif config is not None:

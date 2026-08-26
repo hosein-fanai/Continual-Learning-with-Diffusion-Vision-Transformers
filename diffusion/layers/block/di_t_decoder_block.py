@@ -73,6 +73,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
+            output_shape=self.query_dim,
             name="mha_2",
             dtype=self.dtype_policy,
         )
@@ -247,6 +248,14 @@ def run_self_tests() -> dict[str, str]:
             assert tf.reduce_all(tf.math.is_finite(output))
             assert decoder.mha_layer_norm2.gate_dim == 6
             assert decoder.mha_drop_path2.per_sample is drop_per_sample
+
+    resized_cross_attention = DiTDecoderBlock(
+        dim=4,
+        query_dim=6,
+        num_heads=2,
+        mlp_output_dim=6,
+    )
+    assert resized_cross_attention((x, condition)).shape == (2, 3, 6)
 
     cross_self = identity(
         (x, condition), 

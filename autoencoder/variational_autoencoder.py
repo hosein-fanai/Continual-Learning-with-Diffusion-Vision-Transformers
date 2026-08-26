@@ -105,7 +105,8 @@ class VariationalAutoencoder(models.Model):
 
         Raises:
             ValueError: If conditioning/dimension settings are inconsistent,
-                an integer size is nonpositive, or ``beta`` is negative.
+                an integer size is nonpositive, or ``beta`` is non-finite or
+                negative.
             TypeError: If either keyword mapping contains unsupported keys.
         """
 
@@ -149,9 +150,9 @@ class VariationalAutoencoder(models.Model):
         # Reject booleans and nonnumeric KL-loss weights.
         if isinstance(beta, (bool, np.bool_)) or not isinstance(beta, Real):
             raise TypeError("beta must be a real number.")
-        # Keep the KL-loss coefficient nonnegative.
-        if beta < 0.:
-            raise ValueError("beta must be nonnegative.")
+        # Keep the KL-loss coefficient finite and nonnegative.
+        if not np.isfinite(beta) or beta < 0.:
+            raise ValueError("beta must be finite and nonnegative.")
 
         data_dim = int(data_dim)
         latent_dim = int(latent_dim)
@@ -458,8 +459,8 @@ class VariationalAutoencoder(models.Model):
 
         Args:
             data (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Unconditional
-                feature batch, or conditional ``(x, one_hot_y)`` as supplied by
-                Keras ``fit``.
+                feature batch (with optional ignored labels), or conditional
+                ``(x, one_hot_y)`` as supplied by Keras ``fit``.
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
@@ -470,12 +471,15 @@ class VariationalAutoencoder(models.Model):
         # Extract reconstruction targets from conditional training pairs.
         if self.conditioned:
             x, _ = data
-        # Use the input batch itself as the unconditional target.
+        # Ignore optional supervised labels in unconditional Keras pipelines.
         else:
-            x = data
+            x = data[0] if isinstance(data, (tuple, list)) else data
 
         with tf.GradientTape() as tape:
-            (z_mean, z_log_var, _), x_recon = self(data, training=True)
+            model_inputs = data if self.conditioned else x
+            (z_mean, z_log_var, _), x_recon = self(
+                model_inputs, training=True
+            )
 
             recon_loss = self.compiled_loss(
                 x, 
@@ -524,7 +528,8 @@ class VariationalAutoencoder(models.Model):
 
         Args:
             data (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Unconditional
-                feature batch or conditional ``(x, one_hot_y)``.
+                feature batch (with optional ignored labels), or conditional
+                ``(x, one_hot_y)``.
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
@@ -535,11 +540,14 @@ class VariationalAutoencoder(models.Model):
         # Extract reconstruction targets from conditional evaluation pairs.
         if self.conditioned:
             x, _ = data
-        # Use the input batch itself as the unconditional target.
+        # Ignore optional supervised labels in unconditional Keras pipelines.
         else:
-            x = data
+            x = data[0] if isinstance(data, (tuple, list)) else data
 
-        (z_mean, z_log_var, _), x_recon = self(data, training=False)
+        model_inputs = data if self.conditioned else x
+        (z_mean, z_log_var, _), x_recon = self(
+            model_inputs, training=False
+        )
 
         recon_loss = self.compiled_loss(
             x, 
@@ -926,6 +934,20 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Conditioning and class_num must agree.")
 
+    for invalid_beta in (True, "0.5", -0.1, float("nan"), float("inf")):
+        try:
+            VariationalAutoencoder(
+                data_dim=4,
+                latent_dim=2,
+                hiddens_dims=(),
+                beta=invalid_beta,
+                compile=False,
+            )
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("Invalid KL-loss coefficients must fail.")
+
     try:
         VariationalAutoencoder(
             data_dim=4, 
@@ -1110,6 +1132,12 @@ def run_self_tests() -> dict[str, str]:
     for before, after in zip(weights_before_test, 
                             unconditioned.trainable_weights):
         np.testing.assert_array_equal(before, after.numpy())
+
+    paired_labels = tf.constant([0, 1], tf.int32)
+    paired_train_result = unconditioned.train_step((x, paired_labels))
+    paired_test_result = unconditioned.test_step((x, paired_labels))
+    assert set(paired_train_result) == set(train_result)
+    assert set(paired_test_result) == set(test_result)
 
     generated = unconditioned.generate(classes=[999], samples_per_class=3)
     assert isinstance(generated, np.ndarray)

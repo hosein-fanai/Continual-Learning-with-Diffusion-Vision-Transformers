@@ -63,7 +63,7 @@ labels, saved features, and these preprocessing modes:
 - `"min-max"`: training-set scalar min/max scaling;
 - `"normalize"`: elementwise training mean/std scaling;
 - `"standardize"` or `"diffusion"`: training extrema mapped to `[-1, 1]`;
-- `None` or `""`: no scaling.
+- `None` or `""`: no scaling in the direct loader functions.
 
 `get_dataset` converts arrays into a batched `tf.data.Dataset` and can shuffle,
 cache, pad, augment, extract features, and prefetch. `get_datasets` selects the
@@ -72,6 +72,11 @@ loader and input representation from the requested model:
 - image tensors for diffusion, CNN, and pretrained models;
 - flattened tensors for DNN and VAE models;
 - saved feature tensors when `return_features=True`.
+
+When `get_datasets` receives no preprocessing mode, it selects
+`"standardize"` for diffusion models. VAE models use `"standardize"` with a
+`tanh` reconstruction, `"min-max"` with `sigmoid`, and `"normalize"` with a
+linear reconstruction.
 
 For `training.task="continual"`, `get_datasets` returns the selected loader so
 the learner can create class-specific datasets for each task.
