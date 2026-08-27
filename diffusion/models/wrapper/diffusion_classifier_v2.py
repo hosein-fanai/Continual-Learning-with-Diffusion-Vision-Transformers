@@ -54,11 +54,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 ``id + N + 1`` (so ``-1`` selects final depth N).  Zero is
                 invalid.  Negative IDs are re-resolved after progressive growth.
             clf_train_noisified_max_timesteps (int | None): Optional exclusive timestep cap
-                used while fitting the classifier part.  ``None`` trains its
-                classifier on clean images at timestep 0 and -1 is at self.timesteps.
+                used while fitting the classifier part. ``None`` trains on
+                clean images at timestep 0; ``-1`` uses ``self.timesteps``.
             clf_test_noisified_max_timesteps (int | None): Optional exclusive timestep cap
-                used while evaluating the classifier part.  ``None`` evaluates
-                clean images at timestep 0 and -1 is at self.timesteps.
+                used while evaluating the classifier part. ``None`` evaluates
+                clean images at timestep 0; ``-1`` uses ``self.timesteps``.
             **kwargs (object): Constructor arguments forwarded to
                 ``DiffusionClassifier`` and ``DiffusionModel``.  These include
                 ``network=DiTClassifier(...)``,
@@ -97,13 +97,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
         ]))
 
         self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
-                                                else self.self.clf_train_noisified_max_timesteps
+                                                else self.clf_train_noisified_max_timesteps
         self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
-                                                else self.self.clf_train_noisified_max_timesteps
+                                                else self.clf_train_noisified_max_timesteps
         self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
-                                                else self.self.clf_test_noisified_max_timesteps
+                                                else self.clf_test_noisified_max_timesteps
         self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
-                                                else self.self.clf_test_noisified_max_timesteps
+                                                else self.clf_test_noisified_max_timesteps
         self.clf_trainable_variables = None
         self.gen_trainable_variables = None
         self._active_trainable_variables = None
@@ -137,8 +137,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             assert value is None or (
                 isinstance(value, int)
                 and not isinstance(value, bool)
-                and 1 <= value <= self.timesteps
-            ), f"{name} must be None or an integer in [1, timesteps]."
+                and (value == -1 or 1 <= value <= self.timesteps)
+            ), f"{name} must be None, -1, or an integer in [1, timesteps]."
 
         assert self.use_cfg, \
             "DiffusionClassifierV2 requires CFG "\
@@ -1441,6 +1441,15 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2,
     )
     assert valid_final_depth.clf_vars_noise_part_ids == [1]
+    full_timestep_caps = DiffusionClassifierV2(
+        network=make_network(),
+        clf_train_noisified_max_timesteps=-1,
+        clf_test_noisified_max_timesteps=-1,
+        mask_by_nulls=False,
+        test_steps=2,
+    )
+    assert full_timestep_caps.clf_train_noisified_max_timesteps == 4
+    assert full_timestep_caps.clf_test_noisified_max_timesteps == 4
     for invalid_depth_ids in ([0], [2], [-2]):
         try:
             DiffusionClassifierV2(

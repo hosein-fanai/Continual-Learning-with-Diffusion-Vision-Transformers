@@ -27,6 +27,8 @@ class ImageGeneratorCallback(callbacks.Callback):
     saving. GIF output additionally requires a result path.
 
     Args:
+        add_null_label: Whether a CFG model's null condition is included in
+            the generated grid.
         show_images: Whether ``plot_images`` displays the generated image grid.
         save_gifs: Whether to request intermediate ``x_t`` and ``x_0`` frames
             and write a denoising GIF per epoch.
@@ -34,6 +36,7 @@ class ImageGeneratorCallback(callbacks.Callback):
             child containing ``images`` is created; ``gifs`` is added when GIF
             saving is enabled.
         project_tag: Optional text appended to the timestamped directory name.
+        seed: Optional sampling seed reused at each epoch.
         **kwargs: Arguments forwarded to ``tf.keras.callbacks.Callback``. The
             TensorFlow 2.10 base callback normally requires no extra options.
 
@@ -48,15 +51,19 @@ class ImageGeneratorCallback(callbacks.Callback):
 
     def __init__(
         self, 
+        add_null_label: bool = True, 
         show_images: bool = True, 
         save_gifs: bool = False, 
         results_path: str | os.PathLike[str] | None = None,
         project_tag: str | None = None, 
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Validate output mode and create the timestamped result directories.
 
         Args:
+            add_null_label (bool): Include condition ID 0 for CFG models when
+                generating the epoch grid.
             show_images (bool): Whether to display each generated image grid.
             save_gifs (bool): Whether to save intermediate denoising frames as
                 a GIF for each epoch.
@@ -64,6 +71,7 @@ class ImageGeneratorCallback(callbacks.Callback):
                 directory. A timestamped run directory is created beneath it.
             project_tag (str | None): Optional suffix for the run-directory
                 name.
+            seed (int | None): Optional seed forwarded to model sampling.
             **kwargs (Any): Options forwarded to the Keras callback base class.
 
         Returns:
@@ -80,9 +88,11 @@ class ImageGeneratorCallback(callbacks.Callback):
             raise ValueError("save_gifs requires results_path.")
 
 
+        self.add_null_label = add_null_label
         self.show_images = show_images
         self.save_gifs = save_gifs
         self.results_path = results_path
+        self.seed = seed
 
         project_tag = "" if project_tag is None else " " + project_tag
 
@@ -125,27 +135,35 @@ class ImageGeneratorCallback(callbacks.Callback):
             to ``create_gif``.
         """
 
-        steps = self.model.test_steps
-        cfg_scale = self.model.test_cfg_scale
-        eta = self.model.test_eta
         network_name = self.model.test_network_name
+        network = self.model.get_network(network_name)
+
+        sample_kwargs = {
+            "network_name": network_name, 
+            "labels": list(range(
+                0 if self.add_null_label and network.use_cfg \
+                else int(network.use_cfg), 
+                network.num_labels
+            )), 
+            "steps": self.model.test_steps, 
+            "scale": self.model.test_cfg_scale, 
+            "eta": self.model.test_eta, 
+            "return_x_ts": self.save_gifs, 
+            "return_x0s": self.save_gifs, 
+            "seed": self.seed
+        }
+        outputs = self.model.sample(**sample_kwargs)
 
         # Request intermediate denoising frames when a GIF will be written.
         if self.save_gifs:
-            imgs, frames1, frames2 = self.model.sample(
-                network_name=network_name,
-                steps=steps, 
-                scale=cfg_scale, 
-                eta=eta, 
-                return_x_ts=True, 
-                return_x0s=True, 
-            )
+            imgs, frames1, frames2 = outputs
             create_gif(
                 os.path.join(
                     self.results_path, 
                     "gifs", 
-                    f"epoch-{epoch+1}_steps-{steps}_scale"
-                    f"-{cfg_scale:.1f}_eta-{eta:.4f}.gif"
+                    f"epoch-{epoch+1}_steps-{sample_kwargs['steps']}_"
+                        f"scale-{sample_kwargs['scale']:.1f}_"
+                        f"eta-{sample_kwargs['eta']:.4f}.gif"
                 ), 
                 frames1, 
                 frames2, 
@@ -153,12 +171,7 @@ class ImageGeneratorCallback(callbacks.Callback):
             )
         # Sample only final images when no GIF frames are needed.
         else:
-            imgs = self.model.sample(
-                network_name=network_name,
-                steps=steps, 
-                scale=cfg_scale, 
-                eta=eta, 
-            )
+            imgs = outputs
 
         # Save the image grid, optionally displaying it at the same time.
         if self.results_path is not None: 
@@ -168,8 +181,9 @@ class ImageGeneratorCallback(callbacks.Callback):
                 save_path=os.path.join(
                     self.results_path, 
                     "images", 
-                    f"epoch-{epoch+1}_steps-{steps}_scale"
-                    f"-{cfg_scale:.1f}_eta-{eta:.4f}.png"
+                    f"epoch-{epoch+1}_steps-{sample_kwargs['steps']}_"
+                        f"scale-{sample_kwargs['scale']:.1f}_"
+                        f"eta-{sample_kwargs['eta']:.4f}.png"
                 ) 
             )
         # Display the grid directly when no artifact directory is configured.
@@ -207,19 +221,28 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Invalid output-mode combinations must fail.")
 
-    display_callback = ImageGeneratorCallback(show_images=True)
+    display_callback = ImageGeneratorCallback(
+        add_null_label=False,
+        show_images=True,
+        seed=13,
+    )
     display_sample = Mock(return_value="images")
     display_callback.set_model(SimpleNamespace(
         test_steps=4, 
         test_cfg_scale=1.5, 
         test_eta=0.25, 
         test_network_name="raw",
+        get_network=Mock(return_value=SimpleNamespace(
+            use_cfg=True,
+            num_labels=3,
+        )),
         sample=display_sample, 
     ))
     with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
     display_sample.assert_called_once_with(
-        network_name="raw", steps=4, scale=1.5, eta=0.25
+        network_name="raw", labels=[1, 2], steps=4, scale=1.5, eta=0.25,
+        return_x_ts=False, return_x0s=False, seed=13,
     )
     plot_mock.assert_called_once_with("images")
 
@@ -252,6 +275,10 @@ def run_self_tests() -> dict[str, str]:
             test_cfg_scale=2.0, 
             test_eta=0.125, 
             test_network_name="ema",
+            get_network=Mock(return_value=SimpleNamespace(
+                use_cfg=True,
+                num_labels=3,
+            )),
             sample=save_sample, 
         ))
         with patch.object(
@@ -261,12 +288,13 @@ def run_self_tests() -> dict[str, str]:
         ) as saved_plot_mock:
             assert saving_callback.on_epoch_end(1, None) is None
         save_sample.assert_called_once_with(
-            network_name="ema",
+            network_name="ema", labels=[0, 1, 2],
             steps=3, 
             scale=2.0, 
             eta=0.125, 
             return_x_ts=True, 
             return_x0s=True, 
+            seed=None,
         )
         gif_args, gif_kwargs = gif_mock.call_args
         assert Path(gif_args[0]).name == "epoch-2_steps-3_scale-2.0_eta-0.1250.gif"
@@ -290,6 +318,10 @@ def run_self_tests() -> dict[str, str]:
             test_cfg_scale=1.0, 
             test_eta=0.0, 
             test_network_name="raw",
+            get_network=Mock(return_value=SimpleNamespace(
+                use_cfg=False,
+                num_labels=2,
+            )),
             sample=shown_sample, 
         ))
         with patch.object(
@@ -299,12 +331,13 @@ def run_self_tests() -> dict[str, str]:
         ) as shown_plot_mock:
             shown_saving_callback.on_epoch_end(0)
         shown_sample.assert_called_once_with(
-            network_name="raw",
+            network_name="raw", labels=[0, 1],
             steps=1, 
             scale=1.0, 
             eta=0.0, 
             return_x_ts=True, 
             return_x0s=True, 
+            seed=None,
         )
         assert shown_gif_mock.call_count == 1
         assert shown_plot_mock.call_args.kwargs["show_images"] is True

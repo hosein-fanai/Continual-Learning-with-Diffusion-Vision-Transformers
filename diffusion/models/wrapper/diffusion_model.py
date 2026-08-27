@@ -923,12 +923,21 @@ class DiffusionModel(ArgumentSaverModel):
                         "map_preprocess=True requires x to be a tf.data.Dataset."
                     )
 
-                self._preprocess_training = False
-                x = x.map(
-                    self.prep_inputs_map, 
-                    num_parallel_calls=self.map_num_parallel_calls
-                )
-                self._preprocess_training = None
+                # Keras calls this override for validation inside ``fit``. Its
+                # validation dataset was already prepared above, so do not map
+                # the resulting seven/eight-tensor element a second time.
+                element_spec = x.element_spec
+                already_prepared = isinstance(
+                    element_spec, (tuple, list)
+                ) and len(element_spec) > 2
+                # Map only raw two-tensor image/label dataset elements.
+                if not already_prepared:
+                    self._preprocess_training = False
+                    x = x.map(
+                        self.prep_inputs_map,
+                        num_parallel_calls=self.map_num_parallel_calls
+                    )
+                    self._preprocess_training = None
 
             return super().evaluate(x=x, y=y, **kwargs)
         finally:
@@ -2687,8 +2696,9 @@ class DiffusionModel(ArgumentSaverModel):
             labels (tf.Tensor | list[int] | None): Condition IDs, one per sample.
                 In dynamic mode, ``None`` shifts saved zero-based targets to
                 condition IDs and excludes the CFG null label. Fixed-width
-                mode retains  ``range(network.num_labels)``. Explicit values are 
-                already network label IDs, not unshifted dataset classes.
+                mode likewise samples each class condition once and excludes
+                the CFG null label. Explicit values are already network label
+                IDs, not unshifted dataset classes.
             z (tf.Tensor | None): Latent batch ``[B, latent_width]``.  ``None``
                 draws standard normal values; its batch size must match labels.
             seed (int | None): Latent random seed; None uses ``self.seed``.
@@ -2742,7 +2752,7 @@ class DiffusionModel(ArgumentSaverModel):
             value + int(network.use_cfg)
             for value in self.seen_classes.values()
         ] if network.dynamic_num_classes else list(
-            range(network.num_labels)
+            range(int(network.use_cfg), network.num_labels)
         )
         labels = tf.cast(tf.convert_to_tensor(
             default_labels if labels is None else labels
@@ -2801,8 +2811,8 @@ class DiffusionModel(ArgumentSaverModel):
             labels (tf.Tensor | list[int] | None): Network condition IDs. In
                 dynamic mode, None shifts observed zero-based targets to
                 condition IDs and excludes the CFG null label. Fixed-width
-                mode samples every ``range(network.num_labels)`` ID as before. 
-                The number of labels is the batch size.
+                mode likewise samples each class condition once and excludes
+                the CFG null label. The number of labels is the batch size.
             x_t (tf.Tensor | None): Initial Gaussian state ``[B,H,W,C]``.  None
                 draws it at the active resolution.  In ``swap_noise_image`` VAE
                 mode this argument is instead passed to ``sample_vae`` as ``z``.
@@ -2843,7 +2853,7 @@ class DiffusionModel(ArgumentSaverModel):
             value + int(network.use_cfg)
             for value in self.seen_classes.values()
         ] if network.dynamic_num_classes else list(
-            range(network.num_labels)
+            range(int(network.use_cfg), network.num_labels)
         )
 
         labels = default_labels if labels is None else labels

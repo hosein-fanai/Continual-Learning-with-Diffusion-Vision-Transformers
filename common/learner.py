@@ -11,7 +11,7 @@ import numpy as np
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from common.config import Config
+from common.config import Config, resolve_continual_schedule
 from common.utils import CL_plot
 from common.model import get_model, copy_model, get_callbacks
 from common.replay_buffer import ReplayBuffer
@@ -90,6 +90,132 @@ def _select_classes(
     selected = np.isin(label_ids, classes)
 
     return np.asarray(x)[selected], labels[selected]
+
+
+def _remap_continual_labels(
+    labels: np.ndarray | None,
+    class_order: Sequence[int],
+    onehot_labels: bool,
+) -> np.ndarray | None:
+    """Map original dataset labels to their contiguous schedule positions.
+
+    Args:
+        labels (numpy.ndarray | None): Sparse or one-hot labels from a loader.
+        class_order (Sequence[int]): Original labels in introduction order.
+        onehot_labels (bool): Whether to return selected-width one-hot rows.
+
+    Returns:
+        numpy.ndarray | None: Labels encoded from zero through selected classes
+        minus one, or ``None`` when the input split is absent.
+
+    Raises:
+        ValueError: If a loader returns a label outside ``class_order``.
+    """
+
+    # Preserve absent validation arrays without fabricating held-out data.
+    if labels is None:
+        return None
+
+    label_array = np.asarray(labels)
+    label_ids = np.argmax(label_array, axis=-1) \
+        if label_array.ndim > 1 and label_array.shape[-1] > 1 \
+        else label_array.reshape(-1)
+    mapping = {label: index for index, label in enumerate(class_order)}
+    try:
+        remapped = np.asarray([mapping[label.item()] for label in label_ids])
+    except KeyError as error:
+        raise ValueError(
+            f"Dataset returned unscheduled class label {error.args[0]!r}."
+        ) from error
+
+    # Rebuild categorical targets at the selected continual output width.
+    if onehot_labels:
+        return np.eye(len(class_order), dtype=label_array.dtype)[remapped]
+
+    return remapped.astype(label_array.dtype).reshape(label_array.shape)
+
+
+def _continual_metrics(
+    accuracy_matrix: Sequence[Sequence[float]],
+) -> dict[str, float]:
+    """Compute task-balanced summary metrics from a continual accuracy matrix.
+
+    Args:
+        accuracy_matrix (Sequence[Sequence[float]]): Lower-triangular matrix
+            where row ``t`` contains performance on tasks learned through
+            ``t`` and unavailable future entries are NaN.
+
+    Returns:
+        dict[str, float]: Final average accuracy, average incremental accuracy,
+        average forgetting, and backward transfer. Single-task forgetting and
+        backward transfer are zero because no prior task exists.
+    """
+
+    matrix = np.asarray(accuracy_matrix, dtype="float64")
+    task_num = len(matrix)
+    # Keep an empty schedule representable for defensive direct callers.
+    if task_num == 0:
+        return {
+            "final_average_accuracy": np.nan,
+            "average_incremental_accuracy": np.nan,
+            "average_forgetting": np.nan,
+            "backward_transfer": np.nan,
+        }
+
+    row_averages = [np.nanmean(matrix[index, :index + 1])
+                    for index in range(task_num)]
+    final_average_accuracy = float(np.nanmean(matrix[-1, :task_num]))
+    # Forgetting and BWT are defined only over tasks learned before the last.
+    if task_num == 1:
+        average_forgetting = 0.
+        backward_transfer = 0.
+    # Compare every earlier task with its learned and best historical scores.
+    else:
+        final_old = matrix[-1, :task_num - 1]
+        maxima = np.asarray([
+            np.nanmax(matrix[index:, index])
+            for index in range(task_num - 1)
+        ])
+        diagonal = np.asarray([
+            matrix[index, index] for index in range(task_num - 1)
+        ])
+        average_forgetting = float(np.nanmean(maxima - final_old))
+        backward_transfer = float(np.nanmean(final_old - diagonal))
+
+    return {
+        "final_average_accuracy": final_average_accuracy,
+        "average_incremental_accuracy": float(np.nanmean(row_averages)),
+        "average_forgetting": average_forgetting,
+        "backward_transfer": backward_transfer,
+    }
+
+
+def _task_accuracy_summaries(
+    accuracy_matrix: Sequence[Sequence[float]],
+) -> tuple[list[float], list[float]]:
+    """Extract current-task and prior-task macro accuracy after every task.
+
+    Args:
+        accuracy_matrix (Sequence[Sequence[float]]): Lower-triangular continual
+            task accuracy matrix.
+
+    Returns:
+        tuple[list[float], list[float]]: Matrix diagonal and row-wise mean of
+        earlier columns. The first old-task value is NaN by definition.
+    """
+
+    new_task_accuracy = [
+        float(accuracy_matrix[index][index])
+        for index in range(len(accuracy_matrix))
+    ]
+    old_task_accuracy = [
+        np.nan if index == 0 else float(np.nanmean(
+            accuracy_matrix[index][:index]
+        ))
+        for index in range(len(accuracy_matrix))
+    ]
+
+    return new_task_accuracy, old_task_accuracy
 
 
 def _predict_diffusion_classes(
@@ -272,6 +398,7 @@ def _has_positive_distillation_objective(
 def _load_continual_arrays(
     load_dataset_fn: DatasetLoader,
     class_num: int,
+    class_order: Sequence[int],
     return_features: bool,
     load_dataset_fn_kwargs: dict[str, object],
     max_train_samples: int | None,
@@ -283,11 +410,12 @@ def _load_continual_arrays(
 
     Args:
         load_dataset_fn (DatasetLoader): Full-array dataset loader.
-        class_num (int): Number of leading classes used by the run.
+        class_num (int): Number of selected classes used by the run.
+        class_order (Sequence[int]): Original dataset labels in task order.
         return_features (bool): Whether the loader should return saved features.
         load_dataset_fn_kwargs (dict[str, object]): Loader preprocessing options.
         max_train_samples (int | None): Optional shared training-row limit.
-        max_val_samples (int | None): Optional validation/test-row limit.
+        max_val_samples (int | None): Optional validation-row limit.
         pad (int): Symmetric image padding width.
         dataset_seed (int | None): Seed for limiting and later task sampling.
 
@@ -298,7 +426,7 @@ def _load_continual_arrays(
 
     (all_x_train, all_y_train, all_x_val, all_y_val,
      all_x_test, all_y_test) = load_dataset_fn(
-        indices=list(range(class_num)),
+        indices=list(class_order),
         return_features=return_features,
         **load_dataset_fn_kwargs,
         verbose=0
@@ -316,14 +444,6 @@ def _load_continual_arrays(
         all_x_val, all_y_val = _limit_samples(
             all_x_val,
             all_y_val,
-            max_val_samples,
-            rng
-        )
-    # Otherwise limit test data used as the evaluation fallback.
-    else:
-        all_x_test, all_y_test = _limit_samples(
-            all_x_test,
-            all_y_test,
             max_val_samples,
             rng
         )
@@ -345,12 +465,16 @@ def _load_continual_arrays(
                 np.asarray(all_x_val), pad, value=pad_value
             )
 
-    # Truncate one-hot labels to the configured continual class width.
-    if load_dataset_fn_kwargs["onehot_labels"]:
-        all_y_train = all_y_train[..., :class_num]
-        all_y_val = all_y_val[..., :class_num] \
-                    if all_y_val is not None else None
-        all_y_test = all_y_test[..., :class_num]
+    # Map arbitrary original labels into classifier positions in schedule order.
+    label_arrays = [
+        _remap_continual_labels(
+            labels,
+            class_order,
+            load_dataset_fn_kwargs["onehot_labels"],
+        )
+        for labels in (all_y_train, all_y_val, all_y_test)
+    ]
+    all_y_train, all_y_val, all_y_test = label_arrays
 
     return (
         (
@@ -364,6 +488,8 @@ def _load_continual_arrays(
 def _run_continual_tasks(
     class_num: int,
     load_dataset_fn: DatasetLoader,
+    class_order: Sequence[int] | None = None,
+    task_groups: Sequence[Sequence[int]] | None = None,
     load_dataset_fn_kwargs: dict[str, object] | None = None, 
     remove_prev_classes: bool = True, 
     keep_same_model: bool = True, 
@@ -401,7 +527,7 @@ def _run_continual_tasks(
     callback_monitor: str | None = None, 
     callback_monitor_mode: str | None = None
 ) -> list[float] | dict[str, object]:
-    """Run class-incremental classifier training from two through N classes.
+    """Run classifier training over a configurable class-incremental schedule.
 
     Standalone classifier heads are expanded between tasks. A diffusion
     classifier initialized with ``num_classes=None`` instead grows its attached
@@ -410,9 +536,13 @@ def _run_continual_tasks(
     are mutually exclusive.
 
     Args:
-        class_num (int): Total class count ``N``.  The loop produces tasks for
-            classes ``[0, 1]``, ``[0, 1, 2]``, ..., ``range(N)`` and therefore
-            returns ``max(N - 1, 0)`` scores.
+        class_num (int): Total selected class count ``N``.
+        class_order (Sequence[int] | None): Original dataset labels in their
+            introduction order. ``None`` uses ``range(N)``.
+        task_groups (Sequence[Sequence[int]] | None): Original labels introduced
+            per task. ``None`` uses ``[0, 1]`` and then singleton tasks. When
+            both schedule arguments are supplied, flattened groups must match
+            ``class_order`` exactly.
         load_dataset_fn (Callable[..., tuple[numpy.ndarray, ...]]): Loader called
             with ``indices``, ``return_features``, ``preprocess``,
             ``onehot_labels``, and ``verbose``.  It must return exactly
@@ -539,15 +669,14 @@ def _run_continual_tasks(
             classifier/generator objects when true. The default keeps the
             original accuracy-list return value.
         use_valset (bool): Build and use a fresh validation dataset for every
-            task when true. If the loader has no validation split, the seen
-            test rows are used, matching :func:`common.dataloader.get_datasets`.
-            False disables task validation.
+            task when true and the loader created an explicit validation split.
+            False disables task validation. Test rows are never substituted.
         return_features (bool | None): Internal factory override for configured
             runs. ``None`` preserves direct mode's legacy path-name inference.
         max_train_samples (int | None): Internal configured limit applied once
             to the loader's full training arrays before task selection.
-        max_val_samples (int | None): Internal configured limit applied to the
-            validation arrays, or test arrays when no validation split exists.
+        max_val_samples (int | None): Internal configured limit applied only to
+            independently created validation arrays.
         shuffle_buffer (int | None): Internal configured training shuffle
             capacity. ``None`` preserves the legacy full-task shuffle.
         pad (int): Internal configured symmetric image padding applied before
@@ -562,10 +691,11 @@ def _run_continual_tasks(
         callback_monitor_mode (str | None): Internal configured Keras monitor
             direction. ``None`` preserves each phase's legacy direction.
     Returns:
-        list[float] | dict[str, object]: Test accuracy for each
-        two-through-``class_num`` task. When ``return_details=True``, returns
+        list[float] | dict[str, object]: Cumulative test accuracy after each
+        configured task. When ``return_details=True``, returns
         those accuracies plus optional ensemble accuracies, task histories,
-        report evaluations, and final model objects.
+        report evaluations, the task accuracy matrix, standard continual
+        metrics, schedule metadata, and final model objects.
 
     Raises:
         ValueError: If buffer and generative replay are both enabled,
@@ -576,6 +706,20 @@ def _run_continual_tasks(
         ValueError: If dataset shapes/labels cannot support the requested
             task, replay, or classifier loss.
     """
+
+    class_order, original_task_groups = resolve_continual_schedule(
+        class_num,
+        list(class_order) if class_order is not None else None,
+        [list(group) for group in task_groups]
+        if task_groups is not None else None,
+    )
+    class_num = len(class_order)
+    group_sizes = [len(group) for group in original_task_groups]
+    boundaries = np.cumsum([0, *group_sizes])
+    internal_task_groups = [
+        list(range(int(boundaries[index]), int(boundaries[index + 1])))
+        for index in range(len(group_sizes))
+    ]
 
     # Restrict the shared selector to the two supported diffusion fit paths.
     if fit_method not in ("fit", "fit_progressively"):
@@ -983,14 +1127,28 @@ def _run_continual_tasks(
     generative_histories = []
     classifier_evaluations_list = []
     generative_evaluations_list = []
+    accuracy_matrix = []
     dataset_arrays = None
-    for i in range(class_num-1):
+    for task_index, new_classes in enumerate(internal_task_groups):
+        seen_classes = [
+            label
+            for group in internal_task_groups[:task_index + 1]
+            for label in group
+        ]
+        seen_class_num = len(seen_classes)
         # Print the classes visible in the current continual task.
         if verbose:
-            print(75*'-'+" Classes:", list(range(i+2)))
+            print(
+                75*'-' + " Classes:",
+                [
+                    label
+                    for group in original_task_groups[:task_index + 1]
+                    for label in group
+                ],
+            )
 
         # Freeze the preceding student before the next class can expand it.
-        if use_distillation and i > 0:
+        if use_distillation and task_index > 0:
             previous_teacher = generative_model.snapshot_teacher_network(
                 network_name="raw"
             )
@@ -1005,7 +1163,7 @@ def _run_continual_tasks(
         # Build a classifier head sized for all classes seen in this task.
         else:
             new_model = get_model(
-                i+2, model_type="hp-tuned", 
+                seen_class_num, model_type="hp-tuned",
                 model_path=tuned_model_path, 
                 compile_args=compile_args, 
                 use_loaded_opt=use_loaded_opt, 
@@ -1014,7 +1172,7 @@ def _run_continual_tasks(
 
             # Seed a fresh task head from the configured initial classifier.
             if initial_classifier is not None and (
-                i == 0 or not keep_same_model
+                task_index == 0 or not keep_same_model
             ):
                 _copy_classifier_prefix(initial_classifier, new_model)
 
@@ -1027,6 +1185,7 @@ def _run_continual_tasks(
             dataset_arrays, rng = _load_continual_arrays(
                 load_dataset_fn,
                 class_num,
+                class_order,
                 return_features,
                 load_dataset_fn_kwargs,
                 max_train_samples,
@@ -1037,11 +1196,9 @@ def _run_continual_tasks(
 
         (all_x_train, all_y_train, all_x_val,
         all_y_val, all_x_test, all_y_test) = dataset_arrays
-        seen_classes = list(range(i + 2))
-
-        # Train later tasks on only their newly introduced class.
-        if remove_prev_classes and i > 0:
-            train_classes = [i + 1]
+        # Train later tasks on only their newly introduced group.
+        if remove_prev_classes and task_index > 0:
+            train_classes = new_classes
         # Train the first task, or every cumulative task, on all seen classes.
         else:
             train_classes = seen_classes
@@ -1070,9 +1227,6 @@ def _run_continual_tasks(
         # Respect explicit validation disabling.
         if not use_valset:
             x_val, y_val = None, None
-        # Match get_datasets by using test data when validation is enabled but absent.
-        elif x_val is None:
-            x_val, y_val = x_test, y_test
 
         # Flatten image inputs for dense VAE replay.
         if isinstance(generative_model, VariationalAutoencoder) \
@@ -1108,8 +1262,12 @@ def _run_continual_tasks(
                 y_train = np.concatenate([y_train, y_buffer], axis=0)
 
         # Generate replay after the first task.
-        if generative_model is not None and i > 0:
-            classes = list(range(i + 1))
+        if generative_model is not None and task_index > 0:
+            classes = [
+                label
+                for group in internal_task_groups[:task_index]
+                for label in group
+            ]
             # Generate VAE replay in loader label format.
             if isinstance(generative_model, VariationalAutoencoder):
                 x_buffer, y_buffer = generative_model.generate(
@@ -1193,9 +1351,10 @@ def _run_continual_tasks(
                 classifier_y_test = np.argmax(y_test, axis=-1)
             # Trim one-hot targets to a newly expanded standalone head.
             elif not uses_attached_classifier:
-                classifier_y_train = y_train[..., :i + 2]
-                classifier_y_val = y_val[..., :i + 2] if y_val is not None else None
-                classifier_y_test = y_test[..., :i + 2]
+                classifier_y_train = y_train[..., :seen_class_num]
+                classifier_y_val = y_val[..., :seen_class_num] \
+                    if y_val is not None else None
+                classifier_y_test = y_test[..., :seen_class_num]
 
         task_shuffle_buffer = len(x_train) if shuffle_buffer is None else shuffle_buffer
         trainset = get_dataset(
@@ -1483,34 +1642,45 @@ def _run_continual_tasks(
         y_test_ids = np.argmax(y_test, axis=-1) if load_dataset_fn_kwargs["onehot_labels"] \
                     else np.asarray(y_test).reshape(-1)
 
-        # Preserve a prediction fallback for custom reports.
-        if acc is None:
-            # Obtain class predictions through the diffusion classifier wrapper.
-            if use_diffusion_classifier:
-                preds = _predict_diffusion_classes(
-                    generative_model,
-                    x_test,
-                    y_test_ids,
-                    diffusion_data_min,
-                    diffusion_data_range,
-                    batch_size
-                )
-            # Evaluate joint-only VAE classification on reconstructed inputs.
-            elif uses_attached_classifier \
-            and not train_classifier_separately:
-                _, _, preds = generative_model(
-                    (x_test, y_test),
-                    training=False,
-                )
-            # Fall back to direct predictions from the standalone classifier.
-            else:
-                preds = new_model.predict(
-                    classifier_x_test, 
-                    verbose=verbose
-                )
+        # Obtain one common prediction vector for cumulative and per-task scores.
+        if use_diffusion_classifier:
+            predictions = _predict_diffusion_classes(
+                generative_model,
+                x_test,
+                y_test_ids,
+                diffusion_data_min,
+                diffusion_data_range,
+                batch_size
+            )
+        # Evaluate joint-only VAE classification on reconstructed inputs.
+        elif uses_attached_classifier and not train_classifier_separately:
+            _, _, predictions = generative_model(
+                (x_test, y_test),
+                training=False,
+            )
+        # Use direct predictions from the standalone classifier.
+        else:
+            predictions = new_model.predict(
+                classifier_x_test,
+                verbose=verbose
+            )
 
-            preds = np.argmax(preds, axis=-1)
-            acc = accuracy_score(y_test_ids, preds)
+        prediction_ids = np.argmax(predictions, axis=-1)
+        prediction_accuracy = float(accuracy_score(y_test_ids, prediction_ids))
+        # Preserve the legacy report-derived cumulative accuracy when available.
+        if acc is None:
+            acc = prediction_accuracy
+        matrix_row = [np.nan] * len(internal_task_groups)
+        # Score every learned task group separately without future-class rows.
+        for learned_index, learned_classes in enumerate(
+            internal_task_groups[:task_index + 1]
+        ):
+            group_mask = np.isin(y_test_ids, learned_classes)
+            matrix_row[learned_index] = float(accuracy_score(
+                y_test_ids[group_mask],
+                prediction_ids[group_mask],
+            ))
+        accuracy_matrix.append(matrix_row)
 
         # Expose joint generative history as task history when no separate fit ran.
         if uses_attached_classifier and not history \
@@ -1536,13 +1706,32 @@ def _run_continual_tasks(
 
     # Plot accuracy across completed continual tasks when requested.
     if plot_results:
-        CL_plot(class_num, [(acc_list, " ")])
+        CL_plot(
+            class_num,
+            [(acc_list, " ")],
+            class_counts=[
+                sum(group_sizes[:index + 1])
+                for index in range(len(group_sizes))
+            ],
+        )
+
+    continual_metrics = _continual_metrics(accuracy_matrix)
+    new_task_accuracy, old_task_accuracy = _task_accuracy_summaries(
+        accuracy_matrix
+    )
 
     # Return histories and final objects for orchestration callers.
     if return_details:
         return {
             "accuracies": acc_list, 
             "ensemble_accuracies": ensemble_acc_list,
+            "class_order": class_order,
+            "task_classes": original_task_groups,
+            "accuracy_matrix": accuracy_matrix,
+            "new_task_accuracy": new_task_accuracy,
+            "old_task_accuracy": old_task_accuracy,
+            "continual_metrics": continual_metrics,
+            "dataset_seed": dataset_seed,
             "histories": histories, 
             "generative_histories": generative_histories, 
             "classifier_evaluations": classifier_evaluations_list, 
@@ -1551,6 +1740,139 @@ def _run_continual_tasks(
             "generative_model": generative_model
         }
     return acc_list
+
+
+def run_protocol_self_tests() -> dict[str, str]:
+    """Exercise schedule, label, metric, and validation-isolation contracts.
+
+    Args:
+        None.
+
+    Returns:
+        dict[str, str]: Passing markers for schedule resolution, sparse and
+        one-hot remapping, continual metrics, and validation isolation.
+    """
+
+    from unittest.mock import Mock, patch
+
+    from common import dataloader
+    from common.hpo import _objective_values
+
+
+    # Verify the legacy two-class start followed by singleton experiences.
+    assert resolve_continual_schedule(4) == (
+        [0, 1, 2, 3],
+        [[0, 1], [2], [3]],
+    )
+
+    class_order = [3, 1, 2, 0]
+    sparse = np.asarray([[3], [1], [2], [0]], dtype="uint8")
+    sparse_remapped = _remap_continual_labels(
+        sparse,
+        class_order,
+        onehot_labels=False,
+    )
+    assert np.array_equal(
+        sparse_remapped,
+        np.asarray([[0], [1], [2], [3]], dtype="uint8"),
+    )
+    onehot = np.eye(4, dtype="float32")[[3, 1, 2, 0]]
+    onehot_remapped = _remap_continual_labels(
+        onehot,
+        class_order,
+        onehot_labels=True,
+    )
+    assert np.array_equal(onehot_remapped, np.eye(4, dtype="float32"))
+
+    matrix = [
+        [0.8, np.nan, np.nan],
+        [0.7, 0.9, np.nan],
+        [0.6, 0.85, 0.75],
+    ]
+    metrics = _continual_metrics(matrix)
+    assert np.isclose(metrics["final_average_accuracy"], 0.7333333333333334)
+    assert np.isclose(metrics["average_incremental_accuracy"], 0.7777777777777778)
+    assert np.isclose(metrics["average_forgetting"], 0.125)
+    assert np.isclose(metrics["backward_transfer"], -0.125)
+    new_accuracy, old_accuracy = _task_accuracy_summaries(matrix)
+    assert np.allclose(new_accuracy, [0.8, 0.9, 0.75])
+    assert np.allclose(old_accuracy, [np.nan, 0.7, 0.725], equal_nan=True)
+
+    x_train = np.arange(24, dtype="uint8").reshape((6, 2, 2, 1))
+    y_train = np.asarray([3, 1, 3, 1, 3, 1], dtype="uint8")
+    x_test = np.arange(16, dtype="uint8").reshape((4, 2, 2, 1))
+    y_test = np.asarray([3, 1, 3, 1], dtype="uint8")
+    loader = Mock(return_value=(
+        x_train, y_train, None, None, x_test, y_test
+    ))
+    arrays, _ = _load_continual_arrays(
+        loader,
+        class_num=2,
+        class_order=[3, 1],
+        return_features=False,
+        load_dataset_fn_kwargs={
+            "preprocess": None,
+            "onehot_labels": False,
+        },
+        max_train_samples=None,
+        max_val_samples=1,
+        pad=0,
+        dataset_seed=7,
+    )
+    _, remapped_train, x_val, y_val, retained_test, remapped_test = arrays
+    assert x_val is None and y_val is None
+    assert len(retained_test) == len(x_test)
+    assert set(remapped_train.reshape(-1)) == {0, 1}
+    assert np.array_equal(remapped_test, np.asarray([0, 1, 0, 1]))
+
+    ordinary_loader = Mock(return_value=(
+        x_train,
+        np.asarray([0, 1, 0, 1, 0, 1], dtype="uint8"),
+        None,
+        None,
+        x_test,
+        np.asarray([0, 1, 0, 1], dtype="uint8"),
+    ))
+    # Replace only the built-in loader long enough to inspect absent validation.
+    with patch.object(dataloader, "load_mnist", ordinary_loader):
+        _, valset = dataloader.get_datasets(
+            dataset_name="mnist",
+            model_name="cnn",
+            preprocess=None,
+            validation_ratio=0.,
+            use_valset=True,
+            batch_size=2,
+        )
+    assert valset is None
+
+    validation_objective = _objective_values(
+        "continual",
+        "cnn",
+        {
+            "task_val_accuracy": [0.2, 0.4],
+            "continual_accuracy": [0.99, 0.99],
+        },
+    )
+    assert np.isclose(validation_objective, 0.3)
+    # Reject test-only ensemble feedback in the continual HPO path.
+    try:
+        _objective_values(
+            "continual",
+            "dit_classifier",
+            {"task_val_accuracy": [0.5]},
+            use_ensemble_accuracy=True,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Continual HPO must reject test ensemble feedback.")
+
+    return {
+        "schedule": "passed",
+        "label_remapping": "passed",
+        "continual_metrics": "passed",
+        "validation_isolation": "passed",
+    }
 
 
 def continually_learn(
@@ -1580,8 +1902,11 @@ def continually_learn(
         **kwargs (object): Direct-mode inputs, used only when ``config`` is
             ``None``. The possible keys are:
 
-            - ``class_num`` (int, required): Total class count. Tasks introduce
-              classes two through ``class_num``.
+            - ``class_num`` (int, required): Total selected class count.
+            - ``class_order`` (Sequence[int] | None): Original dataset labels
+              in introduction order; defaults to the natural order.
+            - ``task_groups`` (Sequence[Sequence[int]] | None): Labels added
+              per task; defaults to two classes then singleton tasks.
             - ``load_dataset_fn`` (Callable, required): Loader returning
               ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
             - ``load_dataset_fn_kwargs`` (dict | None): Loader overrides.
@@ -1646,8 +1971,8 @@ def continually_learn(
               forwarded through :func:`common.train.train_model`.
             - ``return_details`` (bool, default ``False``): Return task
               histories and final model objects in addition to accuracies.
-            - ``use_valset`` (bool, default ``True``): Use validation data,
-              falling back to seen test rows when a loader has no split.
+            - ``use_valset`` (bool, default ``True``): Use an explicit loader
+              validation split; a missing split remains disabled.
 
     Returns:
         list[float] | dict[str, object]: Test accuracy for each task. With
@@ -1667,6 +1992,8 @@ def continually_learn(
     if config is None:
         options = dict(kwargs)
         defaults = {
+            "class_order": None,
+            "task_groups": None,
             "load_dataset_fn_kwargs": None, 
             "remove_prev_classes": True, 
             "keep_same_model": True, 
@@ -1758,6 +2085,13 @@ def continually_learn(
             "generative_histories": [], 
             "classifier_evaluations": [], 
             "generative_evaluations": [], 
+            "class_order": [],
+            "task_classes": [],
+            "accuracy_matrix": [],
+            "new_task_accuracy": [],
+            "old_task_accuracy": [],
+            "continual_metrics": {},
+            "dataset_seed": config.training.seed,
             "model": model.get("classifier"), 
             "generative_model": model.get("generative_model")
         }

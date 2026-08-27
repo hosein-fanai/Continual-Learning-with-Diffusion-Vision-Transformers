@@ -120,6 +120,125 @@ def _default_generative_replay_kwargs() -> dict[str, int]:
     return {"train_num": 1_000, "samples_per_class": 1_000}
 
 
+def resolve_continual_schedule(
+    class_num: int | None,
+    class_order: list[int] | tuple[int, ...] | None = None,
+    task_groups: list[list[int]] | tuple[tuple[int, ...], ...] | None = None,
+    available_class_num: int | None = None,
+) -> tuple[list[int], list[list[int]]]:
+    """Validate and resolve a class-incremental experiment schedule.
+
+    ``class_order`` and ``task_groups`` use the dataset's original class IDs.
+    When both are supplied, flattening ``task_groups`` must reproduce
+    ``class_order`` exactly. The legacy schedule remains the default: classes
+    ``[0, 1]`` followed by one new class per task.
+
+    Args:
+        class_num (int | None): Number of selected classes. ``None`` infers the
+            count from an explicit schedule or ``available_class_num``.
+        class_order (Sequence[int] | None): Ordered original dataset labels.
+        task_groups (Sequence[Sequence[int]] | None): Nonempty groups introduced
+            at successive tasks. The first group must contain at least two
+            classes so its classifier objective is non-degenerate.
+        available_class_num (int | None): Optional dataset class count used to
+            validate label bounds and fill a completely unspecified schedule.
+
+    Returns:
+        tuple[list[int], list[list[int]]]: Resolved class order and task groups.
+
+    Raises:
+        TypeError: If class counts or class IDs are not non-boolean integers.
+        ValueError: If the schedule is empty, duplicated, inconsistent, out of
+            range, or begins with fewer than two classes.
+    """
+
+    # Normalize explicit groups before using them to infer the class order.
+    normalized_groups = None
+    # Materialize caller-provided task groups for validation and safe reuse.
+    if task_groups is not None:
+        normalized_groups = [list(group) for group in task_groups]
+        # Reject empty schedules and empty individual experiences.
+        if not normalized_groups or any(not group for group in normalized_groups):
+            raise ValueError("task_groups must contain only nonempty groups.")
+
+    # Infer the order from explicit groups when no separate order was supplied.
+    grouped_order = [label for group in normalized_groups for label in group] \
+        if normalized_groups is not None else None
+    # Let task groups define the class order when it was not separately given.
+    if class_order is None:
+        resolved_order = grouped_order
+    # Otherwise preserve the explicit order and verify redundant group metadata.
+    else:
+        resolved_order = list(class_order)
+        # Keep redundant schedule descriptions consistent and reproducible.
+        if grouped_order is not None and resolved_order != grouped_order:
+            raise ValueError(
+                "Flattened task_groups must exactly match class_order."
+            )
+
+    # Validate optional class-count inputs without accepting booleans as ints.
+    for name, value in (
+        ("class_num", class_num),
+        ("available_class_num", available_class_num),
+    ):
+        # Reject ambiguous boolean or non-integral count values.
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
+            raise TypeError(f"{name} must be a non-boolean integer or None.")
+
+    # Fill a completely unspecified schedule from the requested dataset prefix.
+    if resolved_order is None:
+        resolved_count = available_class_num if class_num is None else class_num
+        # Require some source of truth for the number of classes to schedule.
+        if resolved_count is None:
+            raise ValueError(
+                "class_num, class_order, task_groups, or available_class_num "
+                "must define the continual schedule."
+            )
+        resolved_order = list(range(resolved_count))
+
+    # Every class identifier must be an ordinary integer in the dataset range.
+    if any(isinstance(label, bool) or not isinstance(label, int)
+           for label in resolved_order):
+        raise TypeError("Continual class IDs must be non-boolean integers.")
+    # Disallow negative labels, which no supported dataset uses.
+    if any(label < 0 for label in resolved_order):
+        raise ValueError("Continual class IDs must be nonnegative.")
+    # Enforce the known upper label bound for built-in datasets.
+    if available_class_num is not None and any(
+        label >= available_class_num for label in resolved_order
+    ):
+        raise ValueError(
+            "Continual class IDs must be smaller than the dataset class count."
+        )
+    # Prevent the same class from being introduced by multiple tasks.
+    if len(set(resolved_order)) != len(resolved_order):
+        raise ValueError("Continual class IDs must be unique.")
+
+    selected_class_num = len(resolved_order)
+    # Preserve the existing minimum needed by the initial classification task.
+    if selected_class_num < 2:
+        raise ValueError("A continual schedule must contain at least two classes.")
+    # Keep an explicit count consistent with the resolved label schedule.
+    if class_num is not None and class_num != selected_class_num:
+        raise ValueError("class_num must equal the number of scheduled classes.")
+    # Keep selected-class cardinality within the built-in dataset capacity.
+    if available_class_num is not None and selected_class_num > available_class_num:
+        raise ValueError("The continual schedule exceeds the dataset class count.")
+
+    # Retain the historical 2+1+1 schedule unless groups were made explicit.
+    if normalized_groups is None:
+        normalized_groups = [resolved_order[:2]] + [
+            [label] for label in resolved_order[2:]
+        ]
+    # Avoid a one-output first classifier whose softmax loss is degenerate.
+    if len(normalized_groups[0]) < 2:
+        raise ValueError("The first continual task must contain at least two classes.")
+
+    return resolved_order, normalized_groups
+
+
 class KwargsMixin:
     """Convert a configuration dataclass into constructor keyword arguments."""
 
@@ -468,8 +587,8 @@ class DatasetConfig:
             ``"standardize"``/``"diffusion"``, or no scaling. ``None`` is
             resolved automatically for diffusion and VAE model families.
         indices (list[int] | None): Class IDs retained by ordinary dataset
-            construction. The continual loop introduces the zero-based prefix
-            selected by ``continually_learn.class_num``.
+            construction. Continual selection instead follows
+            ``continually_learn.class_order`` and ``task_groups``.
         validation_ratio (float): Fraction of training rows reserved for a
             stratified validation split; ``0`` disables the split.
         features_path (str | None): Base path of an optional saved feature
@@ -481,8 +600,8 @@ class DatasetConfig:
             Continual runs apply a class-preserving limit once before per-task
             selection, so the value must cover every represented class.
         max_val_samples (int | None): Optional positive evaluation-row limit.
-            Limits preserve represented classes. Continual runs limit
-            validation rows, or test rows when no validation split exists.
+            Limits preserve represented classes and apply only to an explicit
+            validation split, never to the test set.
         batch_size (int): Positive examples per batch; defaults to 128.
         shuffle_buffer (int): Training shuffle-buffer capacity, including each
             continual task. Values above zero enable shuffling; ``0`` disables
@@ -677,6 +796,12 @@ class ContinuallyLearnConfig(KwargsMixin):
             ``None`` uses the selected dataset's complete class count; an
             explicit value must be between 2 and that count. This controls the
             task sequence, not the dynamic diffusion model's initial head width.
+        class_order (list[int] | None): Optional ordering of original dataset
+            labels. ``None`` preserves the natural zero-based order.
+        task_groups (list[list[int]] | None): Optional nonempty groups of
+            original labels introduced per task. Flattening the groups must
+            equal ``class_order`` when both are supplied. ``None`` preserves
+            the initial two-class task followed by singleton tasks.
         remove_prev_classes (bool): Train later tasks on only the newly
             introduced class when true; otherwise train on every seen class.
         keep_same_model (bool): Carry shared classifier weights and old output
@@ -710,6 +835,8 @@ class ContinuallyLearnConfig(KwargsMixin):
     """
 
     class_num: int | None = None
+    class_order: list[int] | None = None
+    task_groups: list[list[int]] | None = None
     remove_prev_classes: bool = True
     keep_same_model: bool = True
     use_loaded_opt: bool = True
@@ -770,7 +897,8 @@ class TrainingConfig:
         fit_kwargs (dict[str, object]): Additional Keras fit arguments such as
             step counts; each config instance owns an independent mapping.
         use_valset (bool): Build and pass validation data for the selected
-            dataset; loaders without a split fall back to test rows.
+            dataset when the loader created an explicit split. Loaders without
+            a split leave validation disabled; test rows are never substituted.
         show_images (bool): Display callback sample grids during training.
         save_gifs (bool): Save callback denoising animations during training.
             Trajectory callbacks are skipped for no-EMA and VAE/swap models.
@@ -1457,6 +1585,8 @@ def run_self_tests() -> dict[str, str]:
     continually_learn_defaults = ContinuallyLearnConfig()
     continually_learn_custom = ContinuallyLearnConfig(
         class_num=3,
+        class_order=[2, 0, 1],
+        task_groups=[[2, 0], [1]],
         remove_prev_classes=False,
         keep_same_model=False,
         use_loaded_opt=False,
@@ -1472,6 +1602,8 @@ def run_self_tests() -> dict[str, str]:
     assert continually_learn_defaults.class_num is None
     assert continually_learn_defaults.buffer_kwargs["maxlen"] == 10_000
     assert continually_learn_custom.class_num == 3
+    assert continually_learn_custom.class_order == [2, 0, 1]
+    assert continually_learn_custom.task_groups == [[2, 0], [1]]
     assert continually_learn_custom.use_buffer is True
     assert continually_learn_defaults.evaluate_ensemble_accuracy is False
     assert continually_learn_defaults.use_distillation is False
@@ -1481,6 +1613,29 @@ def run_self_tests() -> dict[str, str]:
     continually_learn_defaults.ensemble_accuracy_kwargs["max_t"] = 1
     assert ContinuallyLearnConfig().buffer_kwargs["maxlen"] == 10_000
     assert ContinuallyLearnConfig().ensemble_accuracy_kwargs == {}
+
+    resolved_order, resolved_groups = resolve_continual_schedule(
+        None,
+        class_order=[3, 1, 2, 0],
+        task_groups=[[3, 1], [2, 0]],
+        available_class_num=4,
+    )
+    assert resolved_order == [3, 1, 2, 0]
+    assert resolved_groups == [[3, 1], [2, 0]]
+    assert resolve_continual_schedule(4, available_class_num=4) == (
+        [0, 1, 2, 3], [[0, 1], [2], [3]]
+    )
+    try:
+        resolve_continual_schedule(
+            3,
+            class_order=[0, 1, 2],
+            task_groups=[[0, 2], [1]],
+            available_class_num=4,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Mismatched continual schedules must be rejected.")
 
     training_defaults = TrainingConfig()
     training_custom = TrainingConfig(

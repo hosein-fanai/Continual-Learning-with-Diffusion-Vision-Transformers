@@ -1821,6 +1821,7 @@ def run_self_tests() -> dict[str, str]:
     distil_progressive = continual_student.fit_progressively(
         stage_tasks=[{"resolution": 8}],
         x=new_task_dataset,
+        validation_data=new_task_dataset,
         stages_verbose=False,
         stage_epochs=1,
         final_epochs=0,

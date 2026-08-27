@@ -11,6 +11,7 @@ from __future__ import annotations
 import tensorflow as tf
 
 import pandas as pd
+import numpy as np
 
 import matplotlib
 matplotlib.use("Agg")
@@ -1571,10 +1572,25 @@ def _objective_values(
             best="max"
         )
 
-    continual_metric = "continual_ensemble_accuracy" if use_ensemble_accuracy \
-                    else "continual_accuracy"
+    # Continual ensemble scores are currently test-only and cannot tune HPO.
+    if use_ensemble_accuracy:
+        raise ValueError(
+            "Continual ensemble HPO requires a validation-ensemble metric; "
+            "test ensemble accuracy is reserved for final evaluation."
+        )
 
-    return float(pd.Series(history[continual_metric]).mean())
+    validation_values = np.asarray(
+        history.get("task_val_accuracy", []),
+        dtype="float64",
+    )
+    # Never substitute cumulative test accuracy for missing validation feedback.
+    if validation_values.size == 0 or not np.any(np.isfinite(validation_values)):
+        raise ValueError(
+            "Continual HPO requires an explicit validation split with "
+            "task_val_accuracy."
+        )
+
+    return float(np.nanmean(validation_values))
 
 
 def run_hpo(
@@ -1616,8 +1632,9 @@ def run_hpo(
         results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``.
         timeout (float | None): Optional study wall-time limit in seconds.
-        use_ensemble_accuracy (bool): Use post-training ensemble accuracy as
-            HPO feedback for joint or continual diffusion-classifier studies.
+        use_ensemble_accuracy (bool): Use post-training ensemble accuracy for
+            joint diffusion-classifier studies. Continual ensemble HPO is
+            rejected until a validation-only ensemble metric is available.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher.
@@ -1673,6 +1690,12 @@ def run_hpo(
         raise ValueError(
             "use_ensemble_accuracy requires a joint "
             "or continual diffusion classifier study."
+        )
+    # Continual ensemble reports currently evaluate test data, never validation.
+    if use_ensemble_accuracy and task == "continual":
+        raise ValueError(
+            "Continual ensemble HPO requires a validation-ensemble metric; "
+            "test ensemble accuracy is reserved for final evaluation."
         )
     # Restrict runtime teachers to supported distillation study families.
     if teacher_network is not None and not (

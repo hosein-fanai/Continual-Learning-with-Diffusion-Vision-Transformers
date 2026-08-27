@@ -25,7 +25,12 @@ from collections.abc import Callable, Mapping, Sequence
 
 from common.utils import plot_images, plot_history, create_gif
 from common.lr_logger_callback import LrLoggerCallback
-from common.config import Config, load_config, save_config
+from common.config import (
+    Config,
+    load_config,
+    resolve_continual_schedule,
+    save_config,
+)
 from common.dataloader import get_datasets, get_dataset_spec
 from common.model import get_model
 from common.learner import _run_continual_tasks
@@ -634,11 +639,16 @@ def train_model(
         continual_kwargs = deepcopy(continual_kwargs)
         dataset_class_num, _, _ = get_dataset_spec(dataset_name)
         configured_class_num = continual_kwargs.pop("class_num", None)
-        class_num = dataset_class_num if configured_class_num is None \
-                    else configured_class_num
-        # Require at least the initial two-class continual task.
-        if class_num < 2:
-            raise ValueError("continual class_num must be at least 2.")
+        class_order, task_groups = resolve_continual_schedule(
+            configured_class_num,
+            continual_kwargs.get("class_order"),
+            continual_kwargs.get("task_groups"),
+            available_class_num=dataset_class_num,
+        )
+        class_num = len(class_order)
+        # Forward one canonical schedule to the lower-level continual loop.
+        continual_kwargs["class_order"] = class_order
+        continual_kwargs["task_groups"] = task_groups
 
         generative_kwargs = continual_kwargs.pop(
             "generative_model_kwargs", {}
@@ -1055,6 +1065,21 @@ def report(
             )), 
             "final_accuracy": float(history["continual_accuracy"][-1])
         }
+
+        details = model.get("continual_details", {})
+        # Expose task-balanced CL metrics and the complete evaluation matrix.
+        eval_results.update(details.get("continual_metrics", {}))
+        for name in (
+            "class_order",
+            "task_classes",
+            "accuracy_matrix",
+            "new_task_accuracy",
+            "old_task_accuracy",
+            "dataset_seed",
+        ):
+            # Copy only schedule metadata recorded by the continual learner.
+            if name in details:
+                eval_results[name] = details[name]
 
         # Add ensemble summaries when the continual learner produced them.
         if "continual_ensemble_accuracy" in history \

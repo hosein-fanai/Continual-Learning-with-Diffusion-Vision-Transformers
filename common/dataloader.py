@@ -10,7 +10,7 @@ import numpy as np
 from collections.abc import Callable, Mapping, Sequence
 from numbers import Integral, Real
 
-from .config import Config
+from .config import Config, resolve_continual_schedule
 
 
 DatasetArrays = tuple[
@@ -1057,18 +1057,14 @@ def get_datasets(
     # Include every dataset class by default.
     if indices is None:
         indices = list(range(class_num))
-    # Restrict configured continual runs to their requested leading classes.
-    if config is not None and task == "continual" \
-    and config.continually_learn.class_num is not None:
-        continual_class_num = config.continually_learn.class_num
-        # Keep the continual class count within dataset bounds.
-        if not 2 <= continual_class_num <= class_num:
-            raise ValueError(
-                "continually_learn.class_num must be between "
-                "2 and the selected dataset's class count."
-            )
-
-        indices = list(range(continual_class_num))
+    # Resolve configured class order before the continual loader is deferred.
+    if config is not None and task == "continual":
+        indices, _ = resolve_continual_schedule(
+            config.continually_learn.class_num,
+            config.continually_learn.class_order,
+            config.continually_learn.task_groups,
+            available_class_num=class_num,
+        )
 
     loaders = {
         "mnist": load_mnist, 
@@ -1088,17 +1084,13 @@ def get_datasets(
         seed=seed, 
         verbose=0
     )
-    # Prefer the requested validation partition.
-    if x_val is not None:
-        x_eval, y_eval = x_val, y_val
-    # Fall back to test data when the loader omitted validation data.
-    else:
-        x_eval, y_eval = x_test, y_test
+    # Keep validation absent when the loader did not create an explicit split.
+    x_eval, y_eval = x_val, y_val
 
     # Flatten sparse labels into the shape expected by Keras losses.
     if not onehot_labels:
         y_train = np.asarray(y_train).reshape(-1)
-        y_eval = np.asarray(y_eval).reshape(-1)
+        y_eval = np.asarray(y_eval).reshape(-1) if y_eval is not None else None
 
     rng = np.random.default_rng(seed)
     x_train, y_train = _limit_samples(
@@ -1106,11 +1098,13 @@ def get_datasets(
         max_train_samples, 
         rng
     )
-    x_eval, y_eval = _limit_samples(
-        x_eval, y_eval, 
-        max_val_samples, 
-        rng
-    )
+    # Limit only an independently created validation partition.
+    if x_eval is not None:
+        x_eval, y_eval = _limit_samples(
+            x_eval, y_eval,
+            max_val_samples,
+            rng
+        )
 
     # Pad raw images before any dense-model flattening.
     if pad > 0:
@@ -1118,12 +1112,16 @@ def get_datasets(
             "standardize", "diffusion"
         ) else 0.
         x_train = _pad_images(np.asarray(x_train), pad, value=pad_value)
-        x_eval = _pad_images(np.asarray(x_eval), pad, value=pad_value)
+        # Pad validation inputs only when a real validation partition exists.
+        if x_eval is not None:
+            x_eval = _pad_images(np.asarray(x_eval), pad, value=pad_value)
 
     # Flatten inputs for dense classifiers and autoencoders.
     if model_name in _DENSE_MODELS:
         x_train = x_train.reshape((len(x_train), -1))
-        x_eval = x_eval.reshape((len(x_eval), -1))
+        # Flatten validation inputs only when a real partition exists.
+        if x_eval is not None:
+            x_eval = x_eval.reshape((len(x_eval), -1))
 
     trainset = get_dataset(
         x_train, 
@@ -1146,7 +1144,7 @@ def get_datasets(
         shuffle_buffer=0, 
         batch_size=batch_size, 
         drop_remainder=False
-    ) if use_valset else None # Build a deterministic validation pipeline.
+    ) if use_valset and x_eval is not None else None
 
     # Defer per-task loading to the continual learner.
     if task == "continual":

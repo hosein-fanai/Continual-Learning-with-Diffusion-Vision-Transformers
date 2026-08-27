@@ -91,7 +91,8 @@ def extract_features(
 
 def CL_plot(
     class_num: int, 
-    pairs: Iterable[tuple[Sequence[float], str]]
+    pairs: Iterable[tuple[Sequence[float], str]],
+    class_counts: Sequence[int] | None = None,
 ) -> None:
     """Plot continual-learning accuracy against the number of seen classes.
 
@@ -101,6 +102,8 @@ def CL_plot(
         pairs (Iterable[tuple[Sequence[float], str]]): Accuracy series and
             legend labels.  Each series should contain ``class_num - 1``
             values; multiple pairs create comparison curves.
+        class_counts (Sequence[int] | None): Optional seen-class count for each
+            configured task. ``None`` preserves the legacy two-through-N axis.
 
     Returns:
         None: Matplotlib displays the figure interactively.
@@ -112,8 +115,10 @@ def CL_plot(
     from matplotlib import pyplot as plt
 
 
+    x_values = list(range(2, class_num+1)) \
+        if class_counts is None else list(class_counts)
     for accs, label in pairs:
-        plt.plot(list(range(2, class_num+1)), accs, label=label)
+        plt.plot(x_values, accs, label=label)
 
     plt.legend()
     plt.xlabel("#classes")

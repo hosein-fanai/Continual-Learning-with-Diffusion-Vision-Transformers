@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from common.config import Config
+from common.config import Config, resolve_continual_schedule
 from common.dataloader import get_dataset_spec
 
 
@@ -750,17 +750,15 @@ def get_model(
         onehot_labels = config.dataset.onehot_labels
         task = config.training.task
         loss_function = config.model.loss_function
-        # Restrict the continual run to the requested leading classes.
-        if task.lower() == "continual" \
-        and config.continually_learn.class_num is not None:
-            continual_class_num = config.continually_learn.class_num
-            # Keep continual class count within dataset bounds.
-            if not 2 <= continual_class_num <= class_num:
-                raise ValueError(
-                    "continually_learn.class_num must be between "
-                    "2 and the selected dataset's class count."
-                )
-            class_num = continual_class_num
+        # Size continual heads from the validated selected-class schedule.
+        if task.lower() == "continual":
+            class_order, _ = resolve_continual_schedule(
+                config.continually_learn.class_num,
+                config.continually_learn.class_order,
+                config.continually_learn.task_groups,
+                available_class_num=class_num,
+            )
+            class_num = len(class_order)
         show_network_summary = config.model.show_network_summary
         weights_path = config.model.weights_path
         classifier_name = config.model.classifier_name
@@ -1294,18 +1292,18 @@ def get_model(
 
 
 def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=False
-    """Copy a classifier while expanding its softmax head by one class.
+    """Copy a classifier while preserving its existing softmax-head prefix.
 
     All non-final layers receive exact copies of their predecessors' weights.
-    The old output weights and biases are copied into every column except the
-    final column of ``new_model``; that last class retains its initializer.
+    The old output weights and biases are copied into the matching leading
+    columns of ``new_model``; every newly added class retains its initializer.
     Optimizer state is not copied.
 
     Args:
         prev_model (tf.keras.Model): Built source classifier with ``L`` layers
             and final kernel shape ``[..., old_classes]``.
         new_model (tf.keras.Model): Built destination with the same ``L`` layer
-            count and final width exactly ``old_classes + 1``.  Corresponding
+            count and final width at least ``old_classes``. Corresponding
             non-final layer weight shapes must match.
 
     Returns:
@@ -1334,8 +1332,13 @@ def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=Fal
     old_last_layer_weights, old_last_layer_bias = prev_model.layers[-1].get_weights()
     new_last_layer_weights, new_last_layer_bias = new_model.layers[-1].get_weights()
 
-    new_last_layer_weights[..., :-1] = old_last_layer_weights
-    new_last_layer_bias[:-1] = old_last_layer_bias
+    old_width = old_last_layer_bias.shape[0]
+    # Refuse to truncate learned classes when a destination head is too narrow.
+    if new_last_layer_bias.shape[0] < old_width:
+        raise ValueError("Destination classifier head is narrower than the source.")
+
+    new_last_layer_weights[..., :old_width] = old_last_layer_weights
+    new_last_layer_bias[:old_width] = old_last_layer_bias
 
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])
 
