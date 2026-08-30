@@ -19,14 +19,25 @@ matplotlib.use("Agg")
 from pathlib import Path
 
 import gc
+import hashlib
+import json
+import math
+import os
+import uuid
 
 import re
 
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from common.config import Config, load_config, save_config
+from common.config import (
+    Config,
+    load_config,
+    resolve_continual_schedule,
+    save_config,
+)
 from common.dataloader import get_dataset_spec
+from common.recovery import find_latest_task_checkpoint, fingerprint_state
 from common.train import main
 
 
@@ -276,6 +287,13 @@ _MODEL_TAGS = {
     "dnn": "d", 
     "pretrained": "p"
 }
+_RECOVERY_ENQUEUED_ATTR = "recovery_enqueued_trial_numbers"
+"""Study user-attribute key recording source trials queued for recovery."""
+
+_STUDY_SPEC_ATTR = "study_spec"
+_STUDY_SPEC_FINGERPRINT_ATTR = "study_spec_fingerprint"
+_SAMPLER_RNG_STATE_ATTR = "sampler_rng_state"
+_STUDY_SPEC_FILE = "study_spec.json"
 _FIT_METHODS = {"fit", "fit_progressively"}
 
 
@@ -999,6 +1017,668 @@ def _suggest_classifier(
     }
 
 
+def _default_objective_metrics(
+    task: str,
+    use_ensemble_accuracy: bool = False,
+) -> tuple[str, ...]:
+    """Return stable, human-readable metric names for a study task.
+
+    Args:
+        task (str): Normalized HPO task name.
+        use_ensemble_accuracy (bool): Whether ensemble accuracy names the joint
+            classification objective.
+
+    Returns:
+        tuple[str, ...]: Default metric names in optimization order.
+    """
+
+    # Name the legacy scalar generation target.
+    if task == "generation":
+        return ("generation_loss",)
+    # Name both legacy joint Pareto targets.
+    if task == "joint":
+        return (
+            "generation_loss",
+            "ensemble_accuracy" if use_ensemble_accuracy
+            else "classification_accuracy",
+        )
+    # Name the legacy standalone validation target.
+    if task == "classification":
+        return ("validation_accuracy",)
+    # Name the validation-matrix aggregate used by continual studies.
+    if task == "continual":
+        return ("final_average_accuracy",)
+    raise ValueError(f"Unsupported HPO task: {task}")
+
+
+def _inferred_objective_direction(metric_name: str) -> str:
+    """Infer a conservative Optuna direction from a metric's name.
+
+    Args:
+        metric_name (str): Configured objective name.
+
+    Returns:
+        str: ``"minimize"`` for cost-like metrics, otherwise ``"maximize"``.
+    """
+
+    normalized = metric_name.lower()
+    # Minimize conventional cost, error, resource, and forgetting names.
+    if any(token in normalized for token in (
+        "loss", "error", "forgetting", "latency", "memory",
+    )):
+        return "minimize"
+    return "maximize"
+
+
+def _normalize_objective_spec(
+    task: str,
+    objective_metrics: str | Sequence[str] | None = None,
+    objective_directions: str | Sequence[str] | None = None,
+    use_ensemble_accuracy: bool = False,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Normalize objective names/directions and validate their cardinality.
+
+    Args:
+        task (str): Normalized HPO task name.
+        objective_metrics (str | Sequence[str] | None): Optional metric name or
+            ordered names.
+        objective_directions (str | Sequence[str] | None): Optional matching
+            Optuna directions.
+        use_ensemble_accuracy (bool): Select the ensemble joint default name.
+
+    Returns:
+        tuple[tuple[str, ...], tuple[str, ...]]: Normalized metric names and
+        one matching direction per name.
+
+    Raises:
+        TypeError: If either specification has an unsupported container type.
+        ValueError: If names are empty/duplicated or directions are invalid.
+    """
+
+    # Supply task defaults when the caller did not name objectives.
+    if objective_metrics is None:
+        metrics = _default_objective_metrics(task, use_ensemble_accuracy)
+    # Treat one string as one objective rather than a character sequence.
+    elif isinstance(objective_metrics, str):
+        metrics = (objective_metrics,)
+    # Materialize an ordered caller-provided metric sequence.
+    elif isinstance(objective_metrics, Sequence):
+        metrics = tuple(objective_metrics)
+    # Reject mappings, scalars, and other ambiguous containers.
+    else:
+        raise TypeError("objective_metrics must be a string or sequence of strings.")
+
+    # Reject empty specifications and blank/non-string metric names.
+    if not metrics or any(not isinstance(name, str) or not name.strip()
+                          for name in metrics):
+        raise ValueError("objective_metrics must contain nonempty strings.")
+    metrics = tuple(name.strip() for name in metrics)
+    # Prevent ambiguous duplicate objective columns and Optuna dimensions.
+    if len(set(metrics)) != len(metrics):
+        raise ValueError("objective_metrics must not contain duplicate names.")
+
+    # Infer directions only when the caller omitted them.
+    if objective_directions is None:
+        # Preserve the established joint minimize/maximize ordering.
+        if objective_metrics is None and task == "joint":
+            directions = ("minimize", "maximize")
+        # Preserve the established scalar generation direction.
+        elif objective_metrics is None and task == "generation":
+            directions = ("minimize",)
+        # Infer custom and accuracy-family directions from each name.
+        else:
+            directions = tuple(
+                _inferred_objective_direction(name) for name in metrics
+            )
+    # Treat one direction string as one dimension.
+    elif isinstance(objective_directions, str):
+        directions = (objective_directions,)
+    # Materialize an ordered caller-provided direction sequence.
+    elif isinstance(objective_directions, Sequence):
+        directions = tuple(objective_directions)
+    # Reject mappings, scalars, and other ambiguous containers.
+    else:
+        raise TypeError(
+            "objective_directions must be a string or sequence of strings."
+        )
+
+    directions = tuple(
+        str(direction).strip().lower() for direction in directions
+    )
+    # Require Optuna directions to align exactly with objective dimensions.
+    if len(directions) != len(metrics):
+        raise ValueError(
+            "objective_directions must have one entry per objective metric."
+        )
+    invalid = sorted(set(directions) - {"minimize", "maximize"})
+    # Reject spellings that Optuna cannot interpret.
+    if invalid:
+        raise ValueError(
+            "objective_directions entries must be 'minimize' or 'maximize': "
+            + ", ".join(invalid)
+        )
+    return metrics, directions
+
+
+def _study_json_sort_key(value: object) -> str:
+    """Return a canonical sort key for an already JSON-safe study value.
+
+    Args:
+        value (object): JSON-safe metadata value.
+
+    Returns:
+        str: Compact key-sorted JSON representation.
+    """
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _study_json_value(value: object) -> object:
+    """Convert HPO inputs to deterministic JSON-safe study metadata.
+
+    Args:
+        value (object): Scientific study option to normalize.
+
+    Returns:
+        object: Deterministic JSON-safe representation.
+
+    Raises:
+        TypeError: If no stable serialization exists for ``value``.
+        ValueError: If a non-finite numeric value is supplied.
+    """
+
+    # Preserve ordinary JSON scalar values directly.
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    # Require finite floats because strict study metadata uses standard JSON.
+    if isinstance(value, float):
+        # Reject NaN and infinities instead of producing nonportable JSON.
+        if not math.isfinite(value):
+            raise ValueError("HPO study metadata cannot contain non-finite values.")
+        return value
+    # Convert NumPy scalar wrappers to their corresponding Python values.
+    if isinstance(value, np.generic):
+        return _study_json_value(value.item())
+    # Represent array content compactly without embedding large payloads.
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        # Reject Python-object pointers that have no stable byte representation.
+        if array.dtype.hasobject:
+            raise TypeError("Object arrays cannot enter HPO study metadata.")
+        return {
+            "array_shape": list(array.shape),
+            "array_dtype": array.dtype.str,
+            "array_sha256": hashlib.sha256(array.tobytes()).hexdigest(),
+        }
+    # Normalize explicit pathlib inputs to ordinary path strings.
+    if isinstance(value, Path):
+        return str(value)
+    # Preserve mappings in canonical key order.
+    if isinstance(value, Mapping):
+        # Use a normal JSON object when keys already satisfy JSON semantics.
+        if all(isinstance(key, str) for key in value):
+            return {
+                key: _study_json_value(value[key]) for key in sorted(value)
+            }
+        entries = [
+            {
+                "key": _study_json_value(key),
+                "value": _study_json_value(item),
+            }
+            for key, item in value.items()
+        ]
+        entries.sort(key=_study_json_sort_key)
+        return {"mapping": entries}
+    # Preserve ordered sequences while normalizing each member.
+    if isinstance(value, (list, tuple)):
+        return [_study_json_value(item) for item in value]
+    # Sort unordered collections by their canonical JSON representation.
+    if isinstance(value, (set, frozenset)):
+        items = [_study_json_value(item) for item in value]
+        items.sort(key=_study_json_sort_key)
+        return {"set": items}
+    # Serialize TensorFlow numeric dtypes by their registered names.
+    if isinstance(value, tf.dtypes.DType):
+        return {"dtype": value.name}
+    get_config = getattr(value, "get_config", None)
+    # Capture the semantic config of Keras-compatible objects.
+    if callable(get_config):
+        return {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "config": _study_json_value(get_config()),
+        }
+    # Identify plain callables by definition instead of process-local repr.
+    if callable(value):
+        return {
+            "callable": (
+                f"{getattr(value, '__module__', type(value).__module__)}."
+                f"{getattr(value, '__qualname__', type(value).__qualname__)}"
+            )
+        }
+    raise TypeError(
+        "Unsupported HPO study metadata type: " + type(value).__qualname__
+    )
+
+
+def _teacher_study_signature(model: object | None) -> object:
+    """Fingerprint a runtime teacher that intentionally stays out of YAML.
+
+    Args:
+        model (object | None): Optional frozen Keras teacher.
+
+    Returns:
+        object: JSON-safe teacher config/weight signature, or ``None``.
+
+    Raises:
+        TypeError: If the teacher exposes no serializable configuration.
+    """
+
+    # Distinguish teacher-free self-distillation from an external teacher.
+    if model is None:
+        return None
+    get_config = getattr(model, "get_config", None)
+    # Require a reconstructable topology for immutable study identity.
+    if not callable(get_config):
+        raise TypeError("teacher_network must expose a serializable get_config().")
+    weight_descriptors = []
+    for weight in list(getattr(model, "weights", []) or []):
+        array = np.ascontiguousarray(weight.numpy())
+        digest = hashlib.sha256(array.tobytes()).hexdigest()
+        weight_descriptors.append({
+            "shape": list(array.shape),
+            "dtype": array.dtype.str,
+            "sha256": digest,
+        })
+    return {
+        "type": f"{type(model).__module__}.{type(model).__qualname__}",
+        "config": _study_json_value(get_config()),
+        "weights": weight_descriptors,
+    }
+
+
+def _make_study_spec(
+    *,
+    study_name: str,
+    task: str,
+    model_name: str,
+    dataset_name: str,
+    epochs: int,
+    seed: int,
+    use_ensemble_accuracy: bool,
+    ensemble_accuracy_kwargs: Mapping[str, object] | None,
+    fit_method: str,
+    fit_kwargs: Mapping[str, object],
+    teacher_network: object | None,
+    effective_distillation: bool,
+    objective_metrics: Sequence[str],
+    objective_directions: Sequence[str],
+    dtype_policy: str,
+    deterministic_ops: bool,
+    snapshot_network_name: str,
+    class_num: int | None,
+    class_order: Sequence[int] | None,
+    task_groups: Sequence[Sequence[int]] | None,
+    task_size: int,
+    class_order_mode: str,
+    task_order_mode: str,
+) -> dict[str, object]:
+    """Build the immutable scientific identity of a persistent HPO study.
+
+    Args:
+        study_name (str): Exact Optuna storage identity.
+        task (str): Training task family.
+        model_name (str): Searched model family.
+        dataset_name (str): Dataset selector.
+        epochs (int): Ordinary training epoch budget.
+        seed (int): Study, trial, and sampler seed.
+        use_ensemble_accuracy (bool): Whether ensemble scores are authoritative.
+        ensemble_accuracy_kwargs (Mapping[str, object] | None): Ensemble options.
+        fit_method (str): Ordinary or progressive fit selector.
+        fit_kwargs (Mapping[str, object]): Selected fit-method arguments.
+        teacher_network (object | None): Optional external distillation teacher.
+        effective_distillation (bool): Whether the distillation space is active.
+        objective_metrics (Sequence[str]): Ordered objective metric names.
+        objective_directions (Sequence[str]): Matching Optuna directions.
+        dtype_policy (str): Keras numerical policy.
+        deterministic_ops (bool): Whether deterministic kernels are requested.
+        snapshot_network_name (str): Raw/EMA continual teacher branch.
+        class_num (int | None): Selected continual class count.
+        class_order (Sequence[int] | None): Requested continual class order.
+        task_groups (Sequence[Sequence[int]] | None): Requested task groups.
+        task_size (int): Automatic continual task width.
+        class_order_mode (str): Fixed or seeded-random class ordering mode.
+        task_order_mode (str): Fixed or seeded-random whole-task ordering mode.
+
+    Returns:
+        dict[str, object]: Strict JSON-safe immutable study specification.
+    """
+
+    return _study_json_value({
+        "schema_version": 1,
+        "study_name": study_name,
+        "task": task,
+        "model_name": model_name,
+        "dataset_name": dataset_name.lower(),
+        "epochs": int(epochs),
+        "seed": int(seed),
+        "use_ensemble_accuracy": bool(use_ensemble_accuracy),
+        "ensemble_accuracy_kwargs": dict(ensemble_accuracy_kwargs or {}),
+        "fit_method": fit_method,
+        "fit_kwargs": dict(fit_kwargs),
+        "effective_distillation": bool(effective_distillation),
+        "teacher": _teacher_study_signature(teacher_network),
+        "objective_metrics": list(objective_metrics),
+        "objective_directions": list(objective_directions),
+        "dtype_policy": dtype_policy,
+        "deterministic_ops": bool(deterministic_ops),
+        "snapshot_network_name": snapshot_network_name,
+        "continual_schedule": {
+            "class_num": class_num,
+            "class_order": None if class_order is None else list(class_order),
+            "task_groups": None if task_groups is None else [
+                list(group) for group in task_groups
+            ],
+            "task_size": task_size,
+            "class_order_mode": class_order_mode,
+            "task_order_mode": task_order_mode,
+        },
+    })
+
+
+def _read_study_spec(study_root: Path) -> dict[str, object]:
+    """Read and self-validate the pre-study identity file.
+
+    Args:
+        study_root (pathlib.Path): Persistent HPO study directory.
+
+    Returns:
+        dict[str, object]: Authenticated immutable study specification.
+
+    Raises:
+        FileNotFoundError: If no identity sidecar exists.
+        ValueError: If its structure or checksum is invalid.
+    """
+
+    path = study_root / _STUDY_SPEC_FILE
+    # Require metadata that can block identity mismatches before Optuna loads.
+    if not path.is_file():
+        raise FileNotFoundError(
+            "HPO resume study root has no study_spec.json: " + str(study_root)
+        )
+    with path.open("r", encoding="utf-8") as stream:
+        payload = json.load(stream)
+    # Require the documented envelope and mapping-shaped specification.
+    if not isinstance(payload, dict) or not isinstance(payload.get("spec"), dict):
+        raise ValueError("HPO study specification file is invalid.")
+    # Authenticate the sidecar against its stable specification hash.
+    if payload.get("fingerprint") != fingerprint_state(payload["spec"]):
+        raise ValueError("HPO study specification checksum is invalid.")
+    return payload["spec"]
+
+
+def _write_study_spec(study_root: Path, spec: Mapping[str, object]) -> None:
+    """Atomically persist identity before creating or loading Optuna.
+
+    Args:
+        study_root (pathlib.Path): Persistent HPO study directory.
+        spec (Mapping[str, object]): JSON-safe immutable study specification.
+
+    Returns:
+        None: The checksummed sidecar is atomically replaced on success.
+    """
+
+    study_root.mkdir(parents=True, exist_ok=True)
+    path = study_root / _STUDY_SPEC_FILE
+    payload = {
+        "spec": dict(spec),
+        "fingerprint": fingerprint_state(spec),
+    }
+    temporary = study_root / f".{_STUDY_SPEC_FILE}.tmp-{uuid.uuid4().hex}"
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(
+                payload,
+                stream,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(str(temporary), str(path))
+    finally:
+        # Remove only this call's unique temporary file after a failed replace.
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _sampler_random_states(sampler: object) -> tuple[object, object]:
+    """Return Optuna 3.6 TPE's two NumPy RandomState instances.
+
+    Args:
+        sampler (object): Optuna TPESampler instance.
+
+    Returns:
+        tuple[object, object]: TPE and fallback-random ``RandomState`` objects.
+
+    Raises:
+        RuntimeError: If sampler internals differ from the supported contract.
+    """
+
+    try:
+        tpe_rng = sampler._rng.rng
+        random_rng = sampler._random_sampler._rng.rng
+    except AttributeError as error:
+        raise RuntimeError(
+            "This Optuna TPESampler version does not expose the expected "
+            "recoverable RNG streams."
+        ) from error
+    # Fail explicitly when a future Optuna version changes RNG implementation.
+    if not isinstance(tpe_rng, np.random.RandomState) \
+    or not isinstance(random_rng, np.random.RandomState):
+        raise RuntimeError(
+            "Optuna TPESampler RNG internals are incompatible with recovery."
+        )
+    return tpe_rng, random_rng
+
+
+def _random_state_payload(rng: np.random.RandomState) -> dict[str, object]:
+    """Encode a NumPy RandomState tuple for Optuna user attributes.
+
+    Args:
+        rng (numpy.random.RandomState): Sampler stream to snapshot.
+
+    Returns:
+        dict[str, object]: JSON-safe complete MT19937 cursor/state.
+    """
+
+    name, keys, position, has_gauss, cached_gaussian = rng.get_state()
+    return {
+        "bit_generator": name,
+        "keys": keys.tolist(),
+        "position": int(position),
+        "has_gauss": int(has_gauss),
+        "cached_gaussian": float(cached_gaussian),
+    }
+
+
+def _capture_sampler_rng_state(sampler: object) -> dict[str, object]:
+    """Capture both stochastic streams used by Optuna 3.6 TPESampler.
+
+    Args:
+        sampler (object): Optuna TPESampler instance.
+
+    Returns:
+        dict[str, object]: Versioned JSON-safe state for both RNG streams.
+    """
+
+    tpe_rng, random_rng = _sampler_random_states(sampler)
+    return {
+        "schema_version": 1,
+        "tpe": _random_state_payload(tpe_rng),
+        "random_sampler": _random_state_payload(random_rng),
+    }
+
+
+def _restore_sampler_rng_state(
+    sampler: object,
+    state: Mapping[str, object],
+) -> None:
+    """Restore both TPESampler RandomState streams in place.
+
+    Args:
+        sampler (object): Optuna TPESampler instance to restore.
+        state (Mapping[str, object]): State from
+            :func:`_capture_sampler_rng_state`.
+
+    Returns:
+        None: Both internal streams are updated in place.
+
+    Raises:
+        ValueError: If the state schema or either stream is absent.
+    """
+
+    # Reject state created by an unknown future representation.
+    if int(state.get("schema_version", -1)) != 1:
+        raise ValueError("Unsupported Optuna sampler RNG-state schema.")
+    tpe_rng, random_rng = _sampler_random_states(sampler)
+    for rng, name in ((tpe_rng, "tpe"), (random_rng, "random_sampler")):
+        payload = state.get(name)
+        # Require both independent streams for next-suggestion equivalence.
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Optuna sampler RNG state is missing {name!r}.")
+        rng.set_state((
+            str(payload["bit_generator"]),
+            np.asarray(payload["keys"], dtype=np.uint32),
+            int(payload["position"]),
+            int(payload["has_gauss"]),
+            float(payload["cached_gaussian"]),
+        ))
+
+
+def _has_committed_task_checkpoint(checkpoint_dir: Path) -> bool:
+    """Report whether a trial checkpoint root has a committed task boundary.
+
+    Args:
+        checkpoint_dir (pathlib.Path): Per-trial continual checkpoint root.
+
+    Returns:
+        bool: Whether the root contains a fully validated committed task.
+    """
+
+    try:
+        find_latest_task_checkpoint(checkpoint_dir)
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        # A marker alone is not durable evidence: validation checks the sealed
+        # manifest, schedule, payload set, and every recorded checksum.
+        return False
+    return True
+
+
+def _trial_checkpoint_dir(study_root: Path, trial: Any) -> Path:
+    """Resolve and constrain the checkpoint root assigned to an Optuna trial.
+
+    Args:
+        study_root (pathlib.Path): Active persistent HPO study root.
+        trial (optuna.trial.BaseTrial): Live or frozen trial carrying optional
+            recovery user attributes.
+
+    Returns:
+        pathlib.Path: Resolved per-trial checkpoint directory below the study.
+
+    Raises:
+        ValueError: If persisted trial metadata points outside the study root.
+    """
+
+    user_attrs = dict(getattr(trial, "user_attrs", {}) or {})
+    configured = user_attrs.get("resume_checkpoint_dir") \
+        or user_attrs.get("checkpoint_dir")
+    # Reuse the original checkpoint root for an automatically queued retry.
+    if configured is not None:
+        candidate = Path(str(configured)).resolve()
+    # Assign a fresh stable directory to an ordinary trial.
+    else:
+        candidate = (
+            study_root / "checkpoints" / f"trial-{trial.number:04d}"
+        ).resolve()
+
+    checkpoint_root = (study_root / "checkpoints").resolve()
+    # Reject tampered SQLite metadata that escapes the selected study root.
+    if candidate != checkpoint_root and checkpoint_root not in candidate.parents:
+        raise ValueError(
+            "Trial checkpoint directory must remain below the HPO study root."
+        )
+    return candidate
+
+
+def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
+    """Queue one parameter-identical retry for each recoverable trial.
+
+    The source trial number is recorded both on the queued retry and in study
+    metadata. A killed retry may itself be queued once on a later invocation,
+    while the same dead source can never be enqueued repeatedly.
+
+    Args:
+        study (optuna.study.Study): Loaded persistent Optuna study.
+        study_root (pathlib.Path): Root containing the study's checkpoints.
+
+    Returns:
+        tuple[int, ...]: Source trial numbers newly enqueued by this call.
+    """
+
+    trials = tuple(study.get_trials(deepcopy=False))
+    tracked = {
+        int(number)
+        for number in study.user_attrs.get(_RECOVERY_ENQUEUED_ATTR, [])
+    }
+    # Treat already-persisted queued retries as authoritative deduplication data.
+    for existing in trials:
+        source = existing.user_attrs.get("resume_source_trial_number")
+        # Record a retry even if a crash preceded the study-attribute update.
+        if source is not None:
+            tracked.add(int(source))
+
+    enqueued: list[int] = []
+    # Inspect persisted trials for killed runs or failed runs with a committed
+    # task boundary. Failed trials without recovery state stay failed.
+    for frozen in trials:
+        state_name = str(getattr(frozen.state, "name", frozen.state)).upper()
+        checkpoint_dir = _trial_checkpoint_dir(study_root, frozen)
+        has_task_checkpoint = _has_committed_task_checkpoint(checkpoint_dir)
+        recoverable = state_name == "RUNNING" or (
+            state_name == "FAIL" and has_task_checkpoint
+        )
+        # Leave completed, pruned, waiting, and unrecoverable failed trials.
+        if not recoverable:
+            continue
+        source_number = int(frozen.number)
+        # Never queue the same abandoned source trial more than once.
+        if source_number in tracked:
+            continue
+        canonical_original = int(frozen.user_attrs.get(
+            "resume_original_trial_number",
+            source_number,
+        ))
+        study.enqueue_trial(
+            dict(frozen.params),
+            user_attrs={
+                "resume_checkpoint_dir": str(checkpoint_dir),
+                "resume_has_task_checkpoint": has_task_checkpoint,
+                "resume_original_trial_number": canonical_original,
+                "resume_source_trial_number": source_number,
+            },
+        )
+        tracked.add(source_number)
+        enqueued.append(source_number)
+
+    # Persist deduplication state after queued trials are durable in storage.
+    if enqueued:
+        study.set_user_attr(_RECOVERY_ENQUEUED_ATTR, sorted(tracked))
+    return tuple(enqueued)
+
+
 def _build_trial_config(
     trial: Any, 
     task: str, 
@@ -1011,7 +1691,18 @@ def _build_trial_config(
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
     use_distillation: bool = False, 
     fit_method: str = "fit", 
-    fit_kwargs: Mapping[str, object] | None = None
+    fit_kwargs: Mapping[str, object] | None = None,
+    objective_metrics: str | Sequence[str] | None = None,
+    objective_directions: str | Sequence[str] | None = None,
+    dtype_policy: str = "float32",
+    deterministic_ops: bool = False,
+    snapshot_network_name: str = "raw",
+    class_num: int | None = None,
+    class_order: Sequence[int] | None = None,
+    task_groups: Sequence[Sequence[int]] | None = None,
+    task_size: int = 1,
+    class_order_mode: str = "fixed",
+    task_order_mode: str = "fixed",
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -1037,6 +1728,20 @@ def _build_trial_config(
             Progressive named arguments are stored in their explicit
             :class:`TrainingConfig` fields; remaining Keras fit arguments are
             stored in ``TrainingConfig.fit_kwargs``.
+        objective_metrics (str | Sequence[str] | None): Objective names stored
+            with the resolved trial configuration.
+        objective_directions (str | Sequence[str] | None): Matching Optuna
+            directions. Missing directions are inferred from metric names.
+        dtype_policy (str): Keras numeric policy installed before construction.
+        deterministic_ops (bool): Request deterministic TensorFlow kernels.
+        snapshot_network_name (str): ``"raw"`` or ``"ema"`` teacher snapshot
+            used by continual distillation.
+        class_num (int | None): Number of classes in a continual study.
+        class_order (Sequence[int] | None): Optional original-label order.
+        task_groups (Sequence[Sequence[int]] | None): Optional explicit tasks.
+        task_size (int): Classes per automatically constructed task.
+        class_order_mode (str): ``"fixed"`` or seeded ``"random"`` order.
+        task_order_mode (str): ``"fixed"`` or seeded ``"random"`` task order.
 
     Returns:
         Config: Fully typed trial configuration.
@@ -1048,10 +1753,45 @@ def _build_trial_config(
 
     dataset_name = dataset_name.lower()
     fit_kwargs = dict(fit_kwargs or {})
+    snapshot_network_name = str(snapshot_network_name).lower()
+    class_order_mode = str(class_order_mode).lower()
+    task_order_mode = str(task_order_mode).lower()
+    class_order = None if class_order is None else list(class_order)
+    task_groups = None if task_groups is None else [
+        list(group) for group in task_groups
+    ]
+    # Reject teacher snapshot selectors unsupported by diffusion wrappers.
+    if snapshot_network_name not in ("raw", "ema"):
+        raise ValueError("snapshot_network_name must be 'raw' or 'ema'.")
+    normalized_metrics, normalized_directions = _normalize_objective_spec(
+        task,
+        objective_metrics,
+        objective_directions,
+        use_ensemble_accuracy,
+    )
 
     # Reject datasets outside the four supported HPO families.
     if dataset_name not in ("fmnist", "mnist", "cifar10", "cifar100"):
         raise ValueError("dataset_name must be FMNIST, MNIST, CIFAR10, or CIFAR100.")
+    available_class_num, _, _ = get_dataset_spec(dataset_name)
+    schedule_requested = class_num is not None or class_order is not None \
+        or task_groups is not None or task_size != 1 \
+        or class_order_mode != "fixed" or task_order_mode != "fixed"
+    # Keep continual-only schedule controls from being silently ignored.
+    if task != "continual" and schedule_requested:
+        raise ValueError("Continual schedule options require task='continual'.")
+    # Validate direct builder calls with the same canonical schedule resolver.
+    if task == "continual":
+        resolve_continual_schedule(
+            class_num,
+            class_order,
+            task_groups,
+            available_class_num=available_class_num,
+            task_size=task_size,
+            class_order_mode=class_order_mode,
+            task_order_mode=task_order_mode,
+            seed=seed,
+        )
     _validate_fit_request(model_name, fit_method, fit_kwargs)
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
     if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
@@ -1236,9 +1976,24 @@ def _build_trial_config(
             "train_num", [-1, 1_000, 2_500, 5_000, 7_500, 10_000]
         )
         continual_kwargs = {
+            "class_num": class_num,
+            "class_order": class_order,
+            "task_groups": task_groups,
+            "task_size": task_size,
+            "class_order_mode": class_order_mode,
+            "task_order_mode": task_order_mode,
+            "seed": seed,
             "remove_prev_classes": True, 
             "keep_same_model": True, 
             "use_distillation": use_distillation,
+            "snapshot_network_name": snapshot_network_name,
+            # HPO is model development: locked test rows cannot enter a trial.
+            "experiment_phase": "development",
+            # HPO trials opt into task-boundary checkpoints for study recovery.
+            "save_task_checkpoints": True,
+            "use_ensemble_accuracy": bool(use_ensemble_accuracy),
+            "evaluate_ensemble_accuracy": bool(use_ensemble_accuracy),
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs,
             "plot_results": False, 
             "generative_model_kwargs": {
                 "samples_per_class": replay_samples, 
@@ -1253,13 +2008,6 @@ def _build_trial_config(
                 "train_classifier_separately": (
                     wrapper_name == "diffusion_classifier_v2"
                 )
-            })
-
-        # Enable per-task diffusion ensemble reports when they are the HPO signal.
-        if use_ensemble_accuracy:
-            continual_kwargs.update({
-                "evaluate_ensemble_accuracy": True, 
-                "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs
             })
 
         # Select and configure a dense classifier for VAE replay.
@@ -1381,6 +2129,8 @@ def _build_trial_config(
             "fit_kwargs": fit_kwargs,
             **progressive_fields,
             "seed": seed, 
+            "dtype_policy": dtype_policy,
+            "deterministic_ops": bool(deterministic_ops),
             "verbose": 0, 
             "patience": 5 if task in ("generation", "classification") else 0, 
             "monitor": monitor, 
@@ -1420,7 +2170,21 @@ def _build_trial_config(
             "tensorboard_name": tensorboard_name, 
             "use_ensemble_accuracy": use_ensemble_accuracy, 
             "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
-            "use_distillation": use_distillation
+            "use_distillation": use_distillation,
+            "objective_metrics": list(normalized_metrics),
+            "objective_directions": list(normalized_directions),
+            "seed": seed,
+            "dtype_policy": dtype_policy,
+            "deterministic_ops": bool(deterministic_ops),
+            "snapshot_network_name": snapshot_network_name,
+            "continual_schedule": {
+                "class_num": class_num,
+                "class_order": class_order,
+                "task_groups": task_groups,
+                "task_size": task_size,
+                "class_order_mode": class_order_mode,
+                "task_order_mode": task_order_mode,
+            },
         }
     )
 
@@ -1492,14 +2256,120 @@ def _ensemble_accuracy_value(
     raise KeyError("No validation ensemble_accuracy was reported.")
 
 
+def _continual_validation_value(
+    evaluations: Mapping[str, object],
+    metric_name: str,
+) -> float:
+    """Read one scalar exclusively from validation continual metrics.
+
+    Args:
+        evaluations (Mapping[str, object]): Training report evaluation mapping.
+        metric_name (str): Exact validation continual metric to read.
+
+    Returns:
+        float: Requested validation-only scalar.
+
+    Raises:
+        KeyError: If the validation mapping or requested metric is absent.
+        TypeError: If the requested value is not scalar.
+    """
+
+    metrics = evaluations.get("validation_continual_metrics")
+    # Refuse training/test fallbacks when validation aggregates are unavailable.
+    if not isinstance(metrics, Mapping):
+        raise KeyError(
+            "Continual HPO requires "
+            "evaluations['validation_continual_metrics']; test and training "
+            "metrics are never substituted."
+        )
+    # Require the exact configured validation metric.
+    if metric_name not in metrics:
+        raise KeyError(
+            "Requested continual validation objective was not reported: "
+            + metric_name
+        )
+    value = np.asarray(metrics[metric_name])
+    # Keep every Optuna objective dimension scalar.
+    if value.ndim != 0:
+        raise TypeError(
+            "Continual validation objective must be scalar: " + metric_name
+        )
+    return float(value)
+
+
+def _configured_objective_value(
+    task: str,
+    model_name: str,
+    history: Mapping[str, Sequence[float]],
+    evaluations: Mapping[str, object],
+    metric_name: str,
+    direction: str,
+) -> float:
+    """Resolve one explicit objective without changing legacy defaults.
+
+    Args:
+        task (str): Normalized HPO task name.
+        model_name (str): Normalized model-family name.
+        history (Mapping[str, Sequence[float]]): Epoch metric sequences.
+        evaluations (Mapping[str, object]): Final report evaluation mapping.
+        metric_name (str): Exact or supported semantic objective name.
+        direction (str): Matching normalized Optuna direction.
+
+    Returns:
+        float: Selected scalar objective value.
+    """
+
+    # Enforce the dedicated validation-only continual namespace.
+    if task == "continual":
+        return _continual_validation_value(evaluations, metric_name)
+
+    best = "min" if direction == "minimize" else "max"
+    # Resolve diffusion ensemble accuracy from validation report output.
+    if metric_name == "ensemble_accuracy":
+        return _ensemble_accuracy_value(evaluations)
+    # Resolve a model-family-aware semantic generation loss alias.
+    if metric_name == "generation_loss":
+        names = [
+            "val_recon_loss", "recon_loss", "val_total_loss", "total_loss",
+        ] if model_name in ("vae", "vae_classifier") else [
+            "val_noise_loss", "noise_loss", "val_loss", "loss",
+        ]
+        return _history_value(history, names, best=best)
+    # Resolve the semantic joint classifier accuracy alias.
+    if metric_name == "classification_accuracy":
+        return _history_value(history, [
+            "val_total_accuracy",
+            "val_classifier_accuracy",
+            "val_cls_token_accuracy",
+            "val_avg_pooling_accuracy",
+            "val_clf_accuracy",
+            "total_accuracy",
+            "classifier_accuracy",
+            "cls_token_accuracy",
+            "avg_pooling_accuracy",
+            "clf_accuracy",
+        ], best=best)
+    # Resolve the semantic standalone validation accuracy alias.
+    if metric_name == "validation_accuracy":
+        return _history_value(history, ["val_accuracy", "accuracy"], best=best)
+
+    history_names = [metric_name]
+    # Accept a readable validation prefix alongside Keras's ``val_`` prefix.
+    if metric_name.startswith("validation_"):
+        history_names.append("val_" + metric_name[len("validation_"):])
+    return _history_value(history, history_names, best=best)
+
+
 def _objective_values(
     task: str,  
     model_name: str,  
     history: Mapping[str, Sequence[float]], 
     evaluations: Mapping[str, object] | None = None, 
-    use_ensemble_accuracy: bool = False
-) -> float | tuple[float, float]:
-    """Convert training history to the study's objective value or pair.
+    use_ensemble_accuracy: bool = False,
+    objective_metrics: str | Sequence[str] | None = None,
+    objective_directions: str | Sequence[str] | None = None,
+) -> float | tuple[float, ...]:
+    """Convert training outputs to the study's objective value or tuple.
 
     Args:
         task (str): Study task.
@@ -1509,10 +2379,14 @@ def _objective_values(
             required for joint ensemble-accuracy feedback.
         use_ensemble_accuracy (bool): Select ensemble instead of ordinary
             classification accuracy.
+        objective_metrics (str | Sequence[str] | None): Explicit metric names.
+            Continual names are resolved only under
+            ``evaluations['validation_continual_metrics']``.
+        objective_directions (str | Sequence[str] | None): Matching Optuna
+            directions, used when selecting from explicit history metrics.
 
     Returns:
-        float | tuple[float, float]: Scalar objective, or generation-loss and
-        classification-accuracy pair for joint studies.
+        float | tuple[float, ...]: Scalar objective or configured metric tuple.
     """
 
     # Reject ensemble feedback for models without a diffusion classifier wrapper.
@@ -1524,6 +2398,29 @@ def _objective_values(
             "use_ensemble_accuracy requires a joint "
             "or continual diffusion classifier study."
         )
+
+    metrics, directions = _normalize_objective_spec(
+        task,
+        objective_metrics,
+        objective_directions,
+        use_ensemble_accuracy,
+    )
+    evaluations = evaluations or {}
+
+    # Explicit metric lists use exact, independently directed resolution.
+    if objective_metrics is not None:
+        values = tuple(
+            _configured_objective_value(
+                task,
+                model_name,
+                history,
+                evaluations,
+                metric_name,
+                direction,
+            )
+            for metric_name, direction in zip(metrics, directions)
+        )
+        return values[0] if len(values) == 1 else values
 
     # Return the single generation objective for generation studies.
     if task == "generation":
@@ -1546,7 +2443,7 @@ def _objective_values(
 
         # Read the post-training report when ensemble feedback is requested.
         if use_ensemble_accuracy:
-            classification = _ensemble_accuracy_value(evaluations or {})
+            classification = _ensemble_accuracy_value(evaluations)
         # Preserve the legacy training-history objective otherwise.
         else:
             classification = _history_value(history, [
@@ -1572,25 +2469,8 @@ def _objective_values(
             best="max"
         )
 
-    # Continual ensemble scores are currently test-only and cannot tune HPO.
-    if use_ensemble_accuracy:
-        raise ValueError(
-            "Continual ensemble HPO requires a validation-ensemble metric; "
-            "test ensemble accuracy is reserved for final evaluation."
-        )
-
-    validation_values = np.asarray(
-        history.get("task_val_accuracy", []),
-        dtype="float64",
-    )
-    # Never substitute cumulative test accuracy for missing validation feedback.
-    if validation_values.size == 0 or not np.any(np.isfinite(validation_values)):
-        raise ValueError(
-            "Continual HPO requires an explicit validation split with "
-            "task_val_accuracy."
-        )
-
-    return float(np.nanmean(validation_values))
+    # Continual studies use the validation accuracy matrix's aggregate metric.
+    return _continual_validation_value(evaluations, metrics[0])
 
 
 def run_hpo(
@@ -1607,15 +2487,28 @@ def run_hpo(
     fit_method: str = "fit", 
     fit_kwargs: Mapping[str, object] | None = None, 
     teacher_network: tf.keras.Model | None = None,
-    use_distillation: bool = False
+    use_distillation: bool = False,
+    objective_metrics: str | Sequence[str] | None = None,
+    objective_directions: str | Sequence[str] | None = None,
+    dtype_policy: str = "float32",
+    deterministic_ops: bool = False,
+    resume_from: str | Path | None = None,
+    snapshot_network_name: str = "raw",
+    class_num: int | None = None,
+    class_order: Sequence[int] | None = None,
+    task_groups: Sequence[Sequence[int]] | None = None,
+    task_size: int = 1,
+    class_order_mode: str = "fixed",
+    task_order_mode: str = "fixed",
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
-    ``joint`` studies are Pareto searches with generative loss minimized and
-    classification accuracy maximized. Other tasks have one objective. Each
-    trial saves all normal training artifacts plus its input/resolved config;
-    the dataset-specific study directory stores SQLite state and an
-    incrementally updated CSV.
+    By default, ``joint`` studies are Pareto searches with generative loss
+    minimized and classification accuracy maximized, while continual studies
+    maximize validation ``final_average_accuracy``. Explicit metric sequences
+    create matching multi-objective studies. Each trial saves all normal
+    training artifacts plus its input/resolved config; the dataset-specific
+    study directory stores SQLite state and an incrementally updated CSV.
 
     Args:
         task (str): ``generation``, ``joint``, ``classification``, or
@@ -1633,8 +2526,8 @@ def run_hpo(
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``.
         timeout (float | None): Optional study wall-time limit in seconds.
         use_ensemble_accuracy (bool): Use post-training ensemble accuracy for
-            joint diffusion-classifier studies. Continual ensemble HPO is
-            rejected until a validation-only ensemble metric is available.
+            joint or continual diffusion-classifier studies. Continual scoring
+            remains validation-only.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Options passed
             to ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher.
@@ -1651,10 +2544,28 @@ def run_hpo(
             selected method. Progressive use requires ``stage_tasks`` and
             accepts the named curriculum controls plus ordinary variadic
             Keras fit keys.
+        objective_metrics (str | Sequence[str] | None): Metric name or names.
+            Continual objectives are read only from the validation continual
+            metric mapping.
+        objective_directions (str | Sequence[str] | None): Matching
+            ``"minimize"``/``"maximize"`` directions. Names infer directions
+            when omitted.
+        dtype_policy (str): Keras numeric policy recorded for every trial.
+        deterministic_ops (bool): Request deterministic TensorFlow kernels.
+        resume_from (str | pathlib.Path | None): Existing HPO study root whose
+            ``study.db`` should be loaded. This does not denote a model file.
+        snapshot_network_name (str): ``"raw"`` or ``"ema"`` branch used for
+            previous-task continual distillation teachers.
+        class_num (int | None): Selected class count for continual studies.
+        class_order (Sequence[int] | None): Optional original-label order.
+        task_groups (Sequence[Sequence[int]] | None): Optional explicit tasks.
+        task_size (int): Classes per automatically constructed task.
+        class_order_mode (str): ``"fixed"`` or seeded ``"random"`` order.
+        task_order_mode (str): ``"fixed"`` or seeded ``"random"`` task order.
 
     Returns:
-        optuna.study.Study: Resumable completed/partial study. Joint studies
-        expose ``best_trials``; other studies expose ``best_trial``.
+        optuna.study.Study: Resumable completed/partial study. Multi-objective
+        studies expose ``best_trials``; scalar studies expose ``best_trial``.
 
     Raises:
         ImportError: If Optuna is unavailable.
@@ -1674,6 +2585,13 @@ def run_hpo(
     task = task.lower()
     model_name = model_name.lower()
     fit_kwargs = dict(fit_kwargs or {})
+    snapshot_network_name = str(snapshot_network_name).lower()
+    class_order_mode = str(class_order_mode).lower()
+    task_order_mode = str(task_order_mode).lower()
+    class_order = None if class_order is None else list(class_order)
+    task_groups = None if task_groups is None else [
+        list(group) for group in task_groups
+    ]
     effective_distillation = bool(
         use_distillation or teacher_network is not None
     )
@@ -1691,12 +2609,9 @@ def run_hpo(
             "use_ensemble_accuracy requires a joint "
             "or continual diffusion classifier study."
         )
-    # Continual ensemble reports currently evaluate test data, never validation.
-    if use_ensemble_accuracy and task == "continual":
-        raise ValueError(
-            "Continual ensemble HPO requires a validation-ensemble metric; "
-            "test ensemble accuracy is reserved for final evaluation."
-        )
+    # Reject teacher snapshot selectors unsupported by diffusion wrappers.
+    if snapshot_network_name not in ("raw", "ema"):
+        raise ValueError("snapshot_network_name must be 'raw' or 'ema'.")
     # Restrict runtime teachers to supported distillation study families.
     if teacher_network is not None and not (
         task in ("joint", "continual")
@@ -1719,21 +2634,60 @@ def run_hpo(
     if n_trials <= 0 or epochs <= 0:
         raise ValueError("n_trials and epochs must be positive.")
 
-    root = Path(results_path)
-    study_root = root / task / model_name / dataset_name.lower()
-    # Keep ensemble-feedback trials separate from legacy accuracy studies.
-    if use_ensemble_accuracy:
-        study_root /= "ensemble_accuracy"
-    # Isolate the conditional distillation search space from ordinary trials.
-    if effective_distillation:
-        study_root /= "distillation"
-    # Keep progressive trials separate from resumable ordinary-fit studies.
-    if fit_method == "fit_progressively":
-        study_root /= "fit_progressively"
+    available_class_num, _, _ = get_dataset_spec(dataset_name)
+    schedule_requested = class_num is not None or class_order is not None \
+        or task_groups is not None or task_size != 1 \
+        or class_order_mode != "fixed" or task_order_mode != "fixed"
+    # Reject schedule switches that a non-continual objective would ignore.
+    if task != "continual" and schedule_requested:
+        raise ValueError("Continual schedule options require task='continual'.")
+    # Validate every continual schedule before creating study metadata/storage.
+    if task == "continual":
+        resolve_continual_schedule(
+            class_num,
+            class_order,
+            task_groups,
+            available_class_num=available_class_num,
+            task_size=task_size,
+            class_order_mode=class_order_mode,
+            task_order_mode=task_order_mode,
+            seed=seed,
+        )
 
-    configs_path = study_root / "configs"
-    configs_path.mkdir(parents=True, exist_ok=True)
-    storage_path = (study_root / "study.db").resolve().as_posix()
+    normalized_metrics, normalized_directions = _normalize_objective_spec(
+        task,
+        objective_metrics,
+        objective_directions,
+        use_ensemble_accuracy,
+    )
+
+    root = Path(results_path)
+    # Reuse the explicitly selected persistent study directory when resuming.
+    if resume_from is not None:
+        study_root = Path(resume_from)
+        # Require the supplied study root to exist before any writes.
+        if not study_root.is_dir():
+            raise FileNotFoundError(
+                "HPO resume study root does not exist: " + str(study_root)
+            )
+        # Require existing SQLite state rather than starting a misleading study.
+        if not (study_root / "study.db").is_file():
+            raise FileNotFoundError(
+                "HPO resume study root has no study.db: " + str(study_root)
+            )
+    # Construct the established study hierarchy for a new study.
+    else:
+        study_root = root / task / model_name / dataset_name.lower()
+        # Keep ensemble-feedback trials separate from legacy accuracy studies.
+        if use_ensemble_accuracy:
+            study_root /= "ensemble_accuracy"
+        # Isolate the conditional distillation search space from ordinary trials.
+        if effective_distillation:
+            study_root /= "distillation"
+        # Keep progressive trials separate from resumable ordinary-fit studies.
+        if fit_method == "fit_progressively":
+            study_root /= "fit_progressively"
+
     study_name = f"{task}-{model_name}-{dataset_name.lower()}" + (
         "-ensemble-accuracy" if use_ensemble_accuracy else ""
     )
@@ -1743,54 +2697,208 @@ def run_hpo(
     # Give progressive studies an independent SQLite study identity.
     if fit_method == "fit_progressively":
         study_name += "-fit-progressively"
+
+    study_spec = _make_study_spec(
+        study_name=study_name,
+        task=task,
+        model_name=model_name,
+        dataset_name=dataset_name,
+        epochs=epochs,
+        seed=seed,
+        use_ensemble_accuracy=use_ensemble_accuracy,
+        ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
+        fit_method=fit_method,
+        fit_kwargs=fit_kwargs,
+        teacher_network=teacher_network,
+        effective_distillation=effective_distillation,
+        objective_metrics=normalized_metrics,
+        objective_directions=normalized_directions,
+        dtype_policy=dtype_policy,
+        deterministic_ops=deterministic_ops,
+        snapshot_network_name=snapshot_network_name,
+        class_num=class_num,
+        class_order=class_order,
+        task_groups=task_groups,
+        task_size=task_size,
+        class_order_mode=class_order_mode,
+        task_order_mode=task_order_mode,
+    )
+    # Validate identity from a sidecar before touching Optuna storage. This
+    # prevents a mismatched resume request from creating a second study name in
+    # the supplied SQLite database.
+    spec_path = study_root / _STUDY_SPEC_FILE
+    # Require a matching sidecar before loading an explicitly resumed study.
+    if resume_from is not None:
+        persisted_file_spec = _read_study_spec(study_root)
+        # Reject any changed scientific option before accessing SQLite.
+        if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
+            raise ValueError(
+                "Requested HPO study specification differs from resume_from."
+            )
+    # Validate an existing sidecar when reopening by the ordinary output path.
+    elif spec_path.is_file():
+        persisted_file_spec = _read_study_spec(study_root)
+        # Keep accidental path reuse from mixing incompatible experiments.
+        if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
+            raise ValueError(
+                "Existing HPO study specification differs from this request."
+            )
+    # Seal a new study identity before creating its SQLite entry.
+    else:
+        _write_study_spec(study_root, study_spec)
+
+    configs_path = study_root / "configs"
+    configs_path.mkdir(parents=True, exist_ok=True)
+    storage_path = (study_root / "study.db").resolve().as_posix()
+    sampler = optuna.samplers.TPESampler(seed=seed)
     create_kwargs = {
         "study_name": study_name, 
         "storage": "sqlite:///" + storage_path, 
-        "sampler": optuna.samplers.TPESampler(seed=seed), 
+        "sampler": sampler,
         "load_if_exists": True
     }
 
-    # Configure two optimization directions for joint studies.
-    if task == "joint":
-        create_kwargs["directions"] = ["minimize", "maximize"]
-    # Configure the single direction used by other study types.
+    # Optuna uses a distinct argument for scalar and multi-objective studies.
+    if len(normalized_directions) == 1:
+        create_kwargs["direction"] = normalized_directions[0]
+    # Configure one direction per dimension for a Pareto study.
     else:
-        create_kwargs["direction"] = (
-            "minimize" if task == "generation" else "maximize"
+        create_kwargs["directions"] = list(normalized_directions)
+
+    # Load-only semantics prevent resume from creating a missing study name.
+    if resume_from is not None:
+        # load_study cannot create a missing identity, unlike
+        # create_study(load_if_exists=True).
+        study = optuna.load_study(
+            study_name=study_name,
+            storage=create_kwargs["storage"],
+            sampler=sampler,
+        )
+    # Create or intentionally reopen the normal non-resume study hierarchy.
+    else:
+        study = optuna.create_study(**create_kwargs)
+
+    persisted_attr_spec = study.user_attrs.get(_STUDY_SPEC_ATTR)
+    existing_trials = tuple(study.get_trials(deepcopy=False))
+    # Initialize metadata only for a truly empty newly created study.
+    if persisted_attr_spec is None:
+        # Refuse to bless pre-existing trials whose identity was never sealed.
+        if resume_from is not None or existing_trials:
+            raise ValueError(
+                "Existing HPO study has no validated study_spec user attribute."
+            )
+        study.set_user_attr(_STUDY_SPEC_ATTR, study_spec)
+        study.set_user_attr(
+            _STUDY_SPEC_FINGERPRINT_ATTR,
+            fingerprint_state(study_spec),
+        )
+    # Authenticate both persisted user-attribute representations.
+    elif fingerprint_state(persisted_attr_spec) != fingerprint_state(study_spec) \
+    or study.user_attrs.get(_STUDY_SPEC_FINGERPRINT_ATTR) \
+    != fingerprint_state(study_spec):
+        raise ValueError(
+            "Persisted Optuna study specification differs from this request."
         )
 
-    study = optuna.create_study(**create_kwargs)
+    # Restore the post-suggestion sampler cursor before queuing/optimizing.
+    if resume_from is not None:
+        sampler_state = study.user_attrs.get(_SAMPLER_RNG_STATE_ATTR)
+        # A nonempty study must have persisted its exact sampler position.
+        if sampler_state is None:
+            # Fail instead of silently replaying TPE draws from the initial seed.
+            if existing_trials:
+                raise ValueError(
+                    "Existing HPO study has trials but no recoverable TPE RNG state."
+                )
+        # Apply a complete two-stream state when the study contains one.
+        else:
+            _restore_sampler_rng_state(sampler, sampler_state)
+    # Convert recoverable abandoned trials into one-time queued retries.
+    if resume_from is not None:
+        _enqueue_recovery_trials(study, study_root)
 
 
-    def objective(trial: Any) -> float | tuple[float, float]:
+    def objective(trial: Any) -> float | tuple[float, ...]:
         """Execute and score one Optuna trial.
 
         Args:
             trial (optuna.trial.Trial): Active trial.
 
         Returns:
-            float | tuple[float, float]: Study objective value or joint pair.
+            float | tuple[float, ...]: Scalar or multi-objective value.
         """
 
         tf.keras.backend.clear_session()
         gc.collect()
 
+        # Keep the data split and initialization seed fixed across candidates;
+        # Optuna's independently seeded sampler supplies the search variation.
+        trial_seed = seed
         config = _build_trial_config(
             trial, 
             task, 
             model_name, 
             dataset_name, 
             epochs, 
-            seed + trial.number, 
+            trial_seed,
             results_path=root, 
             use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
             use_distillation=effective_distillation,
             fit_method=fit_method, 
-            fit_kwargs=fit_kwargs
+            fit_kwargs=fit_kwargs,
+            objective_metrics=objective_metrics,
+            objective_directions=objective_directions,
+            dtype_policy=dtype_policy,
+            deterministic_ops=deterministic_ops,
+            snapshot_network_name=snapshot_network_name,
+            class_num=class_num,
+            class_order=class_order,
+            task_groups=task_groups,
+            task_size=task_size,
+            class_order_mode=class_order_mode,
+            task_order_mode=task_order_mode,
+        )
+        # All trial suggestions have now consumed their sampler draws. Persist
+        # both TPE streams before any training/file work so a killed trial can
+        # be retried without rewinding subsequent suggestions.
+        study.set_user_attr(
+            _SAMPLER_RNG_STATE_ATTR,
+            _capture_sampler_rng_state(sampler),
         )
 
         input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
+        checkpoint_dir = _trial_checkpoint_dir(study_root, trial)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Keep every trial's artifacts beneath the selected (possibly resumed)
+        # study root rather than recomputing a second hierarchy from results_path.
+        config.training.results_path = str(study_root / "runs")
+        config.hpo.update({
+            "study_root": str(study_root),
+            "checkpoint_dir": str(checkpoint_dir),
+            "input_config_path": str(input_config_path),
+        })
+        recovery_original = trial.user_attrs.get("resume_original_trial_number")
+        # Retain the canonical source identity in retried trial configurations.
+        if recovery_original is not None:
+            config.hpo["resume_original_trial_number"] = int(recovery_original)
+        # Keep resumed-study TensorBoard events under the explicit study root.
+        if resume_from is not None:
+            config.training.tensorboard_path = str(study_root / "tensorboard")
+        # Install task-boundary recovery only for continual training.
+        if task == "continual":
+            config.continually_learn.checkpoint_dir = str(checkpoint_dir)
+            # Resume only when a committed task boundary already exists. Passing
+            # a newly created empty directory would turn a fresh trial into an
+            # invalid recovery request.
+            if _has_committed_task_checkpoint(checkpoint_dir):
+                config.continually_learn.resume_from = str(checkpoint_dir)
+
+        # Publish recovery metadata before training so interrupted trials remain
+        # discoverable from the persistent Optuna database.
+        trial.set_user_attr("seed", trial_seed)
+        trial.set_user_attr("checkpoint_dir", str(checkpoint_dir))
+        trial.set_user_attr("config_path", str(input_config_path))
         save_config(config, input_config_path)
         config = load_config(input_config_path)
 
@@ -1800,28 +2908,29 @@ def run_hpo(
             model_name, 
             result["history"], 
             evaluations=result["evaluations"], 
-            use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"]
+            use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"],
+            objective_metrics=objective_metrics,
+            objective_directions=objective_directions,
         )
         values_list = list(values) if isinstance(values, tuple) else [values]
         config.hpo["objectives"] = values_list
 
         resolved_path = Path(result["results_path"]) / "config.yaml"
         save_config(config, resolved_path)
-        pd.DataFrame([{
-            "name": "generation_loss" if task == "joint" else (
-                    "ensemble_accuracy" if use_ensemble_accuracy else "objective"
-            ),
-            "value": values_list[0], 
-        }, *([{
-            "name": "ensemble_accuracy" if use_ensemble_accuracy \
-                    else "classification_accuracy",
-            "value": values_list[1], 
-        }] if task == "joint" else [])]).to_csv(
+        pd.DataFrame([
+            {"name": name, "direction": direction, "value": value}
+            for name, direction, value in zip(
+                normalized_metrics,
+                normalized_directions,
+                values_list,
+            )
+        ]).to_csv(
             Path(result["results_path"]) / "objectives.csv", 
             index=False
         )
         trial.set_user_attr("results_path", str(result["results_path"]))
         trial.set_user_attr("config_path", str(resolved_path))
+        trial.set_user_attr("resolved_config_path", str(resolved_path))
 
         return values
 

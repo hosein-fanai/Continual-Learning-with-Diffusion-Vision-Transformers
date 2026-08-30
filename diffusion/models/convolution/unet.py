@@ -10,6 +10,7 @@ from copy import deepcopy
 from . import UNetFullOutput, UNetInputs
 
 from common.argument_saver import ArgumentSaverModel
+from common.runtime import derive_seed
 
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
 from diffusion.layers.feature_handler import FeatureHandler
@@ -120,6 +121,7 @@ class UNet(ArgumentSaverModel):
         }, 
         extra_depth_specs: Sequence[object] = (), 
         name_prefix: str = "", 
+        seed: int | None = None,
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -161,6 +163,8 @@ class UNet(ArgumentSaverModel):
                 ``"both"``; ``distil_type`` is ``"hard"`` or ``"soft"``.
             extra_depth_specs (Sequence[object]): Serialized progressive stages.
             name_prefix (str): Prefix for generated Keras layer names.
+            seed (int | None): Optional raw-network seed used to derive
+                independent spatial-dropout streams.
             build (bool): Build variables immediately when true.
             **kwargs (object): Standard ``tf.keras.Model`` options.
 
@@ -181,6 +185,8 @@ class UNet(ArgumentSaverModel):
         cls_token_regularizer_kwargs.setdefault("distil_type", "hard")
         extra_depth_specs = list(extra_depth_specs)
 
+        derive_seed(seed, "unet", "validation")
+        seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
         self._check_arguments(
             num_classes=num_classes, 
@@ -514,7 +520,7 @@ class UNet(ArgumentSaverModel):
         name: str, 
         spatial: bool, 
     ) -> models.Model:
-        """Create an auxiliary float32 class-probability head.
+        """Create an auxiliary head in the policy's stable variable dtype.
 
         Args:
             name (str): Keras model/layer name prefix.
@@ -528,7 +534,10 @@ class UNet(ArgumentSaverModel):
         # Pool spatial feature maps before the regularizer classifier.
         if spatial:
             regularizer_layers.append(
-                layers.GlobalAveragePooling2D(name=f"{name}/pool")
+                layers.GlobalAveragePooling2D(
+                    dtype=self.dtype_policy,
+                    name=f"{name}/pool",
+                )
             )
 
         return models.Sequential(
@@ -537,7 +546,7 @@ class UNet(ArgumentSaverModel):
                 layers.Dense(
                     self.num_classes,
                     activation="softmax",
-                    dtype="float32",
+                    dtype=self.dtype_policy.variable_dtype,
                     name=f"{name}/classes",
                 ),
             ],
@@ -653,6 +662,7 @@ class UNet(ArgumentSaverModel):
             activation_func=self.activation_func, 
             use_batch_norm=self.use_batch_norm, 
             dropout_rate=self.dropout_rate, 
+            seed=derive_seed(self.seed, "residual_stack", name),
             name=name, 
             dtype=self.dtype_policy, 
         )
@@ -732,6 +742,7 @@ class UNet(ArgumentSaverModel):
                         latent_dim_ratio=float(
                             self.reshaper_kwargs.get("latent_dim_ratio", 1.0)
                         ), 
+                        seed=derive_seed(self.seed, "reshaper", flatten_name),
                         name=flatten_name, 
                         dtype=self.dtype_policy, 
                     )

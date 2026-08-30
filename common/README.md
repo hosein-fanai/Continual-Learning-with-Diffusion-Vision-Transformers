@@ -134,10 +134,22 @@ optional ensemble accuracy, and generates final images or GIFs. Saving dynamic
 diffusion weights also saves the class mapping and resolved topology required
 to reconstruct them.
 
+`continually_learn.seed` (falling back to `training.seed`) is the master seed
+for a continual run. It is derived for data, schedules, models and stochastic
+layers, task shuffles, replay, training, sampling, and ensemble noising.
+`training.dtype_policy` is installed before construction and propagated through
+models, wrappers, schedules, constants, optimizers, and mixed-precision loss
+scaling. Directly supplied prebuilt repository models must already match the
+requested seed and dtype policy because their initialization cannot be changed
+retroactively.
+
 ## Continual learning
 
-`continually_learn` introduces classes from two through the requested class
-count. It supports:
+`continually_learn` begins with the first scheduled task. The default
+`task_size=1` starts with one class and adds one class at a time; larger values
+create multi-class tasks. Classes and tasks can be kept fixed, shuffled
+independently with the master seed, or specified exactly with `class_order` and
+`task_groups`. It supports:
 
 - no replay;
 - a bounded `ReplayBuffer`;
@@ -148,12 +160,13 @@ count. It supports:
 
 For a diffusion classifier with an active distillation token and positive
 teacher loss, set `continually_learn.use_distillation=True`. Task one may start
-teacher-free; each following task snapshots the completed raw student before
-its class head expands and uses that frozen snapshot as the teacher. An
-explicit `teacher_network` is therefore optional and, when supplied, applies to
-task one only. V1 uses this lifecycle in `fit` and `fit_progressively`; V2 uses
-it in the classifier phase after either its ordinary or progressive generator
-phase.
+teacher-free; each following task snapshots the completed
+`snapshot_network_name` student (`"raw"` or `"ema"`) before its class head
+expands and uses that frozen snapshot as the teacher. EMA selection requires an
+EMA-enabled wrapper. An explicit `teacher_network` is optional and, when
+supplied, applies to task one only. V1 uses this lifecycle in `fit` and
+`fit_progressively`; V2 uses it in the classifier phase after either its
+ordinary or progressive generator phase.
 
 Configured usage is intentionally small:
 
@@ -179,6 +192,27 @@ use `help(continually_learn)` for that compatibility API. Fixed-buffer and
 generative replay are mutually exclusive. Set `return_details=True` to receive
 histories, reports, final models, and optional ensemble accuracies.
 
+For matched-compute experiments, the optional positive
+`optimizer_steps_per_epoch` value repeats the selected task pool and fixes the
+number of updates in every active phase of each epoch. Its default `None`
+retains ordinary finite-dataset fitting. Actual per-optimizer update deltas are
+recorded in `task_resource_metrics`. The named `reservoir_er` baseline offers
+all exposed current rows to Algorithm R; manually selecting
+`buffer_kwargs.strategy="reservoir"` retains `insert_num` as a sampled-stream
+ablation.
+
+Task checkpointing is opt-in with `save_task_checkpoints=True`. Each atomic committed checkpoint
+contains raw/EMA, classifier/replay and teacher state, optimizer slots, replay
+contents and RNG, global/local RNG state, the task cursor, resolved schedule,
+and metric histories. `resume_from` accepts either the checkpoint root or one
+committed task directory; an interrupted task is rerun from the preceding
+boundary. Reload the immutable `input_config.yaml`, not the final artifact-
+resolved `config.yaml`, when resuming. With CSV reporting enabled, the run writes long-form epoch/task
+metrics, accuracy matrices, the resolved schedule, and summaries beside its
+other artifacts. TensorBoard uses task/class/phase namespaces. Setting
+`use_ensemble_accuracy=True` makes the ensemble accuracy matrix, rather than
+the ordinary matrix, authoritative for final continual metrics.
+
 ## Hyperparameter optimization
 
 `run_hpo` supports `generation`, `joint`, `classification`, and `continual`
@@ -199,12 +233,21 @@ study = run_hpo(
 
 Each trial creates a normal `Config` and runs the same `main` pipeline. Study
 state is stored in SQLite, trial summaries in CSV, and resolved run artifacts
-under the selected results directory. Joint studies use generation loss and
-classification accuracy as separate objectives. Progressive, ensemble, and
-teacher-distillation studies use separate resumable study paths. For continual
-diffusion classifiers, `run_hpo(..., use_distillation=True)` enables the token
-and loss search without requiring a live teacher; each trial creates its later
-teachers from its own completed task snapshots.
+under the selected results directory. Joint studies default to generation loss
+and classification accuracy as separate objectives. `objective_metrics` and
+`objective_directions` can instead define any supported scalar objective tuple;
+continual objectives are validation-only and default to maximizing
+`final_average_accuracy`. Continual TensorBoard output includes per-epoch
+generator and classifier/distillation metrics under task/class/phase paths plus
+final validation/test continual summaries.
+
+Progressive, ensemble, and teacher-distillation studies use separate resumable
+study paths. Pass an existing study directory as `resume_from` to restore the
+validated study specification, SQLite/TPE state, and committed task checkpoints
+inside interrupted continual trials. For continual diffusion classifiers,
+`run_hpo(..., use_distillation=True)` enables the token and loss search without
+requiring a live teacher; each trial creates later teachers from its selected
+raw/EMA completed-task snapshots.
 
 ## Supporting modules
 

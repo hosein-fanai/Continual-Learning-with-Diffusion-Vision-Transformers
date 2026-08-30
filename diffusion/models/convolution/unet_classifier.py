@@ -7,6 +7,8 @@ from copy import deepcopy
 
 from collections.abc import Mapping
 
+from common.runtime import derive_seed
+
 from diffusion.layers.convolution import LayerDict
 from diffusion.layers.convolution import ResidualConvStack
 from diffusion.layers.convolution import VariationalReshaper
@@ -21,7 +23,8 @@ class UNetClassifier(UNet):
     The noise branch is the inherited :class:`UNet`. The classifier reads one
     or more saved U-Net stage features, aligns their spatial sizes, processes them
     with residual convolution stacks, globally pools the final map, and emits
-    float32 class probabilities. Its public attributes and return structures
+    probabilities in the policy's stable variable dtype. Its public attributes
+    and return structures
     match the contracts consumed by ``DiffusionClassifier`` and
     ``DiffusionClassifierV2``. Optional distillation uses a parallel head over
     the same pooled convolutional feature.
@@ -150,12 +153,12 @@ class UNetClassifier(UNet):
 
         self.classifier_feature_extractor = (
             layers.GlobalAveragePooling2D(
-                dtype=tf.float32,
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}classifier_feature_extractor",
             )
             if self.force_global_avg_pooling
             else layers.GlobalMaxPooling2D(
-                dtype=tf.float32,
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}classifier_feature_extractor",
             )
         )
@@ -263,7 +266,7 @@ class UNetClassifier(UNet):
             raise ValueError("Classifier latent_dim_ratio must be positive.")
 
     def _create_clf_regularizer(self, suffix: str) -> layers.Layer:
-        """Create a float32 auxiliary classifier head.
+        """Create an auxiliary classifier head in the stable policy dtype.
 
         Args:
             suffix (str): Suffix appended to the model name prefix.
@@ -275,7 +278,7 @@ class UNetClassifier(UNet):
         return layers.Dense(
             self.num_classes, 
             activation="softmax", 
-            dtype=tf.float32, 
+            dtype=self.dtype_policy.variable_dtype,
             name=f"{self.name_prefix}{suffix}", 
         )
 
@@ -298,7 +301,7 @@ class UNetClassifier(UNet):
         terminal[self.PROJECTOR] = layers.Conv2D(
             self.clf_dim, 
             kernel_size=1, 
-            dtype=tf.float32, 
+            dtype=self.dtype_policy,
             name=f"{self.name_prefix}clf_terminal_feature_projector",
         )
         # Add a variational classifier bottleneck when KL output is enabled.
@@ -310,7 +313,12 @@ class UNetClassifier(UNet):
                 latent_dim_ratio=self.clf_reshaper_kwargs.get(
                     "latent_dim_ratio", 1.0, 
                 ), 
-                dtype=tf.float32, 
+                seed=derive_seed(
+                    self.seed,
+                    "classifier_reshaper",
+                    "terminal",
+                ),
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}clf_terminal_reshaper", 
             )
         self.clf_layers_dicts.append(terminal)
@@ -332,6 +340,12 @@ class UNetClassifier(UNet):
             condition_dim=getattr(self, "condition_dim", None), 
             activation_func=self.activation_func, 
             use_batch_norm=self.use_batch_norm, 
+            dtype=self.dtype_policy,
+            seed=derive_seed(
+                self.seed,
+                "classifier_residual_stack",
+                depth_id,
+            ),
             name=f"{self.name_prefix}clf_depth_{depth_id}_residual_conv_stack", 
         )
         # Attach an auxiliary regularizer at selected classifier depths.
@@ -360,20 +374,25 @@ class UNetClassifier(UNet):
             classifier.add(layers.Dense(
                 max(1, int(self.clf_dim * self.classifier_mlp_ratio)),
                 activation=self.classifier_mlp_activation_func,
-                dtype=tf.float32,
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}{name}_first_layer",
             ))
         # Add classifier dropout only for a nonzero rate.
         if self.dropout_rate > 0.0:
             classifier.add(layers.Dropout(
                 self.dropout_rate,
-                dtype=tf.float32,
+                seed=derive_seed(
+                    self.seed,
+                    "classifier_dropout",
+                    name,
+                ),
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}{name}_dropout",
             ))
         classifier.add(layers.Dense(
             self.num_classes,
             activation="softmax",
-            dtype=tf.float32,
+            dtype=self.dtype_policy.variable_dtype,
             name=f"{self.name_prefix}{name}_final_layer",
         ))
 
@@ -573,7 +592,8 @@ class UNetClassifier(UNet):
             training (bool | None): Keras training mode.
 
         Returns:
-            tf.Tensor | None: Float32 class probabilities or None.
+            tf.Tensor | None: Class probabilities in the policy's stable
+            variable dtype, or None.
         """
 
         # Skip auxiliary prediction when this depth has no regularizer.
@@ -587,7 +607,7 @@ class UNetClassifier(UNet):
 
         return tf.cast(
             regularizer(pooled, training=training), 
-            tf.float32
+            tf.as_dtype(self.dtype_policy.variable_dtype),
         )
 
     def compute_class(
@@ -682,7 +702,7 @@ class UNetClassifier(UNet):
                 x, 
                 training=training
             ), 
-            tf.float32
+            tf.as_dtype(self.dtype_policy.variable_dtype),
         )
 
         # Append the independent parallel head only in distillation mode.
@@ -692,7 +712,7 @@ class UNetClassifier(UNet):
                     x,
                     training=training
                 ),
-                tf.float32
+                tf.as_dtype(self.dtype_policy.variable_dtype),
             )
 
             return (

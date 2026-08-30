@@ -14,6 +14,7 @@ from typing import Literal, get_args
 from . import CondType, TokenType, IdsType, IdsDictType
 
 from common.argument_saver import ArgumentSaverModel
+from common.runtime import derive_seed
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -161,6 +162,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         final_activation_func: str = "linear", 
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
+        seed: int | None = None,
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -346,6 +348,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             use_unpatchify (bool): Return image-shaped output when true; when
                 false return final tokens of shape ``[B, tokens, features]``.
             name_prefix (str): Prefix inserted in all generated layer names.
+            seed (int | None): Optional raw-network seed used to derive
+                independent token-initializer and stochastic-depth streams.
             build (bool): Build symbolic inputs and variables immediately.
             **kwargs (object): Standard ``tf.keras.Model`` options, principally ``name``,
                 ``trainable``, ``dtype``, and ``dynamic``.
@@ -359,6 +363,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._save_init_args(locals())
         self._handle_all_ids()
         self.set_current_resolution()
+        derive_seed(self.seed, "diffusion_transformer", "validation")
+        self.seed = None if seed is None else int(self.seed)
 
         self.dynamic_num_classes = self.num_classes is None
         self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
@@ -1303,6 +1309,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             patch_size=self.patch_size, 
             patchify_with_cnn=self.patchify_with_cnn, 
             shift_right_token=self.shift_inputs, 
+            seed=derive_seed(self.seed, "patch_embedder"),
             name=f"{self.name_prefix}depth_0_patch_embedder"
         )
 
@@ -1364,6 +1371,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             input_as_token=token_type in (""
                 "time_label", "time", "label"
             ), 
+            seed=derive_seed(self.seed, "single_token", name or "unnamed"),
             name=name
         ) if token_type is not None else None
 
@@ -1501,6 +1509,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "ln_no_adaptation": ln_no_adaptation, 
             "drop_prob": drop_prob, 
             "drop_per_sample": drop_per_sample, 
+            "seed": derive_seed(
+                self.seed,
+                "transformer_block",
+                i,
+                name_prefix,
+            ),
             "name": name_prefix
         }
 
@@ -1709,7 +1723,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         x_shape = tf.shape(x)
         input_grid_size = tf.cast(
-            tf.sqrt(tf.cast(x_shape[1], dtype=tf.float32)),
+            tf.sqrt(tf.cast(
+                x_shape[1], dtype=self.dtype_policy.variable_dtype
+            )),
             dtype=tf.int32
         ) if input_grid_size is None else input_grid_size
 
@@ -1822,11 +1838,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         reshaper_layer = layers.Reshape(
             target_shape, 
+            dtype=self.dtype_policy,
             name=name
         )
 
         inputs = layers.Input(
-            shape=(None, dim) if reshape_type == "flatten" else source_shape
+            shape=(None, dim) if reshape_type == "flatten" else source_shape,
+            dtype=self.compute_dtype,
         )
 
 
@@ -1872,11 +1890,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         x = layers.Lambda(
             resize_to_base,
+            dtype=self.dtype_policy,
             name=name+"/resize_to_base"
         )(inputs) if reshape_type == "flatten" else inputs
         x = reshaper_layer(x)
         x = layers.Lambda(
             resize_from_base,
+            dtype=self.dtype_policy,
             name=name+"/resize_from_base"
         )(x) if reshape_type == "unflatten" else x
 
@@ -1889,17 +1909,28 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             z_mean = layers.Dense(
                 latent_dim, 
+                dtype=self.dtype_policy,
                 name=name+"/z_mean"
             )(x)
             z_log_var = layers.Dense(
                 latent_dim, 
+                dtype=self.dtype_policy,
                 name=name+"/z_log_var"
             )(x)
             z = VariationalAutoencoder.compute_z(
-                z_mean, z_log_var
+                z_mean,
+                z_log_var,
+                seed=derive_seed(
+                    self.seed,
+                    "reshaper",
+                    name,
+                    "reparameterization",
+                ),
+                dtype=self.dtype_policy.variable_dtype,
             )
             z = layers.Dense(
                 target_shape[-1], 
+                dtype=self.dtype_policy,
                 name=name+"/z"
             )(z) if latent_dim_ratio != 1 else z
 
@@ -1962,6 +1993,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             return layers.Dense(
                 self.num_classes,
                 activation="softmax",
+                dtype=self.dtype_policy.variable_dtype,
                 name=name
             )
 
@@ -1969,11 +2001,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers.Dense(
                 max(1, int(input_dim * mlp_ratio)), 
                 activation=activation_function, 
+                dtype=self.dtype_policy,
                 name=f"{name}/first_layer"
             ), 
             layers.Dense(
                 self.num_classes, 
                 activation="softmax", 
+                dtype=self.dtype_policy.variable_dtype,
                 name=f"{name}/final_layer"
             )
         ], name=name)
@@ -2171,10 +2205,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             token_inputs = layers.Input(
                 shape=(None, dim), # (grid_size * grid_size, dim)
+                dtype=self.compute_dtype,
                 name=name+"token_inputs"
             )
             cond_inputs = layers.Input(
-                shape=(self.cond_dim,), 
+                shape=(self.cond_dim,),
+                dtype=self.compute_dtype,
                 name=name+"cond_inputs"
             )
 
@@ -2196,7 +2232,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             batch_size = x_shape[0]
             grid_size = tf.cast(
                 tf.sqrt(
-                    tf.cast(x_shape[1], tf.float32)
+                    tf.cast(x_shape[1], self.dtype_policy.variable_dtype)
                 ), 
                 tf.int32
             )
@@ -2263,8 +2299,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             list[tf.TensorShape]: Shapes for image ``[None, H, H, C]``, scalar
             timestep ``[None]``, and scalar label ``[None]`` inputs.  The
-            created image dtype is ``tf.float32``, timestep ``tf.int32``, and
-            label ``tf.uint8``.
+            image dtype follows the policy compute dtype; timestep is
+            ``tf.int32`` and label is ``tf.uint8``.
         """
 
         noisy_images = layers.Input(
@@ -2273,7 +2309,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 self._current_resolution, 
                 self.channels
             ), 
-            dtype=tf.float32, 
+            dtype=self.compute_dtype,
             name="noisy_images"
         )
         ts = layers.Input(

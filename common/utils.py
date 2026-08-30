@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import json
 
 import numpy as np
 
 from collections.abc import Iterable, Mapping, Sequence
+from numbers import Integral, Real
+from pathlib import Path
 
 
 models_path = "./models"
@@ -45,7 +48,9 @@ def init() -> None:
 def extract_features(
     dataset_list: Iterable[object], 
     batch_size: int = 128, 
-    file_name: str | os.PathLike[str] | None = None
+    file_name: str | os.PathLike[str] | None = None,
+    split_seed: int = 42,
+    validation_ratio: float = 0.2,
 ) -> list[np.ndarray]:
     """Extract 2,048-wide Xception features for multiple sample arrays.
 
@@ -57,6 +62,11 @@ def extract_features(
         file_name (str | os.PathLike | None): Optional base path without
             ``.npy``.  When supplied, an object array containing all feature
             arrays is saved via :func:`save_samples`.
+        split_seed (int): Seed that produced the label-aligned train/validation
+            feature split. It is saved beside three-array archives so loading
+            can reconstruct the identical label ordering.
+        validation_ratio (float): Fraction assigned to the saved validation
+            feature array. It is stored with ``split_seed``.
 
     Returns:
         list[numpy.ndarray]: One floating feature array per input dataset,
@@ -85,8 +95,138 @@ def extract_features(
     if file_name is not None:
         save_samples(np.array(features_list, dtype="object"), 
                     file_name, ".npy")
+        # The project feature loader consumes exactly train/validation/test
+        # archives. Record their split contract without changing the legacy
+        # NPY payload format.
+        if len(features_list) == 3:
+            save_feature_split_metadata(
+                file_name,
+                split_seed=split_seed,
+                validation_ratio=validation_ratio,
+            )
 
     return features_list
+
+
+def _normalize_feature_split_metadata(
+    split_seed: int,
+    validation_ratio: float,
+) -> tuple[int, float]:
+    """Validate the reproducible label split stored with feature archives.
+
+    Args:
+        split_seed (int): Non-boolean NumPy-compatible random seed.
+        validation_ratio (float): Fraction assigned to validation features.
+
+    Returns:
+        tuple[int, float]: Normalized Python seed and validation fraction.
+
+    Raises:
+        TypeError: If either value has an unsupported type.
+        ValueError: If the seed or ratio lies outside its valid interval.
+    """
+
+    # Require an integral seed shared by NumPy and scikit-learn.
+    if isinstance(split_seed, bool) or not isinstance(split_seed, Integral):
+        raise TypeError("split_seed must be a non-boolean integer.")
+    split_seed = int(split_seed)
+    # Restrict the seed to the unsigned interval NumPy accepts.
+    if not 0 <= split_seed < 2 ** 32:
+        raise ValueError("split_seed must be in [0, 2**32).")
+    # Require a real validation fraction rather than a truthy flag.
+    if isinstance(validation_ratio, bool) \
+    or not isinstance(validation_ratio, Real):
+        raise TypeError("validation_ratio must be a non-boolean real number.")
+    validation_ratio = float(validation_ratio)
+    # Both saved training and validation partitions must remain nonempty.
+    if not np.isfinite(validation_ratio) \
+    or not 0. < validation_ratio < 1.:
+        raise ValueError("validation_ratio must lie strictly between 0 and 1.")
+
+    return split_seed, validation_ratio
+
+
+def save_feature_split_metadata(
+    path: str | os.PathLike[str],
+    split_seed: int,
+    validation_ratio: float = 0.2,
+) -> Path:
+    """Save the label-split contract beside a train/val/test feature archive.
+
+    Args:
+        path (str | os.PathLike): Feature-archive base path without ``.npy``.
+        split_seed (int): Seed used for the stratified train/validation split.
+        validation_ratio (float): Fraction assigned to validation features.
+
+    Returns:
+        pathlib.Path: Written ``.metadata.json`` sidecar path.
+    """
+
+    split_seed, validation_ratio = _normalize_feature_split_metadata(
+        split_seed,
+        validation_ratio,
+    )
+    metadata_path = Path(os.fspath(path) + ".metadata.json")
+    payload = {
+        "format_version": 1,
+        "label_split": {
+            "random_state": split_seed,
+            "validation_ratio": validation_ratio,
+        },
+    }
+    with metadata_path.open("w", encoding="utf-8") as metadata_file:
+        json.dump(payload, metadata_file, indent=2, sort_keys=True)
+        metadata_file.write("\n")
+
+    return metadata_path
+
+
+def load_feature_split_metadata(
+    path: str | os.PathLike[str],
+) -> tuple[int, float] | None:
+    """Load a feature archive's label-split seed and ratio when available.
+
+    Legacy NPY archives have no sidecar and return ``None`` so callers can
+    retain their historical seed-42 interpretation.
+
+    Args:
+        path (str | os.PathLike): Feature-archive base path without ``.npy``.
+
+    Returns:
+        tuple[int, float] | None: Stored split seed and validation fraction, or
+        ``None`` when a legacy archive has no metadata sidecar.
+
+    Raises:
+        ValueError: If a sidecar has an unsupported or incomplete schema, or
+            contains an invalid split seed/fraction.
+        OSError: If an existing sidecar cannot be opened.
+    """
+
+    metadata_path = Path(os.fspath(path) + ".metadata.json")
+    # Preserve the established interpretation of metadata-free archives.
+    if not metadata_path.is_file():
+        return None
+    with metadata_path.open("r", encoding="utf-8") as metadata_file:
+        payload = json.load(metadata_file)
+    # Accept only the versioned schema written by the paired save helper.
+    if not isinstance(payload, Mapping) or payload.get("format_version") != 1:
+        raise ValueError("Unsupported feature split metadata format.")
+    label_split = payload.get("label_split")
+    # Require a nested mapping before looking up its fields.
+    if not isinstance(label_split, Mapping):
+        raise ValueError("Feature metadata must contain a label_split mapping.")
+    # Reject partial metadata rather than guessing an archive layout.
+    if "random_state" not in label_split \
+    or "validation_ratio" not in label_split:
+        raise ValueError(
+            "Feature label_split metadata requires random_state and "
+            "validation_ratio."
+        )
+
+    return _normalize_feature_split_metadata(
+        label_split["random_state"],
+        label_split["validation_ratio"],
+    )
 
 
 def CL_plot(

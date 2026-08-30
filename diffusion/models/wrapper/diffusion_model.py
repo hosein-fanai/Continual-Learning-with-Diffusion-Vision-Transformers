@@ -16,6 +16,7 @@ from typing import Literal, Sequence, get_args
 from . import NetworkName, TrainType, ClusteringType
 
 from common.argument_saver import ArgumentSaverModel
+from common.gradients import apply_policy_gradients
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -242,10 +243,19 @@ class DiffusionModel(ArgumentSaverModel):
         self.use_cfg = self.network.use_cfg
         self.p_uncond = 0. if not self.use_cfg else self.p_uncond
         self.test_cfg_scale = 1. if not self.use_cfg else self.test_cfg_scale
-        self.noise_loss_coef = tf.constant(self.noise_loss_coef, dtype=tf.float32)
-        self.image_loss_coef = tf.constant(self.image_loss_coef, dtype=tf.float32)
-        self.kl_loss_coef = tf.constant(self.kl_loss_coef, dtype=tf.float32)
-        self.ctr_loss_coef = tf.constant(self.ctr_loss_coef, dtype=tf.float32)
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        self.noise_loss_coef = tf.constant(
+            self.noise_loss_coef, dtype=stable_dtype
+        )
+        self.image_loss_coef = tf.constant(
+            self.image_loss_coef, dtype=stable_dtype
+        )
+        self.kl_loss_coef = tf.constant(
+            self.kl_loss_coef, dtype=stable_dtype
+        )
+        self.ctr_loss_coef = tf.constant(
+            self.ctr_loss_coef, dtype=stable_dtype
+        )
         self.use_image_loss = bool(self.image_loss_coef > 0.)
         self.train_noisified_max_timesteps = self.timesteps if self.train_noisified_max_timesteps == -1 \
                                             else self.train_noisified_max_timesteps
@@ -763,22 +773,39 @@ class DiffusionModel(ArgumentSaverModel):
 
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
 
-        self.total_loss_tracker = metrics.Mean(name="loss")
+        stable_dtype = self.dtype_policy.variable_dtype
+        self.total_loss_tracker = metrics.Mean(
+            name="loss",
+            dtype=stable_dtype,
+        )
         self.noise_loss_tracker = metrics.Mean(
             name="total_noise_loss" if self.show_separate_noise_losses \
-                else "noise_loss"
+                else "noise_loss",
+            dtype=stable_dtype,
         )
         self.cond_noise_loss_tracker = metrics.Mean(
-            name="cond_noise_loss"
+            name="cond_noise_loss",
+            dtype=stable_dtype,
         )
         self.uncond_noise_loss_tracker = metrics.Mean(
-            name="uncond_noise_loss"
+            name="uncond_noise_loss",
+            dtype=stable_dtype,
         )
-        self.image_loss_tracker = metrics.Mean(name="image_loss")
-        self.kl_loss_tracker = metrics.Mean(name="kl_loss")
-        self.ctr_loss_tracker = metrics.Mean(name="ctr_loss")
+        self.image_loss_tracker = metrics.Mean(
+            name="image_loss",
+            dtype=stable_dtype,
+        )
+        self.kl_loss_tracker = metrics.Mean(
+            name="kl_loss",
+            dtype=stable_dtype,
+        )
+        self.ctr_loss_tracker = metrics.Mean(
+            name="ctr_loss",
+            dtype=stable_dtype,
+        )
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            name="ctr_accuracy"
+            name="ctr_accuracy",
+            dtype=stable_dtype,
         )
 
     def fit(
@@ -1696,8 +1723,8 @@ class DiffusionModel(ArgumentSaverModel):
                 cannot exceed or disagree with the network embedding table.
 
         Returns:
-            None: ``self.schedules`` maps schedule-statistic names to float32
-            rank-1 tensors and schedule metadata attributes are updated.
+            None: ``self.schedules`` maps schedule-statistic names to rank-1
+            tensors in the policy variable dtype and updates schedule metadata.
         """
 
         scheduler_name = self.scheduler_name if scheduler_name is None \
@@ -1715,8 +1742,9 @@ class DiffusionModel(ArgumentSaverModel):
             kind=scheduler_name, 
             num_steps=timesteps
         )
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         schedules = {
-            key: tf.constant(value, dtype=tf.float32)
+            key: tf.constant(value, dtype=stable_dtype)
             for key, value in generated_schedules.items()
         }
 
@@ -1755,7 +1783,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tuple[tf.Tensor, tf.Tensor]: ``(sqrt_alpha_bar,
             sqrt_one_minus_alpha_bar)`` with the same index shape as ``t`` and
-            dtype ``tf.float32``.
+            the policy variable dtype.
         """
 
         a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
@@ -1788,12 +1816,15 @@ class DiffusionModel(ArgumentSaverModel):
         if not x0.dtype.is_floating:
             raise TypeError("x0 must have a floating dtype.")
 
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         a, b = self.get_noise_and_signal_rates(t)
-        a = tf.cast(tf.reshape(a, (-1, 1, 1, 1)), x0.dtype)
-        b = tf.cast(tf.reshape(b, (-1, 1, 1, 1)), x0.dtype)
-        noises = tf.cast(noises, x0.dtype)
+        a = tf.reshape(a, (-1, 1, 1, 1))
+        b = tf.reshape(b, (-1, 1, 1, 1))
+        stable_x0 = tf.cast(x0, stable_dtype)
+        stable_noises = tf.cast(noises, stable_dtype)
+        noisy = a * stable_x0 + b * stable_noises
 
-        return a * x0 + b * noises
+        return tf.cast(noisy, x0.dtype)
 
     def noisify(
         self, 
@@ -1944,8 +1975,12 @@ class DiffusionModel(ArgumentSaverModel):
         if variables is None:
             variables = self.network.trainable_variables
 
-        grads = tape.gradient(loss, variables)
-        self.optimizer.apply_gradients(zip(grads, variables))
+        apply_policy_gradients(
+            tape,
+            self.optimizer,
+            loss,
+            variables,
+        )
 
     def get_cfg_labels(
         self, 
@@ -2133,18 +2168,19 @@ class DiffusionModel(ArgumentSaverModel):
             (0.0 when no predictions exist) and averaged class probabilities.
             The latter is zeros ``[B,num_classes]`` when the list has no tensor.
         """
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         ctr_num = 0
-        ctr_loss = 0.
+        ctr_loss = tf.constant(0., dtype=stable_dtype)
         ctr_preds = tf.zeros((
             tf.shape(classes)[0], 
             self.network.num_classes
-        ))
+        ), dtype=stable_dtype)
 
         for classes_pred in classes_pred_list:
             # Include each available regularizer prediction in the ensemble.
             if classes_pred is not None:
                 ctr_num += 1
-                ctr_preds += classes_pred
+                ctr_preds += tf.cast(classes_pred, stable_dtype)
 
         # Average available predictions before computing token classification loss.
         if ctr_num > 0:
@@ -2227,13 +2263,23 @@ class DiffusionModel(ArgumentSaverModel):
         ) if use_image_loss else 0.
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean=z_vals_c[0] if kl_train_type == "cond" else z_vals_u[0], 
-            z_log_var=z_vals_c[1] if kl_train_type == "cond" else z_vals_u[1]
+            z_log_var=z_vals_c[1] if kl_train_type == "cond" else z_vals_u[1],
+            dtype=self.dtype_policy.variable_dtype,
         ) if self.use_kl_loss else 0.
         ctr_loss, ctr_preds = self.compute_ctr_loss(
             classes, 
             regs_list_c if ctr_train_type == "cond" else regs_list_u
         ) if self.use_ctr_loss else (0., 0.)
 
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        noise_loss = tf.cast(noise_loss, stable_dtype)
+        cond_noise_loss = tf.cast(cond_noise_loss, stable_dtype) \
+            if cond_noise_loss is not None else None
+        uncond_noise_loss = tf.cast(uncond_noise_loss, stable_dtype) \
+            if uncond_noise_loss is not None else None
+        image_loss = tf.cast(image_loss, stable_dtype)
+        kl_loss = tf.cast(kl_loss, stable_dtype)
+        ctr_loss = tf.cast(ctr_loss, stable_dtype)
         loss = (
             noise_loss * self.noise_loss_coef + 
             image_loss * self.image_loss_coef + 
@@ -2398,9 +2444,14 @@ class DiffusionModel(ArgumentSaverModel):
             sqrt_a_t = tf.reshape(sqrt_a_t, (-1, 1, 1, 1))
             sqrt_one_minus_a_t = tf.reshape(sqrt_one_minus_a_t, (-1, 1, 1, 1))
 
-        x0 = (x_t - sqrt_one_minus_a_t * eps) / sqrt_a_t
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        stable_x_t = tf.cast(x_t, stable_dtype)
+        stable_eps = tf.cast(eps, stable_dtype)
+        x0 = (
+            stable_x_t - sqrt_one_minus_a_t * stable_eps
+        ) / sqrt_a_t
 
-        return x0, eps
+        return tf.cast(x0, x_t.dtype), eps
 
     def forward( # call function
         self, 
@@ -2573,8 +2624,9 @@ class DiffusionModel(ArgumentSaverModel):
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss \
                         if use_total_loss is None else use_total_loss
-        batch_weight = tf.cast(tf.shape(classes)[0], tf.float32) \
-                       if classes is not None else 1.
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        batch_weight = tf.cast(tf.shape(classes)[0], stable_dtype) \
+                       if classes is not None else tf.cast(1., stable_dtype)
 
         results = {}
 
@@ -2602,16 +2654,16 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Update optional split means using sample counts rather than batches.
         if cond_noise_loss is not None and uncond_noise_loss is not None:
-            cond_weight = 1.
-            uncond_weight = 1.
+            cond_weight = tf.cast(1., stable_dtype)
+            uncond_weight = tf.cast(1., stable_dtype)
             # Derive conditional/null population sizes when labels are available.
             if cond_labels is not None:
                 cond_mask = cond_labels != 0 if self.use_cfg else tf.ones_like(
                     cond_labels, dtype=tf.bool
                 )
-                cond_weight = tf.reduce_sum(tf.cast(cond_mask, tf.float32))
+                cond_weight = tf.reduce_sum(tf.cast(cond_mask, stable_dtype))
                 uncond_weight = tf.reduce_sum(tf.cast(
-                    tf.logical_not(cond_mask), tf.float32
+                    tf.logical_not(cond_mask), stable_dtype
                 ))
 
             self.cond_noise_loss_tracker.update_state(
@@ -2764,6 +2816,7 @@ class DiffusionModel(ArgumentSaverModel):
             )
         n = len(labels)
         seed = self.seed if seed is None else seed
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         ts = tf.zeros(
             shape=(n,), 
             dtype=tf.int32
@@ -2775,6 +2828,7 @@ class DiffusionModel(ArgumentSaverModel):
             ), 
             mean=0., 
             stddev=1., 
+            dtype=stable_dtype,
             seed=seed
         ) if z is None else z
         z = z_projector(
@@ -2859,12 +2913,13 @@ class DiffusionModel(ArgumentSaverModel):
         labels = default_labels if labels is None else labels
         n = len(labels)
         seed = self.seed if seed is None else seed
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         x_t = tf.random.normal((
             n, 
             self._current_resolution, # self.image_size, 
             self._current_resolution, # self.image_size, 
             self.channels
-        ), seed=seed) if x_t is None else x_t
+        ), dtype=stable_dtype, seed=seed) if x_t is None else x_t
         steps = self.test_steps if steps is None else steps
         scale = self.test_cfg_scale if scale is None else scale
         eta = self.test_eta if eta is None else eta
@@ -2933,20 +2988,23 @@ class DiffusionModel(ArgumentSaverModel):
                     ) * tf.sqrt(
                         1. - alpha_bar_t / alpha_bar_t_next
                     ),
-                    dtype=tf.float32
+                    dtype=stable_dtype
                 )
                 eps_coeff = tf.cast(
                     tf.sqrt(tf.maximum(
                             1. - alpha_bar_t_next - sigma_t ** 2, 0.0
                     )),
-                    dtype=tf.float32
+                    dtype=stable_dtype
                 )
 
-                x_t = x0_coef * x0 + eps_coeff * eps
+                stable_x0 = tf.cast(x0, stable_dtype)
+                stable_eps = tf.cast(eps, stable_dtype)
+                x_t = x0_coef * stable_x0 + eps_coeff * stable_eps
                 # Add stochastic DDIM noise when eta is positive.
                 if eta > 0.:
                     x_t += sigma_t * tf.random.normal(
                         tf.shape(x_t),
+                        dtype=stable_dtype,
                         seed=seed
                     )
 
@@ -4014,7 +4072,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy_wrapper.dynamic is True
     assert policy_wrapper.sample(
         network_name="raw", labels=[1], steps=2, eta=0.0, seed=61
-    ).dtype == tf.float32
+    ).dtype == tf.float64
 
     ema_before = [value.numpy().copy() for value in wrapper.ema_network.weights]
     wrapper.network.weights[0].assign_add(tf.ones_like(wrapper.network.weights[0]))

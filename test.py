@@ -475,6 +475,7 @@ PROJECT_SELF_TEST_CLASSES = {
     ), 
     "common.lr_logger_callback": ("LrLoggerCallback",), 
     "common.masked_loss": ("MaskedLoss",), 
+    "common.recovery": ("TaskCheckpoint",),
     "common.replay_buffer": ("ReplayBuffer",), 
     "diffusion.callbacks.batch_loss_plateau": ("BatchLossPlateau",), 
     "diffusion.callbacks.image_generator_callback": ("ImageGeneratorCallback",), 
@@ -555,7 +556,7 @@ def run_project_self_tests(
 
     Returns:
         dict[str, dict[str, str]]: Ordered-by-registration module results.  A
-        successful result covers all 64 registered classes and every inner
+        successful result covers all 65 registered classes and every inner
         value is ``"passed"``.
 
     Raises:
@@ -663,7 +664,7 @@ def run_project_self_tests(
     expected_classes = sum(
         len(class_names) for class_names in PROJECT_SELF_TEST_CLASSES.values()
     )
-    assert tested_classes == expected_classes == 64
+    assert tested_classes == expected_classes == 65
 
     # Print the project-wide summary when progress output is requested.
     if verbose:

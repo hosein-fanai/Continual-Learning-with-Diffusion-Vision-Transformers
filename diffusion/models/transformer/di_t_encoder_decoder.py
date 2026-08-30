@@ -7,6 +7,8 @@ from math import isqrt
 
 from copy import deepcopy
 
+from common.runtime import derive_seed
+
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 from diffusion.models.transformer.di_t_decoder import DiTDecoder
 
@@ -131,6 +133,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         decoder_config.setdefault("dim", self.dim)
         decoder_config.setdefault("cond_dim", self.cond_dim)
         decoder_config.setdefault("dtype", self.dtype_policy.name)
+        decoder_config.setdefault("seed", derive_seed(self.seed, "decoder"))
         decoder_config.setdefault("shift_inputs", False)
         encoder_feature_dims, encoder_feature_grids = \
             self._get_encoder_feature_metadata()
@@ -470,7 +473,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 self.current_resolution, 
                 self.channels, 
             ),
-            dtype=tf.float32, 
+            dtype=self.compute_dtype,
             name="encoder_images", 
         )
         times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
@@ -481,7 +484,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 self.decoder.current_resolution, 
                 self.decoder.channels, 
             ),
-            dtype=tf.float32, 
+            dtype=self.decoder.compute_dtype,
             name="decoder_images", 
         )
 

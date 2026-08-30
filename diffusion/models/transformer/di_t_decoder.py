@@ -1042,13 +1042,13 @@ class DiTDecoder(DiffusionTransformer):
         decoder_inputs = self.inputs
         encoder_cond = layers.Input(
             shape=(self.cond_dim,), 
-            dtype=tf.float32, 
+            dtype=self.compute_dtype,
             name="encoder_cond"
         )
         encoder_features = tuple(
             layers.Input(
                 shape=(None, dim) if grid is not None else (dim,), 
-                dtype=tf.float32, 
+                dtype=self.compute_dtype,
                 name=f"encoder_feature_{index}", 
             )
             for index, (dim, grid) in enumerate(zip(

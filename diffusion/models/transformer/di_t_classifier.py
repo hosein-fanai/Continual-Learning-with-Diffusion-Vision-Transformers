@@ -12,6 +12,8 @@ from copy import deepcopy
 
 from typing import Literal
 
+from common.runtime import derive_seed
+
 from . import (
     CondType, TokenType, IdsType, IdsDictType, 
     select_first_token, select_second_token, 
@@ -319,26 +321,31 @@ class DiTClassifier(DiffusionTransformer):
                     layers.Lambda(
                         remove_second_token if self.clf_has_cls_token \
                         else remove_first_token, 
+                        dtype=self.dtype_policy,
                         name=f"{self.name_prefix}remove_distil_token"
                     ), 
                     layers.GlobalAveragePooling1D(
+                        dtype=self.dtype_policy,
                         name=f"{self.name_prefix}global_average_pooling"
                     )
                 ], name=f"{self.name_prefix}classifier_feature_extractor")
             # Keep the established direct pooling layer without distillation.
             else:
                 self.classifier_feature_extractor = layers.GlobalAveragePooling1D(
+                    dtype=self.dtype_policy,
                     name=f"{self.name_prefix}classifier_feature_extractor"
                 )
         # Otherwise classify from the first class-token position.
         else:
             self.classifier_feature_extractor = layers.Lambda(
                 select_first_token, 
+                dtype=self.dtype_policy,
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
         self.distil_feature_extractor = layers.Lambda(
             select_second_token if self.clf_has_cls_token else select_first_token, 
+            dtype=self.dtype_policy,
             name=f"{self.name_prefix}distil_feature_extractor"
         ) if self.clf_has_distil_token else None
 
@@ -1011,6 +1018,13 @@ class DiTClassifier(DiffusionTransformer):
                 self._create_clf_layer_dict(i, self.clf_layers_dicts)
             )
 
+        # Retain an append-only tracking path for executable classifier stages.
+        # Progressive growth must logically insert stages before the terminal
+        # connector, which requires replacing ``clf_layers_dicts`` later.  This
+        # tracker is created before the classifier head and lets newly appended
+        # stages keep the same weight/checkpoint order as a from-config clone.
+        self._clf_layers_tracker = list(self.clf_layers_dicts[:-1])
+
     def _create_classifier_head(self, name: str) -> models.Sequential:
         """Create one class-probability head with the configured MLP/dropout.
 
@@ -1035,6 +1049,7 @@ class DiTClassifier(DiffusionTransformer):
                     base_dim=self.clf_dim, 
                 ) * self.classifier_mlp_ratio, 
                 activation=self.classifier_mlp_activation_func, 
+                dtype=self.dtype_policy,
                 name=f"{classifier.name}/first_layer"
             ))
 
@@ -1042,12 +1057,19 @@ class DiTClassifier(DiffusionTransformer):
         if self.dropout_rate > 0.:
             classifier.add(layers.Dropout(
                 self.dropout_rate, 
+                seed=derive_seed(
+                    self.seed,
+                    "classifier_dropout",
+                    classifier.name,
+                ),
+                dtype=self.dtype_policy,
                 name="dropout_layer"
             ))
 
         classifier.add(layers.Dense(
             self.num_classes, 
             activation="softmax", 
+            dtype=self.dtype_policy.variable_dtype,
             name=f"{classifier.name}/final_layer"
         ))
 
@@ -1696,12 +1718,16 @@ class DiTClassifier(DiffusionTransformer):
         terminal_connector._init_config["ids"] = deepcopy(terminal_ids)
 
         added_layers = planned_layers[old_clf_depth:]
-        current_terminal = self.clf_layers_dicts[-1]
-        current_terminal.clear()
-        current_terminal.update(added_layers[0])
-
-        self.clf_layers_dicts.extend(added_layers[1:])
-        self.clf_layers_dicts.append(terminal_layers)
+        # Append new executable stages to the pre-head tracking path before
+        # replacing the logical stage sequence. This keeps positional Keras
+        # weights and checkpoint object paths identical to a config clone while
+        # avoiding unsupported non-append mutation of a Trackable ListWrapper.
+        self._clf_layers_tracker.extend(added_layers)
+        self.clf_layers_dicts = [
+            *self.clf_layers_dicts[:-1],
+            *added_layers,
+            terminal_layers,
+        ]
         self.clf_depth = old_clf_depth + len(added_layers)
 
         self._save_init_args({
@@ -2158,7 +2184,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy.dynamic is True
     assert policy.trainable is False
     assert policy_output["noises"].dtype == tf.float32
-    assert policy_output["classes"].dtype == tf.float32
+    assert policy_output["classes"].dtype == tf.float64
 
     scaled = make_model(
         clf_depth=2, 

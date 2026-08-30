@@ -32,6 +32,25 @@ class ArgumentSaver:
             subclasses that save both base and derived constructor arguments.
     """
 
+    def __setattr__(self, name: str, value: object) -> None:
+        """Keep mutable constructor metadata outside the checkpoint graph.
+
+        Args:
+            name (str): Instance attribute name being assigned.
+            value (object): New attribute value.
+
+        Returns:
+            None: The attribute is assigned through the next MRO class.
+        """
+
+        saved_config = self.__dict__.get("_init_config", {})
+        # Reassign saved mutable metadata without creating TF dependencies.
+        if name in saved_config \
+        and isinstance(value, (list, set, dict)) \
+        and hasattr(self, "_no_dependency"):
+            value = self._no_dependency(value)
+        super().__setattr__(name, value)
+
     def _save_init_args(
         self: ArgumentSaver, 
         local_vars: Mapping[str, object], 
@@ -66,7 +85,12 @@ class ArgumentSaver:
         rename = {"build": "build_"} if rename is None else rename
         # Initialize cumulative configuration storage on the first save.
         if not hasattr(self, "_init_config"):
-            self._init_config = {}
+            # Keep serialization metadata out of TensorFlow's object graph.
+            if hasattr(self, "_no_dependency"):
+                self._init_config = self._no_dependency({})
+            # Plain mixin instances have no Trackable dependency API.
+            else:
+                self._init_config = {}
 
         for name, value in local_vars.items():
             # Omit constructor locals explicitly excluded from persistence.
@@ -81,6 +105,11 @@ class ArgumentSaver:
             else:
                 attribute_value = value
                 config_value = value
+
+            # Mutable constructor metadata must not become checkpoint state.
+            if isinstance(value, (list, set, dict)) \
+            and hasattr(self, "_no_dependency"):
+                attribute_value = self._no_dependency(attribute_value)
 
             setattr(
                 self, 

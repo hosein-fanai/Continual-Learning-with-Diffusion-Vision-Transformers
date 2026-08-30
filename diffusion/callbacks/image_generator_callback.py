@@ -93,6 +93,8 @@ class ImageGeneratorCallback(callbacks.Callback):
         self.save_gifs = save_gifs
         self.results_path = results_path
         self.seed = seed
+        self.base_seed = seed
+        self.artifact_prefix = ""
 
         project_tag = "" if project_tag is None else " " + project_tag
 
@@ -114,6 +116,44 @@ class ImageGeneratorCallback(callbacks.Callback):
                     os.path.join(self.results_path, "gifs"), 
                     exist_ok=True
                 )
+
+    def set_artifact_prefix(
+        self,
+        prefix: str | None,
+    ) -> None:
+        """Set a safe filename prefix for a later training phase or task.
+
+        Args:
+            prefix (str | None): Prefix without a trailing separator. ``None``
+                or an empty string restores the ordinary epoch-only names.
+
+        Returns:
+            None: Subsequent PNG/GIF filenames are updated in place.
+
+        Raises:
+            TypeError: If ``prefix`` is neither a string nor ``None``.
+        """
+
+        # Reject filesystem prefixes with an unsupported runtime type.
+        if prefix is not None and not isinstance(prefix, str):
+            raise TypeError("prefix must be a string or None.")
+        normalized = "" if prefix is None else prefix.strip()
+        self.artifact_prefix = normalized + "_" if normalized else ""
+
+    def get_config(self) -> dict[str, object]:
+        """Return behavior-defining callback options for recovery fingerprints.
+
+        Returns:
+            dict[str, object]: Sampling/display/GIF options and the initial
+            seed. Filesystem paths and mutable task prefixes are excluded.
+        """
+
+        return {
+            "add_null_label": self.add_null_label,
+            "show_images": self.show_images,
+            "save_gifs": self.save_gifs,
+            "seed": self.base_seed,
+        }
 
     def on_epoch_end(
         self, 
@@ -161,7 +201,8 @@ class ImageGeneratorCallback(callbacks.Callback):
                 os.path.join(
                     self.results_path, 
                     "gifs", 
-                    f"epoch-{epoch+1}_steps-{sample_kwargs['steps']}_"
+                    f"{self.artifact_prefix}epoch-{epoch+1}_"
+                        f"steps-{sample_kwargs['steps']}_"
                         f"scale-{sample_kwargs['scale']:.1f}_"
                         f"eta-{sample_kwargs['eta']:.4f}.gif"
                 ), 
@@ -181,7 +222,8 @@ class ImageGeneratorCallback(callbacks.Callback):
                 save_path=os.path.join(
                     self.results_path, 
                     "images", 
-                    f"epoch-{epoch+1}_steps-{sample_kwargs['steps']}_"
+                    f"{self.artifact_prefix}epoch-{epoch+1}_"
+                        f"steps-{sample_kwargs['steps']}_"
                         f"scale-{sample_kwargs['scale']:.1f}_"
                         f"eta-{sample_kwargs['eta']:.4f}.png"
                 ) 
@@ -266,6 +308,19 @@ def run_self_tests() -> dict[str, str]:
         assert result_root.name.endswith(" smoke")
         assert (result_root / "images").is_dir()
         assert (result_root / "gifs").is_dir()
+        saving_callback.set_artifact_prefix("task-2_classes-4-5")
+        assert saving_callback.get_config() == {
+            "add_null_label": True,
+            "show_images": False,
+            "save_gifs": True,
+            "seed": None,
+        }
+        try:
+            saving_callback.set_artifact_prefix(3)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("Non-string artifact prefixes must fail.")
 
         frames_one = ["frame-1"]
         frames_two = ["frame-2"]
@@ -297,14 +352,16 @@ def run_self_tests() -> dict[str, str]:
             seed=None,
         )
         gif_args, gif_kwargs = gif_mock.call_args
-        assert Path(gif_args[0]).name == "epoch-2_steps-3_scale-2.0_eta-0.1250.gif"
+        assert Path(gif_args[0]).name == (
+            "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.gif"
+        )
         assert gif_args[1:] == (frames_one, frames_two)
         assert gif_kwargs == {"verbose": 0}
         plot_args, plot_kwargs = saved_plot_mock.call_args
         assert plot_args == ("saved-images",)
         assert plot_kwargs["show_images"] is False
         assert Path(plot_kwargs["save_path"]).name == (
-            "epoch-2_steps-3_scale-2.0_eta-0.1250.png"
+            "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.png"
         )
 
         shown_saving_callback = ImageGeneratorCallback(

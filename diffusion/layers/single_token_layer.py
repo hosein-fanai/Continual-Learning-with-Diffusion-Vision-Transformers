@@ -5,6 +5,8 @@ from tensorflow.keras import initializers
 
 from typing import Any
 
+from common.runtime import derive_seed
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -49,6 +51,7 @@ class SingleTokenLayer(BaseEmbedding):
         self, 
         with_pos_embed: bool = True, 
         input_as_token: bool = False, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Create the trainable token, positional vector, and projections.
@@ -58,6 +61,8 @@ class SingleTokenLayer(BaseEmbedding):
                 positional token.
             input_as_token (bool): Whether the second call input supplies the
                 token instead of a trainable weight.
+            seed (int | None): Optional component seed for the learned token's
+                random-normal initializer.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
@@ -66,6 +71,7 @@ class SingleTokenLayer(BaseEmbedding):
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
+        derive_seed(self.seed, "single_token", "validation")
 
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
@@ -74,10 +80,18 @@ class SingleTokenLayer(BaseEmbedding):
                             else self.mlp_output_dim
         self.pos_embed_type = "new_weight" if self.with_pos_embed else None
         self.embed_dim = self.dim // 2 if self.pos_merger_type == "concat" else self.dim
+        self.seed = None if self.seed is None else int(self.seed)
 
         self.token = self.add_weight(
             shape=(1, 1, self.embed_dim), 
-            initializer=initializers.RandomNormal(stddev=1e-6), # or "zeros"
+            initializer=initializers.RandomNormal(
+                stddev=1e-6, 
+                seed=derive_seed(
+                    self.seed, 
+                    "single_token", 
+                    "initializer"
+                ),
+            ),
             trainable=True, 
             name=f"{self.name}/token_embeddings"
         ) if not self.input_as_token else None

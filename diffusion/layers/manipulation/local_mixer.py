@@ -194,8 +194,9 @@ class LocalMixer(BaseEmbedding):
         h = h[:, prefix_tokens_num:, :] if self.circumvent_tokens else h
 
         h_shape = tf.shape(h)
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         input_grid_size = tf.cast(
-            tf.sqrt(tf.cast(h_shape[1], dtype=tf.float32)), 
+            tf.sqrt(tf.cast(h_shape[1], dtype=stable_dtype)),
             dtype=tf.int32
         )
 

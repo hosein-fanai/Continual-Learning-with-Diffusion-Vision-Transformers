@@ -5,6 +5,8 @@ from tensorflow.keras import layers, models
 
 from typing import Any
 
+from common.runtime import derive_seed
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 from diffusion.layers.single_token_layer import SingleTokenLayer
 
@@ -56,6 +58,7 @@ class PatchEmbedding(BaseEmbedding):
         patch_size: int = 2, 
         patchify_with_cnn: bool = False, 
         shift_right_token: bool = False, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Create the convolutional patch projector and positional table.
@@ -65,12 +68,16 @@ class PatchEmbedding(BaseEmbedding):
             patchify_with_cnn (bool): Whether to use the two-convolution stem.
             shift_right_token (bool): Whether to prepend a learned BOS token
                 and discard the final patch token.
+            seed (int | None): Optional component seed for the learned BOS
+                token used by shifted-input decoders.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
             ``None``.
         """
 
+        derive_seed(seed, "patch_embedding", "validation")
+        seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
@@ -126,6 +133,7 @@ class PatchEmbedding(BaseEmbedding):
         self.shift_right_token = SingleTokenLayer(
             dim=self.hidden_dim, 
             with_pos_embed=False, 
+            seed=derive_seed(self.seed, "bos_token"),
             dtype=self.dtype_policy,
             name=f"{self.name}/bos_token"
         ) if self.shift_right_token else None

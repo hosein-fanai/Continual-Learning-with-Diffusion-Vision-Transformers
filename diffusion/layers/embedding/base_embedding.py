@@ -171,13 +171,16 @@ class BaseEmbedding(BaseLayer):
             temperature (float): Positive wavelength temperature.
 
         Returns:
-            ``np.ndarray`` shaped ``[count, dim]``. Values are sine/cosine
-            features and are normally ``float32``.
+            ``np.ndarray`` shaped ``[count, dim]``. Values use the policy
+            variable dtype so mixed-precision tables remain numerically stable.
         """
 
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        numpy_dtype = stable_dtype.as_numpy_dtype
+        positions = np.asarray(positions, dtype=numpy_dtype)
         frequency_count = max((dim + 1) // 2, 1)
         frequencies = 1. / (temperature ** (
-            np.arange(frequency_count, dtype=np.float32) /
+            np.arange(frequency_count, dtype=numpy_dtype) /
             float(frequency_count)
         ))
         angles = positions[:, None] * frequencies[None, :]
@@ -211,13 +214,15 @@ class BaseEmbedding(BaseLayer):
             name (str | None): Optional TensorFlow operation name.
 
         Returns:
-            ``tf.Tensor`` of dtype ``tf.float32`` and shape
+            ``tf.Tensor`` in the policy variable dtype and shape
             ``[1, grid_size * grid_size, dim]`` in row-major order.
         """
 
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        numpy_dtype = stable_dtype.as_numpy_dtype
         grid_y, grid_x = np.meshgrid(
-            np.arange(grid_size, dtype=np.float32), 
-            np.arange(grid_size, dtype=np.float32), 
+            np.arange(grid_size, dtype=numpy_dtype),
+            np.arange(grid_size, dtype=numpy_dtype),
             indexing="ij"
         )
         x_positions = grid_x.reshape(-1)
@@ -236,7 +241,7 @@ class BaseEmbedding(BaseLayer):
         ], axis=-1)
         embedding = tf.convert_to_tensor(
             embedding[None, ...], 
-            dtype=tf.float32, 
+            dtype=stable_dtype,
             name=name
         )
 
@@ -260,9 +265,14 @@ class BaseEmbedding(BaseLayer):
             :meth:`_get_1d_sincos_embedding`.
         """
 
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         half = dim // 2
-        freqs = np.exp(-np.log(10_000) * np.arange(half) / half)
-        args = t[:, None] * freqs[None]
+        freqs = tf.exp(
+            -tf.math.log(tf.cast(10_000, stable_dtype))
+            * tf.cast(tf.range(half), stable_dtype)
+            / tf.cast(half, stable_dtype)
+        )
+        args = tf.cast(t[:, None], stable_dtype) * freqs[None]
 
         emb = tf.concat([
             tf.sin(args), 
@@ -282,12 +292,17 @@ class BaseEmbedding(BaseLayer):
                 ``4 * (dim // 4)`` channels.
 
         Returns:
-            ``tf.Tensor`` of dtype ``tf.float32`` shaped
+            ``tf.Tensor`` in the policy variable dtype shaped
             ``[1, h * w, 4 * (dim // 4)]``. This compatibility helper is not
             used by the current positional modes.
         """
 
-        grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w))
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        numpy_dtype = stable_dtype.as_numpy_dtype
+        grid_y, grid_x = np.meshgrid(
+            np.arange(h, dtype=numpy_dtype),
+            np.arange(w, dtype=numpy_dtype),
+        )
         grid = np.stack([grid_x, grid_y], axis=-1).reshape(-1, 2)
 
         emb = []
@@ -297,7 +312,7 @@ class BaseEmbedding(BaseLayer):
             emb.append(np.cos(grid * freq))
 
         emb = np.concatenate(emb, axis=-1)
-        emb = tf.convert_to_tensor(emb[None], dtype=tf.float32)
+        emb = tf.convert_to_tensor(emb[None], dtype=stable_dtype)
 
         return emb
 
@@ -388,7 +403,7 @@ class BaseEmbedding(BaseLayer):
                     output_grid_size * output_grid_size 
                     if spatial_embedding else embed_steps, 
                     1, 
-                    dtype=tf.float32
+                    dtype=tf.as_dtype(self.dtype_policy.variable_dtype)
                 ),
                 temperature=temperature
             )
@@ -400,7 +415,10 @@ class BaseEmbedding(BaseLayer):
             return self._get_1d_sincos_embedding(
                 dim=embed_dim,
                 positions=tf.range(
-                    0, grid_size * grid_size, 1, dtype=tf.float32
+                    0,
+                    grid_size * grid_size,
+                    1,
+                    dtype=tf.as_dtype(self.dtype_policy.variable_dtype),
                 ),
                 temperature=temperature
             )[None, ...]
@@ -587,6 +605,8 @@ class BaseEmbedding(BaseLayer):
             batch_size, 
             axis=0
         )
+        # Merge policy constants in the activation dtype selected by Keras.
+        pos_embed = tf.cast(pos_embed, x.dtype)
 
         # Append positional channels for concatenation mode.
         if self.pos_merger_type == "concat":
@@ -773,7 +793,7 @@ def run_self_tests() -> dict[str, str]:
     )
     fixed_table = dtype_fixed._create_embeddings(output_grid_size=2)
     assert dtype_fixed.compute_dtype == "float64"
-    assert fixed_table.dtype == tf.float32
+    assert fixed_table.dtype == tf.float64
     dtype_learned = BaseEmbedding(
         dim=4, pos_embed_type="new_weight", dtype="float64",
     )

@@ -232,20 +232,39 @@ study = run_hpo(
 
 Each Optuna trial first writes and reloads a YAML config, then uses
 `common.train` for data, construction, training, and reports. Trial directories
-contain weights, resolved config, plots, GIFs, CSVs, and objective values;
-TensorBoard event filenames encode every optimized value and the event itself
-records the full name/value mapping. Study state is resumable from SQLite and
-is mirrored to `trials.csv`. Dataset-specific study directories prevent runs
-on CIFAR-10 and CIFAR-100 from sharing state. Joint models use a two-objective
-Pareto study.
+contain weights, resolved config, enabled plots/images/GIFs, CSVs, and objective
+values. TensorBoard event filenames encode every optimized value and the event
+itself records the full name/value mapping. Continual trials additionally log
+every epoch under task/class/phase namespaces and write final validation/test
+continual metrics. Joint models default to a two-objective Pareto study;
+`objective_metrics` and matching `objective_directions` select one or more
+other objectives. Continual objectives are read only from validation continual
+metrics and default to maximizing `final_average_accuracy`.
+
+Study state, the sampler state, and per-trial continual task checkpoints are
+resumable by passing the existing study directory to `resume_from`. The saved
+study specification is checked before continuation, and a trial interrupted
+inside a continual task restarts only that task from its preceding committed
+boundary. Study summaries are mirrored to `trials.csv`. Dataset-specific study
+directories prevent runs on CIFAR-10 and CIFAR-100 from sharing state.
 
 ## Class-incremental learning
 
-`continually_learn` adds one class per task and accepts either a complete
-`Config` or the original inputs as direct keywords. Config mode builds the
-loader and model bundle through `common.dataloader.get_datasets` and
-`common.model.get_model`; every classifier and replay-model phase then uses the
-shared training and reporting APIs.
+`continually_learn` accepts either a complete `Config` or the original inputs
+as direct keywords. Its default `task_size=1` begins with one class and adds one
+class per task. Larger automatic tasks partition `class_order` by `task_size`;
+`class_order_mode="random"` shuffles classes before grouping, while
+`task_order_mode="random"` shuffles complete groups without changing their
+contents. Explicit `task_groups` can define an exact grouped-class schedule.
+Config mode builds the loader and model bundle through
+`common.dataloader.get_datasets` and `common.model.get_model`; every classifier
+and replay-model phase then uses the shared training and reporting APIs.
+
+For a source-verified experimental protocol covering the baseline ladder,
+matched replay budgets, six-cell replay × KD design, candidate gates,
+development/confirmation manifests, paired stream-level inference, recovery,
+artifacts, and expected TensorFlow retracing, see the
+[`research-grade continual-learning workflow`](docs/research-grade-continual-learning.md).
 
 ```python
 from common.config import Config
@@ -254,8 +273,19 @@ from common.learner import continually_learn
 config = Config(
     dataset={"name": "cifar10", "preprocess": "min-max"},
     model={"name": "cnn", "show_network_summary": False},
-    training={"task": "continual", "epochs": 20},
-    continually_learn={"use_buffer": True, "plot_results": True},
+    training={
+        "task": "continual",
+        "epochs": 20,
+        "dtype_policy": "mixed_float16",
+        "deterministic_ops": True,
+    },
+    continually_learn={
+        "seed": 42,
+        "task_size": 1,
+        "use_buffer": True,
+        "buffer_kwargs": {"strategy": "fifo"},
+        "plot_results": True,
+    },
 )
 accuracies = continually_learn(config)
 ```
@@ -266,9 +296,44 @@ classifier phases still use `training.epochs`.
 
 When `continually_learn.use_distillation=True`, a diffusion classifier with a
 distillation token trains task one as the student, then uses an independent
-frozen snapshot of each completed raw student as the next task's teacher. This
-works with ordinary or progressive fitting and with both V1 and V2 wrappers;
-HPO enables the same lifecycle with `run_hpo(..., use_distillation=True)`.
+frozen snapshot of each completed `snapshot_network_name` branch (`"raw"` or
+`"ema"`) as the next task's teacher. EMA snapshots require EMA to be enabled.
+This works with ordinary or progressive fitting and with both V1 and V2
+wrappers; HPO enables the same lifecycle with
+`run_hpo(..., use_distillation=True)`.
+
+`continually_learn.seed` is the authoritative master seed and is propagated to
+the schedule, data, model/layer initialization, task shuffling, replay,
+training, sampling, and ensemble noising. `training.dtype_policy` is installed
+before construction and governs models, wrappers, layers, schedules, and
+optimizers, including mixed-precision loss scaling. With task checkpointing
+enabled explicitly, `resume_from` accepts a checkpoint root or committed
+task directory and restores models, teachers, optimizers, replay, task cursor,
+metrics, and RNG state. Use the run's immutable `input_config.yaml` for this
+resume; `config.yaml` is the final artifact-resolved record. When
+`reporting.save_csv=True`, task/epoch metrics,
+accuracy matrices, schedule, and continual summaries are saved beside the
+resolved config and enabled weights/plots/images/GIFs. If
+`use_ensemble_accuracy=True`, the ensemble matrix is authoritative for the
+reported continual metrics. Average forgetting is signed: the best score
+before the final evaluation minus the final score, so positive backward
+transfer appears as negative forgetting rather than being clipped to zero.
+
+Fixed-buffer replay uses `buffer_kwargs["strategy"]`. `"fifo"` is the exact
+historical default, retaining the newest examples. `"reservoir"` gives every
+example offered to the buffer equal probability of occupying fixed memory, while
+`"class_balanced"` divides feasible storage nearly equally among observed
+classes and uses reservoir sampling within each class. Strategy counters,
+class allocation state, retained samples, and the private RNG are restored from
+task checkpoints, so resumed insertion follows the same stream as an
+uninterrupted run.
+
+The optional `continually_learn.optimizer_steps_per_epoch` control fixes the
+number of updates for each active task-training phase by repeating only the
+already-selected pool; its `null` default changes nothing. The named
+`reservoir_er` baseline offers that complete current pool to Algorithm R,
+whereas an explicit `strategy: reservoir` with `baseline: null` preserves the
+`insert_num` sampled-insertion ablation.
 
 Direct mode remains useful with an existing classifier template or runtime
 model object:
@@ -287,6 +352,7 @@ accuracies = continually_learn(
         "sample_num": 1_000,
         "insert_num": 1_000,
         "seed": 42,
+        "strategy": "reservoir",
     }, 
 )
 ```

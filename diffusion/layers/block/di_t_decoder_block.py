@@ -5,6 +5,8 @@ from tensorflow.keras import layers
 
 from typing import Any
 
+from common.runtime import derive_seed
+
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.drop_path import DropPath
 
@@ -80,6 +82,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
         self.mha_drop_path2 = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
+            seed=derive_seed(self.seed, "mha_drop_path_2"),
             name=f"{self.name}/mha_drop_path_2",
             dtype=self.dtype_policy,
         )

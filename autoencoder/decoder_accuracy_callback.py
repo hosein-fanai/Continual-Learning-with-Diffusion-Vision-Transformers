@@ -8,6 +8,8 @@ from tensorflow.keras import callbacks
 from collections.abc import Callable
 from numbers import Integral
 
+from common.runtime import derive_seed
+
 
 class DecoderAccuracyCallback(callbacks.Callback):
     """Add conditional generator classification accuracy to epoch logs.
@@ -27,7 +29,8 @@ class DecoderAccuracyCallback(callbacks.Callback):
     def __init__(
         self: DecoderAccuracyCallback, 
         classifier: tf.keras.Model | Callable[..., tf.Tensor], 
-        samples_per_class: int = 500
+        samples_per_class: int = 500,
+        seed: int | None = None,
     ) -> None:
         """Initialize generation count and evaluation classifier.
 
@@ -37,6 +40,10 @@ class DecoderAccuracyCallback(callbacks.Callback):
                 ``[samples, classes]``.
             samples_per_class (int): Non-boolean positive number of generations
                 requested for each class previously seen by the attached VAE.
+            seed (int | None): Optional experiment seed. A stable epoch-specific
+                child seed is passed to the VAE so callback sampling is
+                reproducible without repeating the same latent batch every
+                epoch.
 
         Returns:
             None.
@@ -62,6 +69,10 @@ class DecoderAccuracyCallback(callbacks.Callback):
 
         self.samples_per_class = int(samples_per_class)
         self.classifier = classifier
+        # Validate once and retain the master seed for deterministic epoch
+        # streams. ``derive_seed`` also normalizes NumPy integral values.
+        derive_seed(seed, "decoder_accuracy", 0)
+        self.seed = None if seed is None else int(seed)
 
     def on_epoch_end(
         self: DecoderAccuracyCallback, 
@@ -71,7 +82,8 @@ class DecoderAccuracyCallback(callbacks.Callback):
         """Generate examples, classify them, and log exact-match accuracy.
 
         Args:
-            epoch (int): Zero-based completed epoch index; unused otherwise.
+            epoch (int): Zero-based completed epoch index used to derive an
+                independent callback sampling stream.
             logs (dict[str, object] | None): Epoch log mapping. Any supplied
                 dictionary receives ``"decoder_accuracy"`` as a NumPy scalar;
                 ``None`` is replaced locally.
@@ -90,7 +102,8 @@ class DecoderAccuracyCallback(callbacks.Callback):
 
         x_gen, y_true = self.model.generate(
             samples_per_class=self.samples_per_class, 
-            onehot_y_output=False
+            onehot_y_output=False,
+            seed=derive_seed(self.seed, "decoder_accuracy", int(epoch)),
         )
 
         # Avoid reporting an undefined accuracy for an empty generation.
@@ -113,7 +126,18 @@ class DecoderAccuracyCallback(callbacks.Callback):
             message="Generated labels and classifier predictions must align."
         )
 
-        corrects = tf.cast(y_pred == y_true, dtype=tf.float32)
+        classifier_policy = getattr(self.classifier, "dtype_policy", None)
+        model_policy = getattr(self.model, "dtype_policy", None)
+        stable_dtype = getattr(
+            classifier_policy,
+            "variable_dtype",
+            getattr(
+                model_policy,
+                "variable_dtype",
+                tf.keras.mixed_precision.global_policy().variable_dtype,
+            ),
+        )
+        corrects = tf.cast(y_pred == y_true, dtype=stable_dtype)
         acc = tf.reduce_mean(corrects)
 
         logs["decoder_accuracy"] = acc.numpy()
@@ -143,20 +167,22 @@ def run_self_tests() -> dict[str, str]:
 
     def generate(
         samples_per_class: int, 
-        onehot_y_output: bool
+        onehot_y_output: bool,
+        seed: int | None = None,
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return deterministic class-coded samples for callback testing.
 
         Args:
             samples_per_class (int): Requested examples per class.
             onehot_y_output (bool): Requested label encoding flag.
+            seed (int | None): Epoch-derived callback seed.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Class-coded features and integer IDs.
         """
 
         calls["generate"].append(
-            (samples_per_class, onehot_y_output)
+            (samples_per_class, onehot_y_output, seed)
         )
         labels = tf.repeat(
             tf.constant([0, 1], tf.int64), 
@@ -194,13 +220,18 @@ def run_self_tests() -> dict[str, str]:
     callback = DecoderAccuracyCallback(
         classifier=perfect_classifier, 
         samples_per_class=2, 
+        seed=17,
     )
     callback.set_model(SimpleNamespace(generate=generate))
     logs = {"loss": 0.5}
     assert callback.on_epoch_end(3, logs) is None
     assert logs["loss"] == 0.5
     assert float(logs["decoder_accuracy"]) == 1.0
-    assert calls["generate"] == [(2, False)]
+    assert calls["generate"] == [(
+        2,
+        False,
+        derive_seed(17, "decoder_accuracy", 3),
+    )]
     assert calls["training"] == [False]
 
 
@@ -262,19 +293,22 @@ def run_self_tests() -> dict[str, str]:
 
     def generate_empty(
         samples_per_class: int, 
-        onehot_y_output: bool
+        onehot_y_output: bool,
+        seed: int | None = None,
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return a correctly shaped empty generated batch.
 
         Args:
             samples_per_class (int): Requested positive count; unused.
             onehot_y_output (bool): Requested label encoding flag.
+            seed (int | None): Optional callback seed; unused.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Empty features and labels.
         """
 
         assert samples_per_class == 1 and onehot_y_output is False
+        assert seed is None
 
 
         return (tf.zeros((0, 1), tf.float32), 
@@ -308,19 +342,21 @@ def run_self_tests() -> dict[str, str]:
 
     def generate_bad_labels(
         samples_per_class: int, 
-        onehot_y_output: bool
+        onehot_y_output: bool,
+        seed: int | None = None,
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return intentionally incompatible prediction and label lengths.
 
         Args:
             samples_per_class (int): Requested count; unused.
             onehot_y_output (bool): Requested label encoding flag; unused.
+            seed (int | None): Optional callback seed; unused.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Two samples and three labels.
         """
 
-        del samples_per_class, onehot_y_output
+        del samples_per_class, onehot_y_output, seed
 
         return (tf.zeros((2, 1), tf.float32), 
             tf.zeros((3,), tf.int64))

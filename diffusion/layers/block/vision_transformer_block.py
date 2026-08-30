@@ -5,6 +5,8 @@ from tensorflow.keras import layers
 
 from typing import Any
 
+from common.runtime import derive_seed
+
 from diffusion.layers.base_layer import BaseLayer
 from diffusion.layers.drop_path import DropPath
 
@@ -77,6 +79,7 @@ class VisionTransformerBlock(BaseLayer):
         gate_query_flag: bool = True, 
         drop_prob: float = 0., 
         drop_per_sample: bool = True, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
@@ -92,12 +95,16 @@ class VisionTransformerBlock(BaseLayer):
             gate_query_flag (bool): Whether the attention gate uses query width.
             drop_prob (float): Stochastic-depth probability in ``[0, 1)``.
             drop_per_sample (bool): Whether each example receives its own path mask.
+            seed (int | None): Optional component seed used to derive distinct
+                attention and MLP stochastic-depth streams.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
             ``None``.
         """
 
+        derive_seed(seed, "vision_transformer_block", "validation")
+        seed = None if seed is None else int(seed)
         temp_val = (
             kwargs.pop("use_layer_norm", True),
             kwargs.pop("ln_dim", dim),
@@ -141,6 +148,7 @@ class VisionTransformerBlock(BaseLayer):
         self.mha_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
+            seed=derive_seed(self.seed, "mha_drop_path"),
             name=f"{self.name}/mha_drop_path",
             dtype=self.dtype_policy
         )
@@ -161,6 +169,7 @@ class VisionTransformerBlock(BaseLayer):
         self.mlp_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
+            seed=derive_seed(self.seed, "mlp_drop_path"),
             name=f"{self.name}/mlp_drop_path",
             dtype=self.dtype_policy
         )

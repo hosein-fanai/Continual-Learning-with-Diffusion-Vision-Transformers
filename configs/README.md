@@ -21,11 +21,12 @@ The top-level sections are:
   optional clipping.
 - `training`: task, ordinary/progressive fit selection, curriculum and
   epoch/validation settings, result directory, early stopping, TensorBoard,
-  verbosity, and weight persistence.
+  verbosity, weight persistence, global dtype policy, and deterministic-kernel
+  selection.
 - `continually_learn`: optional class count, cumulative/new-class behavior,
   fixed-buffer or generative replay controls, classifier reuse, optional
-  diffusion distillation/ensemble evaluation, and result detail/accuracy
-  plotting switches.
+  seeded class/task scheduling, diffusion distillation/ensemble evaluation,
+  task-boundary recovery, and result detail/accuracy plotting switches.
 - `reporting`: history plots/CSV, final sample controls, and train/validation
   evaluation switches, including optional raw/EMA ensemble accuracy.
 - `hpo`: resolved trial metadata and selected accuracy feedback signal,
@@ -92,28 +93,67 @@ from common.learner import continually_learn
 config = Config(
     dataset={"name": "cifar10", "preprocess": "min-max"}, 
     model={"name": "cnn", "show_network_summary": False}, 
-    training={"task": "continual", "epochs": 20},
+    training={
+        "task": "continual",
+        "epochs": 20,
+        "dtype_policy": "mixed_float16",
+        "deterministic_ops": True,
+    },
     continually_learn={
-        "class_num": 10, 
+        "class_num": 10,
+        "task_size": 1,
+        "class_order_mode": "random",
+        "task_order_mode": "fixed",
+        "seed": 42,
         "use_buffer": True, 
         "buffer_kwargs": {
             "maxlen": 10_000, 
             "sample_num": 1_000, 
             "insert_num": 1_000, 
-            "seed": 42
+            "seed": 42,
+            "strategy": "fifo"
         }
     }
 )
 accuracies = continually_learn(config)
 ```
 
+`buffer_kwargs.strategy` selects how examples occupy a full fixed memory:
+`fifo` is the backward-compatible newest-example policy, `reservoir` is
+Algorithm R over the stream offered to storage, and `class_balanced` assigns
+near-equal feasible class quotas with a reservoir inside each class. The
+default is `fifo`. Replay checkpoints preserve the selected policy, insertion
+counters, class-allocation state, retained samples, and private RNG state.
+The named `baseline: reservoir_er` offers every current row selected for the
+task to Algorithm R. For an insertion-count ablation instead, leave
+`baseline: null`, set `strategy: reservoir`, and control `insert_num`.
+
+`continually_learn.optimizer_steps_per_epoch` is an optional positive update
+budget applied to every active continual training phase. When set, each
+already-selected task pool repeats as needed and Keras executes exactly that
+many steps per epoch; `null` preserves the existing finite-dataset behavior.
+Use it together with fixed old/current row pools when update count is a matched
+experimental control. Do not also set `training.fit_kwargs.steps_per_epoch`.
+
 For generative replay, set `model.name` to a conditional VAE or diffusion
 family and select the continual classifier with `model.classifier_name` and
 `model.classifier_kwargs`. The factories compile both models from `optimizer`;
 `continually_learn` trains and reports each enabled phase through
 `common.train`. Fixed-buffer replay suppresses generative-model construction.
-Dataset sample limits, shuffle capacity, raw-image padding, and the training
-seed carry into every task. Typed replay-model sections automatically use the
+Dataset sample limits, shuffle capacity, raw-image padding, and the effective
+continual seed carry into every task. `continually_learn.seed` is authoritative
+and falls back to `training.seed` only when omitted. It controls schedule
+resolution, split/limiting, initialization, wrappers, task shuffling, replay,
+stochastic layers, generation, and ensemble noising. The final config
+materializes the resolved `class_order` and `task_groups`. Automatic groups
+contain `task_size` classes; `class_order_mode: random` shuffles labels before
+grouping and `task_order_mode: random` shuffles whole groups while preserving
+each group's contents. Explicit `task_groups` overrides automatic grouping.
+`training.dtype_policy` is installed before datasets, models, layers, wrappers,
+schedules, and optimizers are constructed; mixed policies also use optimizer
+loss scaling. Directly supplied prebuilt repository models must already match
+the requested seed and dtype policy. Typed replay-model
+sections automatically use the
 selected dataset's padded dimensions. Fresh and restored continual diffusion
 constructors always receive raw `num_classes: null`; on restoration the wrapper
 uses saved zero-based `seen_classes` to regrow the topology before loading weights.
@@ -132,13 +172,42 @@ UNet classifier sets `classifier_only_distil_token: true`. Set
 Token regularizer mappings accept `train_type: normal|distil|both` and
 `distil_type: hard|soft`. Continual configs additionally set
 `continually_learn.use_distillation: true`. Task one trains without a teacher by
-default. Before each later task, the completed raw student is copied into an
-independent frozen teacher, then the student is allowed to grow for the new
-class. An optional live teacher can initialize task one through
+default. Before each later task, the completed `snapshot_network_name`
+(`raw` or `ema`) student is copied into an independent frozen teacher, then the
+student is allowed to grow for the new class. EMA selection requires an
+EMA-enabled wrapper. An optional live teacher can initialize task one through
 `continually_learn(config, teacher_network=teacher)` or
 `main(config, teacher_network=teacher)`; it is never placed in YAML. The same
 lifecycle works with ordinary and progressive fitting and with both diffusion
 classifier wrappers.
+
+With `continually_learn.save_task_checkpoints: true` (an opt-in setting), a configured
+run commits `checkpoints/task-NNNN` only after a task has trained, evaluated,
+and updated its matrices. The checkpoint contains
+raw/EMA and classifier/replay models, the frozen next-task teacher, optimizers,
+replay samples and private RNG, global/local RNG state, task cursor, resolved
+schedule, and metric histories. Set `continually_learn.resume_from` to either
+the checkpoint root or a committed task directory. An interruption inside a
+task restarts that task from the preceding committed boundary; completed tasks
+are never repeated. Long-form `epoch_metrics.csv`, `task_metrics.csv`,
+`accuracy_matrices.csv`, `schedule.csv`, and `summary.csv` are written when
+`reporting.save_csv` is enabled, beside the resolved config and any enabled
+weights, plots, images, and GIFs. Continual TensorBoard logs use separate
+task/class/phase namespaces for every epoch's generator loss and
+classifier/distillation accuracies, and include final validation and test CL
+summaries. When `continually_learn.use_ensemble_accuracy: true`, the ensemble
+matrix is used for all derived continual metrics.
+
+`run_hpo` accepts the same seed, dtype, deterministic-kernel, schedule,
+distillation snapshot, and ensemble controls as arguments. For continual HPO,
+`objective_metrics` names one metric or an ordered metric list from
+`validation_continual_metrics`; `objective_directions` supplies matching
+`minimize`/`maximize` directions (or directions are inferred). The default is
+to maximize `final_average_accuracy`. Pass the existing study directory to
+`resume_from` to validate and restore its study specification, SQLite/TPE
+state, and per-trial committed task checkpoints. HPO always enables CSV and
+TensorBoard reporting; continual trials retain the task/class/phase metric
+namespaces described above.
 
 Nested model dataclasses expose `kwargs() -> dict[str, Any]`; those dictionaries
 are forwarded to the corresponding transformer or wrapper constructor. Use the

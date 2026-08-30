@@ -9,11 +9,11 @@ iterative sampling around the selected network.
 from __future__ import annotations
 
 import tensorflow as tf
-from tensorflow.keras import utils, callbacks
-
-import pandas as pd
+from tensorflow.keras import callbacks
 
 import numpy as np
+
+import pandas as pd
 
 import os
 
@@ -26,14 +26,20 @@ from collections.abc import Callable, Mapping, Sequence
 from common.utils import plot_images, plot_history, create_gif
 from common.lr_logger_callback import LrLoggerCallback
 from common.config import (
-    Config,
-    load_config,
-    resolve_continual_schedule,
-    save_config,
+    Config, 
+    load_config, 
+    resolve_continual_schedule, 
+    save_config
 )
 from common.dataloader import get_datasets, get_dataset_spec
 from common.model import get_model
 from common.learner import _run_continual_tasks
+from common.runtime import configure_runtime, derive_seed, effective_seed
+from common.recovery import find_latest_task_checkpoint, load_task_checkpoint
+from common.continual_reporting import (
+    write_continual_csv_artifacts, 
+    write_continual_tensorboard_summaries
+)
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -44,18 +50,18 @@ from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
 
 
 _PROGRESSIVE_FIT_KEYS = frozenset({
-    "stage_tasks", "stages_num", "stages_verbose", "stage_epochs",
-    "final_epochs", "timestep_boundaries", "timestep_clustering_type",
-    "resolutions", "depths", "pacing_type", "earlystopping_type",
-    "monitor", "patience", "min_delta", "stopper_mode",
+    "stage_tasks", "stages_num", "stages_verbose", "stage_epochs", 
+    "final_epochs", "timestep_boundaries", "timestep_clustering_type", 
+    "resolutions", "depths", "pacing_type", "earlystopping_type", 
+    "monitor", "patience", "min_delta", "stopper_mode"
 })
 """Arguments owned by the progressive diffusion training API."""
 
 
 def _resolve_training_options(
-    config: Config | None,
-    model: tf.keras.Model | dict[str, object],
-    kwargs: Mapping[str, object],
+    config: Config | None, 
+    model: tf.keras.Model | dict[str, object], 
+    kwargs: Mapping[str, object]
 ) -> dict[str, object]:
     """Resolve direct and configured training values into one flat mapping.
 
@@ -72,102 +78,109 @@ def _resolve_training_options(
     # Preserve the established direct-mode defaults and legacy alias.
     if config is None:
         return {
-            "show_images": kwargs.get("show_images", True),
-            "save_gifs": kwargs.get("save_gifs", False),
-            "results_path": kwargs.get("results_path", "./results"),
-            "project_tag": kwargs.get("project_tag", ""),
-            "report_every_epoch": kwargs.get("report_every_epoch", True),
-            "patience": kwargs.get("patience", 0),
-            "monitor": kwargs.get("monitor"),
-            "monitor_mode": kwargs.get("monitor_mode", "auto"),
-            "use_tensorboard": kwargs.get("tensorboard", False),
-            "tensorboard_run_name": kwargs.get("tensorboard_run_name"),
-            "tensorboard_path": kwargs.get("tensorboard_path"),
-            "hpo": kwargs.get("hpo", {}),
+            "show_images": kwargs.get("show_images", True), 
+            "save_gifs": kwargs.get("save_gifs", False), 
+            "results_path": kwargs.get("results_path", "./results"), 
+            "project_tag": kwargs.get("project_tag", ""), 
+            "report_every_epoch": kwargs.get("report_every_epoch", True), 
+            "patience": kwargs.get("patience", 0), 
+            "monitor": kwargs.get("monitor"), 
+            "monitor_mode": kwargs.get("monitor_mode", "auto"), 
+            "use_tensorboard": kwargs.get("tensorboard", False), 
+            "tensorboard_run_name": kwargs.get("tensorboard_run_name"), 
+            "tensorboard_path": kwargs.get("tensorboard_path"), 
+            "hpo": kwargs.get("hpo", {}), 
             "continual_kwargs": deepcopy(kwargs.get(
-                "continually_learn_kwargs",
-                kwargs.get("continual_kwargs", {}),
-            )),
-            "dataset_name": kwargs.get("dataset_name", "mnist"),
-            "loader_preprocess": kwargs.get("preprocess", "standardize"),
-            "features_path": kwargs.get("features_path", ""),
-            "onehot_labels": kwargs.get("onehot_labels", False),
-            "validation_ratio": kwargs.get("validation_ratio", 0.),
-            "use_valset": kwargs.get("use_valset", True),
-            "seed": kwargs.get("seed"),
-            "training_verbose": kwargs.get("verbose", 1),
-            "epochs": kwargs.get("epochs", 20),
-            "batch_size": kwargs.get("batch_size", 128),
-            "continual_return_features": kwargs.get("return_features"),
-            "continual_max_train_samples": kwargs.get("max_train_samples"),
-            "continual_max_val_samples": kwargs.get("max_val_samples"),
-            "continual_shuffle_buffer": kwargs.get("shuffle_buffer"),
-            "continual_pad": kwargs.get("pad", 0),
-            "initial_classifier": kwargs.get("initial_classifier"),
-            "save_weights": kwargs.get("save_weights", False),
+                "continually_learn_kwargs", 
+                kwargs.get("continual_kwargs", {})
+            )), 
+            "dataset_name": kwargs.get("dataset_name", "mnist"), 
+            "loader_preprocess": kwargs.get("preprocess", "standardize"), 
+            "features_path": kwargs.get("features_path", ""), 
+            "onehot_labels": kwargs.get("onehot_labels", False), 
+            "validation_ratio": kwargs.get("validation_ratio", 0.), 
+            "use_valset": kwargs.get("use_valset", True), 
+            "seed": kwargs.get("seed"), 
+            "dtype_policy": kwargs.get(
+                "dtype_policy", 
+                tf.keras.mixed_precision.global_policy().name
+            ), 
+            "deterministic_ops": kwargs.get("deterministic_ops", False), 
+            "training_verbose": kwargs.get("verbose", 1), 
+            "epochs": kwargs.get("epochs", 20), 
+            "batch_size": kwargs.get("batch_size", 128), 
+            "continual_return_features": kwargs.get("return_features"), 
+            "continual_max_train_samples": kwargs.get("max_train_samples"), 
+            "continual_max_val_samples": kwargs.get("max_val_samples"), 
+            "continual_shuffle_buffer": kwargs.get("shuffle_buffer"), 
+            "continual_pad": kwargs.get("pad", 0), 
+            "initial_classifier": kwargs.get("initial_classifier"), 
+            "save_weights": kwargs.get("save_weights", False), 
             "classifier_compile_overrides": deepcopy(
                 kwargs.get("classifier_kwargs", {}).get("compile_args", {})
-            ),
-            "fit_method": kwargs.get("fit_method", "fit"),
-            "fit_kwargs": dict(kwargs.get("fit_kwargs", {})),
+            ), 
+            "fit_method": kwargs.get("fit_method", "fit"), 
+            "fit_kwargs": dict(kwargs.get("fit_kwargs", {}))
         }
 
     initial_classifier = None
     paired_classifier_path = config.hpo.get("classifier_weights_path")
-    uses_replay_classifier = config.continually_learn.\
-        use_generative_model_classifier
+    uses_replay_classifier = config.continually_learn.use_generative_model_classifier
     resume_classifier = (
         model.get("generative_model") is None
         and config.model.weights_path is not None
         or paired_classifier_path is not None
         and not uses_replay_classifier
     ) if isinstance(model, dict) else False
+
     # Seed task heads from any restored standalone continual classifier.
     if resume_classifier:
         initial_classifier = model.get("classifier")
 
     return {
-        "show_images": config.training.show_images,
-        "save_gifs": config.training.save_gifs,
-        "results_path": config.training.results_path,
-        "project_tag": config.training.project_tag,
-        "report_every_epoch": config.training.report_every_epoch,
-        "patience": config.training.patience,
-        "monitor": config.training.monitor,
-        "monitor_mode": config.training.monitor_mode,
-        "use_tensorboard": config.training.tensorboard,
-        "tensorboard_run_name": config.training.tensorboard_run_name,
-        "tensorboard_path": config.training.tensorboard_path,
-        "hpo": config.hpo,
-        "continual_kwargs": config.continually_learn.kwargs(),
-        "dataset_name": config.dataset.name,
-        "loader_preprocess": config.dataset.preprocess,
-        "features_path": config.dataset.features_path,
-        "onehot_labels": config.dataset.onehot_labels,
-        "validation_ratio": config.dataset.validation_ratio,
-        "use_valset": config.training.use_valset,
-        "seed": config.training.seed,
-        "training_verbose": config.training.verbose,
-        "epochs": config.training.epochs,
-        "batch_size": config.dataset.batch_size,
-        "continual_return_features": config.dataset.return_features,
-        "continual_max_train_samples": config.dataset.max_train_samples,
-        "continual_max_val_samples": config.dataset.max_val_samples,
-        "continual_shuffle_buffer": config.dataset.shuffle_buffer,
-        "continual_pad": config.dataset.pad,
-        "initial_classifier": initial_classifier,
-        "save_weights": config.training.save_weights,
+        "show_images": config.training.show_images, 
+        "save_gifs": config.training.save_gifs, 
+        "results_path": config.training.results_path, 
+        "project_tag": config.training.project_tag, 
+        "report_every_epoch": config.training.report_every_epoch, 
+        "patience": config.training.patience, 
+        "monitor": config.training.monitor, 
+        "monitor_mode": config.training.monitor_mode, 
+        "use_tensorboard": config.training.tensorboard, 
+        "tensorboard_run_name": config.training.tensorboard_run_name, 
+        "tensorboard_path": config.training.tensorboard_path, 
+        "hpo": config.hpo, 
+        "continual_kwargs": config.continually_learn.kwargs(), 
+        "dataset_name": config.dataset.name, 
+        "loader_preprocess": config.dataset.preprocess, 
+        "features_path": config.dataset.features_path, 
+        "onehot_labels": config.dataset.onehot_labels, 
+        "validation_ratio": config.dataset.validation_ratio, 
+        "use_valset": config.training.use_valset, 
+        "seed": effective_seed(config), 
+        "dtype_policy": config.training.dtype_policy, 
+        "deterministic_ops": config.training.deterministic_ops, 
+        "training_verbose": config.training.verbose, 
+        "epochs": config.training.epochs, 
+        "batch_size": config.dataset.batch_size, 
+        "continual_return_features": config.dataset.return_features, 
+        "continual_max_train_samples": config.dataset.max_train_samples, 
+        "continual_max_val_samples": config.dataset.max_val_samples, 
+        "continual_shuffle_buffer": config.dataset.shuffle_buffer, 
+        "continual_pad": config.dataset.pad, 
+        "initial_classifier": initial_classifier, 
+        "save_weights": config.training.save_weights, 
         "classifier_compile_overrides": deepcopy(
             config.model.classifier_kwargs.get("compile_args", {})
-        ),
-        "fit_method": config.training.fit_method,
-        "fit_kwargs": dict(config.training.fit_kwargs),
+        ), 
+        "fit_method": config.training.fit_method, 
+        "fit_kwargs": dict(config.training.fit_kwargs)
     }
 
 
 def _resolve_reporting_options(
-    config: Config | None,
-    kwargs: Mapping[str, object],
+    config: Config | None, 
+    kwargs: Mapping[str, object]
 ) -> dict[str, object]:
     """Resolve direct and configured reporting values into one flat mapping.
 
@@ -183,65 +196,70 @@ def _resolve_reporting_options(
     # Preserve the interactive defaults used by direct notebook calls.
     if config is None:
         return {
-            "results_path": kwargs.get("results_path", "./results"),
-            "save_history_plot": kwargs.get("save_history_plot", False),
-            "save_csv": kwargs.get("save_csv", False),
-            "show_history_plot": kwargs.get("show_history_plot", True),
+            "results_path": kwargs.get("results_path", "./results"), 
+            "save_history_plot": kwargs.get("save_history_plot", False), 
+            "save_csv": kwargs.get("save_csv", False), 
+            "show_history_plot": kwargs.get("show_history_plot", True), 
             "plot_without_20percent": kwargs.get(
                 "plot_without_20percent", True
-            ),
-            "run_trainset_eval": kwargs.get("run_trainset_eval", True),
+            ), 
+            "run_trainset_eval": kwargs.get("run_trainset_eval", True), 
             "verbose": kwargs.get(
                 "verbose", kwargs.get("training_verbose", True)
-            ),
-            "run_valset_eval": kwargs.get("run_valset_eval", True),
+            ), 
+            "run_valset_eval": kwargs.get("run_valset_eval", True), 
             "evaluate_ensemble_accuracy": kwargs.get(
                 "evaluate_ensemble_accuracy", False
-            ),
+            ), 
             "ensemble_accuracy_kwargs": dict(
                 kwargs.get("ensemble_accuracy_kwargs") or {}
-            ),
-            "dataset_name": kwargs.get("dataset_name", "mnist"),
-            "save_final_images": kwargs.get("save_final_images", False),
-            "show_final_images": kwargs.get("show_final_images", True),
-            "final_images_steps": kwargs.get("final_images_steps", 1_000),
+            ), 
+            "dataset_name": kwargs.get("dataset_name", "mnist"), 
+            "save_final_images": kwargs.get("save_final_images", False), 
+            "show_final_images": kwargs.get("show_final_images", True), 
+            "final_images_steps": kwargs.get("final_images_steps", 1_000), 
             "final_images_cfg_scale": kwargs.get(
                 "final_images_cfg_scale", 3.0
-            ),
-            "save_final_gifs": kwargs.get("save_final_gifs", False),
+            ), 
+            "save_final_gifs": kwargs.get("save_final_gifs", False), 
+            "seed": effective_seed(
+                seed=kwargs.get("seed"), 
+                task=kwargs.get("task")
+            )
         }
 
     return {
-        "results_path": config.training.results_path,
-        "save_history_plot": config.reporting.save_history_plot,
-        "save_csv": config.reporting.save_csv,
-        "show_history_plot": config.reporting.show_history_plot,
-        "plot_without_20percent": config.reporting.plot_without_20percent,
-        "run_trainset_eval": config.reporting.run_trainset_eval,
-        "verbose": config.training.verbose,
-        "run_valset_eval": config.reporting.run_valset_eval,
+        "results_path": config.training.results_path, 
+        "save_history_plot": config.reporting.save_history_plot, 
+        "save_csv": config.reporting.save_csv, 
+        "show_history_plot": config.reporting.show_history_plot, 
+        "plot_without_20percent": config.reporting.plot_without_20percent, 
+        "run_trainset_eval": config.reporting.run_trainset_eval, 
+        "verbose": config.training.verbose, 
+        "run_valset_eval": config.reporting.run_valset_eval, 
         "evaluate_ensemble_accuracy": (
             config.reporting.evaluate_ensemble_accuracy
-        ),
+        ), 
         "ensemble_accuracy_kwargs": dict(
             config.reporting.ensemble_accuracy_kwargs or {}
-        ),
-        "dataset_name": config.dataset.name,
-        "save_final_images": config.reporting.save_final_images,
-        "show_final_images": config.reporting.show_final_images,
-        "final_images_steps": config.reporting.final_images_steps,
-        "final_images_cfg_scale": config.reporting.final_images_cfg_scale,
-        "save_final_gifs": config.reporting.save_final_gifs,
+        ), 
+        "dataset_name": config.dataset.name, 
+        "save_final_images": config.reporting.save_final_images, 
+        "show_final_images": config.reporting.show_final_images, 
+        "final_images_steps": config.reporting.final_images_steps, 
+        "final_images_cfg_scale": config.reporting.final_images_cfg_scale, 
+        "save_final_gifs": config.reporting.save_final_gifs, 
+        "seed": effective_seed(config)
     }
 
 
 def _evaluate_diffusion(
-    model: DiffusionModel,
-    dataset: tf.data.Dataset,
-    network_name: str,
-    verbose: int | bool,
-    evaluate_ensemble_accuracy: bool,
-    ensemble_accuracy_kwargs: Mapping[str, object],
+    model: DiffusionModel, 
+    dataset: tf.data.Dataset, 
+    network_name: str, 
+    verbose: int | bool, 
+    evaluate_ensemble_accuracy: bool, 
+    ensemble_accuracy_kwargs: Mapping[str, object]
 ) -> dict[str, object]:
     """Evaluate one raw or EMA diffusion network on one dataset.
 
@@ -260,18 +278,18 @@ def _evaluate_diffusion(
     # Ask V2 wrappers to evaluate generator and classifier together.
     if isinstance(model, DiffusionClassifierV2):
         results = model.evaluate(
-            eval_both=True,
-            x=dataset,
-            network_name=network_name,
-            verbose=verbose,
+            eval_both=True, 
+            x=dataset, 
+            network_name=network_name, 
+            verbose=verbose
         )
     # Use the standard wrapper evaluation path for other diffusion models.
     else:
         results = model.evaluate(
-            dataset,
-            network_name=network_name,
-            return_dict=True,
-            verbose=verbose,
+            dataset, 
+            network_name=network_name, 
+            return_dict=True, 
+            verbose=verbose
         )
 
     # Add ensemble accuracy beside the ordinary evaluation metrics.
@@ -305,9 +323,11 @@ def _plain_config_value(value: object) -> object:
             key: _plain_config_value(item)
             for key, item in value.items()
         }
+
     # Give unordered constructor collections a plain YAML sequence form.
     if isinstance(value, (set, frozenset)):
         return [_plain_config_value(item) for item in value]
+
     # Convert TensorFlow list wrappers, tuples, and ordinary sequences.
     if isinstance(value, Sequence) and not isinstance(
         value, (str, bytes, bytearray)
@@ -416,6 +436,8 @@ def train_model(
     validation_ratio = training_options["validation_ratio"]
     use_valset = training_options["use_valset"]
     seed = training_options["seed"]
+    dtype_policy = training_options["dtype_policy"]
+    deterministic_ops = training_options["deterministic_ops"]
     training_verbose = training_options["training_verbose"]
     epochs = training_options["epochs"]
     batch_size = training_options["batch_size"]
@@ -540,17 +562,25 @@ def train_model(
     ]
     callbacks_list = list(base_callbacks)
     forwarded_callbacks = []
+    generative_forwarded_callbacks = []
 
     image_callback = ImageGeneratorCallback(
         show_images=show_images, 
         save_gifs=save_gifs, 
         results_path=results_path, 
-        project_tag=project_tag
+        project_tag=project_tag, 
+        seed=seed
     )
     # Sample diffusion trajectories only for compatible wrappers.
-    if isinstance(model, DiffusionModel) and \
-    report_every_epoch and not model.swap_noise_image:
-        callbacks_list.append(image_callback)
+    if isinstance(checkpoint_model, DiffusionModel) and \
+    report_every_epoch and not checkpoint_model.swap_noise_image:
+        # Continual bundles use this callback only during their compatible
+        # replay-model phase, never during standalone classifier fitting.
+        if is_continual:
+            generative_forwarded_callbacks.append(image_callback)
+        # Ordinary diffusion training uses the single shared callback list.
+        else:
+            callbacks_list.append(image_callback)
 
     # Add ordinary early stopping outside continual bundle training.
     if not is_continual and patience > 0 and not progressive_fit:
@@ -564,6 +594,30 @@ def train_model(
     # Record the callback's concrete timestamped results directory.
     if config is not None:
         config.training.results_path = image_callback.results_path
+
+    # Give configured continual runs a stable task-checkpoint root before the
+    # initial resolved config is written. A resumed run continues the same
+    # immutable checkpoint sequence unless an explicit new root was supplied.
+    if is_continual and continual_kwargs.get("save_task_checkpoints", False) \
+    and continual_kwargs.get("checkpoint_dir") is None:
+        resume_path = continual_kwargs.get("resume_from")
+        # Continue the checkpoint sequence selected by the caller.
+        if resume_path is not None:
+            resolved_checkpoint_dir = str(
+                find_latest_task_checkpoint(resume_path).parent
+            )
+        # Start a new checkpoint sequence inside the result directory.
+        else:
+            resolved_checkpoint_dir = os.path.join(
+                image_callback.results_path,
+                "checkpoints",
+            )
+        continual_kwargs["checkpoint_dir"] = resolved_checkpoint_dir
+        # Persist the resolved recovery root in typed configurations.
+        if config is not None:
+            config.continually_learn.checkpoint_dir = (
+                resolved_checkpoint_dir
+            )
 
     # Configure TensorBoard metrics and hyperparameter metadata when requested.
     if use_tensorboard:
@@ -589,13 +643,17 @@ def train_model(
             tensorboard_path, 
             filename_suffix="." + tensorboard_name
         )
-        with writer.as_default():
-            tf.summary.text(
-                "hyperparameters", 
-                json.dumps(hpo.get("params", {}), sort_keys=True), 
-                step=0
-            )
-        writer.flush()
+        try:
+            with writer.as_default():
+                tf.summary.text(
+                    "hyperparameters",
+                    json.dumps(hpo.get("params", {}), sort_keys=True),
+                    step=0
+                )
+            writer.flush()
+        finally:
+            # Release the event writer before task-level writers are created.
+            writer.close()
 
     # Append caller-provided callbacks after the shared defaults.
     if extra_callbacks is not None:
@@ -609,22 +667,42 @@ def train_model(
             image_callback.results_path, 
             "config.yaml"
         )
+        declared_input_path = config.hpo.get("input_config_path")
+
+        # Ordinary runs retain one pre-training config that final artifact-path
+        # rewrites cannot invalidate as a task-checkpoint recovery input. HPO
+        # already supplies its own immutable per-trial input config.
+        if declared_input_path is None:
+            input_config_path = os.path.join(
+                image_callback.results_path,
+                "input_config.yaml",
+            )
+            config.hpo["input_config_path"] = input_config_path
+            # A timestamped result directory should be fresh; refuse to replace
+            # a purported immutable recovery specification if it is not.
+            if os.path.exists(input_config_path):
+                raise FileExistsError(
+                    f"Immutable input config already exists: {input_config_path}"
+                )
+
+            save_config(config, input_config_path)
+
         save_config(config, config_path)
 
     progressive_call_kwargs = {
-        "x": trainset,
-        "validation_data": valset,
-        "callbacks": callbacks_list,
-        "verbose": training_verbose,
-        **fit_kwargs,
+        "x": trainset, 
+        "validation_data": valset, 
+        "callbacks": callbacks_list, 
+        "verbose": training_verbose, 
+        **fit_kwargs
     }
     standard_fit_kwargs = {
-        "x": trainset,
-        "epochs": epochs,
-        "validation_data": valset,
-        "callbacks": callbacks_list,
-        "verbose": training_verbose,
-        **fit_kwargs,
+        "x": trainset, 
+        "epochs": epochs, 
+        "validation_data": valset, 
+        "callbacks": callbacks_list, 
+        "verbose": training_verbose, 
+        **fit_kwargs
     }
 
     # Delegate continual bundles to the incremental-learning workflow.
@@ -639,21 +717,102 @@ def train_model(
         continual_kwargs = deepcopy(continual_kwargs)
         dataset_class_num, _, _ = get_dataset_spec(dataset_name)
         configured_class_num = continual_kwargs.pop("class_num", None)
-        class_order, task_groups = resolve_continual_schedule(
-            configured_class_num,
-            continual_kwargs.get("class_order"),
-            continual_kwargs.get("task_groups"),
-            available_class_num=dataset_class_num,
-        )
+        task_size = continual_kwargs.pop("task_size", 1)
+        class_order_mode = continual_kwargs.pop("class_order_mode", "fixed")
+        task_order_mode = continual_kwargs.pop("task_order_mode", "fixed")
+        schedule_seed = continual_kwargs.get("seed", seed)
+        resume_path = continual_kwargs.get("resume_from")
+
+        # Reuse the authoritative materialized schedule on configured resume.
+        if resume_path is not None:
+            recovered_schedule = load_task_checkpoint(resume_path)
+            class_order = list(recovered_schedule.class_order)
+            task_groups = [
+                list(group) for group in recovered_schedule.task_groups
+            ]
+            # Keep a configured class count compatible with the saved schedule.
+            if configured_class_num is not None \
+            and int(configured_class_num) != len(class_order):
+                raise ValueError(
+                    "Configured class_num differs from the checkpoint schedule."
+                )
+
+            requested_order = continual_kwargs.get("class_order")
+
+            # Compare explicit order only when stochastic modes cannot alter it.
+            if requested_order is not None and class_order_mode == "fixed" and \
+            task_order_mode == "fixed" and list(requested_order) != class_order:
+                raise ValueError(
+                    "Configured class_order differs from the checkpoint schedule."
+                )
+
+            requested_groups = continual_kwargs.get("task_groups")
+
+            # Compare explicit groups when whole-task order remains fixed.
+            if requested_groups is not None and task_order_mode == "fixed" \
+            and [list(group) for group in requested_groups] != task_groups:
+                raise ValueError(
+                    "Configured task_groups differ from the checkpoint schedule."
+                )
+
+            # Prevent a foreign checkpoint from exceeding dataset vocabulary.
+            if len(class_order) > dataset_class_num:
+                raise ValueError(
+                    "Checkpoint schedule exceeds the selected dataset classes."
+                )
+        # Resolve stochastic/fixed scheduling normally for a new experiment.
+        else:
+            class_order, task_groups = resolve_continual_schedule(
+                configured_class_num, 
+                continual_kwargs.get("class_order"), 
+                continual_kwargs.get("task_groups"), 
+                available_class_num=dataset_class_num, 
+                task_size=task_size, 
+                class_order_mode=class_order_mode, 
+                task_order_mode=task_order_mode, 
+                seed=schedule_seed
+            )
+
         class_num = len(class_order)
         # Forward one canonical schedule to the lower-level continual loop.
         continual_kwargs["class_order"] = class_order
         continual_kwargs["task_groups"] = task_groups
+        # The schedule is already materialized above. Prevent the lower-level
+        # API from randomizing it again or rejecting explicit groups under a
+        # stale stochastic mode; the original request remains in metadata.
+        continual_kwargs["class_order_mode"] = "fixed"
+        continual_kwargs["task_order_mode"] = "fixed"
+        # Materialize stochastic schedules in the final typed configuration.
+        if config is not None:
+            config.hpo.setdefault("schedule_request", {
+                "task_size": task_size, 
+                "class_order_mode": class_order_mode, 
+                "task_order_mode": task_order_mode, 
+                "seed": schedule_seed
+            })
+            # The final saved config is independently reproducible: it carries
+            # the realized stochastic schedule rather than relying on a future
+            # Python shuffle implementation.
+            config.continually_learn.class_num = class_num
+            config.continually_learn.class_order = list(class_order)
+            config.continually_learn.task_groups = [
+                list(group) for group in task_groups
+            ]
+            config.continually_learn.class_order_mode = "fixed"
+            config.continually_learn.task_order_mode = "fixed"
 
         generative_kwargs = continual_kwargs.pop(
             "generative_model_kwargs", {}
         )
         use_buffer = continual_kwargs.get("use_buffer", False)
+        baseline_name = str(continual_kwargs.get("baseline") or "").lower()
+        no_generator_baselines = {
+            "sequential", "sequential_finetuning", "cumulative", 
+            "cumulative_upper_bound", "reservoir_er"
+        }
+        omit_generative_model = use_buffer or (
+            baseline_name in no_generator_baselines
+        )
         use_loaded_opt = continual_kwargs.pop("use_loaded_opt", True)
         continual_kwargs.pop("return_details", None)
 
@@ -712,9 +871,11 @@ def train_model(
             use_loaded_opt=use_loaded_opt, 
             batch_size=batch_size, 
             epochs=epochs, 
-            generative_model=None if use_buffer else model["generative_model"], 
+            generative_model=None if omit_generative_model \
+                            else model["generative_model"], 
             generative_model_kwargs=generative_kwargs, 
             callbacks_list=forwarded_callbacks,
+            generative_callbacks_list=generative_forwarded_callbacks, 
             return_details=True, 
             return_features=continual_return_features, 
             max_train_samples=continual_max_train_samples, 
@@ -722,6 +883,8 @@ def train_model(
             shuffle_buffer=continual_shuffle_buffer, 
             pad=continual_pad, 
             dataset_seed=seed, 
+            dtype_policy=dtype_policy, 
+            deterministic_ops=deterministic_ops, 
             initial_classifier=initial_classifier, 
             callback_patience=patience, 
             callback_monitor=monitor, 
@@ -735,26 +898,48 @@ def train_model(
         model["classifier"] = details["model"]
         model["generative_model"] = details["generative_model"]
         model["continual_details"] = details
+        # Export task/class/phase metrics after all task fits have completed.
+        if use_tensorboard:
+            write_continual_tensorboard_summaries(
+                details, 
+                tensorboard_path
+            )
+
         history = {"continual_accuracy": details["accuracies"]}
         # Preserve optional ensemble scores beside ordinary continual accuracy.
         if details["ensemble_accuracies"]:
             history["continual_ensemble_accuracy"] = details[
                 "ensemble_accuracies"
             ]
+
+        selected_validation_matrix = (
+            details.get("validation_ensemble_accuracy_matrix", [])
+            if details.get("use_ensemble_accuracy", False)
+            else details.get("validation_accuracy_matrix", [])
+        )
         final_val_accuracy = [
-            next((
-                task_history[name][-1]
-                for name in (
-                    "val_total_accuracy",
-                    "val_classifier_accuracy",
-                    "val_cls_token_accuracy",
-                    "val_avg_pooling_accuracy",
-                    "val_accuracy",
-                )
-                if task_history.get(name)
-            ), np.nan)
-            for task_history in details["histories"]
+            float(np.nanmean(np.asarray(row)[:index + 1]))
+            for index, row in enumerate(selected_validation_matrix)
         ]
+
+        # Preserve legacy history extraction for models without a validation
+        # prediction matrix.
+        if not final_val_accuracy:
+            final_val_accuracy = [
+                next((
+                    task_history[name][-1]
+                    for name in (
+                        "val_total_accuracy", 
+                        "val_classifier_accuracy", 
+                        "val_cls_token_accuracy", 
+                        "val_avg_pooling_accuracy", 
+                        "val_accuracy"
+                    )
+                    if task_history.get(name)
+                ), np.nan)
+                for task_history in details["histories"]
+            ]
+
         history["task_val_accuracy"] = final_val_accuracy
     # Train V2's generator progressively, then retain its ordinary classifier
     # phase so the configured selector mirrors the existing combined fit.
@@ -762,6 +947,7 @@ def train_model(
         model, DiffusionClassifierV2
     ):
         discriminator_kwargs = dict(fit_kwargs)
+
         # Remove curriculum-only values before the ordinary discriminator fit.
         for name in _PROGRESSIVE_FIT_KEYS:
             discriminator_kwargs.pop(name, None)
@@ -770,16 +956,16 @@ def train_model(
             **progressive_call_kwargs
         ).history
         discriminator_history = model.fit_discriminator(
-            x=trainset,
-            epochs=epochs,
-            validation_data=valset,
-            callbacks=callbacks_list,
-            verbose=training_verbose,
-            **discriminator_kwargs,
+            x=trainset, 
+            epochs=epochs, 
+            validation_data=valset, 
+            callbacks=callbacks_list, 
+            verbose=training_verbose, 
+            **discriminator_kwargs
         ).history
         history = model._merge_result_dicts(
-            (generator_history, discriminator_history),
-            ("generator", "discriminator"),
+            (generator_history, discriminator_history), 
+            ("generator", "discriminator")
         )
     # Invoke a caller-selected training method when it is not standard fit.
     elif fit_method != "fit":
@@ -932,6 +1118,142 @@ def train_model(
     return history
 
 
+def _report_final_visuals(
+    model: tf.keras.Model | None, 
+    dataset_name: str, 
+    results_path: str | None, 
+    show_final_images: bool, 
+    save_final_images: bool, 
+    save_final_gifs: bool, 
+    final_images_steps: int, 
+    final_images_cfg_scale: float, 
+    seed: int | None
+) -> None:
+    """Generate the requested final VAE or diffusion visual artifacts.
+
+    Args:
+        model (tf.keras.Model | None): Final generative model. ``None`` and
+            unsupported ordinary classifiers are ignored.
+        dataset_name (str): Dataset name used to infer unconditional VAE image
+            count and shape.
+        results_path (str | None): Artifact directory. It may be ``None`` only
+            when every save option is disabled.
+        show_final_images (bool): Display generated final samples.
+        save_final_images (bool): Save generated final samples as PNG.
+        save_final_gifs (bool): Save a diffusion denoising trajectory as GIF.
+            VAE models have no iterative denoising trajectory and ignore it.
+        final_images_steps (int): Diffusion sampling step count.
+        final_images_cfg_scale (float): Diffusion classifier-free guidance
+            scale.
+        seed (int | None): Master experiment seed used to derive an isolated
+            final-report sampling stream.
+
+    Returns:
+        None: Requested artifacts are displayed and/or written in place.
+
+    Raises:
+        ValueError: If GIF output is requested from a swapped-noise diffusion
+            wrapper, which has no denoising trajectory.
+    """
+
+    # Ordinary classifiers have no sample-generation reporting protocol.
+    if not isinstance(model, (VariationalAutoencoder, DiffusionModel)):
+        return
+    # Avoid any sampling work when no compatible output was requested.
+    if not any((show_final_images, save_final_images, save_final_gifs)):
+        return
+
+    # VAEs produce final samples but no iterative denoising GIF trajectory.
+    if isinstance(model, VariationalAutoencoder):
+        # Ignore a GIF-only request because a VAE has no denoising trajectory.
+        if not (show_final_images or save_final_images):
+            return
+
+        final_seed = derive_seed(seed, "final_report", "vae_generation")
+        class_num, image_shape, _ = get_dataset_spec(dataset_name)
+        # Generate one example for each known conditional class.
+        if model.conditioned:
+            classes = model.seen_classes or list(range(model.class_num or 0))
+            imgs, _ = model.generate(
+                classes=classes, 
+                samples_per_class=1, 
+                seed=final_seed
+            )
+        # Generate one unconditional example per dataset class.
+        else:
+            imgs = model.generate(
+                samples_per_class=class_num, 
+                seed=final_seed
+            )
+
+        imgs = np.asarray(imgs)
+        expected_width = int(np.prod(image_shape))
+        # Plot only flattened samples compatible with the configured dataset.
+        if imgs.ndim == 2 and len(imgs) > 0 and imgs.shape[-1] == expected_width:
+            imgs = imgs.reshape((-1, *image_shape))
+            imgs_save_path = os.path.join(
+                results_path, 
+                "final-images.png"
+            ) if save_final_images else None
+            plot_images(
+                imgs, 
+                show_images=show_final_images, 
+                save_path=imgs_save_path
+            )
+
+        return
+
+    # Swapped-noise wrappers cannot expose intermediate denoising frames.
+    if save_final_gifs and model.swap_noise_image:
+        raise ValueError(
+            "Final GIF trajectories are unavailable when swap_noise_image=True."
+        )
+
+    final_seed = derive_seed(seed, "final_report", "diffusion_sampling")
+
+    # Sample and save the full denoising trajectory when GIF output is enabled.
+    if save_final_gifs:
+        imgs, frames1, frames2 = model.sample(
+            network_name=model.test_network_name, 
+            scale=final_images_cfg_scale, 
+            steps=final_images_steps, 
+            return_x_ts=True, 
+            return_x0s=True, 
+            seed=final_seed
+        )
+        create_gif(
+            os.path.join(
+                results_path, 
+                f"final-gifs_steps-{final_images_steps}"
+                f"_scale-{final_images_cfg_scale:.1f}.gif", 
+            ), 
+            frames1, 
+            frames2
+        )
+    # Sample only final images when a trajectory is unnecessary.
+    else:
+        imgs = model.sample(
+            network_name=model.test_network_name, 
+            scale=final_images_cfg_scale, 
+            steps=final_images_steps, 
+            seed=final_seed
+        )
+
+    imgs_save_path = os.path.join(
+        results_path, 
+        f"final-images_steps-{final_images_steps}"
+        f"_scale-{final_images_cfg_scale:.1f}.png", 
+    ) if save_final_images else None
+
+    # Render final samples only when display or PNG output was requested.
+    if show_final_images or save_final_images:
+        plot_images(
+            imgs, 
+            show_images=show_final_images, 
+            save_path=imgs_save_path
+        )
+
+
 def report(
     config: Config | None = None, 
     history: Mapping[str, Sequence[float]] | None = None, 
@@ -960,6 +1282,7 @@ def report(
             ``dataset_name``, ``show_final_images``, ``save_final_images``,
             ``save_final_gifs``, ``final_images_steps``, and
             ``final_images_cfg_scale``.
+            ``seed`` controls deterministic final VAE generation.
 
     Returns:
         dict: Evaluation metrics. Enabled diffusion-classifier evaluations
@@ -999,6 +1322,7 @@ def report(
     final_images_steps = reporting_options["final_images_steps"]
     final_images_cfg_scale = reporting_options["final_images_cfg_scale"]
     save_final_gifs = reporting_options["save_final_gifs"]
+    seed = reporting_options["seed"]
     is_continual = isinstance(model, dict)
 
     # Restrict ensemble evaluation to wrappers that expose the classifier API.
@@ -1069,13 +1393,16 @@ def report(
         details = model.get("continual_details", {})
         # Expose task-balanced CL metrics and the complete evaluation matrix.
         eval_results.update(details.get("continual_metrics", {}))
+        eval_results["validation_continual_metrics"] = details.get(
+            "validation_continual_metrics", {}
+        )
         for name in (
-            "class_order",
-            "task_classes",
-            "accuracy_matrix",
-            "new_task_accuracy",
-            "old_task_accuracy",
-            "dataset_seed",
+            "class_order", 
+            "task_classes", 
+            "accuracy_matrix", 
+            "new_task_accuracy", 
+            "old_task_accuracy", 
+            "dataset_seed"
         ):
             # Copy only schedule metadata recorded by the continual learner.
             if name in details:
@@ -1099,6 +1426,34 @@ def report(
                 csv_evals_save_path, 
                 index=False
             )
+            write_continual_csv_artifacts(
+                details, 
+                results_path, 
+                metadata={
+                    "dtype_policy": details.get("dtype_policy"), 
+                    "seed": details.get("seed"), 
+                    "snapshot_network_name": details.get(
+                        "snapshot_network_name"
+                    ), 
+                    "use_ensemble_accuracy": details.get(
+                        "use_ensemble_accuracy", False
+                    )
+                }
+            )
+
+        # Continual bundles still honor final visual reporting for their
+        # trained replay model; classifier-only runs are ignored safely.
+        _report_final_visuals(
+            model.get("generative_model"), 
+            dataset_name, 
+            results_path, 
+            show_final_images, 
+            save_final_images, 
+            save_final_gifs, 
+            final_images_steps, 
+            final_images_cfg_scale, 
+            seed
+        )
 
         return eval_results
 
@@ -1129,38 +1484,17 @@ def report(
                 index=True
             )
 
-        # Generate display samples for variational autoencoders when requested.
-        if isinstance(model, VariationalAutoencoder) and (
-            show_final_images or save_final_images
-        ):
-            class_num, image_shape, _ = get_dataset_spec(dataset_name)
-
-            # Generate one example for each known conditional class.
-            if model.conditioned:
-                classes = model.seen_classes or list(range(model.class_num or 0))
-                imgs, _ = model.generate(
-                    classes=classes,
-                    samples_per_class=1
-                )
-            # Generate one unconditional example per dataset class.
-            else:
-                imgs = model.generate(samples_per_class=class_num)
-
-            imgs = np.asarray(imgs)
-            expected_width = int(np.prod(image_shape))
-            # Reshape valid flattened image samples before plotting.
-            if imgs.ndim == 2 and len(imgs) > 0 \
-            and imgs.shape[-1] == expected_width:
-                imgs = imgs.reshape((-1, *image_shape))
-                imgs_save_path = os.path.join(
-                    results_path,
-                    "final-images.png"
-                ) if save_final_images else None
-                plot_images(
-                    imgs, 
-                    show_images=show_final_images, 
-                    save_path=imgs_save_path
-                )
+        _report_final_visuals(
+            model, 
+            dataset_name, 
+            results_path, 
+            show_final_images, 
+            save_final_images, 
+            save_final_gifs, 
+            final_images_steps, 
+            final_images_cfg_scale, 
+            seed
+        )
 
         return eval_results
 
@@ -1187,12 +1521,12 @@ def report(
             print(f"{network_title} Network:")
             eval_results[f"{dataset_key}_{result_suffix}"] = (
                 _evaluate_diffusion(
-                    model,
-                    dataset,
-                    network_name,
-                    verbose,
-                    evaluate_ensemble_accuracy,
-                    ensemble_accuracy_kwargs,
+                    model, 
+                    dataset, 
+                    network_name, 
+                    verbose, 
+                    evaluate_ensemble_accuracy, 
+                    ensemble_accuracy_kwargs
                 )
             )
 
@@ -1205,66 +1539,24 @@ def report(
             index=True
         )
 
-    # Skip diffusion sampling when no visual artifact was requested.
-    if not any((show_final_images, save_final_images, save_final_gifs)):
-        return eval_results
-
-    # Reject GIF trajectories unavailable in swapped-noise sampling mode.
-    if save_final_gifs and model.swap_noise_image:
-        raise ValueError(
-            "Final GIF trajectories are unavailable when swap_noise_image=True."
-        )
-
-    # Sample and save full denoising trajectories for GIF output.
-    if save_final_gifs and not model.swap_noise_image:
-        imgs, frames1, frames2 = model.sample(
-            network_name=model.test_network_name,
-            scale=final_images_cfg_scale, 
-            steps=final_images_steps, 
-            return_x_ts=True, 
-            return_x0s=True
-        )
-        create_gif(
-            os.path.join(
-                results_path, 
-                f"final-gifs_steps-{final_images_steps}"
-                f"_scale-{final_images_cfg_scale:.1f}.gif"
-            ), 
-            frames1, frames2
-        )
-    # Sample only final images when GIF trajectories are unnecessary.
-    else:
-        imgs = model.sample(
-            network_name=model.test_network_name,
-            scale=final_images_cfg_scale, 
-            steps=final_images_steps
-        )
-    
-    # Prepare a final-image path when file output is enabled.
-    if save_final_images:
-        imgs_save_path = os.path.join(
-            results_path, 
-            f"final-images_steps-{final_images_steps}"
-            f"_scale-{final_images_cfg_scale:.1f}.png"
-        )
-    # Disable final-image file output while retaining optional display.
-    else:
-        imgs_save_path = None
-
-    # Render final samples when display or file output was requested.
-    if show_final_images or save_final_images:
-        plot_images(
-            imgs,
-            show_images=show_final_images,
-            save_path=imgs_save_path
-        )
+    _report_final_visuals(
+        model, 
+        dataset_name, 
+        results_path, 
+        show_final_images, 
+        save_final_images, 
+        save_final_gifs, 
+        final_images_steps, 
+        final_images_cfg_scale, 
+        seed
+    )
 
     return eval_results 
 
 
 def main(
     config: Config | None = None, 
-    teacher_network: tf.keras.Model | None = None,
+    teacher_network: tf.keras.Model | None = None, 
     **kwargs: object
 ) -> dict[str, object]:
     """Run dataset setup, model construction, fitting, and final reporting.
@@ -1293,7 +1585,9 @@ def main(
             f"the following settings:\n{config}"
         )
 
-        seed = config.training.seed
+        seed = effective_seed(config)
+        dtype_policy = config.training.dtype_policy
+        deterministic_ops = config.training.deterministic_ops
     # Announce direct settings and obtain their seed.
     else:
         print(
@@ -1301,11 +1595,16 @@ def main(
             f"the following settings:\n{kwargs}"
         )
 
-        seed = kwargs.get("seed")
+        seed = effective_seed(
+            seed=kwargs.get("seed"), 
+            task=kwargs.get("task")
+        )
+        dtype_policy = kwargs.get("dtype_policy", "float32")
+        deterministic_ops = kwargs.get("deterministic_ops", False)
 
-    # Seed supported random generators for reproducible orchestration.
-    if seed is not None:
-        utils.set_random_seed(seed)
+    # Install policy and seed before constructing datasets, models, layers, or
+    # optimizers. Keras seeds Python, NumPy, and TensorFlow together.
+    configure_runtime(seed, dtype_policy, deterministic_ops)
 
     trainset, valset = get_datasets(
         config, 

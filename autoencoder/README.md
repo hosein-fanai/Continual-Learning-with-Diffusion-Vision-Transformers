@@ -74,7 +74,10 @@ Top-level `**kwargs` goes to `tf.keras.Model`, so common valid examples are
 `name`, `dtype`, and `trainable`; unknown keys fail in Keras.
 
 `train` accepts `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
-`validation_data`, `callbacks_list`, `callbacks_monitor`, `clf`, and `verbose`.
+`validation_data`, `callbacks_list`, `callbacks_monitor`, `clf`, `verbose`, and
+the optional positive `steps_per_epoch`. Setting the latter repeats the
+prepared dataset and fixes the optimizer updates in each epoch; its default
+`None` preserves finite-dataset fitting.
 Its `train_num` behavior is:
 
 - `-1`: use each supplied row once, with no manual resampling;
@@ -88,9 +91,10 @@ sample array and ignores `classes`/`onehot_y_output`.
 ## `VAEClassifier`
 
 `VAEClassifier` fixes conditional mode, attaches a classifier, and adds
-`alpha * categorical_crossentropy` plus accuracy trackers. Forward, training,
-and evaluation all classify reconstructed vectors and average categorical
-cross-entropy over each batch.
+`alpha * categorical_crossentropy` plus accuracy trackers. Its VAE reconstructs
+from `(x, y)`, but its classifier predicts directly from `x`; ground-truth
+labels therefore cannot leak into predictions through a label-conditioned
+reconstruction. Classification cross-entropy is averaged over each batch.
 
 ```python
 from autoencoder import VAEClassifier
@@ -113,8 +117,8 @@ configuration later.
 
 `VAEClassifier.train(**kwargs)` accepts only the base training controls
 `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
-`validation_data`, `callbacks_list`, and `verbose`. It supplies `clf` and
-monitors `val_clf_accuracy` itself.
+`validation_data`, `callbacks_list`, `verbose`, and `steps_per_epoch`. It
+supplies `clf` and monitors `val_clf_accuracy` itself.
 
 ## Decoder accuracy callback
 

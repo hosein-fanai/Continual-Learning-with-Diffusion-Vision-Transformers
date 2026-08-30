@@ -108,6 +108,16 @@ class EnsembleAccuracy(metrics.Metric):
             ``None``.
         """
 
+        kwargs = dict(kwargs)
+        wrapper_policy = getattr(diffusion_clf, "dtype_policy", None)
+        kwargs.setdefault(
+            "dtype",
+            getattr(
+                wrapper_policy,
+                "variable_dtype",
+                tf.keras.mixed_precision.global_policy().variable_dtype,
+            ),
+        )
         super().__init__(
             name=name, 
             **kwargs
@@ -299,17 +309,18 @@ class EnsembleAccuracy(metrics.Metric):
             timesteps
         )
 
+        stable_dtype = tf.as_dtype(self.dtype)
         signal_power = tf.cast(
             tf.square(signal_rates), 
-            tf.float32
+            stable_dtype,
         )
         noise_power = tf.cast(
             tf.square(noise_rates), 
-            tf.float32
+            stable_dtype,
         )
         epsilon = tf.cast(
             tf.keras.backend.epsilon(), 
-            tf.float32
+            stable_dtype,
         )
         log_snr = (
             tf.math.log(tf.maximum(signal_power, epsilon))

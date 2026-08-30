@@ -9,22 +9,34 @@ import math
 from typing import Any
 
 from common.argument_saver import ArgumentSaverModel
+from common.runtime import derive_seed
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
-def _sample_latent(values: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+def _sample_latent(
+    values: tuple[tf.Tensor, tf.Tensor],
+    seed: int | None = None,
+    dtype: tf.dtypes.DType | str | None = None,
+) -> tf.Tensor:
     """Sample a reparameterized latent vector from Gaussian parameters.
 
     Args:
         values (tuple[tf.Tensor, tf.Tensor]): Latent mean and log-variance
             tensors with identical shapes.
+        seed (int | None): Optional TensorFlow operation seed.
+        dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
 
     Returns:
         tf.Tensor: Reparameterized sample with the same shape and dtype.
     """
 
-    return VariationalAutoencoder.compute_z(values[0], values[1])
+    return VariationalAutoencoder.compute_z(
+        values[0],
+        values[1],
+        seed=seed,
+        dtype=dtype,
+    )
 
 
 def _batch_size(value: tf.Tensor) -> tf.Tensor:
@@ -56,6 +68,7 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         source_shape: tuple[int, ...] | list[int], 
         add_kl: bool = False, 
         latent_dim_ratio: float = 1.0, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Build a functional Keras model with statically known reshape sizes.
@@ -66,6 +79,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
                 feature dimensions, excluding batch.
             add_kl (bool): Whether flattening creates Gaussian latent parameters.
             latent_dim_ratio (float): Positive latent-to-flattened-width ratio.
+            seed (int | None): Parent seed used to derive this bottleneck's
+                reparameterization stream.
             **kwargs (Any): Standard Keras model options.
 
         Returns:
@@ -81,15 +96,25 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         )
         kwargs = dict(kwargs)
         model_name = kwargs.get("name", None) or "variational_reshaper"
+        reparameterization_seed = derive_seed(
+            seed,
+            "variational_reshaper",
+            model_name,
+            "reparameterization",
+        )
         dtype = kwargs.pop("dtype", None)
         kwargs.pop("dynamic", None)
-        # Use a mixed-precision policy's compute dtype for the functional input.
-        if isinstance(dtype, tf.keras.mixed_precision.Policy):
-            input_dtype = dtype.compute_dtype
-        # Otherwise use the explicit dtype or TensorFlow's float32 default.
+        # Resolve omitted dtypes through the active global numeric policy.
+        if dtype is None:
+            policy = tf.keras.mixed_precision.global_policy()
+        # Preserve an already-resolved mixed-precision policy.
+        elif isinstance(dtype, tf.keras.mixed_precision.Policy):
+            policy = dtype
+        # Convert an explicit dtype name into a uniform Keras policy.
         else:
-            input_dtype = dtype or tf.float32
-        layer_dtype_kwargs = {} if dtype is None else {"dtype": dtype}
+            policy = tf.keras.mixed_precision.Policy(dtype)
+        input_dtype = policy.compute_dtype
+        layer_dtype_kwargs = {"dtype": policy}
 
         flattened_dim = math.prod(source_shape)
         # Build an image-shaped input and flattening path for encoder use.
@@ -132,6 +157,10 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             )(x)
             z = layers.Lambda(
                 _sample_latent,
+                arguments={
+                    "seed": reparameterization_seed,
+                    "dtype": policy.variable_dtype,
+                },
                 name=f"{model_name}/sample"
             )((z_mean, z_log_var))
             x = layers.Dense(
@@ -156,7 +185,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             "reshape_type": reshape_type, 
             "source_shape": source_shape, 
             "add_kl": add_kl, 
-            "latent_dim_ratio": latent_dim_ratio
+            "latent_dim_ratio": latent_dim_ratio,
+            "seed": seed,
         })
         self._init_config.update(layers.Layer.get_config(self))
         self.source_shape_ = source_shape
@@ -253,6 +283,7 @@ def run_self_tests() -> dict[str, str]:
         (4, 4, 3), 
         add_kl=True, 
         latent_dim_ratio=0.5, 
+        seed=37,
         name="depth_2_reshaper"
     )
     z, mean, log_var = variational(x)
@@ -260,6 +291,7 @@ def run_self_tests() -> dict[str, str]:
     assert mean.shape == log_var.shape == (2, 24)
     assert variational.output_shape[1][-1] == 24
     assert variational.get_layer("depth_2_reshaper/z") is not None
+    assert variational.get_config()["seed"] == 37
 
     unflatten = VariationalReshaper(
         "unflatten", 
@@ -273,6 +305,7 @@ def run_self_tests() -> dict[str, str]:
     clone = VariationalReshaper.from_config(variational.get_config())
     assert clone(x)[0].shape == z.shape
     assert clone.output_shape[1][-1] == 24
+    assert clone.seed == 37
 
     try:
         VariationalReshaper("flatten", (1,), add_kl=True, latent_dim_ratio=0.1)

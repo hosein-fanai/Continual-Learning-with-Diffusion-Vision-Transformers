@@ -2,33 +2,51 @@
 
 from __future__ import annotations
 
+import tensorflow as tf
+
 import numpy as np
 
 from collections import deque
 
-from collections.abc import Iterable, Sequence
-from numbers import Integral
-
 import random
+
+from collections.abc import Iterable, Mapping, Sequence
+from numbers import Integral
+from typing import Literal
+
+
+ReplayStrategy = Literal["fifo", "reservoir", "class_balanced"]
+_STRATEGY_ALIASES = {
+    "fifo": "fifo", 
+    "reservoir": "reservoir", 
+    "class_balanced": "class_balanced", 
+    "class-balanced": "class_balanced", 
+    "class_balanced_reservoir": "class_balanced"
+}
 
 
 class ReplayBuffer(object):
     """Store and randomly replay ``(sample, label)`` items.
 
-    The backing :class:`collections.deque` discards the oldest item from its
-    left side when a bounded buffer is full. Sampling is non-destructive and
-    uses an instance-local seeded random generator.
+    FIFO storage (the default) uses a bounded :class:`collections.deque` and is
+    exactly backward compatible with the original implementation. ``reservoir``
+    applies Algorithm R, giving every item observed in the stream equal
+    inclusion probability. ``class_balanced`` assigns near-equal per-class
+    quotas and applies reservoir sampling independently inside each class.
+    Sampling is non-destructive and uses an instance-local seeded generator.
 
     Attributes:
         maxlen (int | None): Maximum retained item count.  ``None`` creates an
             unbounded deque and ``0`` creates a deque that retains no items.
         buffer (collections.deque): Current replay items, initialized empty.
+        strategy (ReplayStrategy): Selected insertion/eviction policy.
     """
 
     def __init__(
         self: ReplayBuffer, 
         maxlen: int | None, 
-        seed: int | float | str | bytes | bytearray | None = None
+        seed: int | float | str | bytes | bytearray | None = None, 
+        strategy: ReplayStrategy | str = "fifo"
     ) -> None:
         """Create an empty replay buffer with a local random generator.
 
@@ -39,13 +57,18 @@ class ReplayBuffer(object):
             seed (int | float | str | bytes | bytearray | None): Seed for this
                 buffer's private generator. ``None`` uses system entropy and
                 no module-level random state is changed.
+            strategy (ReplayStrategy | str): ``"fifo"`` (the exact historical
+                behavior), ``"reservoir"`` (uniform Algorithm R), or
+                ``"class_balanced"`` (balanced per-class reservoirs). The
+                aliases ``"class-balanced"`` and
+                ``"class_balanced_reservoir"`` are accepted.
 
         Returns:
             None.
 
         Raises:
             ValueError: If ``maxlen`` is neither ``None`` nor a non-boolean,
-                nonnegative integer.
+                nonnegative integer, or if ``strategy`` is unsupported.
         """
 
         # Require an optional non-boolean integral buffer capacity.
@@ -58,8 +81,16 @@ class ReplayBuffer(object):
 
         self.maxlen = int(maxlen) if maxlen is not None else None
 
-        self._rng = random.Random(seed)
+        # Restrict insertion behavior to the documented strategy vocabulary.
+        if not isinstance(strategy, str) or strategy.lower() not in _STRATEGY_ALIASES:
+            raise ValueError(
+                "strategy must be 'fifo', 'reservoir', or 'class_balanced'."
+            )
 
+        self.strategy: ReplayStrategy = _STRATEGY_ALIASES[strategy.lower()]
+        variable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
+        self.sample_dtype = np.dtype(tf.as_dtype(variable_dtype).as_numpy_dtype)
+        self._rng = random.Random(seed)
         self.clear()
 
     def __len__(self: ReplayBuffer) -> int:
@@ -79,6 +110,304 @@ class ReplayBuffer(object):
         """
 
         self.buffer = deque(maxlen=self.maxlen)
+        self._items_seen = 0
+        self._class_order: list[object] = []
+        self._class_seen: dict[object, int] = {}
+        self._class_priorities: dict[object, float] = {}
+
+    @staticmethod
+    def _label_key(item: object) -> object:
+        """Return a hashable class identifier from one ``(sample, label)`` item.
+
+        Scalar labels are used directly. A one-dimensional vector is treated as
+        one-hot/probability encoded and mapped with ``argmax``.
+
+        Args:
+            item (object): Replay item whose second element is its label.
+
+        Returns:
+            object: Hashable Python scalar identifying the item's class.
+
+        Raises:
+            TypeError: If the item is not a pair or its label is unsupported.
+        """
+
+        # Require the paired item representation used by continual replay.
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise TypeError(
+                "class_balanced replay items must be (sample, label) pairs."
+            )
+
+        label = np.asarray(item[1])
+
+        # Accept one sample's scalar, sparse-column, or one-hot label only.
+        if label.size == 0 or label.ndim > 1:
+            raise TypeError(
+                "class_balanced labels must be scalars or one-dimensional vectors."
+            )
+
+        value = label.reshape(-1)[0].item() if label.size == 1 \
+                else int(np.argmax(label))
+
+        try:
+            hash(value)
+        except TypeError as error:
+            raise TypeError("class_balanced labels must be hashable.") from error
+
+        return value
+
+    def _class_quotas(self: ReplayBuffer) -> dict[object, int]:
+        """Return the current capacity allocation for every observed class.
+
+        Random priorities allocate remainder slots. Consequently, when there
+        are more classes than slots, the stored classes form a reservoir-like
+        uniform subset rather than permanently favoring the earliest labels.
+
+        Returns:
+            dict[object, int]: Per-class quotas summing to ``maxlen``.
+        """
+
+        # Unbounded buffers can retain every observation from each class.
+        if self.maxlen is None:
+            return {
+                label: self._class_seen[label] 
+                for label in self._class_order
+            }
+
+        # An empty class registry has no capacity allocation to compute.
+        if not self._class_order:
+            return {}
+
+        base, remainder = divmod(self.maxlen, len(self._class_order))
+        ranked_classes = [
+            (-self._class_priorities[label], index, label)
+            for index, label in enumerate(self._class_order)
+        ]
+        ranked_classes.sort()
+        extra_classes = {
+            label for _, _, label in ranked_classes[:remainder]
+        }
+
+        return {
+            label: base + int(label in extra_classes)
+            for label in self._class_order
+        }
+
+    def _rebalance_classes(self: ReplayBuffer) -> None:
+        """Downsample stored classes uniformly to their current quotas.
+
+        Returns:
+            None: The bounded buffer is rebuilt with quota-compliant contents.
+        """
+
+        # An unbounded buffer needs no eviction or quota enforcement.
+        if self.maxlen is None:
+            return
+
+        items = list(self.buffer)
+        quotas = self._class_quotas()
+        indices_by_class = {label: [] for label in self._class_order}
+        for index, item in enumerate(items):
+            indices_by_class[self._label_key(item)].append(index)
+
+        kept_indices = set()
+        for label in self._class_order:
+            indices = indices_by_class[label]
+            quota = quotas[label]
+            # Preserve a class already at or below its feasible allocation.
+            if len(indices) <= quota:
+                kept_indices.update(indices)
+            # Uniformly thin a class whose prior allocation was larger.
+            elif quota > 0:
+                kept_indices.update(self._rng.sample(indices, quota))
+
+        self.buffer = deque(
+            (item for index, item in enumerate(items) if index in kept_indices), 
+            maxlen=self.maxlen,
+        )
+
+    def _append_reservoir(self: ReplayBuffer, item: object) -> None:
+        """Insert one stream item using standard uniform Algorithm R.
+
+        Args:
+            item (object): Next item in the observed replay stream.
+
+        Returns:
+            None: The item is appended, replaces one slot, or is discarded.
+        """
+
+        self._items_seen += 1
+        # Fill available storage before probabilistic replacement begins.
+        if self.maxlen is None or len(self.buffer) < self.maxlen:
+            self.buffer.append(item)
+            return
+
+        # A zero-capacity reservoir records the cursor but retains no item.
+        if self.maxlen == 0:
+            return
+
+        replacement = self._rng.randrange(self._items_seen)
+
+        # Algorithm R accepts exactly the first ``capacity`` draw positions.
+        if replacement < self.maxlen:
+            self.buffer[replacement] = item
+
+    def _append_class_balanced(self: ReplayBuffer, item: object) -> None:
+        """Insert one item into a balanced per-class reservoir.
+
+        Args:
+            item (object): Next ``(sample, label)`` stream item.
+
+        Returns:
+            None: Class state and bounded storage are updated in place.
+        """
+
+        label = self._label_key(item)
+        is_new_class = label not in self._class_seen
+        # Give each newly observed class an exchangeable allocation priority.
+        if is_new_class:
+            self._class_order.append(label)
+            self._class_seen[label] = 0
+            self._class_priorities[label] = self._rng.random()
+
+        self._items_seen += 1
+        self._class_seen[label] += 1
+        # A new class can reduce earlier quotas, so thin them before insertion.
+        if is_new_class:
+            self._rebalance_classes()
+
+        # Unbounded class-balanced storage retains the complete stream.
+        if self.maxlen is None:
+            self.buffer.append(item)
+            return
+
+        quota = self._class_quotas()[label]
+
+        # Classes outside a remainder allocation retain no item at capacity.
+        if quota == 0:
+            return
+
+        class_indices = [
+            index for index, stored in enumerate(self.buffer)
+            if self._label_key(stored) == label
+        ]
+
+        # Fill this class's available quota before reservoir replacement.
+        if len(class_indices) < quota:
+            self.buffer.append(item)
+            return
+
+        replacement = self._rng.randrange(self._class_seen[label])
+
+        # Apply Algorithm R within the class's current quota.
+        if replacement < quota:
+            self.buffer[class_indices[replacement]] = item
+
+    def state_dict(self: ReplayBuffer) -> dict[str, object]:
+        """Return all state required for an exact deterministic continuation.
+
+        Returns:
+            dict[str, object]: Capacity, strategy, retained items, private RNG,
+            stream count, and class-reservoir allocation state.
+        """
+
+        return {
+            "schema_version": 1, 
+            "maxlen": self.maxlen, 
+            "strategy": self.strategy, 
+            "items": list(self.buffer), 
+            "rng_state": self._rng.getstate(), 
+            # FIFO does not need a historical stream cursor; report its current
+            # retained count so the common serialized invariant remains valid.
+            "items_seen": len(self.buffer) if self.strategy == "fifo" \
+                        else self._items_seen, 
+            "classes": [{
+                "label": label, 
+                "seen": self._class_seen[label], 
+                "priority": self._class_priorities[label]
+            } for label in self._class_order]
+        }
+
+    def load_state_dict(
+        self: ReplayBuffer, 
+        state: Mapping[str, object]
+    ) -> None:
+        """Restore a state produced by :meth:`state_dict` without reinsertion.
+
+        Args:
+            state (Mapping[str, object]): Serialized replay state.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If capacity, strategy, counters, or retained contents
+                are incompatible with this buffer.
+        """
+
+        # Refuse cross-capacity restoration because it changes inclusion odds.
+        if state.get("maxlen") != self.maxlen:
+            raise ValueError("Replay-buffer capacity differs from the checkpoint.")
+
+        saved_strategy = str(state.get("strategy", "fifo"))
+
+        # Refuse restoration under a different insertion distribution.
+        if saved_strategy != self.strategy:
+            raise ValueError("Replay-buffer strategy differs from the checkpoint.")
+
+        items = list(state.get("items", []))
+
+        # Guard against silently truncated or malformed retained contents.
+        if self.maxlen is not None and len(items) > self.maxlen:
+            raise ValueError("Replay checkpoint exceeds the configured capacity.")
+
+        items_seen = int(state.get("items_seen", len(items)))
+
+        # FIFO has no algorithmic stream cursor beyond its retained contents.
+        if self.strategy == "fifo":
+            items_seen = len(items)
+
+        # Reservoir cursors must cover every currently retained observation.
+        if items_seen < len(items) or items_seen < 0:
+            raise ValueError("Replay checkpoint has an invalid stream count.")
+
+        classes = list(state.get("classes", []))
+        class_order = [record["label"] for record in classes]
+
+        # Each class must have exactly one allocation/counter record.
+        if len(class_order) != len(set(class_order)):
+            raise ValueError("Replay checkpoint contains duplicate classes.")
+
+        class_seen = {
+            record["label"]: int(record["seen"]) 
+            for record in classes
+        }
+        class_priorities = {
+            record["label"]: float(record["priority"]) 
+            for record in classes
+        }
+
+        # Historical class observation counts cannot be negative.
+        if any(count < 0 for count in class_seen.values()):
+            raise ValueError("Replay checkpoint contains a negative class count.")
+        # Balanced state accounts for the full stream class by class.
+        if self.strategy == "class_balanced":
+            # Per-class counters must sum to the global insertion cursor.
+            if sum(class_seen.values()) != items_seen:
+                raise ValueError("Replay class counts do not match items_seen.")
+            # Every retained item must belong to a registered class.
+            if any(self._label_key(item) not in class_seen for item in items):
+                raise ValueError("Replay items contain an unknown class.")
+        # Other strategies never carry class allocation metadata.
+        elif classes:
+            raise ValueError("Only class_balanced replay may contain class state.")
+
+        self.buffer = deque(items, maxlen=self.maxlen)
+        self._items_seen = items_seen
+        self._class_order = class_order
+        self._class_seen = class_seen
+        self._class_priorities = class_priorities
+        self._rng.setstate(state["rng_state"])
 
     def sample(
         self: ReplayBuffer, 
@@ -107,10 +436,13 @@ class ReplayBuffer(object):
         # Reject booleans and non-integral replay sample counts.
         if isinstance(num, bool) or not isinstance(num, Integral):
             raise TypeError("num must be a non-boolean integer.")
+
         # Keep replay sample counts nonnegative.
         if num < 0:
             raise ValueError("num must be nonnegative.")
+
         num = int(num)
+
         # Preserve the empty population without invoking random sampling.
         if len(list_) == 0:
             return []
@@ -145,7 +477,15 @@ class ReplayBuffer(object):
             None.
         """
 
-        self.buffer.append(item)
+        # Preserve the exact historical bounded-deque behavior by default.
+        if self.strategy == "fifo":
+            self.buffer.append(item)
+        # Route opt-in global-uniform insertion through Algorithm R.
+        elif self.strategy == "reservoir":
+            self._append_reservoir(item)
+        # The remaining validated strategy is the class-balanced reservoir.
+        else:
+            self._append_class_balanced(item)
 
     def extend(self: ReplayBuffer, items: Iterable[object]) -> None:
         """Append every item from an iterable in order.
@@ -158,7 +498,13 @@ class ReplayBuffer(object):
             None.
         """
 
-        self.buffer.extend(items)
+        # Preserve deque.extend, including its historical ordering semantics.
+        if self.strategy == "fifo":
+            self.buffer.extend(items)
+            return
+
+        for item in items:
+            self.append(item)
 
     def pop(self: ReplayBuffer) -> object:
         """Remove and return the newest (rightmost) replay item.
@@ -186,7 +532,8 @@ class ReplayBuffer(object):
         """
 
         item = self.pop()
-        self.append(item)
+        # Do not treat a non-destructive peek as another stream observation.
+        self.buffer.append(item)
         
         return item
 
@@ -202,9 +549,9 @@ class ReplayBuffer(object):
 
         Returns:
             tuple[numpy.ndarray, numpy.ndarray]: ``(x_buffer, y_buffer)``.
-            Samples are cast to ``float32`` and labels to ``uint8``.  Their
-            leading dimension is the number sampled; an empty buffer produces
-            two arrays with shape ``(0,)``.
+            Samples are cast to the active policy's stable variable dtype and
+            labels to ``uint8``. Their leading dimension is the number sampled;
+            an empty buffer produces two arrays with shape ``(0,)``.
         """
 
         x_buffer, y_buffer = [], []
@@ -212,7 +559,7 @@ class ReplayBuffer(object):
             x_buffer.append(x)
             y_buffer.append(y)
 
-        x_buffer = np.array(x_buffer, dtype="float32")
+        x_buffer = np.array(x_buffer, dtype=self.sample_dtype)
         y_buffer = np.array(y_buffer, dtype="uint8")
 
         return x_buffer, y_buffer

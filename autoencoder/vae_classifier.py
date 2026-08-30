@@ -10,16 +10,20 @@ import numpy as np
 from collections.abc import Callable
 from numbers import Real
 
+from common.gradients import apply_policy_gradients
+
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
 class VAEClassifier(VariationalAutoencoder):
     """Train a conditional dense VAE alongside a classification objective.
 
-    The forward pass and custom training/test steps classify reconstructed
-    vectors.  Thus reconstruction, KL, and classification losses jointly train
-    the VAE, while classification loss can also train a nested classifier when
-    it is trainable. Labels must always be one-hot.
+    The conditional VAE reconstructs from ``(x, y)``, while the classifier
+    predicts directly from ``x``.  Keeping the discriminative branch independent
+    of the supplied target prevents ground-truth labels from leaking through a
+    label-conditioned reconstruction. Reconstruction and KL losses train the
+    VAE; classification loss trains a nested classifier when it is trainable.
+    Labels must always be one-hot.
 
     Attributes:
         classifier (tf.keras.Model | Callable): Class-score model initialized
@@ -48,7 +52,7 @@ class VAEClassifier(VariationalAutoencoder):
         Args:
             class_num (int): Positive one-hot label width and classifier output
                 width.
-            classifier (tf.keras.Model | Callable): Maps vectors shaped
+            classifier (tf.keras.Model | Callable): Maps input vectors shaped
                 ``[batch, data_dim]`` to class probabilities shaped
                 ``[batch, class_num]``. It is registered as a nested Keras
                 component; its trainable weights participate in optimization.
@@ -76,7 +80,7 @@ class VAEClassifier(VariationalAutoencoder):
         # Keep conditioning and class width controlled by this wrapper.
         if "conditioned" in kwargs or "class_num" in kwargs:
             raise TypeError("VAEClassifier fixes conditioned=True and class_num.")
-        # Require a callable classifier for the reconstruction branch.
+        # Require a callable classifier for the parallel input branch.
         if not callable(classifier):
             raise TypeError("classifier must be callable.")
         # Reject booleans and nonnumeric classification-loss weights.
@@ -101,9 +105,14 @@ class VAEClassifier(VariationalAutoencoder):
         self.classifier = classifier
         self.alpha = float(alpha)
 
-        self.clf_loss_tracker = metrics.Mean(name="clf_loss")
+        stable_dtype = self.dtype_policy.variable_dtype
+        self.clf_loss_tracker = metrics.Mean(
+            name="clf_loss",
+            dtype=stable_dtype,
+        )
         self.clf_accuracy_tracker = metrics.CategoricalAccuracy(
-            name="clf_accuracy"
+            name="clf_accuracy",
+            dtype=stable_dtype,
         )
 
         compile_args_default = {
@@ -131,13 +140,16 @@ class VAEClassifier(VariationalAutoencoder):
             y_pred (tf.Tensor): Matching class probabilities.
 
         Returns:
-            tf.Tensor: Scalar ``float32`` fraction whose argmax class IDs match.
+            tf.Tensor: Scalar fraction in the policy's stable variable dtype.
         """
 
         y_true = tf.argmax(y_true, axis=1)
         y_pred = tf.argmax(y_pred, axis=1)
         
-        corrects = tf.cast(y_true == y_pred, dtype=tf.float32)
+        corrects = tf.cast(
+            y_true == y_pred,
+            dtype=tf.as_dtype(self.dtype_policy.variable_dtype),
+        )
         accuracy = tf.reduce_mean(corrects)
 
         return accuracy
@@ -170,7 +182,7 @@ class VAEClassifier(VariationalAutoencoder):
         inputs: tuple[tf.Tensor, tf.Tensor], 
         training: bool | tf.Tensor = False, 
     ) -> tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
-        """Reconstruct conditional inputs and classify the reconstruction.
+        """Reconstruct conditionally while classifying the unconditioned input.
 
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor]): ``(x, one_hot_y)`` with shapes
@@ -181,17 +193,19 @@ class VAEClassifier(VariationalAutoencoder):
         Returns:
             tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
             Latent statistics/sample shaped ``[batch, latent_dim]``,
-            reconstruction shaped ``[batch, data_dim]``, and classifier
-            probabilities shaped ``[batch, class_num]``.
+            reconstruction shaped ``[batch, data_dim]``, and label-independent
+            classifier probabilities from ``x`` shaped ``[batch, class_num]``.
         """
 
+        x, _ = inputs
         (z_mean, z_log_var, z), reconstructed = super().call(inputs, training)
-        # Forward training state to Keras classifiers.
+        # Classify x directly: reconstructed is conditioned on the true label
+        # and therefore must never be used as the discriminative input.
         if isinstance(self.classifier, tf.keras.layers.Layer):
-            prediction = self.classifier(reconstructed, training=training)
+            prediction = self.classifier(x, training=training)
         # Support generic callables that do not accept a training argument.
         else:
-            prediction = self.classifier(reconstructed)
+            prediction = self.classifier(x)
 
         return (z_mean, z_log_var, z), reconstructed, prediction
 
@@ -201,10 +215,11 @@ class VAEClassifier(VariationalAutoencoder):
     ) -> dict[str, tf.Tensor]:
         """Optimize VAE and classifier losses for one conditional batch.
 
-        Classification cross-entropy is computed from the classifier's output
-        for reconstructed vectors and averaged across the batch. The
-        reconstruction loss follows the compiled Keras reduction and KL is a
-        batch mean.
+        Classification cross-entropy is computed from direct predictions on
+        ``x`` and averaged across the batch. The reconstruction loss follows
+        the compiled Keras reduction and KL is a batch mean. Consequently, the
+        classification term cannot exploit the label supplied to the
+        conditional encoder/decoder.
 
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor]): Feature vectors and one-hot
@@ -224,29 +239,38 @@ class VAEClassifier(VariationalAutoencoder):
                 inputs, training=True
             )
 
-            recon_loss = self.compiled_loss(
+            stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            recon_loss = tf.cast(self.compiled_loss(
                 x, 
                 x_recon, 
                 regularization_losses=self.losses,
-            )
+            ), stable_dtype)
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
-                z_log_var
+                z_log_var,
+                dtype=stable_dtype,
             )
             clf_loss = tf.reduce_mean(
-                losses.categorical_crossentropy(y, y_pred),
+                losses.categorical_crossentropy(
+                    tf.cast(y, stable_dtype),
+                    tf.cast(y_pred, stable_dtype),
+                ),
             )
 
             total_loss = (
                 recon_loss + 
-                self.beta * kl_loss + 
-                self.alpha * clf_loss
+                tf.cast(self.beta, stable_dtype) * kl_loss +
+                tf.cast(self.alpha, stable_dtype) * clf_loss
             )
         
-        grads = tape.gradient(total_loss, self.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        apply_policy_gradients(
+            tape,
+            self.optimizer,
+            total_loss,
+            self.trainable_weights,
+        )
 
-        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
@@ -272,7 +296,10 @@ class VAEClassifier(VariationalAutoencoder):
         self: VAEClassifier, 
         inputs: tuple[tf.Tensor, tf.Tensor]
     ) -> dict[str, tf.Tensor]:
-        """Evaluate reconstruction-based VAE/classifier losses without updates.
+        """Evaluate conditional reconstruction and direct classification.
+
+        Class predictions depend only on ``x``; ``y`` is used as a target and
+        as the VAE reconstruction condition, never as classifier input.
 
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor]): Feature vectors and one-hot
@@ -291,26 +318,31 @@ class VAEClassifier(VariationalAutoencoder):
             inputs, training=False
         )
 
-        recon_loss = self.compiled_loss(
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        recon_loss = tf.cast(self.compiled_loss(
             x, 
             x_recon, 
             regularization_losses=self.losses,
-        )
+        ), stable_dtype)
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
-            z_log_var
+            z_log_var,
+            dtype=stable_dtype,
         )
         clf_loss = tf.reduce_mean(
-            losses.categorical_crossentropy(y, y_pred)
+            losses.categorical_crossentropy(
+                tf.cast(y, stable_dtype),
+                tf.cast(y_pred, stable_dtype),
+            )
         )
 
         total_loss = (
             recon_loss + 
-            self.beta * kl_loss + 
-            self.alpha * clf_loss
+            tf.cast(self.beta, stable_dtype) * kl_loss +
+            tf.cast(self.alpha, stable_dtype) * clf_loss
         )
 
-        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
@@ -348,6 +380,7 @@ class VAEClassifier(VariationalAutoencoder):
             **kwargs (object): Options accepted by
                 :meth:`VariationalAutoencoder.train`: ``train_num``, ``epochs``,
                 ``batch_size``, ``shuffle_buffer``, ``seed``,
+                ``steps_per_epoch``,
                 ``validation_data``, ``callbacks_list``, and ``verbose``.
                 ``x``, ``y``, ``clf``, and ``callbacks_monitor`` are forbidden
                 because this method supplies them. Example:
@@ -384,10 +417,10 @@ def run_self_tests() -> dict[str, str]:
 
     The tests cover constructor guards, classifier registration, nonzero and
     zero classification coefficients, trainable and frozen classifiers,
-    forward shapes, exact/partial accuracy, real eager train/test steps,
-    metric reset, inherited conditional generation, weight persistence,
-    invalid label/output shapes, callable classifiers, and every reserved or
-    forwarded :meth:`train` keyword.
+    forward shapes, label-leakage isolation, exact/partial accuracy, real eager
+    train/test steps, metric reset, inherited conditional generation, weight
+    persistence, invalid label/output shapes, callable classifiers, and every
+    reserved or forwarded :meth:`train` keyword.
 
     Args:
         None.
@@ -525,6 +558,55 @@ def run_self_tests() -> dict[str, str]:
         bool(tf.reduce_all(tf.math.is_finite(value)))
         for value in (z_mean, z_log_var, z, reconstruction, prediction)
     )
+
+    # Regression: changing only the reconstruction condition may alter the VAE
+    # output, but it must not alter predictions for an otherwise identical x.
+    protocol_classifier = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(4,)),
+        tf.keras.layers.Dense(3, activation="softmax", use_bias=False),
+    ])
+    protocol_model = VAEClassifier(
+        class_num=3,
+        classifier=protocol_classifier,
+        data_dim=4,
+        latent_dim=1,
+        hiddens_dims=(),
+        last_activation=None,
+        compile=False,
+    )
+    protocol_classifier.layers[-1].set_weights([np.array([
+        [2.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [0.0, 0.0, 2.0],
+        [0.0, 0.0, 0.0],
+    ], dtype=np.float32)])
+    protocol_model.decoder.layers[-1].set_weights([
+        np.array([
+            [0.0, 0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+        ], dtype=np.float32),
+        np.zeros((4,), dtype=np.float32),
+    ])
+    same_x = tf.repeat(x[:1], repeats=2, axis=0)
+    labels_a = tf.one_hot([0, 0], depth=3)
+    labels_b = tf.one_hot([1, 1], depth=3)
+    _, reconstruction_a, prediction_a = protocol_model(
+        (same_x, labels_a), training=False
+    )
+    _, reconstruction_b, prediction_b = protocol_model(
+        (same_x, labels_b), training=False
+    )
+    tf.debugging.assert_near(prediction_a, prediction_b)
+    tf.debugging.assert_near(
+        prediction_a,
+        protocol_classifier(same_x, training=False),
+    )
+    assert bool(tf.reduce_any(tf.not_equal(
+        reconstruction_a,
+        reconstruction_b,
+    ))), "Conditional reconstruction should remain label-sensitive."
 
     tf.debugging.assert_near(
         model._compute_accuracy(

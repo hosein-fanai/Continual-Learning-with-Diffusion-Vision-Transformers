@@ -207,8 +207,9 @@ class Upsample(BaseEmbedding):
         ) if self.circumvent_tokens else (x, None)
 
         x_shape = tf.shape(x)
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         input_grid_size = tf.cast(
-            tf.sqrt(tf.cast(x_shape[1], dtype=tf.float32)),
+            tf.sqrt(tf.cast(x_shape[1], dtype=stable_dtype)),
             dtype=tf.int32
         )
     

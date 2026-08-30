@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import callbacks, optimizers
 
+from common.gradients import apply_policy_gradients
+
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
@@ -476,8 +478,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self._train_part == "discriminator"
             or variables is self.clf_trainable_variables
         ) else self.gen_optimizer
-        grads = tape.gradient(loss, variables)
-        optimizer.apply_gradients(zip(grads, variables))
+        apply_policy_gradients(
+            tape,
+            optimizer,
+            loss,
+            variables,
+        )
 
     def prep_clfv2_inputs(
         self, 
@@ -904,7 +910,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_ctr_loss=ctr_loss, 
             clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds
+            clf_distil_preds=distil_preds,
+            distil_acc_mask=self._distillation_metric_mask(
+                classes,
+                teacher_labels,
+                None,
+            ) if self.use_distil_loss else None,
         )
 
         return results
@@ -975,7 +986,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_ctr_loss=ctr_loss, 
             clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds
+            clf_distil_preds=distil_preds,
+            distil_acc_mask=self._distillation_metric_mask(
+                classes,
+                teacher_labels,
+                None,
+            ) if self.use_distil_loss else None,
         )
 
         return results

@@ -30,12 +30,27 @@ _DIFFUSION_MODELS = {
     "unet", "unet_classifier"
 }
 _DENSE_MODELS = {"vae", "variational_autoencoder", "vae_classifier", "dnn"}
+_LEGACY_FEATURE_SPLIT_SEED = 42
+_LEGACY_FEATURE_VALIDATION_RATIO = 0.2
+
+
+def _policy_numpy_dtype() -> np.dtype:
+    """Return the active policy's stable floating NumPy dtype.
+
+    Returns:
+        numpy.dtype: Float32 for float32/mixed policies and float64 for the
+        float64 policy.
+    """
+
+    variable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
+
+    return np.dtype(tf.as_dtype(variable_dtype).as_numpy_dtype)
 
 
 def _pad_images(
-    x: np.ndarray,
-    pad: int,
-    value: float | int = 0,
+    x: np.ndarray, 
+    pad: int, 
+    value: float | int = 0
 ) -> np.ndarray:
     """Apply symmetric constant padding to a NumPy image batch.
 
@@ -72,9 +87,9 @@ def _pad_images(
     channel_padding = ((0, 0),) if x.ndim == 4 else ()
 
     return np.pad(
-        x,
-        spatial_padding + channel_padding,
-        constant_values=value,
+        x, 
+        spatial_padding + channel_padding, 
+        constant_values=value
     )
 
 
@@ -145,10 +160,10 @@ def _limit_samples(
 
 
 def _map_inputs(
-    dataset: tf.data.Dataset,
-    transform: Callable[[tf.Tensor], tf.Tensor],
-    paired: bool,
-    num_parallel_calls: object,
+    dataset: tf.data.Dataset, 
+    transform: Callable[[tf.Tensor], tf.Tensor], 
+    paired: bool, 
+    num_parallel_calls: object
 ) -> tf.data.Dataset:
     """Apply one input transform while preserving optional labels.
 
@@ -162,33 +177,36 @@ def _map_inputs(
         tf.data.Dataset: Dataset with transformed inputs and unchanged labels.
     """
 
+
     def transform_pair(
-        inputs: tf.Tensor,
-        labels: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Transform paired inputs without changing their labels.
+        inputs: tf.Tensor, 
+        labels: tf.Tensor, 
+        *metadata: tf.Tensor
+    ) -> tuple[tf.Tensor, ...]:
+        """Transform paired inputs without changing labels or metadata.
 
         Args:
             inputs (tf.Tensor): One batched input tensor.
             labels (tf.Tensor): Labels paired with the input batch.
+            *metadata (tf.Tensor): Optional additional per-example tensors.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor]: Transformed inputs and original labels.
+            tuple[tf.Tensor, ...]: Transformed inputs, labels, and metadata.
         """
 
-        return transform(inputs), labels
+        return transform(inputs), labels, *metadata
 
 
     # Preserve labels for supervised and conditional pipelines.
     if paired:
         return dataset.map(
-            transform_pair,
-            num_parallel_calls=num_parallel_calls,
+            transform_pair, 
+            num_parallel_calls=num_parallel_calls
         )
 
     return dataset.map(
-        transform,
-        num_parallel_calls=num_parallel_calls,
+        transform, 
+        num_parallel_calls=num_parallel_calls
     )
 
 
@@ -318,9 +336,10 @@ def preprocess_dataset(
         features_path (str | None): Base path without the ``.npy`` suffix. Its
             text must identify MNIST, Fashion-MNIST, CIFAR-10, or CIFAR-100 in
             feature mode; :func:`common.utils.load_samples` appends the suffix.
-        onehot_labels (bool): If true, convert each label array to ``float32``
-            one-hot rows shaped ``[samples, class_num]``; otherwise retain its
-            original integer-label rank and dtype.
+        onehot_labels (bool): If true, convert each label array to one-hot rows
+            in the active policy's stable variable dtype, shaped
+            ``[samples, class_num]``; otherwise retain its original
+            integer-label rank and dtype.
         seed (int | None): Random seed used for the stratified split.
         verbose (bool | int): Truthy values print shapes and simple label
             frequencies; falsy values suppress output.
@@ -344,7 +363,9 @@ def preprocess_dataset(
 
     from sklearn.model_selection import train_test_split
 
-    from common.utils import load_samples
+    from common.utils import load_feature_split_metadata, load_samples
+
+    stable_dtype = _policy_numpy_dtype()
 
     # Require a non-boolean numeric validation ratio.
     if isinstance(validation_ratio, (bool, np.bool_)) \
@@ -382,14 +403,46 @@ def preprocess_dataset(
         y_train = y_train[labels_set_list[0]]
         y_test = y_test[labels_set_list[1]]
 
+        # New archives declare the exact seed/ratio used to align their saved
+        # train and validation features with labels. Archives created before
+        # metadata support retain the historical 42/0.2 layout.
+        feature_split_metadata = load_feature_split_metadata(features_path)
+        feature_split_seed, feature_validation_ratio = (
+            feature_split_metadata
+            if feature_split_metadata is not None
+            else (
+                _LEGACY_FEATURE_SPLIT_SEED,
+                _LEGACY_FEATURE_VALIDATION_RATIO,
+            )
+        )
         y_train, y_val = train_test_split(
             y_train, 
-            test_size=0.2, 
+            test_size=feature_validation_ratio,
             stratify=y_train, 
-            random_state=42
+            random_state=feature_split_seed,
         )
 
         x_train, x_val, x_test = load_samples(features_path, ".npy")
+
+        # Fail before concatenation if metadata and feature arrays describe a
+        # different split, which would otherwise silently corrupt label pairs.
+        feature_label_lengths = (
+            ("train", len(x_train), len(y_train)),
+            ("validation", len(x_val), len(y_val)),
+            ("test", len(x_test), len(y_test)),
+        )
+        mismatched_lengths = [
+            f"{name}: features={feature_count}, labels={label_count}"
+            for name, feature_count, label_count in feature_label_lengths
+            if feature_count != label_count
+        ]
+        # Reject feature archives whose metadata does not align with labels.
+        if mismatched_lengths:
+            raise ValueError(
+                "Saved feature split metadata does not align with labels ("
+                + "; ".join(mismatched_lengths)
+                + ")."
+            )
 
         x_train = np.concatenate([x_train, x_val], axis=0)
         y_train = np.concatenate([y_train, y_val], axis=0)
@@ -422,14 +475,14 @@ def preprocess_dataset(
         if value_range == 0.:
             value_range = 1.
 
-        x_train = (x_train.astype("float32") - min_) / value_range
+        x_train = (x_train.astype(stable_dtype) - min_) / value_range
         # Apply the training extrema to validation inputs when present.
         if x_val is not None:
-            x_val = (x_val.astype("float32") - min_) / value_range
-        x_test = (x_test.astype("float32") - min_) / value_range
+            x_val = (x_val.astype(stable_dtype) - min_) / value_range
+        x_test = (x_test.astype(stable_dtype) - min_) / value_range
     # Normalize each feature to zero mean/unit variance.
     elif preprocess == "normalize":
-        x_train = x_train.astype("float32")
+        x_train = x_train.astype(stable_dtype)
         mean = x_train.mean(axis=0)
         std = x_train.std(axis=0)
         std = np.where(std == 0., 1., std)
@@ -437,8 +490,8 @@ def preprocess_dataset(
         x_train = (x_train - mean) / std
         # Apply training normalization statistics to validation inputs.
         if x_val is not None:
-            x_val = (x_val.astype("float32") - mean) / std
-        x_test = (x_test.astype("float32") - mean) / std
+            x_val = (x_val.astype(stable_dtype) - mean) / std
+        x_test = (x_test.astype(stable_dtype) - mean) / std
     # Scale diffusion inputs to [-1, 1].
     elif preprocess in ("standardize", "diffusion"):
         min_ = x_train.min()
@@ -448,11 +501,11 @@ def preprocess_dataset(
         if value_range == 0.:
             value_range = 1.
 
-        x_train = (x_train.astype("float32") - min_) / value_range
+        x_train = (x_train.astype(stable_dtype) - min_) / value_range
         # Apply the training extrema to validation inputs when present.
         if x_val is not None:
-            x_val = (x_val.astype("float32") - min_) / value_range
-        x_test = (x_test.astype("float32") - min_) / value_range
+            x_val = (x_val.astype(stable_dtype) - min_) / value_range
+        x_test = (x_test.astype(stable_dtype) - min_) / value_range
 
         x_train = (x_train * 2.) - 1.
         # Map validation inputs into diffusion space when present.
@@ -461,8 +514,15 @@ def preprocess_dataset(
         x_test = (x_test * 2.) - 1.
     # Preserve values when no preprocessing is requested.
     else:
+        # Align saved floating features with the active stable dtype.
+        if return_features:
+            x_train = x_train.astype(stable_dtype)
+            # Align validation features when that split exists.
+            if x_val is not None:
+                x_val = x_val.astype(stable_dtype)
+            x_test = x_test.astype(stable_dtype)
         # Keep raw image storage compact.
-        if not return_features:
+        else:
             x_train = x_train.astype("uint8")
             # Preserve compact storage for raw validation images.
             if x_val is not None:
@@ -471,11 +531,20 @@ def preprocess_dataset(
 
     # Convert integer labels to full-width categorical rows.
     if onehot_labels:
-        y_train = to_categorical(y_train, num_classes=class_num)
+        y_train = to_categorical(
+            y_train,
+            num_classes=class_num,
+        ).astype(stable_dtype)
         # Convert validation labels when a validation split exists.
         if y_val is not None:
-            y_val = to_categorical(y_val, num_classes=class_num)
-        y_test = to_categorical(y_test, num_classes=class_num)
+            y_val = to_categorical(
+                y_val,
+                num_classes=class_num,
+            ).astype(stable_dtype)
+        y_test = to_categorical(
+            y_test,
+            num_classes=class_num,
+        ).astype(stable_dtype)
 
     # Report prepared split shapes and label frequencies.
     if verbose:
@@ -725,9 +794,10 @@ def get_dataset(
     conv_base: models.Model | None = None, 
     num_parallel_calls: int | None = None, 
     prefetch: bool = False, 
-    seed: int | None = None
+    seed: int | None = None, 
+    metadata: np.ndarray | tf.Tensor | None = None
 ) -> tf.data.Dataset:
-    """Create one batched ``tf.data`` pipeline from inputs or input-label pairs.
+    """Create one batched input, supervised, or metadata-bearing pipeline.
 
     Args:
         x (numpy.ndarray | tf.Tensor): Input samples shaped ``[samples, ...]``.
@@ -750,14 +820,18 @@ def get_dataset(
             ``AUTOTUNE`` mapping and prefetching.
         prefetch (bool): Whether to append a prefetch operation.
         seed (int | None): Optional deterministic seed for shuffling.
+        metadata (numpy.ndarray | tf.Tensor | None): Optional third tensor
+            aligned with ``x`` and ``y``. Continual distillation uses it for a
+            replay-provenance mask. It requires non-``None`` labels.
 
     Returns:
-        tf.data.Dataset: Batched inputs when ``y`` is ``None``; otherwise
-        batched ``(inputs, labels)`` pairs.
+        tf.data.Dataset: Batched inputs, ``(inputs, labels)`` pairs, or
+        ``(inputs, labels, metadata)`` triples.
 
     Raises:
         TypeError: If ``pad`` is not a non-boolean integer.
-        ValueError: If ``pad`` is negative or ``batch_size`` is not positive.
+        ValueError: If ``pad`` is negative, ``batch_size`` is not positive, or
+            metadata is supplied without labels.
     """
 
     from tensorflow.keras import layers
@@ -775,14 +849,21 @@ def get_dataset(
     # Require a positive number of examples per batch.
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")
+
     # Add the channel dimension expected by image models.
     if len(x.shape) == 3:
         x = x[..., None]
 
+    # Metadata has no meaning without the labels whose rows it describes.
+    if metadata is not None and y is None:
+        raise ValueError("metadata requires non-None labels.")
     # Build an input-only pipeline for unconditional models.
     if y is None:
         dataset = tf.data.Dataset.from_tensor_slices(x)
-    # Keep supervised or conditional inputs paired with their labels.
+    # Retain optional per-example provenance beside supervised inputs.
+    elif metadata is not None:
+        dataset = tf.data.Dataset.from_tensor_slices((x, y, metadata))
+    # Keep ordinary supervised or conditional inputs paired with their labels.
     else:
         dataset = tf.data.Dataset.from_tensor_slices((x, y))
 
@@ -854,8 +935,8 @@ def get_dataset(
 
 
 def _resolve_dataset_options(
-    config: Config | None,
-    kwargs: Mapping[str, object],
+    config: Config | None, 
+    kwargs: Mapping[str, object]
 ) -> dict[str, object]:
     """Resolve direct or configured dataset orchestration values once.
 
@@ -870,30 +951,30 @@ def _resolve_dataset_options(
     # Keep the legacy direct defaults when no typed configuration is supplied.
     if config is None:
         model_name = kwargs.get(
-            "model_name",
-            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer")),
+            "model_name", 
+            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer"))
         )
         model_name = str(model_name).lower()
         default_preprocess = None if model_name == "pretrained" \
-                             else "standardize"
+                            else "standardize"
 
         return {
-            "dataset_name": kwargs.get("dataset_name", "mnist"),
-            "model_name": model_name,
-            "preprocess": kwargs.get("preprocess", default_preprocess),
-            "indices": kwargs.get("indices"),
-            "validation_ratio": kwargs.get("validation_ratio", 0.),
-            "return_features": kwargs.get("return_features", False),
-            "features_path": kwargs.get("features_path", ""),
-            "onehot_labels": kwargs.get("onehot_labels", False),
-            "batch_size": kwargs.get("batch_size", 128),
-            "shuffle_buffer": kwargs.get("shuffle_buffer", 10_000),
-            "pad": kwargs.get("pad", 0),
-            "max_train_samples": kwargs.get("max_train_samples"),
-            "max_val_samples": kwargs.get("max_val_samples"),
-            "use_valset": kwargs.get("use_valset", True),
-            "seed": kwargs.get("seed"),
-            "task": kwargs.get("task", "legacy"),
+            "dataset_name": kwargs.get("dataset_name", "mnist"), 
+            "model_name": model_name, 
+            "preprocess": kwargs.get("preprocess", default_preprocess), 
+            "indices": kwargs.get("indices"), 
+            "validation_ratio": kwargs.get("validation_ratio", 0.), 
+            "return_features": kwargs.get("return_features", False), 
+            "features_path": kwargs.get("features_path", ""), 
+            "onehot_labels": kwargs.get("onehot_labels", False), 
+            "batch_size": kwargs.get("batch_size", 128), 
+            "shuffle_buffer": kwargs.get("shuffle_buffer", 10_000), 
+            "pad": kwargs.get("pad", 0), 
+            "max_train_samples": kwargs.get("max_train_samples"), 
+            "max_val_samples": kwargs.get("max_val_samples"), 
+            "use_valset": kwargs.get("use_valset", True), 
+            "seed": kwargs.get("seed"), 
+            "task": kwargs.get("task", "legacy")
         }
 
     model_name = config.model.name or (
@@ -903,22 +984,27 @@ def _resolve_dataset_options(
     model_name = str(model_name).lower()
 
     return {
-        "dataset_name": config.dataset.name,
-        "model_name": model_name,
-        "preprocess": config.dataset.preprocess,
-        "indices": config.dataset.indices,
-        "validation_ratio": config.dataset.validation_ratio,
-        "return_features": config.dataset.return_features,
-        "features_path": config.dataset.features_path,
-        "onehot_labels": config.dataset.onehot_labels,
-        "batch_size": config.dataset.batch_size,
-        "shuffle_buffer": config.dataset.shuffle_buffer,
-        "pad": config.dataset.pad,
-        "max_train_samples": config.dataset.max_train_samples,
-        "max_val_samples": config.dataset.max_val_samples,
-        "use_valset": config.training.use_valset,
-        "seed": config.training.seed,
-        "task": config.training.task,
+        "dataset_name": config.dataset.name, 
+        "model_name": model_name, 
+        "preprocess": config.dataset.preprocess, 
+        "indices": config.dataset.indices, 
+        "validation_ratio": config.dataset.validation_ratio, 
+        "return_features": config.dataset.return_features, 
+        "features_path": config.dataset.features_path, 
+        "onehot_labels": config.dataset.onehot_labels, 
+        "batch_size": config.dataset.batch_size, 
+        "shuffle_buffer": config.dataset.shuffle_buffer, 
+        "pad": config.dataset.pad, 
+        "max_train_samples": config.dataset.max_train_samples, 
+        "max_val_samples": config.dataset.max_val_samples, 
+        "use_valset": config.training.use_valset, 
+        "seed": (
+            config.continually_learn.seed
+            if str(config.training.task).lower() == "continual"
+            and config.continually_learn.seed is not None
+            else config.training.seed
+        ), 
+        "task": config.training.task
     }
 
 
@@ -1036,16 +1122,18 @@ def get_datasets(
             ) if config.model.kwargs else typed_vae_config.last_activation
 
         activation_name = getattr(
-            vae_activation, "__name__", vae_activation
+            vae_activation, "__name__", 
+            vae_activation
         )
-        activation_name = str(activation_name).lower() \
-            if activation_name is not None else None
+        activation_name = str(activation_name).lower() if activation_name is not None \
+                        else None
         preprocess = {
-            "tanh": "standardize",
-            "sigmoid": "min-max",
-            "linear": "normalize",
-            None: "normalize",
+            "tanh": "standardize", 
+            "sigmoid": "min-max", 
+            "linear": "normalize", 
+            None: "normalize"
         }.get(activation_name)
+
         # Record a recognized activation's resolved preprocessing mode.
         if config is not None and preprocess is not None:
             config.dataset.preprocess = preprocess
@@ -1054,16 +1142,21 @@ def get_datasets(
         dataset_name, 
         return_features
     )
+
     # Include every dataset class by default.
     if indices is None:
         indices = list(range(class_num))
     # Resolve configured class order before the continual loader is deferred.
     if config is not None and task == "continual":
         indices, _ = resolve_continual_schedule(
-            config.continually_learn.class_num,
-            config.continually_learn.class_order,
-            config.continually_learn.task_groups,
-            available_class_num=class_num,
+            config.continually_learn.class_num, 
+            config.continually_learn.class_order, 
+            config.continually_learn.task_groups, 
+            available_class_num=class_num, 
+            task_size=config.continually_learn.task_size, 
+            class_order_mode=config.continually_learn.class_order_mode, 
+            task_order_mode=config.continually_learn.task_order_mode, 
+            seed=options["seed"]
         )
 
     loaders = {

@@ -19,8 +19,11 @@ from dataclasses import (
 )
 from typing import Any, TypeVar
 from collections.abc import Mapping
+from math import isfinite
+from numbers import Integral, Real
 
 import os
+import random
 
 import yaml
 
@@ -99,14 +102,16 @@ def _default_buffer_kwargs() -> dict[str, object]:
     """Return default fixed replay-buffer controls.
 
     Returns:
-        dict[str, object]: New capacity, sampling, insertion, and seed values.
+        dict[str, object]: New capacity, sampling, insertion, seed, and FIFO
+        strategy values.
     """
 
     return {
         "maxlen": 10_000, 
         "sample_num": 1_000, 
         "insert_num": 1_000, 
-        "seed": None
+        "seed": None,
+        "strategy": "fifo",
     }
 
 
@@ -125,32 +130,64 @@ def resolve_continual_schedule(
     class_order: list[int] | tuple[int, ...] | None = None,
     task_groups: list[list[int]] | tuple[tuple[int, ...], ...] | None = None,
     available_class_num: int | None = None,
+    task_size: int = 1,
+    class_order_mode: str = "fixed",
+    task_order_mode: str = "fixed",
+    seed: int | None = None,
 ) -> tuple[list[int], list[list[int]]]:
     """Validate and resolve a class-incremental experiment schedule.
 
     ``class_order`` and ``task_groups`` use the dataset's original class IDs.
     When both are supplied, flattening ``task_groups`` must reproduce
-    ``class_order`` exactly. The legacy schedule remains the default: classes
-    ``[0, 1]`` followed by one new class per task.
+    ``class_order`` exactly. Without explicit groups, classes are partitioned
+    into consecutive groups of ``task_size``; the default therefore starts
+    with one class and adds one class per task. Class order and whole-task order
+    can be shuffled independently by the same configured seed.
 
     Args:
         class_num (int | None): Number of selected classes. ``None`` infers the
             count from an explicit schedule or ``available_class_num``.
         class_order (Sequence[int] | None): Ordered original dataset labels.
         task_groups (Sequence[Sequence[int]] | None): Nonempty groups introduced
-            at successive tasks. The first group must contain at least two
-            classes so its classifier objective is non-degenerate.
+            at successive tasks.
         available_class_num (int | None): Optional dataset class count used to
             validate label bounds and fill a completely unspecified schedule.
+        task_size (int): Positive number of classes placed in each automatically
+            constructed task. The final task may contain fewer classes.
+        class_order_mode (str): ``"fixed"`` preserves the supplied/natural class
+            order; ``"random"`` shuffles it reproducibly before grouping.
+        task_order_mode (str): ``"fixed"`` preserves task order; ``"random"``
+            shuffles complete groups without changing within-task class order.
+        seed (int | None): Seed used for class/task shuffling.
 
     Returns:
         tuple[list[int], list[list[int]]]: Resolved class order and task groups.
 
     Raises:
-        TypeError: If class counts or class IDs are not non-boolean integers.
+        TypeError: If class counts, task size, seed, or class IDs are not
+            non-boolean integers.
         ValueError: If the schedule is empty, duplicated, inconsistent, out of
-            range, or begins with fewer than two classes.
+            range, or uses an unsupported ordering mode.
     """
+
+    # Validate automatic grouping and reproducible ordering controls.
+    if isinstance(task_size, bool) or not isinstance(task_size, int):
+        raise TypeError("task_size must be a non-boolean integer.")
+    # Keep automatic task groups nonempty.
+    if task_size < 1:
+        raise ValueError("task_size must be positive.")
+    # Accept only the integer seed domain shared by schedule RNGs.
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise TypeError("seed must be a non-boolean integer or None.")
+
+    class_order_mode = str(class_order_mode).lower()
+    task_order_mode = str(task_order_mode).lower()
+    # Restrict class ordering to the two documented protocols.
+    if class_order_mode not in ("fixed", "random"):
+        raise ValueError("class_order_mode must be 'fixed' or 'random'.")
+    # Restrict task ordering independently from within-task ordering.
+    if task_order_mode not in ("fixed", "random"):
+        raise ValueError("task_order_mode must be 'fixed' or 'random'.")
 
     # Normalize explicit groups before using them to infer the class order.
     normalized_groups = None
@@ -160,6 +197,11 @@ def resolve_continual_schedule(
         # Reject empty schedules and empty individual experiences.
         if not normalized_groups or any(not group for group in normalized_groups):
             raise ValueError("task_groups must contain only nonempty groups.")
+        # Explicit membership and random class ordering are contradictory.
+        if class_order_mode == "random":
+            raise ValueError(
+                "class_order_mode='random' cannot be combined with task_groups."
+            )
 
     # Infer the order from explicit groups when no separate order was supplied.
     grouped_order = [label for group in normalized_groups for label in group] \
@@ -217,7 +259,7 @@ def resolve_continual_schedule(
         raise ValueError("Continual class IDs must be unique.")
 
     selected_class_num = len(resolved_order)
-    # Preserve the existing minimum needed by the initial classification task.
+    # Continual evaluation requires at least one transition between tasks.
     if selected_class_num < 2:
         raise ValueError("A continual schedule must contain at least two classes.")
     # Keep an explicit count consistent with the resolved label schedule.
@@ -227,14 +269,23 @@ def resolve_continual_schedule(
     if available_class_num is not None and selected_class_num > available_class_num:
         raise ValueError("The continual schedule exceeds the dataset class count.")
 
-    # Retain the historical 2+1+1 schedule unless groups were made explicit.
+    schedule_rng = random.Random(seed)
+    # Randomize class identity before automatic grouping when requested.
     if normalized_groups is None:
-        normalized_groups = [resolved_order[:2]] + [
-            [label] for label in resolved_order[2:]
+        # Shuffle individual labels only for the class-random protocol.
+        if class_order_mode == "random":
+            schedule_rng.shuffle(resolved_order)
+        normalized_groups = [
+            resolved_order[index:index + task_size]
+            for index in range(0, len(resolved_order), task_size)
         ]
-    # Avoid a one-output first classifier whose softmax loss is degenerate.
-    if len(normalized_groups[0]) < 2:
-        raise ValueError("The first continual task must contain at least two classes.")
+
+    # Reorder complete tasks while preserving class order inside each group.
+    if task_order_mode == "random":
+        schedule_rng.shuffle(normalized_groups)
+
+    # The returned order always describes the actual resolved task stream.
+    resolved_order = [label for group in normalized_groups for label in group]
 
     return resolved_order, normalized_groups
 
@@ -519,10 +570,15 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     """Arguments forwarded to ``DiffusionClassifier`` except ``network``.
 
     ``mask_by_nulls=None`` lets the model factory match the raw network's CFG
-    setting. An explicit boolean is forwarded unchanged.
+    setting. An explicit boolean is forwarded unchanged. Knowledge
+    distillation keeps the historical hard/T=1/all-sample defaults;
+    ``distil_temperature`` controls soft-target smoothing and ``distil_scope``
+    selects old classes, replay rows, or all current/replay rows.
     """
 
     distil_type: str = "hard"
+    distil_temperature: float = 1.0
+    distil_scope: str = "current_and_replay"
     mask_by_nulls: bool | None = None
     mask_by_t_threshold: bool = False
     mask_t_percentage: int = 70
@@ -533,6 +589,34 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_acc_coef: float = 0.5
     distil_acc_coef: float = 0.5
     ctr_acc_coef: float = 0.0
+
+    def __post_init__(self: DiffusionClassifierConfig) -> None:
+        """Validate optional knowledge-distillation controls.
+
+        Args:
+            None.
+
+        Returns:
+            None: Values are validated and scope spelling is normalized.
+        """
+
+        # Require a mathematically defined soft-target temperature.
+        if isinstance(self.distil_temperature, bool) \
+        or not isinstance(self.distil_temperature, Real) \
+        or not isfinite(self.distil_temperature) \
+        or self.distil_temperature <= 0.:
+            raise ValueError(
+                "distil_temperature must be a finite positive number."
+            )
+        self.distil_scope = str(self.distil_scope).lower()
+        # Restrict KD sample allocation to the three implemented protocols.
+        if self.distil_scope not in (
+            "old_classes", "replay_only", "current_and_replay"
+        ):
+            raise ValueError(
+                "distil_scope must be 'old_classes', 'replay_only', or "
+                "'current_and_replay'."
+            )
 
 
 @dataclass
@@ -801,7 +885,17 @@ class ContinuallyLearnConfig(KwargsMixin):
         task_groups (list[list[int]] | None): Optional nonempty groups of
             original labels introduced per task. Flattening the groups must
             equal ``class_order`` when both are supplied. ``None`` preserves
-            the initial two-class task followed by singleton tasks.
+            automatic grouping by ``task_size``.
+        task_size (int): Positive number of classes per automatically built
+            task. The default ``1`` starts with one class and adds one class at
+            every task.
+        class_order_mode (str): ``"fixed"`` or seeded ``"random"`` ordering
+            before automatic grouping.
+        task_order_mode (str): ``"fixed"`` or seeded ``"random"`` ordering of
+            complete groups while preserving order inside each group.
+        seed (int | None): Master continual seed used by schedule resolution,
+            data, model initialization, replay, training and sampling. ``None``
+            falls back to ``training.seed`` for backward compatibility.
         remove_prev_classes (bool): Train later tasks on only the newly
             introduced class when true; otherwise train on every seen class.
         keep_same_model (bool): Carry shared classifier weights and old output
@@ -812,10 +906,43 @@ class ContinuallyLearnConfig(KwargsMixin):
         use_buffer (bool): Use fixed-size sample replay instead of a generative
             replay model.
         buffer_kwargs (dict): ``ReplayBuffer`` controls ``maxlen``,
-            ``sample_num``, ``insert_num``, and ``seed``.
+            ``sample_num``, ``insert_num``, ``seed``, and the optional storage
+            ``strategy``. Omitting ``strategy`` retains FIFO exactly.
+        baseline (str | None): Optional named research control. ``None`` leaves
+            every legacy switch independent; named controls validate a coherent
+            sequential, cumulative, reservoir-ER, LwF, generative-replay, or
+            joint-DiT treatment.
         plot_results (bool): Plot accuracy against the number of seen classes.
         generative_model_kwargs (dict): Replay-model controls ``train_num``
             and ``samples_per_class``.
+        use_generative_replay (bool): Generate old examples between tasks when
+            a replay model is present. The default ``True`` preserves previous
+            behavior; ``False`` enables joint/KD controls without generation.
+        replay_budget_mode (str): ``"legacy"`` retains per-class generation and
+            buffer counts. ``"fixed_total"`` uses the explicit old/current
+            example budgets below so replay methods receive matched exposure.
+        replay_old_examples (int | None): Total old examples selected per task
+            in fixed-total mode.
+        replay_current_examples (int | None): Optional exact current-data
+            exposure per task in fixed-total mode; ``None`` keeps every current
+            example.
+        optimizer_steps_per_epoch (int | None): Optional positive optimizer
+            update count for each active training phase per epoch. ``None``
+            preserves the existing finite-dataset fit behavior.
+        replay_candidate_multiplier (int): Positive candidate-pool multiplier
+            used before an optional cognitive replay gate.
+        replay_selection (str): ``"all"`` legacy selection or the optional
+            ``"uniform"``, ``"random"`, ``"confidence"``, ``"surprise"``,
+            or ``"confidence_surprise"`` matched-pool controls.
+        replay_surprise_weight (float): Combined-gate surprise weight in
+            ``[0, 1]``.
+        replay_cache_dir (str | None): Optional shared candidate-pool directory
+            for matched raw-versus-EMA or gate comparisons.
+        replay_cache_mode (str): ``"off"``, ``"write"``, ``"read"``, or
+            ``"read_write"``. The default performs no cache I/O.
+        mechanistic_metrics (bool): Compute optional teacher calibration and
+            replay consistency/coverage/diversity/drift outcomes per task.
+        mechanistic_max_samples (int): Positive cap on quadratic diversity work.
         use_generative_model_classifier (bool): Use the classifier attached to
             a VAE or diffusion replay model instead of the standalone model.
         train_classifier_separately (bool): Add the separate classifier phase
@@ -826,17 +953,44 @@ class ContinuallyLearnConfig(KwargsMixin):
             provide a distillation token and a positive teacher objective. An
             optional runtime teacher may initialize task one but is never
             stored in this YAML-safe section.
+        snapshot_network_name (str): ``"raw"`` or ``"ema"`` branch cloned for
+            previous-task distillation.
+        teacher_network_name (str | None): Readable alias for
+            ``snapshot_network_name``. ``None`` preserves the established field;
+            an explicit value overrides it.
+        use_ensemble_accuracy (bool): Use timestep-ensemble values as the
+            authoritative continual accuracy matrix and derived metrics.
         evaluate_ensemble_accuracy (bool): Also evaluate diffusion-classifier
-            ensemble accuracy after each continual task.
+            ensemble accuracy after each continual task. Retained as a legacy
+            alias for ``use_ensemble_accuracy``.
         ensemble_accuracy_kwargs (dict): Options forwarded to
             ``DiffusionClassifier.evaluate_ensemble_accuracy``.
         return_details (bool): Return task histories and final models together
             with accuracies from a direct configured call.
+        save_task_checkpoints (bool): Persist one atomic recovery checkpoint
+            after every completed task.
+        checkpoint_dir (str | None): Optional recovery root. Configured runs
+            default to ``<results_path>/checkpoints``.
+        resume_from (str | None): Checkpoint root or committed task directory
+            from which the next unfinished task is restored.
+        experiment_phase (str): ``"legacy"`` preserves test reporting,
+            ``"development"`` prohibits test evaluation, and
+            ``"confirmation"`` enables the frozen confirmatory run path.
+        experiment_manifest_path (str | None): Frozen paired-block manifest
+            required for confirmation runs.
+        experiment_manifest_hash (str | None): Trusted external SHA-256 digest
+            used to authenticate the confirmation manifest.
+        experiment_run_id (str | None): Planned condition-by-stream run whose
+            schedule and seed this invocation must match.
     """
 
     class_num: int | None = None
     class_order: list[int] | None = None
     task_groups: list[list[int]] | None = None
+    task_size: int = 1
+    class_order_mode: str = "fixed"
+    task_order_mode: str = "fixed"
+    seed: int | None = None
     remove_prev_classes: bool = True
     keep_same_model: bool = True
     use_loaded_opt: bool = True
@@ -844,16 +998,194 @@ class ContinuallyLearnConfig(KwargsMixin):
     buffer_kwargs: dict[str, object] = field(
         default_factory=_default_buffer_kwargs
     )
+    baseline: str | None = None
     plot_results: bool = True
     generative_model_kwargs: dict[str, int] = field(
         default_factory=_default_generative_replay_kwargs
     )
+    use_generative_replay: bool = True
+    replay_budget_mode: str = "legacy"
+    replay_old_examples: int | None = None
+    replay_current_examples: int | None = None
+    replay_candidate_multiplier: int = 1
+    replay_selection: str = "all"
+    replay_surprise_weight: float = 0.5
+    replay_cache_dir: str | None = None
+    replay_cache_mode: str = "off"
+    mechanistic_metrics: bool = False
+    mechanistic_max_samples: int = 512
     use_generative_model_classifier: bool = False
     train_classifier_separately: bool = False
     use_distillation: bool = False
+    snapshot_network_name: str = "raw"
+    teacher_network_name: str | None = None
+    use_ensemble_accuracy: bool = False
     evaluate_ensemble_accuracy: bool = False
     ensemble_accuracy_kwargs: dict[str, object] = field(default_factory=dict)
     return_details: bool = False
+    save_task_checkpoints: bool = False
+    checkpoint_dir: str | None = None
+    resume_from: str | None = None
+    experiment_phase: str = "legacy"
+    experiment_manifest_path: str | None = None
+    experiment_manifest_hash: str | None = None
+    experiment_run_id: str | None = None
+    optimizer_steps_per_epoch: int | None = None
+
+    def __post_init__(self: ContinuallyLearnConfig) -> None:
+        """Validate and normalize optional continual research controls.
+
+        ``buffer_kwargs`` remains an extensible mapping because the continual
+        API owns capacity and sampling validation. This hook validates its
+        strategy plus named baselines, matched budgets, gates, cache mode,
+        teacher branch, diagnostic cap, and experiment phase.
+
+        Returns:
+            None: ``buffer_kwargs`` is copied and contains a canonical strategy.
+
+        Raises:
+            TypeError: If ``buffer_kwargs`` is not a mapping or ``None``.
+            ValueError: If its strategy is not FIFO, reservoir, or
+                class-balanced reservoir storage.
+        """
+
+        # Preserve the historical explicit-None shorthand for all defaults.
+        if self.buffer_kwargs is None:
+            self.buffer_kwargs = _default_buffer_kwargs()
+        # Require keyword-style replay controls before inspecting strategy.
+        if not isinstance(self.buffer_kwargs, Mapping):
+            raise TypeError("buffer_kwargs must be a mapping or None.")
+
+        normalized = dict(self.buffer_kwargs)
+        strategy = normalized.get("strategy", "fifo")
+        aliases = {
+            "fifo": "fifo",
+            "reservoir": "reservoir",
+            "class_balanced": "class_balanced",
+            "class-balanced": "class_balanced",
+            "class_balanced_reservoir": "class_balanced",
+        }
+        # Validate the policy before publishing its canonical spelling.
+        if not isinstance(strategy, str) or strategy.lower() not in aliases:
+            raise ValueError(
+                "buffer_kwargs.strategy must be 'fifo', 'reservoir', or "
+                "'class_balanced'."
+            )
+        normalized["strategy"] = aliases[strategy.lower()]
+        self.buffer_kwargs = normalized
+
+        baseline_names = {
+            "sequential", "sequential_finetuning", "cumulative",
+            "cumulative_upper_bound", "reservoir_er", "lwf", "vae_replay",
+            "diffusion_replay", "joint_none", "joint_replay", "joint_kd",
+            "joint_both",
+        }
+        # Reject misspelled named controls before model construction.
+        if self.baseline is not None \
+        and str(self.baseline).lower() not in baseline_names:
+            raise ValueError("baseline is not a supported continual control.")
+        self.replay_budget_mode = str(self.replay_budget_mode).lower()
+        # Keep exposure accounting within the two implemented budget regimes.
+        if self.replay_budget_mode not in ("legacy", "fixed_total"):
+            raise ValueError(
+                "replay_budget_mode must be 'legacy' or 'fixed_total'."
+            )
+        for name in ("replay_old_examples", "replay_current_examples"):
+            value = getattr(self, name)
+            # Exposure counts must be exact nonnegative integers when supplied.
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, Integral)
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be nonnegative or None.")
+        # Fixed update accounting is disabled by default and positive when used.
+        if self.optimizer_steps_per_epoch is not None and (
+            isinstance(self.optimizer_steps_per_epoch, bool)
+            or not isinstance(self.optimizer_steps_per_epoch, Integral)
+            or self.optimizer_steps_per_epoch <= 0
+        ):
+            raise ValueError(
+                "optimizer_steps_per_epoch must be positive or None."
+            )
+        # Store an ordinary integer for stable YAML serialization.
+        if self.optimizer_steps_per_epoch is not None:
+            self.optimizer_steps_per_epoch = int(
+                self.optimizer_steps_per_epoch
+            )
+        # Fixed-total mode cannot infer a cross-treatment old-data budget.
+        if self.replay_budget_mode == "fixed_total" \
+        and self.replay_old_examples is None:
+            raise ValueError(
+                "fixed_total replay requires replay_old_examples."
+            )
+        # Candidate generation must be a positive multiple of the final budget.
+        if isinstance(self.replay_candidate_multiplier, bool) \
+        or not isinstance(self.replay_candidate_multiplier, Integral) \
+        or self.replay_candidate_multiplier <= 0:
+            raise ValueError(
+                "replay_candidate_multiplier must be a positive integer."
+            )
+        selection_names = {
+            "all", "uniform", "random", "confidence", "surprise",
+            "confidence_surprise",
+        }
+        self.replay_selection = str(self.replay_selection).lower()
+        # Refuse an unknown replay gate rather than changing a treatment silently.
+        if self.replay_selection not in selection_names:
+            raise ValueError("replay_selection is unsupported.")
+        # Combined confidence-surprise scores use a convex weight.
+        if isinstance(self.replay_surprise_weight, bool) \
+        or not isinstance(self.replay_surprise_weight, Real) \
+        or not 0. <= float(self.replay_surprise_weight) <= 1.:
+            raise ValueError("replay_surprise_weight must be in [0, 1].")
+        # PyYAML 1.1 parses the unquoted token ``off`` as boolean false.
+        self.replay_cache_mode = "off" if self.replay_cache_mode is False \
+            else str(self.replay_cache_mode).lower()
+        # Limit cache behavior to explicit immutable/read-through policies.
+        if self.replay_cache_mode not in (
+            "off", "write", "read", "read_write"
+        ):
+            raise ValueError("replay_cache_mode is unsupported.")
+        # Enabled caching needs a concrete pool shared by treatment variants.
+        if self.replay_cache_mode != "off" and not self.replay_cache_dir:
+            raise ValueError(
+                "replay_cache_dir is required when replay caching is enabled."
+            )
+        # Bound optional quadratic diversity diagnostics by a positive cap.
+        if isinstance(self.mechanistic_max_samples, bool) \
+        or not isinstance(self.mechanistic_max_samples, Integral) \
+        or self.mechanistic_max_samples <= 0:
+            raise ValueError(
+                "mechanistic_max_samples must be a positive integer."
+            )
+        # Normalize the optional readable teacher-branch alias when present.
+        if self.teacher_network_name is not None:
+            self.teacher_network_name = str(self.teacher_network_name).lower()
+            # Restrict snapshots to branches actually exposed by the wrapper.
+            if self.teacher_network_name not in ("raw", "ema"):
+                raise ValueError("teacher_network_name must be 'raw' or 'ema'.")
+        self.snapshot_network_name = str(self.snapshot_network_name).lower()
+        # Keep the established snapshot field under the same branch contract.
+        if self.snapshot_network_name not in ("raw", "ema"):
+            raise ValueError("snapshot_network_name must be 'raw' or 'ema'.")
+        self.experiment_phase = str(self.experiment_phase).lower()
+        # Separate legacy, development-only, and confirmatory evaluation paths.
+        if self.experiment_phase not in (
+            "legacy", "development", "confirmation"
+        ):
+            raise ValueError("experiment_phase is unsupported.")
+        # Confirmation access is valid only through one externally
+        # authenticated, preregistered run declaration.
+        if self.experiment_phase == "confirmation" and not all((
+            self.experiment_manifest_path,
+            self.experiment_manifest_hash,
+            self.experiment_run_id,
+        )):
+            raise ValueError(
+                "confirmation requires experiment_manifest_path, "
+                "experiment_manifest_hash, and experiment_run_id."
+            )
 
 
 @dataclass
@@ -910,6 +1242,12 @@ class TrainingConfig:
         task (str): ``legacy``, ``generation``, ``joint``, ``classification``,
             or ``continual``.
         seed (int | None): TensorFlow/Keras and dataset split seed.
+        dtype_policy (str): Keras global dtype policy installed before data and
+            model construction, such as ``"float32"``, ``"mixed_float16"`` or
+            ``"mixed_bfloat16"``.
+        deterministic_ops (bool): Request deterministic TensorFlow kernels when
+            supported. Continual runs still derive every random source from
+            ``continually_learn.seed``.
         verbose (int): Keras and project reporting verbosity.
         patience (int): Early-stopping patience; ``0`` disables it.
         monitor (str | None): Explicit early-stopping metric, or ``None`` for
@@ -948,6 +1286,8 @@ class TrainingConfig:
     save_weights: bool = True
     task: str = "legacy"
     seed: int | None = None
+    dtype_policy: str = "float32"
+    deterministic_ops: bool = False
     verbose: int = 1
     patience: int = 0
     monitor: str | None = None
@@ -1623,8 +1963,23 @@ def run_self_tests() -> dict[str, str]:
     assert resolved_order == [3, 1, 2, 0]
     assert resolved_groups == [[3, 1], [2, 0]]
     assert resolve_continual_schedule(4, available_class_num=4) == (
-        [0, 1, 2, 3], [[0, 1], [2], [3]]
+        [0, 1, 2, 3], [[0], [1], [2], [3]]
     )
+    random_schedule = resolve_continual_schedule(
+        6,
+        available_class_num=6,
+        task_size=2,
+        class_order_mode="random",
+        seed=17,
+    )
+    assert random_schedule == resolve_continual_schedule(
+        6,
+        available_class_num=6,
+        task_size=2,
+        class_order_mode="random",
+        seed=17,
+    )
+    assert all(len(group) == 2 for group in random_schedule[1])
     try:
         resolve_continual_schedule(
             3,
@@ -1667,6 +2022,8 @@ def run_self_tests() -> dict[str, str]:
         results_path=None, 
         save_weights=False, 
     )
+    assert training_defaults.dtype_policy == "float32"
+    assert training_defaults.deterministic_ops is False
     assert training_defaults.use_valset is True and training_defaults.save_gifs is True
     assert training_defaults.fit_method == "fit"
     assert training_defaults.stage_tasks is None
@@ -1900,7 +2257,7 @@ def run_self_tests() -> dict[str, str]:
         save_config(distillation_config, distillation_path)
         loaded_distillation = load_config(distillation_path)
         assert loaded_distillation == distillation_config
-        assert "teacher_network" not in distillation_path.read_text(
+        assert "teacher_network:" not in distillation_path.read_text(
             encoding="utf-8"
         )
 

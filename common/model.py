@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import tensorflow as tf
 from tensorflow.keras import losses
 
+import numpy as np
+
 from copy import deepcopy
+
 from collections.abc import Callable, Mapping, Sequence
 from numbers import Integral, Real
 from typing import Any
 
-import numpy as np
-
 from common.config import Config, resolve_continual_schedule
 from common.dataloader import get_dataset_spec
+from common.runtime import (
+    configure_runtime, 
+    derive_seed, 
+    effective_seed, 
+    validate_model_dtype_policy
+)
 
 
 _CLASSIFIER_MODELS = {"cnn", "dnn", "pretrained", "hp-tuned"}
@@ -26,19 +34,20 @@ _DIFFUSION_CLASSIFIER_MODELS = {
 }
 _VAE_MODELS = {"vae", "variational_autoencoder", "vae_classifier"}
 _MODEL_SECTION_NAMES = {
-    "diffusion_transformer": "diffusion_transformer",
-    "dit_classifier": "dit_classifier",
-    "dit_decoder": "dit_decoder",
-    "dit_encoder_decoder": "dit_encoder_decoder",
-    "dit_encoder_decoder_classifier": "dit_encoder_decoder_classifier",
-    "unet": "unet",
-    "unet_classifier": "unet_classifier",
-    "vae": "variational_autoencoder",
-    "variational_autoencoder": "variational_autoencoder",
-    "vae_classifier": "vae_classifier",
+    "diffusion_transformer": "diffusion_transformer", 
+    "dit_classifier": "dit_classifier", 
+    "dit_decoder": "dit_decoder", 
+    "dit_encoder_decoder": "dit_encoder_decoder", 
+    "dit_encoder_decoder_classifier": "dit_encoder_decoder_classifier", 
+    "unet": "unet", 
+    "unet_classifier": "unet_classifier", 
+    "vae": "variational_autoencoder", 
+    "variational_autoencoder": "variational_autoencoder", 
+    "vae_classifier": "vae_classifier"
 }
 _DIFFUSION_CLASSIFIER_WRAPPERS = {
-    "diffusion_classifier", "diffusion_classifier_v2"
+    "diffusion_classifier", 
+    "diffusion_classifier_v2"
 }
 
 
@@ -285,7 +294,8 @@ def _get_classifier_model(
     compile_args: Mapping[str, object] | None = None, 
     use_loaded_opt: bool = False, 
     verbose: bool | int = 1, 
-    architecture_kwargs: Mapping[str, object] | None = None
+    architecture_kwargs: Mapping[str, object] | None = None, 
+    seed: int | None = None
 ) -> Any:
     """Build and compile one of four legacy image/feature classifiers.
 
@@ -329,10 +339,12 @@ def _get_classifier_model(
             ``kernel_initializer`` (``"glorot_uniform"``).  Multidimensional
             DNN inputs are flattened before the dense blocks.  Nonempty
             mappings are rejected for ``pretrained`` and ``hp-tuned`` models.
+        seed (int | None): Optional experiment seed used to derive independent
+            dropout streams for each constructed classifier branch.
 
     Returns:
         tf.keras.Sequential: A built, compiled classifier mapping a batch of
-        images/features to ``float32`` probabilities shaped
+        images/features to stable policy-variable-dtype probabilities shaped
         ``[batch, class_num]``.
 
     Raises:
@@ -381,6 +393,7 @@ def _get_classifier_model(
     # Preserve None as the explicit all-trainable Xception setting.
     if num_last_not_frozen is not None:
         num_last_not_frozen = int(num_last_not_frozen)
+
     resize = tuple(int(size) for size in resize)
 
     compile_args_default = get_compile_args()
@@ -389,6 +402,9 @@ def _get_classifier_model(
         **(compile_args or {})
     }
     architecture_kwargs = dict(architecture_kwargs or {})
+    stable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
+    # Validate the optional seed once before constructing seeded sublayers.
+    derive_seed(seed, "classifier", "dropout", "validation")
 
     # Keep custom local architectures separate from saved/pretrained models.
     if architecture_kwargs and model_type in ("pretrained", "hp-tuned"):
@@ -419,25 +435,41 @@ def _get_classifier_model(
                 name="resize"
             ), 
             layers.Rescaling(
-                scale=1. / 127.5,
-                offset=-1.,
+                scale=1. / 127.5, 
+                offset=-1., 
                 name="xception_preprocess"
             ), 
             conv_base, 
             layers.GlobalAveragePooling2D(), 
-            layers.Dropout(dropout_rate), 
-            layers.Dense(class_num, activation="softmax")
+            layers.Dropout(
+                dropout_rate, 
+                seed=derive_seed(seed, "classifier", "pretrained", "dropout")
+            ), 
+            layers.Dense(
+                class_num, 
+                activation="softmax", 
+                dtype=stable_dtype
+            )
         ])
     # Restore the requested hyperparameter-tuned classifier.
     elif model_type == "hp-tuned":
         model = models.load_model(model_path)
+        validate_model_dtype_policy(
+            model, 
+            role="hp-tuned classifier"
+        )
+
         # Reuse the deserialized optimizer when requested.
         if use_loaded_opt:
             compile_args["optimizer"] = model.optimizer
 
         model = models.Sequential([
             *models.clone_model(model).layers[:-1], 
-            layers.Dense(class_num, activation="softmax")
+            layers.Dense(
+                class_num, 
+                activation="softmax", 
+                dtype=stable_dtype
+            )
         ])
     # Build a configurable convolutional classifier.
     elif model_type == "cnn":
@@ -455,8 +487,15 @@ def _get_classifier_model(
                 layers.MaxPooling2D(2), 
                 layers.Conv2D(256, 3, padding="same", activation="relu"), 
                 layers.GlobalAveragePooling2D(), 
-                layers.Dropout(dropout_rate), 
-                layers.Dense(class_num, activation="softmax")
+                layers.Dropout(
+                    dropout_rate, 
+                    seed=derive_seed(seed, "classifier", "cnn", "legacy", "dropout")
+                ), 
+                layers.Dense(
+                    class_num, 
+                    activation="softmax", 
+                    dtype=stable_dtype
+                )
             ])
         # Merge user overrides into explicit CNN architecture defaults.
         else:
@@ -522,8 +561,15 @@ def _get_classifier_model(
 
             model_layers.extend([
                 global_pooling_layer(), 
-                layers.Dropout(dropout_rate), 
-                layers.Dense(class_num, activation="softmax")
+                layers.Dropout(
+                    dropout_rate,
+                    seed=derive_seed(seed, "classifier", "cnn", "dropout"),
+                ),
+                layers.Dense(
+                    class_num,
+                    activation="softmax",
+                    dtype=stable_dtype,
+                )
             ])
             model = models.Sequential(model_layers)
     # Build a configurable dense classifier.
@@ -534,8 +580,16 @@ def _get_classifier_model(
                 # layers.Flatten(input_shape=(10, 10, 2048)), 
                 # layers.GlobalAveragePooling2D(input_shape=(10, 10, 2048)), 
                 # layers.Dense(256, activation="relu"), 
-                layers.Dropout(dropout_rate, input_shape=(2048,)), 
-                layers.Dense(class_num, activation="softmax")
+                layers.Dropout(
+                    dropout_rate, 
+                    input_shape=(2048,), 
+                    seed=derive_seed(seed, "classifier", "dnn", "legacy", "dropout")
+                ), 
+                layers.Dense(
+                    class_num, 
+                    activation="softmax", 
+                    dtype=stable_dtype
+                )
             ])
         # Merge user overrides into explicit DNN architecture defaults.
         else:
@@ -572,11 +626,15 @@ def _get_classifier_model(
                     model_layers.append(layers.BatchNormalization())
 
             model_layers.extend([
-                layers.Dropout(dropout_rate), 
+                layers.Dropout(
+                    dropout_rate,
+                    seed=derive_seed(seed, "classifier", "dnn", "dropout"),
+                ),
                 layers.Dense(
                     class_num, 
                     activation="softmax", 
-                    kernel_initializer=architecture["kernel_initializer"]
+                    kernel_initializer=architecture["kernel_initializer"],
+                    dtype=stable_dtype,
                 )
             ])
             model = models.Sequential(model_layers)
@@ -598,7 +656,7 @@ def _get_classifier_model(
 
 def get_model(
     config: Config | dict[str, object] | int | None = None, 
-    teacher_network: Any | None = None,
+    teacher_network: Any | None = None, 
     **kwargs: object
 ) -> Any | dict[str, object]:
     """Build any classifier, VAE, or diffusion model used by the project.
@@ -659,15 +717,40 @@ def get_model(
     # Reject unsupported configuration root types.
     if config is not None and not isinstance(config, Config):
         raise TypeError("config must be a Config, mapping, integer class count, or None.")
+
+    runtime_seed = effective_seed(
+        config, 
+        seed=kwargs.get("seed"), 
+        task=kwargs.get("task")
+    )
+
+    # Configured factories own the policy. Internal direct calls preserve the
+    # installed policy unless runtime controls were supplied explicitly.
+    if config is not None or any(
+        key in kwargs for key in ("seed", "dtype_policy", "deterministic_ops")
+    ):
+        configure_runtime(
+            runtime_seed, 
+            config.training.dtype_policy if config is not None else kwargs.get(
+                "dtype_policy", 
+                tf.keras.mixed_precision.global_policy().name
+            ), 
+            config.training.deterministic_ops if config is not None else bool(
+                kwargs.get("deterministic_ops", False)
+            )
+        )
   
     legacy_keys = {
         "class_num", "model_type", "model_path", "dropout_rate", 
         "num_last_not_frozen", "resize", "compile_args", 
-        "use_loaded_opt", "verbose", "architecture_kwargs"
+        "use_loaded_opt", "verbose", "architecture_kwargs", "seed", 
+        "dtype_policy", "deterministic_ops"
     }
+
     # Route calls using only legacy classifier options to the original builder.
     if config is None and "class_num" in kwargs and set(kwargs) <= legacy_keys:
         legacy_type = kwargs.get("model_type", "CNN")
+
         # Use legacy construction only for classifier families.
         if str(legacy_type).lower() in _CLASSIFIER_MODELS:
             # Reject a teacher that this legacy classifier cannot consume.
@@ -675,8 +758,13 @@ def get_model(
                 raise ValueError(
                     "teacher_network requires a diffusion classifier model family."
                 )
+
             legacy_kwargs = dict(kwargs)
             class_num = legacy_kwargs.pop("class_num")
+            for runtime_key in ("dtype_policy", "deterministic_ops"):
+                legacy_kwargs.pop(runtime_key, None)
+
+            legacy_kwargs["seed"] = runtime_seed
 
             return _get_classifier_model(class_num, **legacy_kwargs)
 
@@ -752,11 +840,17 @@ def get_model(
         loss_function = config.model.loss_function
         # Size continual heads from the validated selected-class schedule.
         if task.lower() == "continual":
+            continual_seed = config.continually_learn.seed if config.continually_learn.seed is not None \
+                            else config.training.seed
             class_order, _ = resolve_continual_schedule(
-                config.continually_learn.class_num,
-                config.continually_learn.class_order,
-                config.continually_learn.task_groups,
-                available_class_num=class_num,
+                config.continually_learn.class_num, 
+                config.continually_learn.class_order, 
+                config.continually_learn.task_groups, 
+                available_class_num=class_num, 
+                task_size=config.continually_learn.task_size, 
+                class_order_mode=config.continually_learn.class_order_mode, 
+                task_order_mode=config.continually_learn.task_order_mode, 
+                seed=continual_seed
             )
             class_num = len(class_order)
         show_network_summary = config.model.show_network_summary
@@ -954,7 +1048,8 @@ def get_model(
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 
             verbose=0, 
-            architecture_kwargs=architecture_kwargs
+            architecture_kwargs=architecture_kwargs,
+            seed=runtime_seed,
         )
 
 
@@ -982,6 +1077,10 @@ def get_model(
         if name in _VAE_MODELS:
             selected_kwargs.pop("class_num", None)
             selected_kwargs.pop("compile", None)
+
+            # Replace typed ``None`` with the authoritative runtime seed.
+            if selected_kwargs.get("seed") is None:
+                selected_kwargs["seed"] = runtime_seed
             # Make dataset-derived width authoritative for typed sections.
             if using_typed_model_config:
                 selected_kwargs["data_dim"] = flat_dim
@@ -1108,18 +1207,27 @@ def get_model(
             selected_kwargs["decoder_kwargs"] = decoder_kwargs
 
         network_types = {
-            "diffusion_transformer": DiffusionTransformer,
-            "dit_classifier": DiTClassifier,
-            "dit_decoder": DiTDecoder,
-            "dit_encoder_decoder": DiTEncoderDecoder,
-            "dit_encoder_decoder_classifier": DiTEncoderDecoderClassifier,
-            "unet": UNet,
-            "unet_classifier": UNetClassifier,
+            "diffusion_transformer": DiffusionTransformer, 
+            "dit_classifier": DiTClassifier, 
+            "dit_decoder": DiTDecoder, 
+            "dit_encoder_decoder": DiTEncoderDecoder, 
+            "dit_encoder_decoder_classifier": DiTEncoderDecoderClassifier, 
+            "unet": UNet, 
+            "unet_classifier": UNetClassifier
         }
+        # Replace typed ``None`` before raw-network sublayers are constructed.
+        if selected_kwargs.get("seed") is None:
+            selected_kwargs["seed"] = runtime_seed
+
         network = network_types[name](**selected_kwargs)
 
         selected_wrapper_name = wrapper_name
         selected_wrapper_kwargs = deepcopy(wrapper_kwargs)
+
+        # Wrapper noising, label dropout, replay sampling, and inference all
+        # inherit the canonical experiment seed unless explicitly overridden.
+        if selected_wrapper_kwargs.get("seed") is None:
+            selected_wrapper_kwargs["seed"] = runtime_seed
         # Resolve the typed automatic value after the raw timestep count is known.
         if selected_wrapper_kwargs.get("test_steps") is None:
             selected_wrapper_kwargs["test_steps"] = min(50, network.timesteps)
@@ -1187,6 +1295,7 @@ def get_model(
         Returns:
             tf.keras.Model: The same model after optional weight loading.
         """
+
         # Build an uninitialized VAE before loading shape-dependent weights.
         if weights_path is not None \
         and isinstance(selected_model, VariationalAutoencoder) \
@@ -1194,8 +1303,13 @@ def get_model(
             import tensorflow as tf
 
 
-            x = tf.zeros((1, flat_dim), dtype=tf.float32)
-            inputs = (x, tf.one_hot([0], class_num)) if selected_model.conditioned else x
+            input_dtype = tf.as_dtype(selected_model.compute_dtype)
+            x = tf.zeros((1, flat_dim), dtype=input_dtype)
+            inputs = (
+                x, 
+                tf.one_hot([0], class_num, dtype=input_dtype)
+            ) if selected_model.conditioned else x
+
             selected_model(inputs, training=False)
 
         # Print the most useful available architecture summary when requested.

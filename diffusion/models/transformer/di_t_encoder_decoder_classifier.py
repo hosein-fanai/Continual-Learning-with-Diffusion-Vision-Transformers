@@ -11,6 +11,8 @@ from tensorflow.keras import layers
 
 from copy import deepcopy
 
+from common.runtime import derive_seed
+
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.transformer.di_t_decoder import DiTDecoder
 from diffusion.models.transformer.di_t_encoder_decoder import DiTEncoderDecoder
@@ -155,6 +157,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         decoder_config.setdefault("dim", self.dim)
         decoder_config.setdefault("cond_dim", self.cond_dim)
         decoder_config.setdefault("dtype", self.dtype_policy.name)
+        decoder_config.setdefault("seed", derive_seed(self.seed, "decoder"))
         decoder_config.setdefault("shift_inputs", False)
         encoder_feature_dims, encoder_feature_grids = \
             DiTEncoderDecoder._get_encoder_feature_metadata(self)
@@ -270,7 +273,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 self.current_resolution,
                 self.channels,
             ),
-            dtype=tf.float32,
+            dtype=self.compute_dtype,
             name="noisy_images",
         )
         times = layers.Input(
@@ -289,7 +292,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 self.decoder.current_resolution,
                 self.decoder.channels,
             ),
-            dtype=tf.float32,
+            dtype=self.decoder.compute_dtype,
             name="decoder_images",
         )
 

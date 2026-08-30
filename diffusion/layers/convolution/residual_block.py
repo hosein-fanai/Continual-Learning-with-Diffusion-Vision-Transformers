@@ -6,6 +6,7 @@ from tensorflow.keras import layers
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.runtime import derive_seed
 
 
 def _split_inputs(
@@ -50,6 +51,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
         use_batch_norm: bool = True, 
         dropout_rate: float = 0.0, 
         zero_init: bool = False, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Create the convolution, residual, and optional condition paths.
@@ -62,6 +64,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
             use_batch_norm (bool): Whether to normalize before convolution.
             dropout_rate (float): Spatial-dropout probability in ``[0, 1)``.
             zero_init (bool): Whether to zero-initialize the second convolution.
+            seed (int | None): Optional component seed for spatial dropout.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -71,8 +74,11 @@ class ResidualConvBlock(ArgumentSaverLayer):
         super().__init__(**kwargs)
         self._check_arguments(locals())
         self._save_init_args(locals())
+        derive_seed(seed, "residual_conv_block", "validation")
 
+        self.seed = None if self.seed is None else int(self.seed)
         self.output_dim = self.filters
+
         self.normalization = layers.BatchNormalization(
             center=False, 
             scale=False, 
@@ -89,6 +95,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
         )
         self.dropout = layers.SpatialDropout2D(
             rate=self.dropout_rate, 
+            seed=derive_seed(self.seed, "spatial_dropout"),
             dtype=self.dtype_policy, 
             name=f"{self.name}/dropout"
         ) if self.dropout_rate > 0.0 else None
@@ -238,6 +245,7 @@ class ResidualConvStack(ArgumentSaverLayer):
         use_batch_norm: bool = True, 
         dropout_rate: float = 0.0, 
         zero_init: bool = False, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Create ``depth`` equally configured residual blocks.
@@ -251,12 +259,16 @@ class ResidualConvStack(ArgumentSaverLayer):
             use_batch_norm (bool): Whether each block uses batch normalization.
             dropout_rate (float): Spatial-dropout probability in ``[0, 1)``.
             zero_init (bool): Whether the last block ends with zero weights.
+            seed (int | None): Optional stack seed used to derive one spatial
+                dropout stream per residual block.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
             None: Initialization mutates only the new layer instance.
         """
 
+        derive_seed(seed, "residual_conv_stack", "validation")
+        seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
 
         # Require a positive integer number of residual blocks.
@@ -275,6 +287,7 @@ class ResidualConvStack(ArgumentSaverLayer):
                 use_batch_norm=self.use_batch_norm, 
                 dropout_rate=self.dropout_rate, 
                 zero_init=self.zero_init and block_id == self.depth - 1, 
+                seed=derive_seed(self.seed, "block", block_id),
                 dtype=self.dtype_policy, 
                 name=f"{self.name}/block_{block_id + 1}"
             )

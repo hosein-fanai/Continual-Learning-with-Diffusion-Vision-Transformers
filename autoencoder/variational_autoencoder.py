@@ -11,7 +11,9 @@ from collections.abc import Callable, Mapping, Sequence
 from numbers import Integral, Real
 
 from common.dataloader import get_dataset
+from common.gradients import apply_policy_gradients
 from common.model import get_callbacks
+from common.runtime import derive_seed
 
 from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
 
@@ -59,6 +61,7 @@ class VariationalAutoencoder(models.Model):
         class_num: int | None = None, 
         compile: bool = True, 
         compile_args: Mapping[str, object] | None = None, 
+        seed: int | None = None,
         **kwargs: object
     ) -> None:
         """Build the encoder, decoder, metric state, and optional optimizer.
@@ -97,6 +100,10 @@ class VariationalAutoencoder(models.Model):
                 "loss": "mean_squared_error"}``.  Keys may be any accepted by
                 ``Model.compile``, for example ``{"optimizer": "adam",
                 "run_eagerly": True}``.
+            seed (int | None): Optional experiment seed for the VAE's explicit
+                reparameterization operation and default generation/training
+                streams. Continual task-level global reseeding combines with
+                this component seed to reproduce its stateful draw sequence.
             **kwargs (object): Standard ``tf.keras.Model`` constructor options,
                 such as ``name``, ``trainable``, and ``dtype``.
 
@@ -166,6 +173,16 @@ class VariationalAutoencoder(models.Model):
         self.beta = beta
         self.conditioned = conditioned
         self.class_num = class_num
+        # Keep reparameterization's operation seed independent from dataset
+        # shuffling and callback generation. A stateful op remains compatible
+        # with TF 2.10 Functional KerasTensors; task-level runtime reseeding
+        # resets its deterministic sequence at each recovery boundary.
+        self.reparameterization_seed = derive_seed(
+            seed,
+            "vae",
+            "reparameterization",
+        )
+        self.seed = None if seed is None else int(seed)
 
         self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, 
                                         hiddens_kwargs, class_num)
@@ -174,9 +191,19 @@ class VariationalAutoencoder(models.Model):
 
         self.seen_classes = []
 
-        self.total_loss_tracker = metrics.Mean(name="total_loss")
-        self.kl_loss_tracker = metrics.Mean(name="kl_loss")
-        self.recon_loss_tracker = metrics.Mean(name="recon_loss")
+        stable_dtype = self.dtype_policy.variable_dtype
+        self.total_loss_tracker = metrics.Mean(
+            name="total_loss",
+            dtype=stable_dtype,
+        )
+        self.kl_loss_tracker = metrics.Mean(
+            name="kl_loss",
+            dtype=stable_dtype,
+        )
+        self.recon_loss_tracker = metrics.Mean(
+            name="recon_loss",
+            dtype=stable_dtype,
+        )
 
         compile_args_default = {
             "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
@@ -220,16 +247,17 @@ class VariationalAutoencoder(models.Model):
             units, 
             activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
             kernel_initializer=kernel_init, 
-            use_bias=not use_batch_norm
+            use_bias=not use_batch_norm,
+            dtype=self.dtype_policy,
         ))
         dlayer.add(
-            layers.Activation(actv)
+            layers.Activation(actv, dtype=self.dtype_policy)
         ) if (use_batch_norm and actv != "prelu") else None
         dlayer.add(
-            layers.PReLU()
+            layers.PReLU(dtype=self.dtype_policy)
         ) if actv == "prelu" else None
         dlayer.add(
-            layers.BatchNormalization()
+            layers.BatchNormalization(dtype=self.dtype_policy)
         ) if use_batch_norm else None
 
         return dlayer
@@ -262,12 +290,20 @@ class VariationalAutoencoder(models.Model):
         """
 
         hiddens_kwargs = dict(hiddens_kwargs or {})
-        x_inputs = layers.Input(shape=(input_dim,), name="x_input")
+        x_inputs = layers.Input(
+            shape=(input_dim,),
+            dtype=self.compute_dtype,
+            name="x_input",
+        )
 
         # Concatenate one-hot labels into a conditional encoder input.
         if self.conditioned:
-            y_inputs = layers.Input(shape=(class_num,), name="y_input")
-            x = layers.Concatenate()([x_inputs, y_inputs])
+            y_inputs = layers.Input(
+                shape=(class_num,),
+                dtype=self.compute_dtype,
+                name="y_input",
+            )
+            x = layers.Concatenate(dtype=self.dtype_policy)([x_inputs, y_inputs])
             inputs = [x_inputs, y_inputs]
         # Use only data features for an unconditional encoder.
         else:
@@ -277,9 +313,22 @@ class VariationalAutoencoder(models.Model):
         for hidden_dim in hiddens_dims:
             x = self._dense_layer(hidden_dim, **hiddens_kwargs)(x)
 
-        z_mean = layers.Dense(latent_dim, name="z_mean")(x)
-        z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
-        z = VariationalAutoencoder.compute_z(z_mean, z_log_var)
+        z_mean = layers.Dense(
+            latent_dim,
+            dtype=self.dtype_policy,
+            name="z_mean",
+        )(x)
+        z_log_var = layers.Dense(
+            latent_dim,
+            dtype=self.dtype_policy,
+            name="z_log_var",
+        )(x)
+        z = VariationalAutoencoder.compute_z(
+            z_mean,
+            z_log_var,
+            seed=self.reparameterization_seed,
+            dtype=self.dtype_policy.variable_dtype,
+        )
 
         encoder = models.Model(
             inputs, 
@@ -316,12 +365,20 @@ class VariationalAutoencoder(models.Model):
             tensor shaped ``[batch, output_dim]``.
         """
 
-        z_inputs = layers.Input(shape=(latent_dim,), name="z_input")
+        z_inputs = layers.Input(
+            shape=(latent_dim,),
+            dtype=self.compute_dtype,
+            name="z_input",
+        )
 
         # Concatenate one-hot labels into a conditional decoder input.
         if self.conditioned:
-            y_inputs = layers.Input(shape=(class_num,), name="y_input")
-            z = layers.Concatenate()([z_inputs, y_inputs])
+            y_inputs = layers.Input(
+                shape=(class_num,),
+                dtype=self.compute_dtype,
+                name="y_input",
+            )
+            z = layers.Concatenate(dtype=self.dtype_policy)([z_inputs, y_inputs])
             inputs = [z_inputs, y_inputs]
         # Decode directly from latent samples in unconditional mode.
         else:
@@ -333,7 +390,8 @@ class VariationalAutoencoder(models.Model):
 
         outputs = layers.Dense(
             output_dim, 
-            activation=last_activation
+            activation=last_activation,
+            dtype=self.dtype_policy,
         )(z)
 
         decoder = models.Model(
@@ -347,7 +405,9 @@ class VariationalAutoencoder(models.Model):
     @staticmethod
     def compute_z(
         z_mean: tf.Tensor, 
-        z_log_var: tf.Tensor
+        z_log_var: tf.Tensor,
+        seed: int | None = None,
+        dtype: tf.dtypes.DType | str | None = None,
     ) -> tf.Tensor:
         """Sample a latent vector with the reparameterization trick.
 
@@ -355,41 +415,58 @@ class VariationalAutoencoder(models.Model):
             z_mean (tf.Tensor): Floating Gaussian means shaped
                 ``[batch, latent_dim]``.
             z_log_var (tf.Tensor): Matching floating elementwise log variances.
+            seed (int | None): Optional stateful TensorFlow operation seed.
+            dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
+                None preserves ``z_mean.dtype``. Mixed-precision callers should
+                pass their policy's variable dtype.
 
         Returns:
-            tf.Tensor: Values with ``z_mean``'s dtype, computed as
+            tf.Tensor: Values cast back to ``z_mean``'s dtype, computed as
             ``z_mean + exp(0.5*z_log_var) * epsilon`` with the same shape;
             ``epsilon`` is newly drawn from a standard normal distribution on
             every call.
         """
 
+        output_dtype = z_mean.dtype
+        stable_dtype = tf.as_dtype(dtype or output_dtype)
+        stable_mean = tf.cast(z_mean, stable_dtype)
+        stable_log_var = tf.cast(z_log_var, stable_dtype)
         epsilon = tf.random.normal(
-            shape=tf.shape(z_mean),
-            dtype=z_mean.dtype
+            shape=tf.shape(stable_mean),
+            dtype=stable_dtype,
+            seed=seed,
         )
-        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
+        z = stable_mean + tf.exp(0.5 * stable_log_var) * epsilon
 
-        return z
+        return tf.cast(z, output_dtype)
 
     @staticmethod
     def compute_kl(
         z_mean: tf.Tensor, 
-        z_log_var: tf.Tensor
+        z_log_var: tf.Tensor,
+        dtype: tf.dtypes.DType | str | None = None,
     ) -> tf.Tensor:
         """Compute mean KL divergence from the unit Gaussian prior.
 
         Args:
             z_mean (tf.Tensor): Rank-two means shaped ``[batch, latent_dim]``.
             z_log_var (tf.Tensor): Matching log variances.
+            dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
+                None preserves ``z_mean.dtype``.
 
         Returns:
             tf.Tensor: Scalar floating tensor.  Divergence is summed over
             the last latent axis and averaged across the batch.
         """
 
+        stable_dtype = tf.as_dtype(dtype or z_mean.dtype)
+        stable_mean = tf.cast(z_mean, stable_dtype)
+        stable_log_var = tf.cast(z_log_var, stable_dtype)
+
         return -0.5 * tf.reduce_mean(
             tf.reduce_sum(
-                1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+                1 + stable_log_var - tf.square(stable_mean)
+                - tf.exp(stable_log_var),
                 axis=-1
             )
         )
@@ -481,22 +558,28 @@ class VariationalAutoencoder(models.Model):
                 model_inputs, training=True
             )
 
-            recon_loss = self.compiled_loss(
+            stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            recon_loss = tf.cast(self.compiled_loss(
                 x, 
                 x_recon, 
                 regularization_losses=self.losses
-            )
+            ), stable_dtype)
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
-                z_log_var
+                z_log_var,
+                dtype=stable_dtype,
             )
 
-            total_loss = recon_loss + self.beta * kl_loss
+            total_loss = recon_loss + tf.cast(self.beta, stable_dtype) * kl_loss
 
-        grads = tape.gradient(total_loss, self.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        apply_policy_gradients(
+            tape,
+            self.optimizer,
+            total_loss,
+            self.trainable_weights,
+        )
 
-        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(
             total_loss, sample_weight=batch_weight
         )
@@ -549,19 +632,21 @@ class VariationalAutoencoder(models.Model):
             model_inputs, training=False
         )
 
-        recon_loss = self.compiled_loss(
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        recon_loss = tf.cast(self.compiled_loss(
             x, 
             x_recon, 
             regularization_losses=self.losses
-        )
+        ), stable_dtype)
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
-            z_log_var
+            z_log_var,
+            dtype=stable_dtype,
         )
 
-        total_loss = self.beta * kl_loss + recon_loss
+        total_loss = tf.cast(self.beta, stable_dtype) * kl_loss + recon_loss
 
-        batch_weight = tf.cast(tf.shape(x)[0], tf.float32)
+        batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(
@@ -585,7 +670,8 @@ class VariationalAutoencoder(models.Model):
         self: VariationalAutoencoder, 
         classes: Sequence[int] | None = None, 
         samples_per_class: int = 500, 
-        onehot_y_output: bool = False
+        onehot_y_output: bool = False,
+        seed: int | None = None,
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | tuple[list, list]:
         """Decode random normal latents into synthetic replay samples.
 
@@ -599,8 +685,10 @@ class VariationalAutoencoder(models.Model):
                 examples per class in conditional mode, or total examples in
                 unconditional mode.
             onehot_y_output (bool): In conditional mode, return labels as
-                ``float32`` one-hot rows when true or NumPy integer IDs when
-                false.  Ignored in unconditional mode.
+                one-hot rows in the policy's stable variable dtype when true,
+                or NumPy integer IDs when false. Ignored in unconditional mode.
+            seed (int | None): Optional stateless latent-sampling seed. The
+                same seed and arguments reproduce the same latent batch.
 
         Returns:
             numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray] | tuple[list,
@@ -616,6 +704,22 @@ class VariationalAutoencoder(models.Model):
             TypeError: If ``samples_per_class`` or a class ID is not a
                 non-boolean integer.
         """
+
+        # Resolve the model seed only when the caller does not provide a
+        # task/callback-specific stream.
+        generation_seed = self.seed if seed is None else seed
+        conditional_seed = derive_seed(
+            generation_seed,
+            "vae",
+            "generate",
+            "conditional",
+        )
+        unconditional_seed = derive_seed(
+            generation_seed,
+            "vae",
+            "generate",
+            "unconditional",
+        )
 
         # Reject booleans and non-integral generation counts.
         if isinstance(samples_per_class, (bool, np.bool_)) \
@@ -651,9 +755,19 @@ class VariationalAutoencoder(models.Model):
             ):
                 raise ValueError("Every class ID must lie in [0, class_num).")
 
-            z = tf.random.normal(shape=(samples_per_class*len(classes), self.latent_dim))
+            latent_shape = (samples_per_class * len(classes), self.latent_dim)
+            stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            z = tf.random.normal(
+                shape=latent_shape,
+                dtype=stable_dtype,
+            ) if conditional_seed is None else tf.random.stateless_normal(
+                latent_shape,
+                seed=[conditional_seed, 0],
+                dtype=stable_dtype,
+            )
             y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.int32),
-                                    depth=self.class_num) for i in classes], 
+                                    depth=self.class_num,
+                                    dtype=stable_dtype) for i in classes],
                                 axis=0)
             x = self.decoder((z, y), training=False)
 
@@ -666,8 +780,15 @@ class VariationalAutoencoder(models.Model):
 
             return x, y
 
+        latent_shape = (samples_per_class, self.latent_dim)
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         z = tf.random.normal(
-            shape=(samples_per_class, self.latent_dim)
+            shape=latent_shape,
+            dtype=stable_dtype,
+        ) if unconditional_seed is None else tf.random.stateless_normal(
+            latent_shape,
+            seed=[unconditional_seed, 0],
+            dtype=stable_dtype,
         )
         x = self.decoder(z, training=False)
 
@@ -694,7 +815,8 @@ class VariationalAutoencoder(models.Model):
         callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
         callbacks_monitor: str = "", 
         clf: models.Model | Callable | None = None, 
-        verbose: bool | int = 1
+        verbose: bool | int = 1,
+        steps_per_epoch: int | None = None,
     ) -> dict[str, list[float]]:
         """Fit the VAE and optionally monitor generated-sample accuracy.
 
@@ -716,7 +838,9 @@ class VariationalAutoencoder(models.Model):
             shuffle_buffer (int): Non-boolean, nonnegative training shuffle
                 capacity passed to :func:`common.dataloader.get_dataset`; ``0``
                 disables shuffling.
-            seed (int | None): Optional training-dataset shuffle seed.
+            seed (int | None): Optional task seed for resampling, dataset
+                shuffling, and decoder-accuracy sampling. ``None`` uses the
+                model constructor seed when available.
             validation_data (tf.data.Dataset | numpy.ndarray | tf.Tensor |
                 tuple[numpy.ndarray | tf.Tensor, numpy.ndarray | tf.Tensor] |
                 None): Validation input. A passed dataset is preserved; raw
@@ -735,6 +859,9 @@ class VariationalAutoencoder(models.Model):
                 ``[batch, class_num]``.  It is used only by the decoder-accuracy
                 callback and does not enter the VAE loss.
             verbose (int | bool): Keras verbosity and callback verbosity.
+            steps_per_epoch (int | None): Optional positive fixed update count
+                per epoch. When supplied, the prepared finite dataset repeats
+                so Keras can always complete the requested number of steps.
 
         Returns:
             dict[str, list[float]]: ``History.history`` with per-epoch total,
@@ -759,11 +886,32 @@ class VariationalAutoencoder(models.Model):
             # Require non-boolean integers for every training control.
             if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
                 raise TypeError(f"{name} must be a non-boolean integer.")
+        # Validate the optional Keras update budget separately from required
+        # integer controls because ``None`` disables it.
+        if steps_per_epoch is not None and (
+            isinstance(steps_per_epoch, (bool, np.bool_))
+            or not isinstance(steps_per_epoch, Integral)
+        ):
+            raise TypeError(
+                "steps_per_epoch must be a non-boolean integer or None."
+            )
+        # A supplied update budget must request at least one batch.
+        if steps_per_epoch is not None and steps_per_epoch <= 0:
+            raise ValueError("steps_per_epoch must be positive when provided.")
+        # Publish the normalized Python integer to the Keras fit call.
+        if steps_per_epoch is not None:
+            steps_per_epoch = int(steps_per_epoch)
 
         train_num = int(train_num)
         epochs = int(epochs)
         batch_size = int(batch_size)
         shuffle_buffer = int(shuffle_buffer)
+        seed = self.seed if seed is None else seed
+        # Validate and normalize the effective task seed.
+        derive_seed(seed, "vae", "train", "validation")
+        # Normalize a supplied seed for downstream APIs.
+        if seed is not None:
+            seed = int(seed)
         # Keep label presence consistent with the conditioning mode.
         if (self.conditioned and y is None) \
         or (not self.conditioned and y is not None):
@@ -819,7 +967,7 @@ class VariationalAutoencoder(models.Model):
                 callbacks_monitor = "decoder_accuracy"
 
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf), 
+                DecoderAccuracyCallback(classifier=clf, seed=seed),
                 *get_callbacks(
                     monitor=callbacks_monitor, 
                     verbose=verbose
@@ -828,7 +976,7 @@ class VariationalAutoencoder(models.Model):
         # Add decoder evaluation to user callbacks.
         elif clf is not None and callbacks_list is not None:
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf), 
+                DecoderAccuracyCallback(classifier=clf, seed=seed),
                 *callbacks_list
             ]
         # Build ordinary VAE callbacks.
@@ -849,6 +997,10 @@ class VariationalAutoencoder(models.Model):
             drop_remainder=False, 
             seed=seed
         )
+        # Repeat only under the explicit update-count protocol; the default
+        # still consumes the prepared finite dataset once per epoch.
+        if steps_per_epoch is not None:
+            trainset = trainset.repeat()
         # Preserve prepared validation pipelines.
         if isinstance(validation_data, tf.data.Dataset):
             valset = validation_data
@@ -878,12 +1030,18 @@ class VariationalAutoencoder(models.Model):
         else:
             valset = None
 
+        keras_fit_kwargs = {}
+        # Avoid adding a new Keras keyword in the default path so existing
+        # mocked calls and third-party subclasses remain byte-for-byte stable.
+        if steps_per_epoch is not None:
+            keras_fit_kwargs["steps_per_epoch"] = steps_per_epoch
         history = self.fit(
             trainset, 
             epochs=epochs, 
             validation_data=valset,
             callbacks=callbacks_list, 
-            verbose=verbose
+            verbose=verbose,
+            **keras_fit_kwargs,
         ).history
 
         return history
@@ -1433,6 +1591,10 @@ def run_self_tests() -> dict[str, str]:
         {"batch_size": 0},
         {"shuffle_buffer": True},
         {"shuffle_buffer": -1},
+        {"steps_per_epoch": True},
+        {"steps_per_epoch": 0},
+        {"steps_per_epoch": -1},
+        {"steps_per_epoch": 1.5},
     )
     for invalid_options in invalid_controls:
         training_options = {
@@ -1453,6 +1615,21 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Invalid integer training controls must fail.")
+
+    with mock.patch.object(
+        VariationalAutoencoder, "fit", autospec=True, return_value=fit_history
+    ) as fit_mock:
+        unconditioned.train(
+            x_numpy,
+            train_num=-1,
+            batch_size=1,
+            steps_per_epoch=3,
+            callbacks_list=[],
+            verbose=0,
+        )
+        repeated_dataset = fit_mock.call_args.args[1]
+        assert len(list(repeated_dataset.take(3).as_numpy_iterator())) == 3
+        assert fit_mock.call_args.kwargs["steps_per_epoch"] == 3
 
     with mock.patch.object(
         VariationalAutoencoder, "fit", autospec=True, return_value=fit_history

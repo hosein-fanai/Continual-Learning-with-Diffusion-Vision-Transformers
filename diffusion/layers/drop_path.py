@@ -5,6 +5,7 @@ import tensorflow as tf
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.runtime import derive_seed
 
 
 class DropPath(ArgumentSaverLayer):
@@ -37,6 +38,7 @@ class DropPath(ArgumentSaverLayer):
         drop_prob: float = 0., 
         scale_by_keep: bool = True, 
         per_sample: bool = True, 
+        seed: int | None = None,
         **kwargs: Any
     ) -> None:
         """Initialize stochastic-depth probability and mask semantics.
@@ -46,6 +48,7 @@ class DropPath(ArgumentSaverLayer):
             scale_by_keep (bool): Whether retained paths are divided by their
                 keep probability.
             per_sample (bool): Whether examples receive independent masks.
+            seed (int | None): Optional component seed for the path mask RNG.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -54,10 +57,15 @@ class DropPath(ArgumentSaverLayer):
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
+        derive_seed(self.seed, "drop_path", "validation")
+
+        self.seed = None if self.seed is None else int(self.seed)
 
         # Keep the path-drop probability within its valid half-open interval.
         if not 0. <= self.drop_prob < 1.:
-            raise ValueError("drop_prob must satisfy 0.0 <= drop_prob < 1.0.")
+            raise ValueError(
+                "drop_prob must satisfy 0.0 <= drop_prob < 1.0."
+            )
 
     def call(self, x: tf.Tensor, training: bool | None = None) -> tf.Tensor:
         """Apply a training-only path mask.
@@ -105,7 +113,8 @@ class DropPath(ArgumentSaverLayer):
             mask_shape, 
             minval=0., 
             maxval=1., 
-            dtype=x.dtype
+            dtype=x.dtype, 
+            seed=self.seed
         )
         binary_mask = tf.floor(random_tensor)
 
