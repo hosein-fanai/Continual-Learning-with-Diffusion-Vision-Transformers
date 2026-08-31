@@ -20,7 +20,7 @@ intentionally empty in version control.
 | Generation + classification | [unet_classifier](joint/unet_classifier.ipynb) | Joint U-Net generator/classifier | Images | 50 |
 | Generation + classification | [vae_classifier](joint/vae_classifier.ipynb) | Joint variational generator/classifier | Flattened images | 30 |
 | Classification | [cnn](classification/cnn.ipynb) | Convolutional baseline | Images | 30 |
-| Classification | [dnn](classification/dnn.ipynb) | Dense baseline | Feature vectors | 30 |
+| Classification | [dnn](classification/dnn.ipynb) | Dense baseline | Flattened images | 30 |
 | Classification | [pretrained](classification/pretrained.ipynb) | Xception transfer learning | Images | 30 |
 | Continual learning | [diffusion_transformer](continual/diffusion_transformer.ipynb) | Conditional replay buffer | Images | 20 |
 | Continual learning | [dit_decoder](continual/dit_decoder.ipynb) | Conditional replay buffer | Images | 20 |

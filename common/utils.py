@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 import os
+
 import json
 
-import numpy as np
+import warnings
+
+from pathlib import Path
 
 from collections.abc import Iterable, Mapping, Sequence
 from numbers import Integral, Real
-from pathlib import Path
 
 
 models_path = "./models"
@@ -60,8 +64,8 @@ def extract_features(
             a frozen resize/preprocess/Xception/global-pooling model.
         batch_size (int): Positive prediction batch size; defaults to 128.
         file_name (str | os.PathLike | None): Optional base path without
-            ``.npy``.  When supplied, an object array containing all feature
-            arrays is saved via :func:`save_samples`.
+            ``.npy``. When supplied, the feature arrays are saved as an ordered,
+            non-pickled NumPy container via :func:`save_samples`.
         split_seed (int): Seed that produced the label-aligned train/validation
             feature split. It is saved beside three-array archives so loading
             can reconstruct the identical label ordering.
@@ -93,24 +97,25 @@ def extract_features(
 
     # Persist extracted features when an output prefix is supplied.
     if file_name is not None:
-        save_samples(np.array(features_list, dtype="object"), 
-                    file_name, ".npy")
+        feature_bundle = np.empty(len(features_list), dtype=object)
+        feature_bundle[:] = features_list
+        save_samples(feature_bundle, file_name, ".npy")
+
         # The project feature loader consumes exactly train/validation/test
-        # archives. Record their split contract without changing the legacy
-        # NPY payload format.
+        # archives. Record their split contract beside the safe array container.
         if len(features_list) == 3:
             save_feature_split_metadata(
-                file_name,
-                split_seed=split_seed,
-                validation_ratio=validation_ratio,
+                file_name, 
+                split_seed=split_seed, 
+                validation_ratio=validation_ratio
             )
 
     return features_list
 
 
 def _normalize_feature_split_metadata(
-    split_seed: int,
-    validation_ratio: float,
+    split_seed: int, 
+    validation_ratio: float
 ) -> tuple[int, float]:
     """Validate the reproducible label split stored with feature archives.
 
@@ -147,9 +152,9 @@ def _normalize_feature_split_metadata(
 
 
 def save_feature_split_metadata(
-    path: str | os.PathLike[str],
-    split_seed: int,
-    validation_ratio: float = 0.2,
+    path: str | os.PathLike[str], 
+    split_seed: int, 
+    validation_ratio: float = 0.2
 ) -> Path:
     """Save the label-split contract beside a train/val/test feature archive.
 
@@ -163,17 +168,18 @@ def save_feature_split_metadata(
     """
 
     split_seed, validation_ratio = _normalize_feature_split_metadata(
-        split_seed,
-        validation_ratio,
+        split_seed, 
+        validation_ratio
     )
     metadata_path = Path(os.fspath(path) + ".metadata.json")
     payload = {
-        "format_version": 1,
+        "format_version": 1, 
         "label_split": {
-            "random_state": split_seed,
-            "validation_ratio": validation_ratio,
-        },
+            "random_state": split_seed, 
+            "validation_ratio": validation_ratio
+        }
     }
+
     with metadata_path.open("w", encoding="utf-8") as metadata_file:
         json.dump(payload, metadata_file, indent=2, sort_keys=True)
         metadata_file.write("\n")
@@ -182,7 +188,7 @@ def save_feature_split_metadata(
 
 
 def load_feature_split_metadata(
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str]
 ) -> tuple[int, float] | None:
     """Load a feature archive's label-split seed and ratio when available.
 
@@ -224,15 +230,15 @@ def load_feature_split_metadata(
         )
 
     return _normalize_feature_split_metadata(
-        label_split["random_state"],
-        label_split["validation_ratio"],
+        label_split["random_state"], 
+        label_split["validation_ratio"]
     )
 
 
 def CL_plot(
     class_num: int, 
-    pairs: Iterable[tuple[Sequence[float], str]],
-    class_counts: Sequence[int] | None = None,
+    pairs: Iterable[tuple[Sequence[float], str]], 
+    class_counts: Sequence[int] | None = None
 ) -> None:
     """Plot continual-learning accuracy against the number of seen classes.
 
@@ -255,8 +261,9 @@ def CL_plot(
     from matplotlib import pyplot as plt
 
 
-    x_values = list(range(2, class_num+1)) \
-        if class_counts is None else list(class_counts)
+    x_values = list(range(2, class_num+1)) if class_counts is None \
+            else list(class_counts)
+
     for accs, label in pairs:
         plt.plot(x_values, accs, label=label)
 
@@ -666,9 +673,12 @@ def save_samples(
     """Save a NumPy-compatible array as CSV or NPY using a base path.
 
     Args:
-        arr (numpy.ndarray | array-like): Values to persist.  CSV generally
-            requires a one- or two-dimensional numeric array; NPY supports
-            arbitrary shapes and object arrays.
+        arr (numpy.ndarray | array-like): Values to persist. CSV generally
+            requires a one- or two-dimensional numeric array. A numeric NPY
+            array is saved normally; a one-dimensional object array is treated
+            as an ordered heterogeneous bundle whose members must each convert
+            to a non-object NumPy array. Such bundles use safe NPZ container
+            content while retaining the public ``.npy`` filename convention.
         path (str | os.PathLike): Base path without an extension.
         type_ (str): Exactly ``".csv"`` or ``".npy"``.
 
@@ -676,18 +686,44 @@ def save_samples(
         None.
 
     Raises:
-        ValueError: If ``type_`` is unsupported.
+        ValueError: If ``type_`` is unsupported or an object bundle is not a
+            one-dimensional sequence of non-object arrays.
         OSError: If the destination cannot be opened or written.
     """
 
     path = os.fspath(path)
+
     # Serialize tabular values as comma-separated text.
     if type_ == ".csv":
         np.savetxt(path+type_, arr, delimiter=',')
-    # Serialize arbitrary NumPy arrays in binary format.
+    # Serialize numeric arrays or safe heterogeneous numeric bundles.
     elif type_ == ".npy":
+        array = np.asarray(arr)
+        members = None
+
+        # Validate pickle-backed inputs before opening/truncating the destination.
+        if array.dtype.hasobject:
+            # One outer axis is required to preserve member boundaries safely.
+            if array.ndim != 1:
+                raise ValueError(
+                    "Object sample bundles must be one-dimensional."
+                )
+
+            members = [np.asarray(member) for member in array]
+
+            # No member may smuggle a pickle-backed object payload.
+            if any(member.dtype.hasobject for member in members):
+                raise ValueError(
+                    "Object sample bundle members must have non-object dtypes."
+                )
+
         with open(path+type_, "wb") as file:
-            np.save(file ,arr)
+            # Replace pickle-backed object arrays with an ordered ZIP container.
+            if members is not None:
+                np.savez(file, *members)
+            # Ordinary homogeneous arrays retain the original NPY encoding.
+            else:
+                np.save(file, array, allow_pickle=False)
     # Reject artifact formats outside CSV and NPY.
     else:
         raise ValueError("type_ must be '.csv' or '.npy'.")
@@ -695,31 +731,114 @@ def save_samples(
 
 def load_samples(
     path: str | os.PathLike[str], 
-    type_: str
+    type_: str, 
+    allow_pickle: bool = False
 ) -> np.ndarray:
     """Load a CSV or NPY sample archive from a base path.
 
     Args:
         path (str | os.PathLike): Base path without an extension.
         type_ (str): ``".csv"`` loads comma-delimited numeric data;
-            ``".npy"`` loads with ``allow_pickle=True``.
+            ``".npy"`` loads NumPy binary data.
+        allow_pickle (bool): NPY trust policy. The safe default ``False`` rejects
+            legacy object arrays. ``True`` explicitly permits a trusted legacy
+            pickle payload and emits ``RuntimeWarning`` with a migration path.
+            New heterogeneous bundles are ordered NPZ containers whose members
+            are always loaded with pickle disabled. CSV loading ignores this
+            option after its type has been validated.
 
     Returns:
         numpy.ndarray: Loaded values.
 
     Raises:
-        ValueError: If ``type_`` is unsupported or CSV contents are invalid.
+        TypeError: If ``allow_pickle`` is not boolean.
+        ValueError: If ``type_`` is unsupported, CSV contents are invalid, or a
+            strict NPY load encounters an object array, or a safe bundle has
+            malformed keys/object-valued members.
         OSError: If the selected path cannot be opened.
+
+    Warns:
+        RuntimeWarning: If explicit compatibility mode enables pickle for a
+            trusted legacy object-array archive. Re-save the returned array with
+            :func:`save_samples` to migrate it to the safe container format.
     """
 
     path = os.fspath(path)
+
+    # Keep the trust decision explicit and reject truthy stand-ins such as 1.
+    if not isinstance(allow_pickle, bool):
+        raise TypeError("allow_pickle must be boolean.")
+
     # Parse comma-separated numeric values.
     if type_ == ".csv":
         arr = np.loadtxt(path + type_, delimiter=",")
-    # Restore a binary NumPy array without pickle objects.
+    # Restore a binary NumPy array under the selected trust policy.
     elif type_ == ".npy":
         with open(path+type_, "rb") as file:
-            arr = np.load(file, allow_pickle=True)
+            magic = file.read(4)
+            file.seek(0)
+            is_safe_bundle = magic == b"PK\x03\x04"
+            # Make every legacy pickle load an explicit, visible trust decision.
+            if allow_pickle and not is_safe_bundle:
+                warnings.warn(
+                    "allow_pickle=True can execute code from this archive. "
+                    "Only load trusted legacy files, then migrate by calling "
+                    "save_samples(loaded, new_path, '.npy').", 
+                    RuntimeWarning, 
+                    stacklevel=2
+                )
+
+            try:
+                loaded = np.load(
+                    file, 
+                    allow_pickle=False if is_safe_bundle else allow_pickle
+                )
+            except ValueError as error:
+                is_legacy_object_archive = (
+                    "Object arrays" in str(error)
+                    and "allow_pickle=False" in str(error)
+                )
+                # Explain the safe migration path without silently executing code.
+                if is_legacy_object_archive:
+                    raise ValueError(
+                        "Legacy object-array NPY loading is disabled. If and "
+                        "only if the file is trusted, retry with "
+                        "allow_pickle=True and re-save it with save_samples."
+                    ) from error
+                raise
+
+            # Safe heterogeneous bundles use ordered default NPZ member names.
+            if isinstance(loaded, np.lib.npyio.NpzFile):
+                try:
+                    expected_keys = [
+                        f"arr_{index}" for index in range(len(loaded.files))
+                    ]
+                    # Reject missing, reordered, duplicated, or injected members.
+                    if loaded.files != expected_keys:
+                        raise ValueError(
+                            "Sample bundle members must be ordered arr_0..arr_n."
+                        )
+                    try:
+                        members = [loaded[key] for key in expected_keys]
+                    except ValueError as error:
+                        # Convert NumPy's lazy object-member error into our contract.
+                        if "allow_pickle=False" in str(error):
+                            raise ValueError(
+                                "Sample bundle members must have non-object dtypes."
+                            ) from error
+                        raise
+                    # Container members remain non-pickled even under legacy mode.
+                    if any(member.dtype.hasobject for member in members):
+                        raise ValueError(
+                            "Sample bundle members must have non-object dtypes."
+                        )
+                    arr = np.empty(len(members), dtype=object)
+                    arr[:] = members
+                finally:
+                    loaded.close()
+            # Ordinary numeric and explicitly trusted legacy NPY arrays pass through.
+            else:
+                arr = loaded
     # Reject artifact formats outside CSV and NPY.
     else:
         raise ValueError("type_ must be '.csv' or '.npy'.")

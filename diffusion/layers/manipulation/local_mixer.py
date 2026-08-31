@@ -5,6 +5,7 @@ from tensorflow.keras import layers
 
 from typing import Any
 
+from common.validation import require
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -94,21 +95,15 @@ class LocalMixer(BaseEmbedding):
             ``None``.
         """
 
-        temp_val = kwargs.pop("circumvent_cls_token", None)
-        # Preserve legacy one-token configurations under the canonical option.
-        if temp_val is not None:
-            circumvent_tokens = temp_val
-
         super().__init__(
             use_layer_norm=use_layer_norm, 
             **kwargs
         )
         self._save_init_args(locals())
-
-        # Require a source grid for spatial token reshaping.
-        assert self.grid_size is not None, \
+        require(
+            self.grid_size is not None, 
             "LocalMixer requires grid_size."
-
+        )
 
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier

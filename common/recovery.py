@@ -724,6 +724,7 @@ def _write_replay_archive(
     }
     state_getter = getattr(replay_buffer, "state_dict", None)
 
+    # Preserve strategy-specific counters when the buffer exposes versioned state.
     if callable(state_getter):
         replay_state = dict(state_getter())
         # Samples and RNG are already stored in their established archive and
@@ -830,6 +831,7 @@ def restore_replay_buffer(
         raise TypeError(
             "This replay buffer cannot restore a non-FIFO strategy checkpoint."
         )
+    # Require the legacy mutation and RNG interface before changing the buffer.
     if not hasattr(replay_buffer, "clear") \
     or not hasattr(replay_buffer, "extend") \
     or not hasattr(replay_buffer, "_rng"):

@@ -6,11 +6,12 @@ from tensorflow.keras import layers
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.keras_registry import register_canonical_keras_serializable
 
 from diffusion.layers.convolution.residual_block import _split_inputs
 
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class ImageDownsample(ArgumentSaverLayer):
     """Reduce both spatial image dimensions by a configurable integer stride."""
 

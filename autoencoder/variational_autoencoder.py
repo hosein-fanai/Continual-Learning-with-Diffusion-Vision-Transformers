@@ -12,12 +12,14 @@ from numbers import Integral, Real
 
 from common.dataloader import get_dataset
 from common.gradients import apply_policy_gradients
+from common.keras_registry import register_canonical_keras_serializable
 from common.model import get_callbacks
 from common.runtime import derive_seed
 
 from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
 
 
+@register_canonical_keras_serializable(package="continual_learning")
 class VariationalAutoencoder(models.Model):
     """Encode dense samples into a Gaussian latent space and reconstruct them.
 
@@ -167,9 +169,37 @@ class VariationalAutoencoder(models.Model):
         class_num = int(class_num) if class_num is not None else None
 
         hiddens_kwargs = dict(hiddens_kwargs or {})
+        allowed_hidden_kwargs = {
+            "actv", "use_batch_norm", "kernel_init"
+        }
+        unknown_hidden_kwargs = set(hiddens_kwargs) - allowed_hidden_kwargs
+        # Validate the public hidden-block mapping even when no hidden layer is
+        # requested; otherwise an empty architecture silently accepts typos.
+        if unknown_hidden_kwargs:
+            raise TypeError(
+                "Unsupported hiddens_kwargs: "
+                f"{sorted(unknown_hidden_kwargs)}."
+            )
+        # Avoid truth-value coercion changing a documented boolean option into
+        # a different Dense/normalization topology.
+        if "use_batch_norm" in hiddens_kwargs and not isinstance(
+            hiddens_kwargs["use_batch_norm"], (bool, np.bool_)
+        ):
+            raise TypeError("hiddens_kwargs use_batch_norm must be boolean.")
+        # Normalize NumPy boolean scalars into a stable Python config value.
+        if "use_batch_norm" in hiddens_kwargs:
+            hiddens_kwargs["use_batch_norm"] = bool(
+                hiddens_kwargs["use_batch_norm"]
+            )
 
 
+        self.data_dim = data_dim
         self.latent_dim = latent_dim
+        self.hiddens_dims = hiddens_dims
+        # Constructor callables/configuration are metadata, not additional
+        # checkpoint dependencies beyond the layers built from them below.
+        self.hiddens_kwargs = self._no_dependency(dict(hiddens_kwargs))
+        self.last_activation = self._no_dependency(last_activation)
         self.beta = beta
         self.conditioned = conditioned
         self.class_num = class_num
@@ -215,6 +245,148 @@ class VariationalAutoencoder(models.Model):
         if compile:
             self.compile(**compile_args)
 
+    @staticmethod
+    def _serialize_activation(
+        activation: str | Callable | None,
+    ) -> object:
+        """Serialize one activation while preserving simple public values.
+
+        Args:
+            activation (str | Callable | None): Constructor activation value.
+
+        Returns:
+            object: JSON-compatible Keras activation configuration.
+        """
+
+        # Strings (including the special hidden-block ``prelu`` spelling) and
+        # None are already stable constructor values.
+        if activation is None or isinstance(activation, str):
+            return activation
+
+        return tf.keras.activations.serialize(activation)
+
+    @staticmethod
+    def _deserialize_activation(config: object) -> object:
+        """Restore an activation serialized by :meth:`_serialize_activation`.
+
+        Args:
+            config (object): Serialized activation configuration.
+
+        Returns:
+            object: Activation value accepted by Keras Dense/Activation.
+        """
+
+        # Preserve already-stable public activation spellings unchanged.
+        if config is None or isinstance(config, str):
+            return config
+
+        return tf.keras.activations.deserialize(config)
+
+    def get_config(self: VariationalAutoencoder) -> dict[str, object]:
+        """Return a complete, architecture-preserving Keras configuration.
+
+        Compilation state is intentionally excluded from architecture config;
+        Keras serializes it separately for full-model formats. Direct
+        ``from_config`` and ``clone_model`` reconstruction therefore produce an
+        uncompiled model with the same encoder/decoder topology.
+
+        Returns:
+            dict[str, object]: Standard model state and every constructor value
+            required to recreate the VAE architecture.
+        """
+
+        config = super().get_config()
+        # TensorFlow 2.10 can omit these fields for subclassed models.
+        config.setdefault("name", self.name)
+        config.setdefault("trainable", self.trainable)
+        config.setdefault("dtype", self.dtype_policy.name)
+        config.setdefault("dynamic", self.dynamic)
+
+        hidden_kwargs = dict(self.hiddens_kwargs)
+        # Encode an optional callable activation for Keras reconstruction.
+        if "actv" in hidden_kwargs:
+            hidden_kwargs["actv"] = self._serialize_activation(
+                hidden_kwargs["actv"]
+            )
+        # Encode an optional initializer through Keras' registered format.
+        if "kernel_init" in hidden_kwargs:
+            hidden_kwargs["kernel_init"] = tf.keras.initializers.serialize(
+                tf.keras.initializers.get(hidden_kwargs["kernel_init"])
+            )
+
+        config.update({
+            "data_dim": self.data_dim,
+            "latent_dim": self.latent_dim,
+            "hiddens_dims": list(self.hiddens_dims),
+            "hiddens_kwargs": hidden_kwargs,
+            "last_activation": self._serialize_activation(
+                self.last_activation
+            ),
+            "beta": float(self.beta),
+            "conditioned": self.conditioned,
+            "class_num": self.class_num,
+            "compile": False,
+            "compile_args": None,
+            "seed": self.seed,
+        })
+
+        return config
+
+    @classmethod
+    def _deserialize_constructor_config(
+        cls: type[VariationalAutoencoder],
+        config: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Normalize serialized activation/initializer values for construction.
+
+        Args:
+            config (Mapping[str, object]): Output of :meth:`get_config`.
+
+        Returns:
+            dict[str, object]: Independent keyword mapping accepted by
+            :meth:`__init__`.
+        """
+
+        restored = dict(config)
+        hidden_kwargs = dict(restored.get("hiddens_kwargs") or {})
+        # Restore an encoded hidden activation before constructor dispatch.
+        if "actv" in hidden_kwargs:
+            hidden_kwargs["actv"] = cls._deserialize_activation(
+                hidden_kwargs["actv"]
+            )
+        # Restore an encoded initializer while retaining stable string names.
+        if "kernel_init" in hidden_kwargs:
+            initializer_config = hidden_kwargs["kernel_init"]
+            hidden_kwargs["kernel_init"] = (
+                initializer_config
+                if isinstance(initializer_config, str)
+                else tf.keras.initializers.deserialize(initializer_config)
+            )
+        restored["hiddens_kwargs"] = hidden_kwargs
+        # Restore the output activation when the serialized field is present.
+        if "last_activation" in restored:
+            restored["last_activation"] = cls._deserialize_activation(
+                restored["last_activation"]
+            )
+
+        return restored
+
+    @classmethod
+    def from_config(
+        cls: type[VariationalAutoencoder],
+        config: Mapping[str, object],
+    ) -> VariationalAutoencoder:
+        """Recreate a VAE from its complete architecture configuration.
+
+        Args:
+            config (Mapping[str, object]): Output of :meth:`get_config`.
+
+        Returns:
+            VariationalAutoencoder: Independent uncompiled architecture clone.
+        """
+
+        return cls(**cls._deserialize_constructor_config(config))
+
     def _dense_layer(
         self: VariationalAutoencoder, 
         units: int, 
@@ -242,11 +414,19 @@ class VariationalAutoencoder(models.Model):
         """
 
         dlayer = models.Sequential()
+        # Give every Dense layer an independent initializer instance. Keras
+        # 2.10 otherwise repeats draws when one deserialized unseeded
+        # initializer object is reused across encoder and decoder blocks.
+        dense_initializer = tf.keras.initializers.deserialize(
+            tf.keras.initializers.serialize(
+                tf.keras.initializers.get(kernel_init)
+            )
+        )
 
         dlayer.add(layers.Dense(
             units, 
             activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
-            kernel_initializer=kernel_init, 
+            kernel_initializer=dense_initializer,
             use_bias=not use_batch_norm,
             dtype=self.dtype_policy,
         ))
@@ -1047,6 +1227,12 @@ class VariationalAutoencoder(models.Model):
         return history
 
 
+# TensorFlow 2.10 may emit the plain root name for subclassed-model JSON.
+tf.keras.utils.get_custom_objects()[
+    "VariationalAutoencoder"
+] = VariationalAutoencoder
+
+
 def run_self_tests() -> dict[str, str]:
     """Run CPU-small tests for every VAE mode and public behavior.
 
@@ -1110,7 +1296,7 @@ def run_self_tests() -> dict[str, str]:
         VariationalAutoencoder(
             data_dim=4, 
             latent_dim=2, 
-            hiddens_dims=(3,), 
+            hiddens_dims=(),
             hiddens_kwargs={"unknown_option": True}, 
             compile=False, 
         )
@@ -1118,6 +1304,18 @@ def run_self_tests() -> dict[str, str]:
         pass
     else:
         raise AssertionError("Unknown dense-block options must be rejected.")
+    try:
+        VariationalAutoencoder(
+            data_dim=4,
+            latent_dim=2,
+            hiddens_dims=(),
+            hiddens_kwargs={"use_batch_norm": "false"},
+            compile=False,
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("use_batch_norm must not use truth-value coercion.")
 
     uncompiled = VariationalAutoencoder(
         data_dim=4, 
@@ -1160,6 +1358,25 @@ def run_self_tests() -> dict[str, str]:
     assert unconditioned._is_compiled is True
     assert isinstance(unconditioned.optimizer, tf.keras.optimizers.SGD)
     assert unconditioned.run_eagerly is True
+    architecture_config = unconditioned.get_config()
+    assert architecture_config["data_dim"] == 4
+    assert architecture_config["latent_dim"] == 2
+    assert architecture_config["hiddens_dims"] == [5]
+    assert architecture_config["hiddens_kwargs"]["actv"] == "relu"
+    assert architecture_config["last_activation"] is None
+    assert architecture_config["beta"] == 0.5
+    assert architecture_config["compile"] is False
+    architecture_clone = VariationalAutoencoder.from_config(
+        architecture_config
+    )
+    assert architecture_clone.data_dim == unconditioned.data_dim
+    assert architecture_clone.latent_dim == unconditioned.latent_dim
+    assert architecture_clone.hiddens_dims == unconditioned.hiddens_dims
+    assert architecture_clone.hiddens_kwargs["actv"] == "relu"
+    assert architecture_clone.last_activation is None
+    assert architecture_clone.beta == unconditioned.beta
+    assert architecture_clone.conditioned is False
+    assert architecture_clone._is_compiled is False
 
     relu_no_bn = unconditioned._dense_layer(
         3, 
@@ -1175,6 +1392,22 @@ def run_self_tests() -> dict[str, str]:
         tf.shape(relu_no_bn(tf.ones((2, 4)))), 
         tf.constant([2, 3])
     )
+
+    shared_initializer = tf.keras.initializers.GlorotUniform()
+    initialized_block_a = unconditioned._dense_layer(
+        3,
+        use_batch_norm=False,
+        kernel_init=shared_initializer,
+    )
+    initialized_block_b = unconditioned._dense_layer(
+        3,
+        use_batch_norm=False,
+        kernel_init=shared_initializer,
+    )
+    assert initialized_block_a.layers[0].kernel_initializer \
+        is not shared_initializer
+    assert initialized_block_a.layers[0].kernel_initializer \
+        is not initialized_block_b.layers[0].kernel_initializer
 
     relu_with_bn = unconditioned._dense_layer(
         3, 

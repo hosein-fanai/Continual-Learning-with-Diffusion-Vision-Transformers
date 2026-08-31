@@ -8,9 +8,8 @@ from tensorflow.keras import models
 import numpy as np
 
 from collections.abc import Callable, Mapping, Sequence
-from numbers import Integral, Real
 
-from .config import Config, resolve_continual_schedule
+from .config import Config, normalize_training_task, resolve_continual_schedule
 
 
 DatasetArrays = tuple[
@@ -25,11 +24,17 @@ DatasetLoader = Callable[..., DatasetArrays]
 
 
 _DIFFUSION_MODELS = {
-    "diffusion_transformer", "dit_classifier", "dit_decoder",
-    "dit_encoder_decoder", "dit_encoder_decoder_classifier",
+    "diffusion_transformer", "dit_classifier", "dit_decoder", 
+    "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
     "unet", "unet_classifier"
 }
 _DENSE_MODELS = {"vae", "variational_autoencoder", "vae_classifier", "dnn"}
+_DATASET_SPECS = {
+    "mnist": (10, (28, 28, 1)), 
+    "fmnist": (10, (28, 28, 1)), 
+    "cifar10": (10, (32, 32, 3)), 
+    "cifar100": (100, (32, 32, 3))
+}
 _LEGACY_FEATURE_SPLIT_SEED = 42
 _LEGACY_FEATURE_VALIDATION_RATIO = 0.2
 
@@ -63,22 +68,8 @@ def _pad_images(
     Returns:
         numpy.ndarray: Padded images with unchanged dtype and leading/channel
         dimensions. ``pad=0`` returns ``x`` unchanged.
-
-    Raises:
-        TypeError: If ``pad`` is not a non-boolean integer.
-        ValueError: If ``pad`` is negative or ``x`` is not a rank-three/four
-            image batch.
     """
 
-    # Reject booleans and non-integral padding widths.
-    if isinstance(pad, bool) or not isinstance(pad, Integral):
-        raise TypeError("pad must be a non-boolean integer.")
-    # Keep spatial padding nonnegative.
-    if pad < 0:
-        raise ValueError("pad must be nonnegative.")
-    # Accept only image batches with optional channel dimensions.
-    if x.ndim not in (3, 4):
-        raise ValueError("Padding requires [N, H, W] or [N, H, W, C] images.")
     # Preserve the original array when padding is disabled.
     if pad == 0:
         return x
@@ -225,29 +216,17 @@ def get_dataset_spec(
         flattened image/feature width.
     """
 
-    dataset_name = dataset_name.lower()
-    # Select the MNIST shape and class count.
-    if dataset_name == "mnist":
-        class_num, image_shape = 10, (28, 28, 1)
-    # Select the Fashion-MNIST shape and class count.
-    elif dataset_name == "fmnist":
-        class_num, image_shape = 10, (28, 28, 1)
-    # Select the CIFAR-10 shape and class count.
-    elif dataset_name == "cifar10":
-        class_num, image_shape = 10, (32, 32, 3)
-    # Select the CIFAR-100 shape and class count.
-    elif dataset_name == "cifar100":
-        class_num, image_shape = 100, (32, 32, 3)
-    # Reject dataset names outside the four supported families.
-    else:
+    spec = _DATASET_SPECS.get(dataset_name.lower())
+
+    # Reject dataset names outside the supported families.
+    if spec is None:
         raise ValueError(
             "dataset_name must be 'mnist', "
             "'fmnist', 'cifar10', or 'cifar100'."
         )
 
-    flat_dim = int(
-        np.prod(image_shape)
-    ) if not return_features else 2_048
+    class_num, image_shape = spec
+    flat_dim = 2_048 if return_features else int(np.prod(image_shape))
 
     return class_num, image_shape, flat_dim
 
@@ -272,16 +251,14 @@ def sort_filter_labels(
         array.  Within a class, original row order is preserved.
     """
 
-    labels_set_list = []
-    for labels_set in labels_list:
-        allowed_instances_list = []
-        for index in indices:
-            allowed_instances = np.where(labels_set == index)[0].tolist()
-            allowed_instances_list.extend(allowed_instances)
-
-        labels_set_list.append(allowed_instances_list)
-    
-    return labels_set_list
+    return [
+        [
+            row
+            for class_id in indices
+            for row in np.where(labels == class_id)[0].tolist()
+        ]
+        for labels in labels_list
+    ]
 
 
 def preprocess_dataset(
@@ -352,9 +329,8 @@ def preprocess_dataset(
         are ``None`` when ``validation_ratio`` is ``0.0``.
 
     Raises:
-        TypeError: If ``validation_ratio`` is not a non-boolean real number.
         ValueError: If feature mode cannot infer a supported dataset from its
-            path, the validation ratio is non-finite or outside ``[0, 1)``,
+            path, the validation ratio is outside ``[0, 1)``,
             requested classes cannot support the stratified split, or
             feature/label lengths differ.
     """
@@ -365,16 +341,13 @@ def preprocess_dataset(
 
     from common.utils import load_feature_split_metadata, load_samples
 
+
     stable_dtype = _policy_numpy_dtype()
 
-    # Require a non-boolean numeric validation ratio.
-    if isinstance(validation_ratio, (bool, np.bool_)) \
-    or not isinstance(validation_ratio, Real):
-        raise TypeError("validation_ratio must be a non-boolean real number.")
-    # Keep the validation fraction finite and within its valid interval.
-    if not np.isfinite(validation_ratio) or not 0. <= validation_ratio < 1.:
-        raise ValueError("validation_ratio must lie in [0, 1).")
     validation_ratio = float(validation_ratio)
+    # Keep the validation fraction within its mathematical interval.
+    if not 0. <= validation_ratio < 1.:
+        raise ValueError("validation_ratio must lie in [0, 1).")
     # Load saved feature vectors instead of raw images.
     if return_features:
         # Require an archive path whenever saved features are requested.
@@ -466,8 +439,8 @@ def preprocess_dataset(
     else:
         x_val, y_val = None, None
 
-    # Scale data to the [0, 1] interval.
-    if preprocess == "min-max":
+    # Scale from training extrema to [0, 1] or diffusion's [-1, 1].
+    if preprocess in ("min-max", "standardize", "diffusion"):
         min_ = x_train.min()
         max_ = x_train.max()
         value_range = max_ - min_
@@ -480,6 +453,14 @@ def preprocess_dataset(
         if x_val is not None:
             x_val = (x_val.astype(stable_dtype) - min_) / value_range
         x_test = (x_test.astype(stable_dtype) - min_) / value_range
+
+        # Map normalized inputs into diffusion space when requested.
+        if preprocess != "min-max":
+            x_train = (x_train * 2.) - 1.
+            # Apply the same mapping to validation inputs when present.
+            if x_val is not None:
+                x_val = (x_val * 2.) - 1.
+            x_test = (x_test * 2.) - 1.
     # Normalize each feature to zero mean/unit variance.
     elif preprocess == "normalize":
         x_train = x_train.astype(stable_dtype)
@@ -492,26 +473,6 @@ def preprocess_dataset(
         if x_val is not None:
             x_val = (x_val.astype(stable_dtype) - mean) / std
         x_test = (x_test.astype(stable_dtype) - mean) / std
-    # Scale diffusion inputs to [-1, 1].
-    elif preprocess in ("standardize", "diffusion"):
-        min_ = x_train.min()
-        max_ = x_train.max()
-        value_range = max_ - min_
-        # Avoid division by zero for constant inputs.
-        if value_range == 0.:
-            value_range = 1.
-
-        x_train = (x_train.astype(stable_dtype) - min_) / value_range
-        # Apply the training extrema to validation inputs when present.
-        if x_val is not None:
-            x_val = (x_val.astype(stable_dtype) - min_) / value_range
-        x_test = (x_test.astype(stable_dtype) - min_) / value_range
-
-        x_train = (x_train * 2.) - 1.
-        # Map validation inputs into diffusion space when present.
-        if x_val is not None:
-            x_val = (x_val * 2.) - 1.
-        x_test = (x_test * 2.) - 1.
     # Preserve values when no preprocessing is requested.
     else:
         # Align saved floating features with the active stable dtype.
@@ -584,35 +545,20 @@ def load_mnist(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load and prepare MNIST images or saved features.
+    """Load MNIST and apply the shared preprocessing pipeline.
 
     Args:
-        indices (Sequence[int]): Retained class IDs from ``0`` through ``9``.
-            Defaults to every class; ordering controls grouping before split.
-        validation_ratio (float): Training fraction reserved for validation;
-            ``0.0`` returns ``None`` validation arrays.
-        preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or any other value for no
-            scaling; see :func:`preprocess_dataset` for exact behavior.
-        features_path (str | None): Base path for a ``.npy`` archive of
-            train/validation/test features.  Used only when
-            ``return_features=True`` and must contain ``"mnist_"``.
-        return_features (bool): Return saved feature vectors rather than raw
-            ``28 x 28`` images.
-        onehot_labels (bool): Return 10-column one-hot labels when true; return
-            integer class IDs when false.
-        seed (int | None): Random seed used for the stratified split.
-        verbose (bool | int): Whether to print dataset summaries.
+        indices (Sequence[int]): Classes to retain.
+        validation_ratio (float): Fraction reserved for validation.
+        preprocess (str | None): Shared preprocessing mode.
+        features_path (str | None): Optional saved-feature archive.
+        return_features (bool): Load features instead of images.
+        onehot_labels (bool): Return one-hot labels.
+        seed (int | None): Split seed.
+        verbose (bool | int): Print dataset summaries.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray | None,
-        numpy.ndarray | None, numpy.ndarray, numpy.ndarray]: Training,
-        optional validation, and test feature/label pairs in that order.
-
-    Example:
-        ``load_mnist(indices=[0, 1], preprocess="min-max",
-        onehot_labels=True)`` returns only two classes, but one-hot rows still
-        have width 10 because MNIST's full class count is retained.
+        DatasetArrays: Train, validation, and test pairs.
     """
 
     from tensorflow.keras.datasets import mnist
@@ -638,35 +584,20 @@ def load_fmnist(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load and prepare Fashion MNIST images or saved features.
+    """Load Fashion-MNIST and apply the shared preprocessing pipeline.
 
     Args:
-        indices (Sequence[int]): Retained class IDs from ``0`` through ``9``.
-            Defaults to every class; ordering controls grouping before split.
-        validation_ratio (float): Training fraction reserved for validation;
-            ``0.0`` returns ``None`` validation arrays.
-        preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or any other value for no
-            scaling; see :func:`preprocess_dataset` for exact behavior.
-        features_path (str | None): Base path for a ``.npy`` archive of
-            train/validation/test features.  Used only when
-            ``return_features=True`` and must contain ``"fmnist_"``.
-        return_features (bool): Return saved feature vectors rather than raw
-            ``28 x 28`` images.
-        onehot_labels (bool): Return 10-column one-hot labels when true; return
-            integer class IDs when false.
-        seed (int | None): Random seed used for the stratified split.
-        verbose (bool | int): Whether to print dataset summaries.
+        indices (Sequence[int]): Classes to retain.
+        validation_ratio (float): Fraction reserved for validation.
+        preprocess (str | None): Shared preprocessing mode.
+        features_path (str | None): Optional saved-feature archive.
+        return_features (bool): Load features instead of images.
+        onehot_labels (bool): Return one-hot labels.
+        seed (int | None): Split seed.
+        verbose (bool | int): Print dataset summaries.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray | None,
-        numpy.ndarray | None, numpy.ndarray, numpy.ndarray]: Training,
-        optional validation, and test feature/label pairs in that order.
-
-    Example:
-        ``load_fmnist(indices=[0, 1], preprocess="min-max",
-        onehot_labels=True)`` returns only two classes, but one-hot rows still
-        have width 10 because Fashion-MNIST's full class count is retained.
+        DatasetArrays: Train, validation, and test pairs.
     """
 
     from tensorflow.keras.datasets import fashion_mnist
@@ -692,35 +623,20 @@ def load_cifar10(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load and prepare CIFAR-10 images or saved features.
+    """Load CIFAR-10 and apply the shared preprocessing pipeline.
 
     Args:
-        indices (Sequence[int]): Retained class IDs from ``0`` through ``9``.
-            Defaults to every class; ordering controls grouping before split.
-        validation_ratio (float): Training fraction reserved for validation;
-            ``0.0`` returns ``None`` validation arrays.
-        preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or any other value for no
-            scaling; see :func:`preprocess_dataset` for exact behavior.
-        features_path (str | None): Base path for a ``.npy`` archive of
-            train/validation/test features.  Used only when
-            ``return_features=True`` and must contain ``"cifar10_"``.
-        return_features (bool): Return saved feature vectors rather than raw
-            ``32 x 32 x 3`` images.
-        onehot_labels (bool): Return 10-column one-hot labels when true; return
-            integer class IDs when false.
-        seed (int | None): Random seed used for the stratified split.
-        verbose (bool | int): Whether to print dataset summaries.
+        indices (Sequence[int]): Classes to retain.
+        validation_ratio (float): Fraction reserved for validation.
+        preprocess (str | None): Shared preprocessing mode.
+        features_path (str | None): Optional saved-feature archive.
+        return_features (bool): Load features instead of images.
+        onehot_labels (bool): Return one-hot labels.
+        seed (int | None): Split seed.
+        verbose (bool | int): Print dataset summaries.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray | None,
-        numpy.ndarray | None, numpy.ndarray, numpy.ndarray]: Training,
-        optional validation, and test feature/label pairs in that order.
-
-    Example:
-        ``load_cifar10(indices=[0, 1], preprocess="min-max",
-        onehot_labels=True)`` returns only two classes, but one-hot rows still
-        have width 10 because CIFAR-10's full class count is retained.
+        DatasetArrays: Train, validation, and test pairs.
     """
 
     from tensorflow.keras.datasets import cifar10
@@ -746,29 +662,20 @@ def load_cifar100(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load and prepare CIFAR-100 fine-label images or saved features.
+    """Load CIFAR-100 and apply the shared preprocessing pipeline.
 
     Args:
-        indices (Sequence[int]): Retained fine-label IDs from ``0`` through
-            ``99``.  Defaults to all classes.
-        validation_ratio (float): Training fraction reserved for validation;
-            ``0.0`` returns ``None`` validation arrays.
-        preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or another value for no
-            scaling; see :func:`preprocess_dataset`.
-        features_path (str | None): Base path for a ``.npy`` archive of
-            train/validation/test features.  Used only in feature mode and must
-            contain ``"cifar100_"``.
-        return_features (bool): Return saved feature vectors instead of raw
-            images when true.
-        onehot_labels (bool): Return 100-column one-hot labels when true.
-        seed (int | None): Random seed used for the stratified split.
-        verbose (bool | int): Whether to print dataset summaries.
+        indices (Sequence[int]): Classes to retain.
+        validation_ratio (float): Fraction reserved for validation.
+        preprocess (str | None): Shared preprocessing mode.
+        features_path (str | None): Optional saved-feature archive.
+        return_features (bool): Load features instead of images.
+        onehot_labels (bool): Return one-hot labels.
+        seed (int | None): Split seed.
+        verbose (bool | int): Print dataset summaries.
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray | None,
-        numpy.ndarray | None, numpy.ndarray, numpy.ndarray]: Training,
-        optional validation, and test feature/label pairs in that order.
+        DatasetArrays: Train, validation, and test pairs.
     """
 
     from tensorflow.keras.datasets import cifar100
@@ -829,7 +736,6 @@ def get_dataset(
         ``(inputs, labels, metadata)`` triples.
 
     Raises:
-        TypeError: If ``pad`` is not a non-boolean integer.
         ValueError: If ``pad`` is negative, ``batch_size`` is not positive, or
             metadata is supplied without labels.
     """
@@ -840,9 +746,6 @@ def get_dataset(
     num_parallel_calls = tf.data.AUTOTUNE if num_parallel_calls is None \
                         else num_parallel_calls
 
-    # Reject booleans and non-integral padding widths.
-    if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
-        raise TypeError("pad must be a non-boolean integer.")
     # Keep spatial padding nonnegative.
     if pad < 0:
         raise ValueError("pad must be nonnegative.")
@@ -974,7 +877,7 @@ def _resolve_dataset_options(
             "max_val_samples": kwargs.get("max_val_samples"), 
             "use_valset": kwargs.get("use_valset", True), 
             "seed": kwargs.get("seed"), 
-            "task": kwargs.get("task", "legacy")
+            "task": normalize_training_task(kwargs.get("task", "legacy"))
         }
 
     model_name = config.model.name or (
@@ -982,6 +885,7 @@ def _resolve_dataset_options(
         else "diffusion_transformer"
     )
     model_name = str(model_name).lower()
+    task = normalize_training_task(config.training.task)
 
     return {
         "dataset_name": config.dataset.name, 
@@ -1000,11 +904,11 @@ def _resolve_dataset_options(
         "use_valset": config.training.use_valset, 
         "seed": (
             config.continually_learn.seed
-            if str(config.training.task).lower() == "continual"
+            if task == "continual"
             and config.continually_learn.seed is not None
             else config.training.seed
         ), 
-        "task": config.training.task
+        "task": task,
     }
 
 
@@ -1051,9 +955,9 @@ def get_datasets(
         standardization.
 
     Raises:
-        TypeError: If ``pad`` is not a non-boolean integer.
-        ValueError: If ``pad`` is negative or incompatible with saved features
-            or a pretrained image model.
+        TypeError: If ``task`` is not a string.
+        ValueError: If ``task`` is unsupported, or if ``pad`` is negative or
+            incompatible with saved features or a pretrained image model.
     """
 
     options = _resolve_dataset_options(config, kwargs)
@@ -1074,16 +978,11 @@ def get_datasets(
     seed = options["seed"]
     task = options["task"]
 
-    # Reject booleans and non-integral padding widths before loading data.
-    if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
-        raise TypeError("pad must be a non-boolean integer.")
     # Keep spatial padding nonnegative.
     if pad < 0:
         raise ValueError("pad must be nonnegative.")
 
     dataset_name = dataset_name.lower()
-    model_name = model_name.lower()
-    task = task.lower()
 
     # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
@@ -1177,13 +1076,10 @@ def get_datasets(
         seed=seed, 
         verbose=0
     )
-    # Keep validation absent when the loader did not create an explicit split.
-    x_eval, y_eval = x_val, y_val
-
     # Flatten sparse labels into the shape expected by Keras losses.
     if not onehot_labels:
         y_train = np.asarray(y_train).reshape(-1)
-        y_eval = np.asarray(y_eval).reshape(-1) if y_eval is not None else None
+        y_val = np.asarray(y_val).reshape(-1) if y_val is not None else None
 
     rng = np.random.default_rng(seed)
     x_train, y_train = _limit_samples(
@@ -1192,10 +1088,10 @@ def get_datasets(
         rng
     )
     # Limit only an independently created validation partition.
-    if x_eval is not None:
-        x_eval, y_eval = _limit_samples(
-            x_eval, y_eval,
-            max_val_samples,
+    if x_val is not None:
+        x_val, y_val = _limit_samples(
+            x_val, y_val, 
+            max_val_samples, 
             rng
         )
 
@@ -1206,15 +1102,15 @@ def get_datasets(
         ) else 0.
         x_train = _pad_images(np.asarray(x_train), pad, value=pad_value)
         # Pad validation inputs only when a real validation partition exists.
-        if x_eval is not None:
-            x_eval = _pad_images(np.asarray(x_eval), pad, value=pad_value)
+        if x_val is not None:
+            x_val = _pad_images(np.asarray(x_val), pad, value=pad_value)
 
     # Flatten inputs for dense classifiers and autoencoders.
     if model_name in _DENSE_MODELS:
         x_train = x_train.reshape((len(x_train), -1))
         # Flatten validation inputs only when a real partition exists.
-        if x_eval is not None:
-            x_eval = x_eval.reshape((len(x_eval), -1))
+        if x_val is not None:
+            x_val = x_val.reshape((len(x_val), -1))
 
     trainset = get_dataset(
         x_train, 
@@ -1231,13 +1127,13 @@ def get_datasets(
         config.dataset.trainset_len = len(trainset)
 
     valset = get_dataset(
-        x_eval, 
-        y_eval, 
+        x_val,
+        y_val,
         pad=0, 
         shuffle_buffer=0, 
         batch_size=batch_size, 
         drop_remainder=False
-    ) if use_valset and x_eval is not None else None
+    ) if use_valset and x_val is not None else None
 
     # Defer per-task loading to the continual learner.
     if task == "continual":

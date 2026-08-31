@@ -277,7 +277,6 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "plot_results": False,
                 "verbose": 0,
                 "seed": 31,
-                "dataset_seed": 31,
                 "checkpoint_dir": str(checkpoint_dir),
                 "save_task_checkpoints": True,
                 "return_details": True,

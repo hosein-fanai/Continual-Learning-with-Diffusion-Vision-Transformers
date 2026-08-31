@@ -11,10 +11,12 @@ from collections.abc import Callable
 from numbers import Real
 
 from common.gradients import apply_policy_gradients
+from common.keras_registry import register_canonical_keras_serializable
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
+@register_canonical_keras_serializable(package="continual_learning")
 class VAEClassifier(VariationalAutoencoder):
     """Train a conditional dense VAE alongside a classification objective.
 
@@ -127,6 +129,67 @@ class VAEClassifier(VariationalAutoencoder):
         # Compile immediately when requested by the caller.
         if compile_model:
             self.compile(**compile_args)
+
+    def get_config(self: VAEClassifier) -> dict[str, object]:
+        """Return the VAE architecture plus classifier branch configuration.
+
+        Returns:
+            dict[str, object]: JSON-compatible constructor configuration. The
+            nested classifier is represented through Keras object
+            serialization and compilation remains separate from architecture.
+        """
+
+        config = super().get_config()
+        # This subclass fixes conditioning internally; forwarding the base
+        # keyword would be rejected by its constructor.
+        config.pop("conditioned", None)
+        config.update({
+            "class_num": self.class_num,
+            "classifier": tf.keras.utils.serialize_keras_object(
+                self.classifier
+            ),
+            "alpha": self.alpha,
+            "compile": False,
+            "compile_args": None,
+        })
+
+        return config
+
+    @classmethod
+    def from_config(
+        cls: type[VAEClassifier],
+        config: dict[str, object],
+    ) -> VAEClassifier:
+        """Recreate the joint model and deserialize its classifier branch.
+
+        Args:
+            config (dict[str, object]): Output of :meth:`get_config`.
+
+        Returns:
+            VAEClassifier: Independent uncompiled architecture clone.
+        """
+
+        restored = VariationalAutoencoder._deserialize_constructor_config(
+            config
+        )
+        classifier_config = restored.pop("classifier")
+        # Keras 2.10's generic deserializer does not expose the built-in
+        # Sequential/Functional model classes through its default object map.
+        # Route model configs through the model-aware factory while retaining
+        # the generic path for registered callable classifiers.
+        if (
+            isinstance(classifier_config, dict)
+            and classifier_config.get("class_name")
+            in {"Functional", "Model", "Sequential"}
+        ):
+            classifier = tf.keras.models.model_from_config(classifier_config)
+        # Preserve support for registered callable classifier objects.
+        else:
+            classifier = tf.keras.utils.deserialize_keras_object(
+                classifier_config
+            )
+
+        return cls(classifier=classifier, **restored)
 
     def _compute_accuracy(
         self: VAEClassifier, 
@@ -412,6 +475,10 @@ class VAEClassifier(VariationalAutoencoder):
                             **kwargs)
 
 
+# TensorFlow 2.10 may emit the plain root name for subclassed-model JSON.
+tf.keras.utils.get_custom_objects()["VAEClassifier"] = VAEClassifier
+
+
 def run_self_tests() -> dict[str, str]:
     """Run joint VAE/classifier construction, step, and API tests.
 
@@ -535,9 +602,30 @@ def run_self_tests() -> dict[str, str]:
     assert model.name == "vae_classifier" and model._is_compiled is True
     assert isinstance(model.optimizer, tf.keras.optimizers.SGD)
     assert model.run_eagerly is True
-    assert "alpha" not in model.get_config(), (
-        "The current subclassed-model config does not persist custom "
-        "VAEClassifier constructor values."
+    joint_config = model.get_config()
+    assert joint_config["class_num"] == 3
+    assert joint_config["alpha"] == 0.5
+    assert joint_config["data_dim"] == 4
+    assert joint_config["latent_dim"] == 2
+    assert joint_config["hiddens_dims"] == [4]
+    assert "conditioned" not in joint_config
+    assert isinstance(joint_config["classifier"], dict)
+    joint_clone = VAEClassifier.from_config(joint_config)
+    assert joint_clone.class_num == model.class_num
+    assert joint_clone.alpha == model.alpha
+    assert joint_clone.data_dim == model.data_dim
+    assert joint_clone.latent_dim == model.latent_dim
+    assert joint_clone.hiddens_dims == model.hiddens_dims
+    assert joint_clone._is_compiled is False
+    assert isinstance(joint_clone.classifier, tf.keras.Model)
+    assert joint_clone.classifier is not model.classifier
+    assert len(joint_clone.classifier.weights) == len(model.classifier.weights)
+    assert all(
+        left.shape == right.shape
+        for left, right in zip(
+            joint_clone.classifier.weights,
+            model.classifier.weights,
+        )
     )
 
     x = tf.constant([
@@ -547,9 +635,15 @@ def run_self_tests() -> dict[str, str]:
     (z_mean, z_log_var, z), reconstruction, prediction = model(
         (x, y), training=False
     )
+    clone_latents, clone_reconstruction, clone_prediction = joint_clone(
+        (x, y), training=False
+    )
     assert z_mean.shape == z_log_var.shape == z.shape == (2, 2)
     assert reconstruction.shape == (2, 4)
     assert prediction.shape == (2, 3)
+    assert all(value.shape == (2, 2) for value in clone_latents)
+    assert clone_reconstruction.shape == (2, 4)
+    assert clone_prediction.shape == (2, 3)
     tf.debugging.assert_near(
         tf.reduce_sum(prediction, axis=1), 
         tf.ones((2,), tf.float32)

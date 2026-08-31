@@ -10,14 +10,14 @@ import tokenize
 from pathlib import Path
 
 
-def _tracked_python_files() -> tuple[Path, ...]:
-    """Return only Python sources tracked by Git.
+def _project_python_files() -> tuple[Path, ...]:
+    """Return tracked and non-ignored Python sources in the working tree.
 
     Args:
         None.
 
     Returns:
-        tuple[Path, ...]: Absolute tracked ``.py`` paths in repository order.
+        tuple[Path, ...]: Absolute project ``.py`` paths in Git's stable order.
     """
 
     root = Path(__file__).resolve().parent
@@ -27,6 +27,9 @@ def _tracked_python_files() -> tuple[Path, ...]:
             "-c", 
             f"safe.directory={root.as_posix()}", 
             "ls-files", 
+            "--cached",
+            "--others",
+            "--exclude-standard",
             "--", 
             "*.py"
         ), 
@@ -208,7 +211,7 @@ def _has_documented_output_type(docstring: str) -> bool:
 
 
 def _run_static_checker_self_tests() -> None:
-    """Exercise multiline datatype, output, and branch-location parsing.
+    """Exercise datatype, output, branch, and runtime-assert parsing.
 
     Args:
         None.
@@ -248,6 +251,22 @@ else:
     assert _if_branch_locations(branch_tree, branch_source) == (
         (2, "if"), (5, "elif"), (8, "else")
     )
+
+    assertion_source = """def runtime_guard():
+    assert ready, "required"
+
+def run_self_tests():
+    assert exercised
+"""
+    assertion_tree = ast.parse(assertion_source)
+    assert _production_assert_locations(
+        assertion_tree,
+        Path("package/module.py"),
+    ) == (2,)
+    assert _production_assert_locations(
+        assertion_tree,
+        Path("common/tests/test_module.py"),
+    ) == ()
 
 
 def _if_branch_locations(
@@ -308,8 +327,56 @@ def _if_branch_locations(
     return tuple(sorted(locations))
 
 
+def _production_assert_locations(
+    tree: ast.AST,
+    relative_path: Path,
+) -> tuple[int, ...]:
+    """Locate assertions that would disappear from non-test code under ``-O``.
+
+    Args:
+        tree (ast.AST): Parsed Python module tree.
+        relative_path (pathlib.Path): Project-relative source path.
+
+    Returns:
+        tuple[int, ...]: Sorted source lines containing production assertions.
+            Assertions in ``common/tests`` or beneath an executable
+            ``*self_tests`` function are intentionally excluded.
+    """
+
+    # Unit-test modules may use Python assertions as ordinary test checks.
+    if "tests" in relative_path.parts:
+        return ()
+
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    locations: list[int] = []
+    for node in ast.walk(tree):
+        # Continue only with optimization-sensitive assertion statements.
+        if not isinstance(node, ast.Assert):
+            continue
+
+        current = node
+        inside_self_test = False
+        while current in parents:
+            current = parents[current]
+            # Embedded executable self-tests deliberately use concise asserts.
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+            and current.name.endswith("self_tests"):
+                inside_self_test = True
+                break
+
+        # Production guards must remain active when Python optimization is on.
+        if not inside_self_test:
+            locations.append(node.lineno)
+
+    return tuple(sorted(locations))
+
+
 def assert_static_contracts() -> dict[str, int]:
-    """Assert documentation, typing, and branch-comment contracts repository-wide.
+    """Assert documentation, typing, branch, and runtime-guard contracts.
 
     Lambdas are excluded because Python syntax cannot annotate lambda parameters
     or returns. Conventional implicit ``self`` and ``cls`` parameters are also
@@ -331,7 +398,7 @@ def assert_static_contracts() -> dict[str, int]:
     failures: list[str] = []
     counts = {"files": 0, "classes": 0, "functions": 0, "branches": 0}
 
-    for path in _tracked_python_files():
+    for path in _project_python_files():
         source = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(source, filename=str(path), type_comments=True)
         relative_path = path.relative_to(Path(__file__).resolve().parent)
@@ -431,6 +498,12 @@ def assert_static_contracts() -> dict[str, int]:
                 failures.append(
                     f"{relative_path}:{line_number} {keyword} missing purpose comment"
                 )
+
+        for line_number in _production_assert_locations(tree, relative_path):
+            failures.append(
+                f"{relative_path}:{line_number} production assert disappears under -O; "
+                "use an explicit validation guard"
+            )
 
     # Fail once with the complete static-contract violation report.
     if failures:

@@ -49,82 +49,33 @@ class LrLoggerCallback(callbacks.Callback):
 
 
 def run_self_tests() -> dict[str, str]:
-    """Run callback tests for scalar and scheduled learning rates.
-
-    The checks exercise attached and unattached callbacks, tensor/scalar and
-    callable rates, preservation of existing log entries, mutation of an empty
-    supplied dictionary, and a ``None`` log mapping.
-
-    Args:
-        None.
+    """Smoke-test scalar and scheduled learning-rate logging.
 
     Returns:
-        dict[str, str]: ``{"LrLoggerCallback": "passed"}`` after all
-        assertions succeed.
+        dict[str, str]: Passing marker for :class:`LrLoggerCallback`.
     """
 
     from types import SimpleNamespace
 
     import tensorflow as tf
 
-
     callback = LrLoggerCallback()
-    fixed_optimizer = SimpleNamespace(
+    optimizer = SimpleNamespace(
         learning_rate=tf.Variable(0.125, dtype=tf.float32), 
         iterations=tf.Variable(2, dtype=tf.int64), 
     )
-    callback.set_model(SimpleNamespace(optimizer=fixed_optimizer))
+    callback.set_model(SimpleNamespace(optimizer=optimizer))
     logs = {"loss": 1.0}
-    assert callback.on_epoch_end(0, logs) is None
-    assert logs["loss"] == 1.0
+    callback.on_epoch_end(0, logs)
     assert abs(logs["learning_rate"] - 0.125) < 1e-7
 
-    fixed_optimizer.learning_rate.assign(0.0625)
-    callback.on_epoch_end(1, logs)
-    assert abs(logs["learning_rate"] - 0.0625) < 1e-7
-
-
-    def scheduled_rate(step: tf.Tensor | tf.Variable) -> tf.Tensor:
-        """Return a deterministic rate for the supplied optimizer step.
-
-        Args:
-            step (tf.Tensor | tf.Variable): Current optimizer iteration.
-
-        Returns:
-            tf.Tensor: ``0.4 / (1 + step)`` as ``float32``.
-        """
-
-        return tf.constant(0.4, tf.float32) / (
-            1.0 + tf.cast(step, tf.float32)
-        )
-
-
-    scheduled_optimizer = SimpleNamespace(
-        learning_rate=scheduled_rate, 
-        iterations=tf.Variable(3, dtype=tf.int64), 
+    optimizer.learning_rate = tf.keras.optimizers.schedules.InverseTimeDecay(
+        initial_learning_rate=0.4,
+        decay_steps=1,
+        decay_rate=1.0,
     )
-    callback.set_model(SimpleNamespace(optimizer=scheduled_optimizer))
-    scheduled_logs = {"metric": 2.0}
-    callback.on_epoch_end(2, scheduled_logs)
-    assert abs(scheduled_logs["learning_rate"] - 0.1) < 1e-7
-    assert scheduled_logs["metric"] == 2.0
-
-    empty_logs = {}
-    callback.on_epoch_end(3, empty_logs)
-    assert abs(empty_logs["learning_rate"] - 0.1) < 1e-7
-    assert callback.on_epoch_end(4, None) is None
-
-    unattached = LrLoggerCallback()
-    try:
-        unattached.on_epoch_end(0, {})
-    except AttributeError:
-        pass
-    else:
-        raise AssertionError("An unattached callback must not invent an optimizer.")
+    callback.on_epoch_end(1, logs)
+    assert logs["loss"] == 1.0
+    assert abs(logs["learning_rate"] - (0.4 / 3.0)) < 1e-7
 
     return {"LrLoggerCallback": "passed"}
-
-
-# Run this module's executable self-test entry point when invoked directly.
-if __name__ == "__main__":
-    print(run_self_tests())

@@ -1,0 +1,43 @@
+# Current-schema classifier example used by the root CLI and config tests.
+dataset:
+  name: cifar10
+  preprocess: min-max
+  validation_ratio: 0.2
+  batch_size: 128
+  shuffle_buffer: 10000
+
+model:
+  name: cnn
+  show_network_summary: false
+
+optimizer:
+  name: adam
+  initial_learning_rate: 0.001
+  schedule: cosine
+
+training:
+  task: classification
+  epochs: 20
+  results_path: ./results
+  save_weights: true
+  seed: 42
+  dtype_policy: float32
+  deterministic_ops: false
+
+continually_learn:
+  use_buffer: false
+  buffer_kwargs:
+    maxlen: 10000
+    sample_num: 1000
+    insert_num: 1000
+    seed: null
+    strategy: fifo
+  optimizer_steps_per_epoch: null
+
+reporting:
+  show_history_plot: false
+  save_history_plot: true
+  run_trainset_eval: true
+  run_valset_eval: true
+
+hpo: {}

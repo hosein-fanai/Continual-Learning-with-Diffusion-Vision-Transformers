@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase, main
 from unittest.mock import patch
 
 import random
+import subprocess
+import sys
 
 import numpy as np
 import tensorflow as tf
@@ -17,6 +20,7 @@ from common.runtime import (
     effective_seed,
     validate_model_dtype_policy,
 )
+from common.validation import require
 
 
 class RuntimeTests(TestCase):
@@ -39,6 +43,49 @@ class RuntimeTests(TestCase):
         """
 
         tf.keras.mixed_precision.set_global_policy(self.previous_policy)
+
+    def test_require_preserves_assertion_semantics(self: RuntimeTests) -> None:
+        """Retain truth testing, messages, and bare assertion arguments.
+
+        Returns:
+            None.
+        """
+
+        self.assertIsNone(require(object()))
+        with self.assertRaises(AssertionError) as bare_error:
+            require(0)
+        self.assertEqual(bare_error.exception.args, ())
+
+        marker = object()
+        with self.assertRaises(AssertionError) as message_error:
+            require([], marker)
+        self.assertIs(message_error.exception.args[0], marker)
+
+    def test_require_remains_active_under_optimization(
+        self: RuntimeTests,
+    ) -> None:
+        """Keep required invariants active in a Python ``-O`` subprocess.
+
+        Returns:
+            None.
+        """
+
+        project_root = Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-O",
+                "-c",
+                "from common.validation import require; "
+                "require(False, 'active under -O')",
+            ],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("AssertionError: active under -O", completed.stderr)
 
     def test_seed_precedence_and_validation(self: RuntimeTests) -> None:
         """Apply continual precedence only to continual runs.
@@ -66,6 +113,10 @@ class RuntimeTests(TestCase):
         self.assertIsNone(effective_seed())
         with self.assertRaises(TypeError):
             effective_seed(seed=True)
+        with self.assertRaises(TypeError):
+            effective_seed(seed=1.5)
+        with self.assertRaises(TypeError):
+            effective_seed(seed="7")
         with self.assertRaises(ValueError):
             effective_seed(seed=-1)
 
@@ -158,6 +209,8 @@ class RuntimeTests(TestCase):
             enable.assert_called_once_with()
         with self.assertRaises(ValueError):
             configure_runtime(seed=None, deterministic_ops=True)
+        with self.assertRaises(TypeError):
+            configure_runtime(seed=9, deterministic_ops="false")
 
     def test_loaded_model_policy_validation(self: RuntimeTests) -> None:
         """Reject stale restored layers while allowing stable mixed softmax.
@@ -174,8 +227,14 @@ class RuntimeTests(TestCase):
         stale(tf.ones((1, 2), dtype=tf.float32))
 
         configure_runtime(seed=31, dtype_policy="mixed_float16")
-        with self.assertRaisesRegex(ValueError, "does not retrofit"):
-            validate_model_dtype_policy(stale, role="restored classifier")
+        inputs = tf.keras.Input(shape=(2,))
+        wrapped_stale = tf.keras.Model(inputs, stale(inputs))
+        self.assertEqual(wrapped_stale.dtype_policy.name, "mixed_float16")
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            validate_model_dtype_policy(
+                wrapped_stale,
+                role="restored classifier",
+            )
 
         policy = tf.keras.mixed_precision.global_policy()
         compatible = tf.keras.Sequential([
@@ -216,7 +275,8 @@ class RuntimeTests(TestCase):
         )
         self.assertEqual(selected_seed, 29)
         self.assertEqual(policy_name, "float32")
-        with self.assertRaises(TypeError):
+        # Missing structure is reported naturally by the behavior owner.
+        with self.assertRaises(AttributeError):
             effective_seed(SimpleNamespace())
 
 

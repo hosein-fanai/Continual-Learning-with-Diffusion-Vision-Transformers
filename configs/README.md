@@ -1,9 +1,12 @@
 # Training configurations
 
-YAML files in this directory provide keyword overrides for the dataclasses in
+The root `default.yaml` is a current, CLI-loadable example whose mappings provide
+keyword overrides for the dataclasses in
 `common.config`. `load_config(path)` converts nested mappings into a `Config`
 tree; omitted sections and fields keep their dataclass defaults. Unknown keys
 are rejected by the corresponding dataclass constructor.
+Loading uses safe YAML constructors and rejects duplicate explicit mapping keys
+at every nesting level; ordinary YAML `<<` merge overrides remain supported.
 
 The top-level sections are:
 
@@ -18,7 +21,8 @@ The top-level sections are:
   `vae_classifier`). The same rule applies to a named diffusion wrapper when
   `wrapper_kwargs` is empty.
 - `optimizer`: optimizer family, learning rate/schedule, decay, momentum, and
-  optional clipping.
+  optional positive finite `clipnorm`, which clips each variable's gradient
+  tensor independently (it is not a global-gradient norm).
 - `training`: task, ordinary/progressive fit selection, curriculum and
   epoch/validation settings, result directory, early stopping, TensorBoard,
   verbosity, weight persistence, global dtype policy, and deterministic-kernel
@@ -47,6 +51,14 @@ config = load_config("results/resolved-config.yaml")
 `save_config` keeps its full-output behavior by default. Pass `shorten=True` to
 write only values that differ from their dataclass defaults; omitted values are
 restored normally by `load_config`.
+
+`training.task` accepts only `legacy`, `generation`, `joint`, `classification`,
+or `continual` (case-insensitive). A path-like `training.results_path` is
+normalized to text. `common.config.normalize_training_task(value)` exposes the
+same validation to direct callers. Set `results_path` to `null` only when every
+active runtime path can work without a directory: disable file, TensorBoard,
+weight/config, and checkpoint outputs, and use interactive image display during
+training.
 
 Diffusion wrappers can use their existing progressive trainer directly from
 the same config tree:
@@ -163,6 +175,13 @@ to its generator phase and keeps its required discriminator phase on ordinary
 `fit`; standalone classifiers, buffers, and VAEs do not accept the progressive
 selector.
 
+The V2 fields `clf_train_noisified_max_timesteps` and
+`clf_test_noisified_max_timesteps` select clean timestep 0 with `null`, the full
+horizon with `-1`, or an exclusive `[0, cap)` range with a positive integer.
+Classifier caps are independent of progressive generator intervals. Direct V2
+evaluation must select `generator`/`discriminator` or request both; shared
+reporting evaluates both phases.
+
 Student distillation settings are serializable model fields. A DiT classifier
 sets `classifier_only_distil_token: true` together with a non-null
 `clf_distil_token_type` (or shares a non-null inherited `distil_token_type`); a
@@ -180,6 +199,12 @@ EMA-enabled wrapper. An optional live teacher can initialize task one through
 `main(config, teacher_network=teacher)`; it is never placed in YAML. The same
 lifecycle works with ordinary and progressive fitting and with both diffusion
 classifier wrappers.
+
+`distil_scope` accepts `old_classes`, `replay_only`, or the default
+`current_and_replay`. Replay-only scope requires generative replay; the learner
+adds row-level replay provenance to training batches, V2 retains it through
+mapped preprocessing, and teacher-targeted losses/metrics select only those
+rows.
 
 With `continually_learn.save_task_checkpoints: true` (an opt-in setting), a configured
 run commits `checkpoints/task-NNNN` only after a task has trained, evaluated,
@@ -212,9 +237,9 @@ namespaces described above.
 Nested model dataclasses expose `kwargs() -> dict[str, Any]`; those dictionaries
 are forwarded to the corresponding transformer or wrapper constructor. Use the
 constructor docstrings as the authoritative valid-value reference. The
-`mnist_config copy*.yaml` files and `default.yaml` record experiments from
-earlier API revisions and contain legacy key names. They are archival records,
-not HPO bases. New studies generate current YAML files below
+YAML files under `old/` record experiments from earlier API revisions and
+contain legacy key names. They are archival records, not CLI examples or HPO
+bases. New studies generate current YAML files below
 `results/hpo/<task>/<model>/<dataset>/configs/` and reload every one before
 training.
 

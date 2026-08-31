@@ -7,6 +7,8 @@ import numpy as np
 
 from typing import Any, TypeAlias, Literal
 
+from common.runtime import derive_seed, effective_seed
+
 from diffusion.models.wrapper import NetworkName
 
 
@@ -30,16 +32,19 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify``, ``network``, ``ema_network``, and ``get_network``. Weighted
+    ``noisify``, ``q_sample``, ``network``, ``ema_network``, and
+    ``get_network``. Weighted
     evaluation also requires ``get_noise_and_signal_rates``. Each selected inner
     network must expose ``num_classes`` and the project's five-or-six-value
-    ``predict_class(full_return=True)`` interface.
+    ``predict_class(full_return=True)`` interface. Seeded mode additionally
+    requires ``q_sample`` so stateless per-timestep noise can be applied without
+    advancing TensorFlow's stateful RNG counters.
 
     Args:
-        diffusion_clf: A ``DiffusionClassifier``-compatible wrapper.
-        netwrok_name: Historical misspelling retained by the public API.
-            ``"ema"`` selects ``ema_network`` and ``"raw"`` selects
-            ``network``. Only these two values are valid.
+        diffusion_clf: A ``DiffusionClassifier``-compatible wrapper exposing
+            callable ``noisify``, ``q_sample``, and ``get_network`` methods.
+        network_name: Correctly spelled ``"ema"``/``"raw"`` selector. When
+            both aliases are omitted, ``"ema"`` is used.
         compute_type: ``"chunked"`` for bounded memory or ``"batched"`` for
             one larger network call.
         weighted: If true, use normalized signal-to-noise-ratio weights so
@@ -48,8 +53,8 @@ class EnsembleAccuracy(metrics.Metric):
             wrapper's total ``timesteps``. Timestep ``max_t`` itself is excluded.
         t_chunk_size: Positive number of timesteps per call in chunked mode.
             Values larger than ``max_t`` simply produce one chunk.
-        seed: Optional seed passed to the wrapper's Gaussian noising
-            operation, or ``None`` for its configured/default randomness.
+        seed: Optional master seed for mode-invariant per-timestep Gaussian
+            noising streams, or ``None`` for configured/default randomness.
         clf_acc_coef: Nonnegative coefficient for primary class predictions.
         distil_acc_coef: Nonnegative coefficient for distillation-head
             predictions. A positive value requires that optional output.
@@ -73,15 +78,15 @@ class EnsembleAccuracy(metrics.Metric):
     def __init__(
         self, 
         diffusion_clf: Any, 
-        netwrok_name: NetworkName = "ema", 
+        network_name: NetworkName | None = None, 
         compute_type: ComputeType = "chunked", 
         weighted: bool = False, 
         max_t: int = 128, 
         t_chunk_size: int = 16, 
         seed: int | None = None, 
-        clf_acc_coef: float = 1.,
-        distil_acc_coef: float = 0.,
-        ctr_acc_coef: float = 0.,
+        clf_acc_coef: float = 1., 
+        distil_acc_coef: float = 0., 
+        ctr_acc_coef: float = 0., 
         name: str | None = "ensemble_accuracy", 
         **kwargs: Any
     ) -> None:
@@ -89,13 +94,15 @@ class EnsembleAccuracy(metrics.Metric):
 
         Args:
             diffusion_clf (Any): Diffusion-classifier wrapper exposing
-                ``timesteps``, ``noisify``, raw/EMA members, and ``get_network``.
-            netwrok_name (NetworkName): ``"ema"`` or ``"raw"`` network selector.
+                ``timesteps``, callable ``noisify``/``q_sample``, raw/EMA
+                members, and ``get_network``.
+            network_name (NetworkName | None): Preferred ``"ema"`` or
+                ``"raw"`` selector; both omitted defaults to ``"ema"``.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
             weighted (bool): Whether timesteps use normalized SNR weights.
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
-            seed (int | None): Optional noising seed.
+            seed (int | None): Optional master noising seed.
             clf_acc_coef (float): Coefficient for primary class predictions.
             distil_acc_coef (float): Coefficient for distillation-head
                 predictions.
@@ -111,11 +118,11 @@ class EnsembleAccuracy(metrics.Metric):
         kwargs = dict(kwargs)
         wrapper_policy = getattr(diffusion_clf, "dtype_policy", None)
         kwargs.setdefault(
-            "dtype",
+            "dtype", 
             getattr(
-                wrapper_policy,
-                "variable_dtype",
-                tf.keras.mixed_precision.global_policy().variable_dtype,
+                wrapper_policy, 
+                "variable_dtype", 
+                tf.keras.mixed_precision.global_policy().variable_dtype
             ),
         )
         super().__init__(
@@ -124,7 +131,8 @@ class EnsembleAccuracy(metrics.Metric):
         )
 
         required = (
-            "timesteps", "noisify", "network", "ema_network", "get_network"
+            "timesteps", "noisify", "q_sample", 
+            "network", "ema_network", "get_network"
         )
         missing = [name for name in required if not hasattr(diffusion_clf, name)]
         # Require the wrapper protocol attributes used by this metric.
@@ -135,6 +143,9 @@ class EnsembleAccuracy(metrics.Metric):
         # Require a callable forward-noising operation.
         if not callable(diffusion_clf.noisify):
             raise TypeError("diffusion_clf.noisify must be callable.")
+        # Stateless seeded evaluation injects noise through forward diffusion.
+        if not callable(diffusion_clf.q_sample):
+            raise TypeError("diffusion_clf.q_sample must be callable.")
         # Network selection is part of the wrapper protocol as well.
         if not callable(diffusion_clf.get_network):
             raise TypeError("diffusion_clf.get_network must be callable.")
@@ -161,14 +172,11 @@ class EnsembleAccuracy(metrics.Metric):
         if not isinstance(t_chunk_size, int) or isinstance(t_chunk_size, bool) \
         or t_chunk_size < 1:
             raise ValueError("t_chunk_size must be a positive integer.")
-        # Restrict prediction to the wrapper's raw or EMA network.
-        if netwrok_name not in ("ema", "raw"):
-            raise ValueError("netwrok_name must be 'ema' or 'raw'.")
 
         for coef_name, coef in (
-            ("clf_acc_coef", clf_acc_coef),
-            ("distil_acc_coef", distil_acc_coef),
-            ("ctr_acc_coef", ctr_acc_coef),
+            ("clf_acc_coef", clf_acc_coef), 
+            ("distil_acc_coef", distil_acc_coef), 
+            ("ctr_acc_coef", ctr_acc_coef)
         ):
             # Require every prediction-head coefficient to be finite and nonnegative.
             if not isinstance(coef, (int, float)) or isinstance(coef, bool) \
@@ -189,7 +197,8 @@ class EnsembleAccuracy(metrics.Metric):
             raise ValueError("compute_type can either be chunked or batched.")
 
         self.diffusion_clf = diffusion_clf
-        self.network = self.diffusion_clf.get_network(netwrok_name)
+        self.network_name = network_name
+        self.network = self.diffusion_clf.get_network(self.network_name)
         minimum_classes = 0 if getattr(
             self.network, "dynamic_num_classes", False
         ) else 1
@@ -208,7 +217,10 @@ class EnsembleAccuracy(metrics.Metric):
         self.weighted = weighted
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
-        self.seed = seed
+        self.seed = effective_seed(seed=(
+            getattr(diffusion_clf, "seed", None) 
+            if seed is None else seed
+        ))
         self.clf_acc_coef = float(clf_acc_coef)
         self.distil_acc_coef = float(distil_acc_coef)
         self.ctr_acc_coef = float(ctr_acc_coef)
@@ -219,8 +231,8 @@ class EnsembleAccuracy(metrics.Metric):
         )
 
     def _predict_classes(
-        self,
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
         """Return the configured combination of classifier predictions.
@@ -242,15 +254,16 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         outputs = self.network.predict_class(
-            inputs,
-            full_return=True,
+            inputs, 
+            full_return=True, 
             training=training
         )
+
         # Require the common classifier full-return structure.
         if not isinstance(outputs, (tuple, list)) or len(outputs) < 5:
             raise TypeError(
-                "network.predict_class(full_return=True) must return at least "
-                "five classifier outputs."
+                "network.predict_class(full_return=True) must "
+                "return at least five classifier outputs."
             )
         # Require tensor predictions from the primary classifier head.
         if not tf.is_tensor(outputs[0]):
@@ -262,22 +275,26 @@ class EnsembleAccuracy(metrics.Metric):
         # Include classifier-token regularizers when their coefficient is positive.
         if self.ctr_acc_coef > 0.:
             regs_list = outputs[3]
+
             # Require the documented regularizer-head collection.
             if not isinstance(regs_list, (tuple, list)):
                 raise TypeError(
                     "Classifier regularizer predictions must be a list or tuple."
                 )
+
             ctr_preds = [
                 tf.cast(pred, self.dtype)
                 for pred in regs_list
                 if pred is not None
             ]
+
             # Require at least one usable regularizer prediction.
             if not ctr_preds:
                 raise ValueError(
-                    "ctr_acc_coef > 0 requires at least one classifier "
-                    "regularizer prediction."
+                    "ctr_acc_coef > 0 requires at least "
+                    "one classifier regularizer prediction."
                 )
+
             total_pred += tf.add_n(ctr_preds) / len(ctr_preds) * self.ctr_acc_coef
 
         # Include the distillation head when its coefficient is positive.
@@ -287,8 +304,10 @@ class EnsembleAccuracy(metrics.Metric):
                 raise ValueError(
                     "distil_acc_coef > 0 requires a distillation prediction."
                 )
+
             total_pred += tf.cast(
-                outputs[5], self.dtype
+                outputs[5], 
+                self.dtype
             ) * self.distil_acc_coef
 
         return total_pred
@@ -328,6 +347,64 @@ class EnsembleAccuracy(metrics.Metric):
         )
 
         return tf.cast(tf.nn.softmax(log_snr), self.dtype)
+
+    def _noisify_timestep_block(
+        self, 
+        x: tf.Tensor, 
+        start: int, 
+        count: int
+    ) -> tf.Tensor:
+        """Create one chunk-boundary-invariant block of noisy replicas.
+
+        Each logical timestep owns a child seed derived only from the master
+        seed and timestep ID. Batched and chunked prediction therefore request
+        identical noising streams regardless of their network-call grouping.
+
+        Args:
+            x (tf.Tensor): Clean images shaped ``[batch,height,width,channels]``.
+            start (int): First timestep in the block.
+            count (int): Positive number of consecutive timesteps.
+
+        Returns:
+            tf.Tensor: Noisy replicas shaped
+            ``[batch,count,height,width,channels]``.
+        """
+
+        batch_shape = tf.reshape(tf.shape(x)[0], (1,))
+        noised_by_timestep = []
+        for timestep in range(start, start + count):
+            timestep_batch = tf.fill(batch_shape, timestep)
+            timestep_seed = derive_seed(
+                self.seed, 
+                "ensemble_accuracy", 
+                "timestep", 
+                timestep
+            )
+
+            # Seeded metrics use counter-free noise so compute mode and prior
+            # random calls cannot change a logical timestep's realization.
+            if timestep_seed is not None:
+                noises = tf.random.stateless_normal(
+                    tf.shape(x), 
+                    seed=tf.constant((timestep_seed, 0), dtype=tf.int32), 
+                    dtype=x.dtype
+                )
+                x_t = self.diffusion_clf.q_sample(
+                    x, 
+                    timestep_batch, 
+                    noises
+                )
+            # Preserve ordinary advancing randomness for explicitly unseeded use.
+            else:
+                x_t, *_ = self.diffusion_clf.noisify(
+                    x, 
+                    timestep_batch, 
+                    seed=None
+                )
+
+            noised_by_timestep.append(x_t)
+
+        return tf.stack(noised_by_timestep, axis=1)
 
     def reset_state(self) -> None:
         """Reset correct-example and example-count accumulators to zero.
@@ -398,25 +475,27 @@ class EnsembleAccuracy(metrics.Metric):
         batch_size = tf.shape(x)[0]
         ts = tf.range(self.max_t, dtype=tf.int32)
 
-        x_rep = tf.repeat(x, repeats=self.max_t, axis=0)
+        x_rep = self._noisify_timestep_block(
+            x, 
+            start=0, 
+            count=self.max_t
+        )
+        x_rep = tf.reshape(
+            x_rep, 
+            tf.concat(([-1], tf.shape(x)[1:]), axis=0)
+        )
         t_rep = tf.tile(ts, multiples=[batch_size])
         uncond_labels = tf.zeros(
             (batch_size * self.max_t,), 
             dtype=tf.uint8
         )
 
-        x_rep, *_ = self.diffusion_clf.noisify(
-            x_rep, 
-            t_rep, 
-            seed=self.seed
-        )
-
         cls_pred = self._predict_classes(
-            (x_rep, t_rep, uncond_labels),
+            (x_rep, t_rep, uncond_labels), 
             training=training
         )
         cls_pred = tf.reshape(
-            cls_pred,
+            cls_pred, 
             (batch_size, self.max_t, -1)
         )
 
@@ -450,7 +529,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         pred_sum = tf.zeros(
             (batch_size, num_classes), 
-            dtype=self.dtype,
+            dtype=self.dtype
         )
         for start in range(0, self.max_t, self.t_chunk_size):
             chunk_t = min(self.t_chunk_size, self.max_t - start)
@@ -461,15 +540,18 @@ class EnsembleAccuracy(metrics.Metric):
                 dtype=tf.uint8
             )
 
-            x_rep = tf.repeat(x, repeats=chunk_t, axis=0)
-            x_rep, *_ = self.diffusion_clf.noisify(
+            x_rep = self._noisify_timestep_block(
+                x, 
+                start=start, 
+                count=chunk_t
+            )
+            x_rep = tf.reshape(
                 x_rep, 
-                t_rep, 
-                seed=self.seed
+                tf.concat(([-1], tf.shape(x)[1:]), axis=0)
             )
 
             cls_pred = self._predict_classes(
-                (x_rep, t_rep, uncond_labels),
+                (x_rep, t_rep, uncond_labels), 
                 training=training
             )
             cls_pred = tf.reshape(
@@ -600,6 +682,7 @@ def run_self_tests() -> dict[str, str]:
 
     predict_calls = []
     noisify_calls = []
+    q_sample_calls = []
 
 
     def predict_class(
@@ -666,6 +749,32 @@ def run_self_tests() -> dict[str, str]:
         noisify_calls.append((tuple(images.shape), timesteps.numpy(), seed))
 
         return (images,)
+
+
+    def q_sample(
+        images: tf.Tensor,
+        timesteps: tf.Tensor,
+        noises: tf.Tensor,
+    ) -> tf.Tensor:
+        """Record and apply deterministic stateless test noise.
+
+        Args:
+            images (tf.Tensor): Clean image tensor.
+            timesteps (tf.Tensor): Per-row timestep IDs.
+            noises (tf.Tensor): Stateless Gaussian noise tensor.
+
+        Returns:
+            tf.Tensor: Images shifted by the supplied noise.
+        """
+
+        noised_images = images + noises
+        q_sample_calls.append((
+            timesteps.numpy().copy(),
+            noises.numpy().copy(),
+            noised_images.numpy().copy(),
+        ))
+
+        return noised_images
 
 
     raw_network = SimpleNamespace(
@@ -741,6 +850,7 @@ def run_self_tests() -> dict[str, str]:
         network=raw_network, 
         ema_network=ema_network, 
         noisify=noisify, 
+        q_sample=q_sample,
         get_noise_and_signal_rates=get_noise_and_signal_rates,
         get_network=network_by_name.__getitem__,
     )
@@ -749,6 +859,7 @@ def run_self_tests() -> dict[str, str]:
     for weighted in (False, True):
         predict_calls.clear()
         noisify_calls.clear()
+        q_sample_calls.clear()
         batched = EnsembleAccuracy(
             wrapper, 
             netwrok_name="ema", 
@@ -765,8 +876,34 @@ def run_self_tests() -> dict[str, str]:
         assert len(predict_calls) == 1 and predict_calls[0][2] is True
         assert predict_calls[0][3] is True
         assert np.all(predict_calls[0][1] == 0)
-        assert noisify_calls[0][0] == (10, 2, 2, 1)
-        assert noisify_calls[0][2] == 17
+        assert noisify_calls == []
+        assert len(q_sample_calls) == 5
+        expected_timestep_seeds = [
+            derive_seed(
+                17, "ensemble_accuracy", "timestep", timestep
+            )
+            for timestep in range(5)
+        ]
+        assert [call[0].tolist() for call in q_sample_calls] == [
+            [timestep, timestep] for timestep in range(5)
+        ]
+        for timestep, call in enumerate(q_sample_calls):
+            expected_noise = tf.random.stateless_normal(
+                tf.shape(images),
+                seed=tf.constant((
+                    expected_timestep_seeds[timestep], 0
+                ), dtype=tf.int32),
+                dtype=images.dtype,
+            )
+            np.testing.assert_array_equal(
+                call[1], expected_noise.numpy()
+            )
+            np.testing.assert_array_equal(
+                call[2], (images + expected_noise).numpy()
+            )
+        batched_q_sample_calls = [
+            tuple(value.copy() for value in call) for call in q_sample_calls
+        ]
         expected_row = expected_prediction(5, weighted)
         np.testing.assert_allclose(
             batched_prediction.numpy(), 
@@ -776,6 +913,7 @@ def run_self_tests() -> dict[str, str]:
 
         predict_calls.clear()
         noisify_calls.clear()
+        q_sample_calls.clear()
         chunked = EnsembleAccuracy(
             wrapper, 
             netwrok_name="raw", 
@@ -792,10 +930,24 @@ def run_self_tests() -> dict[str, str]:
             batched_prediction.numpy(), 
             atol=1e-6
         )
+        comparison_labels = tf.zeros((2,), dtype=tf.int32)
+        batched.update_state(comparison_labels, batched_prediction)
+        chunked.update_state(comparison_labels, chunked_prediction)
+        tf.debugging.assert_near(batched.result(), chunked.result())
         assert len(predict_calls) == 3
         assert [call[0].shape[0] for call in predict_calls] == [4, 4, 2]
         assert all(call[2] is False for call in predict_calls)
         assert all(call[3] is True for call in predict_calls)
+        assert noisify_calls == []
+        assert len(set(expected_timestep_seeds)) == 5
+        assert len(q_sample_calls) == len(batched_q_sample_calls)
+        for batched_call, chunked_call in zip(
+            batched_q_sample_calls, q_sample_calls
+        ):
+            for batched_value, chunked_value in zip(
+                batched_call, chunked_call
+            ):
+                np.testing.assert_array_equal(batched_value, chunked_value)
 
     combined_kwargs = {
         "weighted": True,
@@ -839,10 +991,32 @@ def run_self_tests() -> dict[str, str]:
     assert oversized_chunk.ensemble_predict(images).shape == (2, 3)
     assert len(predict_calls) == 1
 
+    corrected_selector = EnsembleAccuracy(
+        wrapper,
+        network_name="raw",
+        max_t=1,
+    )
+    default_selector = EnsembleAccuracy(wrapper, max_t=1)
+    assert corrected_selector.network is raw_network
+    assert corrected_selector.network_name == "raw"
+    assert default_selector.network is ema_network
+    assert default_selector.network_name == "ema"
     try:
         EnsembleAccuracy(
             wrapper,
-            netwrok_name="not-ema",
+            netwrok_name="raw",
+            network_name="ema",
+            max_t=1,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Both network selector aliases must fail.")
+
+    try:
+        EnsembleAccuracy(
+            wrapper,
+            network_name="not-ema",
             compute_type="batched",
             max_t=1,
         )
@@ -905,6 +1079,14 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Invalid metric options must fail.")
 
+    for invalid_seed in (True, -1, 2 ** 32, 1.5):
+        try:
+            EnsembleAccuracy(wrapper, max_t=1, seed=invalid_seed)
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("Invalid ensemble seeds must fail.")
+
     def missing_optional_predict_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
         full_return: bool = False,
@@ -957,6 +1139,7 @@ def run_self_tests() -> dict[str, str]:
         network=missing_network,
         ema_network=missing_network,
         noisify=noisify,
+        q_sample=q_sample,
         get_network=get_missing_network,
     )
     for coefficient in ("ctr_acc_coef", "distil_acc_coef"):
@@ -1024,6 +1207,7 @@ def run_self_tests() -> dict[str, str]:
         network=raw_network,
         ema_network=ema_network,
         noisify=noisify,
+        q_sample=q_sample,
         get_noise_and_signal_rates=get_zero_noise_rates,
         get_network=network_by_name.__getitem__,
     )

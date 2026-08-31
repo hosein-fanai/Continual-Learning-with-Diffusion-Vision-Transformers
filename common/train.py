@@ -26,7 +26,8 @@ from collections.abc import Callable, Mapping, Sequence
 from common.utils import plot_images, plot_history, create_gif
 from common.lr_logger_callback import LrLoggerCallback
 from common.config import (
-    Config, 
+    Config,
+    normalize_training_task,
     load_config, 
     resolve_continual_schedule, 
     save_config
@@ -58,6 +59,39 @@ _PROGRESSIVE_FIT_KEYS = frozenset({
 """Arguments owned by the progressive diffusion training API."""
 
 
+def _normalize_results_path(
+    results_path: object, 
+    required_for: Sequence[str] = ()
+) -> str | bytes | None:
+    """Normalize an optional text artifact root and enforce its consumers.
+
+    Args:
+        results_path (object): Candidate string/path-like artifact root or
+            ``None``.
+        required_for (Sequence[str]): Enabled operations that cannot run without
+            an artifact root.
+
+    Returns:
+        str | bytes | None: Filesystem path, or ``None`` when output is unused.
+
+    Raises:
+        TypeError: If an enabled artifact consumer has no path.
+    """
+
+    requirements = tuple(str(name) for name in required_for)
+    # Permit no artifact root only when every active consumer can work without it.
+    if results_path is None:
+        # Explain all active consumers instead of failing later in os.path.join.
+        if requirements:
+            raise TypeError(
+                "results_path is required for " + ", ".join(requirements) + "."
+            )
+
+        return None
+
+    return os.fspath(results_path)
+
+
 def _resolve_training_options(
     config: Config | None, 
     model: tf.keras.Model | dict[str, object], 
@@ -75,7 +109,7 @@ def _resolve_training_options(
         :func:`train_model`.
     """
 
-    # Preserve the established direct-mode defaults and legacy alias.
+    # Preserve the established direct-mode defaults.
     if config is None:
         return {
             "show_images": kwargs.get("show_images", True), 
@@ -90,10 +124,9 @@ def _resolve_training_options(
             "tensorboard_run_name": kwargs.get("tensorboard_run_name"), 
             "tensorboard_path": kwargs.get("tensorboard_path"), 
             "hpo": kwargs.get("hpo", {}), 
-            "continual_kwargs": deepcopy(kwargs.get(
-                "continually_learn_kwargs", 
-                kwargs.get("continual_kwargs", {})
-            )), 
+            "continual_kwargs": deepcopy(
+                kwargs.get("continually_learn_kwargs", {})
+            ),
             "dataset_name": kwargs.get("dataset_name", "mnist"), 
             "loader_preprocess": kwargs.get("preprocess", "standardize"), 
             "features_path": kwargs.get("features_path", ""), 
@@ -297,7 +330,8 @@ def _evaluate_diffusion(
         model, DiffusionClassifier
     ):
         selected_kwargs = dict(ensemble_accuracy_kwargs)
-        selected_kwargs["netwrok_name"] = network_name
+        # Report each evaluation against its selected network.
+        selected_kwargs["network_name"] = network_name
         selected_kwargs.setdefault("verbose", bool(verbose))
         results["ensemble_accuracy"] = model.evaluate_ensemble_accuracy(
             dataset, **selected_kwargs
@@ -346,69 +380,29 @@ def train_model(
     extra_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None, 
     **kwargs: object
 ) -> dict[str, list[float]]:
-    """Fit a configured model, manage callbacks, and persist run state.
+    """Fit one model or continual bundle and persist requested artifacts.
 
     Args:
-        config (Config | None): Supplies training settings when provided.
-            ``None`` uses a display-only image callback and ``epochs``.
-        model (tf.keras.Model | dict): Compiled model or continual target/replay
-            mapping returned by :func:`get_model`.
-        trainset (tf.data.Dataset | Callable): Batched training pairs, or the
-            CIFAR loader used by continual learning.
-        valset (tf.data.Dataset | None): Optional validation pairs.
-        save_config_ (bool): Save ``config.yaml`` before training and again
-            after paths are updated. Dynamic diffusion weight saving always
-            writes the required paired config even when this is false. It does
-            not disable callback artifacts or other weight saving.
-        extra_callbacks (Sequence[tf.keras.callbacks.Callback] | None): Extra
-            callbacks appended after the standard callbacks. HPO uses this for
-            pruning; the continual learner uses it for per-task callbacks.
-        **kwargs (object): Direct training, reporting, dataset-loader, and
-            persistence settings used only when ``config`` is ``None``.
-            Important fit keys are ``epochs``, ``verbose``, ``patience``,
-            ``monitor``, ``monitor_mode``, ``report_every_epoch``,
-            ``save_weights``, and callback/artifact settings. ``fit_method``
-            selects an alternate model method such as VAE ``"train"`` or V2
-            ``"fit_generator"``/``"fit_discriminator"``; ``fit_kwargs`` is
-            shallow-copied and forwarded to that method. Configured runs use
-            ``training.fit_method`` and the progressive fields on
-            :class:`TrainingConfig`; ``fit_progressively`` uses stage/final
-            epochs instead of ``training.epochs``. A continual model
-            bundle consumes ``continually_learn_kwargs`` (the legacy
-            ``continual_kwargs`` spelling remains accepted in direct mode) and
-            also accepts ``max_train_samples``,
-            ``max_val_samples``, ``shuffle_buffer``, raw-image ``pad``, and 
-            ``seed``.
+        config (Config | None): Typed settings, or ``None`` for direct mode.
+        model (tf.keras.Model | dict[str, object] | None): Compiled model or
+            continual classifier/replay bundle.
+        trainset (tf.data.Dataset | Callable[..., object] | None): Batched
+            training input or continual dataset loader.
+        valset (tf.data.Dataset | None): Optional validation input.
+        save_config_ (bool): Persist the resolved typed configuration.
+        extra_callbacks (Sequence[tf.keras.callbacks.Callback] | None):
+            Callbacks appended to the standard training callbacks.
+        **kwargs (object): Direct-mode training options. Continual bundles use
+            the canonical ``continually_learn_kwargs`` mapping.
 
     Returns:
-        dict[str, list[float]]: The Keras ``History.history`` mapping with one
-        value per completed epoch for each reported metric. Continual bundles
-        return ``continual_accuracy`` and ``task_val_accuracy``, plus
-        ``continual_ensemble_accuracy`` when enabled.
-
-    Side Effects:
-        Sets ``config.training.results_path`` from
-        ``ImageGeneratorCallback.results_path``. If weight saving is enabled,
-        writes ``model.weights.h5`` and sets ``config.model.weights_path`` to
-        the selected model's weights. A continual replay model is saved as
-        ``replay-model.weights.h5`` and is the selected model in that case;
-        the paired classifier path is retained in configuration metadata.
-        Dynamic diffusion saves also persist the current raw ``num_classes``
-        and wrapper ``seen_classes`` in the mandatory paired ``config.yaml``.
-        Progressive weight saves likewise force a final config rewrite and
-        record the post-growth network constructor state.
-        TensorBoard and HPO metadata are written when configured. Epoch
-        trajectory sampling is limited to compatible diffusion wrappers. A
-        continual model bundle is updated with its final classifier/replay
-        model and a ``continual_details`` mapping.
+        dict[str, list[float]]: Epoch metrics, including continual accuracy
+            series for continual bundles.
 
     Raises:
-        TypeError: If ``model`` or ``trainset`` is omitted, or dynamic
-            diffusion weights are requested without a ``Config`` to save, or
-            a direct ``fit_method`` is not a string.
-        ValueError: If configured fit selection/arguments conflict, a
-            progressive curriculum lacks ``stage_tasks``, or its target is not
-            a diffusion wrapper.
+        TypeError: If required inputs or an artifact path are missing.
+        ValueError: If configured fit controls conflict or progressive fitting
+            targets an unsupported model.
     """
 
     # Require both a model and training input for orchestration.
@@ -469,20 +463,10 @@ def train_model(
                 "training.fit_method must be 'fit' or 'fit_progressively'."
             )
 
-        orchestration_fit_keys = {
-            "x", "y", "epochs", "initial_epoch", "validation_data",
-            "callbacks", "verbose",
+        reserved_fit_keys = {
+            "x", "y", "epochs", "initial_epoch", 
+            "validation_data", "callbacks", "verbose"
         }
-        conflicting_fit_keys = sorted(
-            orchestration_fit_keys.intersection(fit_kwargs)
-        )
-        # Keep data, epoch, callback, and verbosity ownership unambiguous.
-        if conflicting_fit_keys:
-            raise ValueError(
-                "training.fit_kwargs cannot override train_model arguments: "
-                + str(conflicting_fit_keys)
-            )
-
         # Assemble the existing progressive API from its typed config fields.
         if fit_method == "fit_progressively":
             # Require an explicit curriculum instead of inventing hidden stages.
@@ -492,17 +476,18 @@ def train_model(
                     "fit_method='fit_progressively'."
                 )
 
-            conflicting_fit_keys = sorted(
-                _PROGRESSIVE_FIT_KEYS.intersection(fit_kwargs)
-            )
-            # Keep named progressive arguments in their explicit config fields.
-            if conflicting_fit_keys:
-                raise ValueError(
-                    "training.fit_kwargs cannot override configured "
-                    "progressive arguments: "
-                    + str(conflicting_fit_keys)
-                )
+            reserved_fit_keys.update(_PROGRESSIVE_FIT_KEYS)
 
+        conflicting_fit_keys = sorted(reserved_fit_keys.intersection(fit_kwargs))
+        # Keep orchestration-owned arguments out of the free-form fit mapping.
+        if conflicting_fit_keys:
+            raise ValueError(
+                "training.fit_kwargs contains reserved keys: "
+                + str(conflicting_fit_keys)
+            )
+
+        # Materialize progressive controls only for the progressive method.
+        if fit_method == "fit_progressively":
             fit_kwargs = {
                 "stage_tasks": config.training.stage_tasks,
                 "stages_num": config.training.stages_num,
@@ -523,10 +508,6 @@ def train_model(
                 "stopper_mode": config.training.stopper_mode,
                 **fit_kwargs,
             }
-
-    # Require a string before using the shared method-name convention.
-    if not isinstance(fit_method, str):
-        raise TypeError("fit_method must be a string.")
 
     progressive_fit = fit_method.endswith("progressively")
 
@@ -555,6 +536,27 @@ def train_model(
     # Persist the final serializable topology beside progressive weights.
     if save_weights and progressive_fit and config is not None:
         save_config_ = True
+
+    result_path_consumers = []
+    # The callback needs a save destination when images are not displayed.
+    if not show_images:
+        result_path_consumers.append("training without interactive image display")
+    # GIFs are always file artifacts.
+    if save_gifs:
+        result_path_consumers.append("training GIF saving")
+    # Final weights are written beneath the callback's concrete result path.
+    if save_weights:
+        result_path_consumers.append("weight saving")
+    # Typed config snapshots are written beneath the result path.
+    if save_config_ and config is not None:
+        result_path_consumers.append("configuration saving")
+    # Continual bundles always persist their classifier template.
+    if is_continual:
+        result_path_consumers.append("continual training")
+    # An explicit TensorBoard root is independent of the result directory.
+    if use_tensorboard and tensorboard_path is None:
+        result_path_consumers.append("default TensorBoard logging")
+    results_path = _normalize_results_path(results_path, result_path_consumers)
 
     base_callbacks = [
         LrLoggerCallback(), 
@@ -689,7 +691,7 @@ def train_model(
 
         save_config(config, config_path)
 
-    progressive_call_kwargs = {
+    fit_call_kwargs = {
         "x": trainset, 
         "validation_data": valset, 
         "callbacks": callbacks_list, 
@@ -697,12 +699,8 @@ def train_model(
         **fit_kwargs
     }
     standard_fit_kwargs = {
-        "x": trainset, 
         "epochs": epochs, 
-        "validation_data": valset, 
-        "callbacks": callbacks_list, 
-        "verbose": training_verbose, 
-        **fit_kwargs
+        **fit_call_kwargs
     }
 
     # Delegate continual bundles to the incremental-learning workflow.
@@ -806,10 +804,7 @@ def train_model(
         )
         use_buffer = continual_kwargs.get("use_buffer", False)
         baseline_name = str(continual_kwargs.get("baseline") or "").lower()
-        no_generator_baselines = {
-            "sequential", "sequential_finetuning", "cumulative", 
-            "cumulative_upper_bound", "reservoir_er"
-        }
+        no_generator_baselines = {"sequential", "cumulative", "reservoir_er"}
         omit_generative_model = use_buffer or (
             baseline_name in no_generator_baselines
         )
@@ -830,7 +825,6 @@ def train_model(
             "max_val_samples", 
             "shuffle_buffer", 
             "pad", 
-            "dataset_seed", 
             "initial_classifier", 
             "callback_patience", 
             "callback_monitor", 
@@ -882,7 +876,7 @@ def train_model(
             max_val_samples=continual_max_val_samples, 
             shuffle_buffer=continual_shuffle_buffer, 
             pad=continual_pad, 
-            dataset_seed=seed, 
+            seed=seed, 
             dtype_policy=dtype_policy, 
             deterministic_ops=deterministic_ops, 
             initial_classifier=initial_classifier, 
@@ -922,8 +916,7 @@ def train_model(
             for index, row in enumerate(selected_validation_matrix)
         ]
 
-        # Preserve legacy history extraction for models without a validation
-        # prediction matrix.
+        # Fall back to task histories when no validation matrix is available.
         if not final_val_accuracy:
             final_val_accuracy = [
                 next((
@@ -953,7 +946,7 @@ def train_model(
             discriminator_kwargs.pop(name, None)
 
         generator_history = model.fit_generator_progressively(
-            **progressive_call_kwargs
+            **fit_call_kwargs
         ).history
         discriminator_history = model.fit_discriminator(
             x=trainset, 
@@ -987,7 +980,7 @@ def train_model(
         # Progressive methods own their stage and final epoch budgets.
         elif progressive_fit:
             trained = method(
-                **progressive_call_kwargs
+                **fit_call_kwargs
             )
         # Adapt shared arguments to other Keras-like training methods.
         else:
@@ -1121,7 +1114,7 @@ def train_model(
 def _report_final_visuals(
     model: tf.keras.Model | None, 
     dataset_name: str, 
-    results_path: str | None, 
+    results_path: str | os.PathLike[str] | None,
     show_final_images: bool, 
     save_final_images: bool, 
     save_final_gifs: bool, 
@@ -1152,6 +1145,7 @@ def _report_final_visuals(
         None: Requested artifacts are displayed and/or written in place.
 
     Raises:
+        TypeError: If a requested file artifact has no usable result path.
         ValueError: If GIF output is requested from a swapped-noise diffusion
             wrapper, which has no denoising trajectory.
     """
@@ -1168,6 +1162,11 @@ def _report_final_visuals(
         # Ignore a GIF-only request because a VAE has no denoising trajectory.
         if not (show_final_images or save_final_images):
             return
+
+        results_path = _normalize_results_path(
+            results_path,
+            ("final image saving",) if save_final_images else (),
+        )
 
         final_seed = derive_seed(seed, "final_report", "vae_generation")
         class_num, image_shape, _ = get_dataset_spec(dataset_name)
@@ -1208,6 +1207,15 @@ def _report_final_visuals(
         raise ValueError(
             "Final GIF trajectories are unavailable when swap_noise_image=True."
         )
+
+    diffusion_file_outputs = []
+    # PNG output requires a destination independently of GIF output.
+    if save_final_images:
+        diffusion_file_outputs.append("final image saving")
+    # A denoising animation is likewise a file-only output.
+    if save_final_gifs:
+        diffusion_file_outputs.append("final GIF saving")
+    results_path = _normalize_results_path(results_path, diffusion_file_outputs)
 
     final_seed = derive_seed(seed, "final_report", "diffusion_sampling")
 
@@ -1262,39 +1270,26 @@ def report(
     valset: tf.data.Dataset | None = None, 
     **kwargs: object
 ) -> dict[str, object]:
-    """Create configured history, evaluation, sample-image, and GIF reports.
+    """Create history, evaluation, sample-image, and GIF reports.
 
     Args:
-        config (Config | None): Reporting settings and result path.  ``None``
-            displays the history and final samples without writing artifacts.
-        history (Mapping[str, Sequence[float]]): Epoch metric series, normally
-            the return value of :func:`train_model`.
-        model (tf.keras.Model | dict): Trained model or continual mapping.
-        trainset (tf.data.Dataset | Callable): Training input used for optional
-            evaluation.
+        config (Config | None): Typed reporting settings, or ``None`` for
+            direct mode.
+        history (Mapping[str, Sequence[float]] | None): Epoch metric series.
+        model (tf.keras.Model | dict[str, object] | None): Trained model or
+            continual bundle.
+        trainset (tf.data.Dataset | Callable[..., object] | None): Training
+            input used for optional evaluation.
         valset (tf.data.Dataset | None): Validation data. Evaluation is skipped
-            when it is ``None``, even if ``run_valset_eval=True``.
-        **kwargs (object): Direct-mode reporting keys used only when ``config``
-            is ``None``: ``results_path``, ``show_history_plot``,
-            ``save_history_plot``, ``plot_without_20percent``, ``save_csv``,
-            ``run_trainset_eval``, ``run_valset_eval``, ``verbose``,
-            ``evaluate_ensemble_accuracy``, ``ensemble_accuracy_kwargs``,
-            ``dataset_name``, ``show_final_images``, ``save_final_images``,
-            ``save_final_gifs``, ``final_images_steps``, and
-            ``final_images_cfg_scale``.
-            ``seed`` controls deterministic final VAE generation.
+            when absent.
+        **kwargs (object): Direct-mode reporting and artifact options.
 
     Returns:
-        dict: Evaluation metrics. Enabled diffusion-classifier evaluations
-        contain normal metrics plus ``ensemble_accuracy`` for each raw/EMA
-        network. Requested artifacts are displayed and/or written beneath the
-        result path.
+        dict[str, object]: Standard, diffusion, or continual evaluation metrics.
 
     Raises:
-        TypeError: If history, model, or trainset is omitted, or a saving
-            option is enabled without a usable result path.
-        ValueError: If requested sampling steps/scales or datasets violate the
-            wrapper's constraints.
+        TypeError: If required inputs or an artifact path are missing.
+        ValueError: If reporting controls conflict with the selected model.
     """
 
     # Require completed training inputs before producing a report.
@@ -1324,6 +1319,25 @@ def report(
     save_final_gifs = reporting_options["save_final_gifs"]
     seed = reporting_options["seed"]
     is_continual = isinstance(model, dict)
+
+    visual_model = model.get("generative_model") if is_continual else model
+    result_path_consumers = []
+    # History and evaluation CSV paths are prepared before model reporting.
+    if save_history_plot:
+        result_path_consumers.append("history-plot saving")
+    # Both ordinary and continual CSV reporters require the same artifact root.
+    if save_csv:
+        result_path_consumers.append("CSV saving")
+    # Final PNGs are meaningful only for supported generative models.
+    if save_final_images and isinstance(
+        visual_model, (VariationalAutoencoder, DiffusionModel)
+    ):
+        result_path_consumers.append("final image saving")
+    # Preserve the more specific swapped-noise error for unsupported GIFs.
+    if save_final_gifs and isinstance(visual_model, DiffusionModel) \
+    and not visual_model.swap_noise_image:
+        result_path_consumers.append("final GIF saving")
+    results_path = _normalize_results_path(results_path, result_path_consumers)
 
     # Restrict ensemble evaluation to wrappers that expose the classifier API.
     if evaluate_ensemble_accuracy and not isinstance(
@@ -1402,7 +1416,7 @@ def report(
             "accuracy_matrix", 
             "new_task_accuracy", 
             "old_task_accuracy", 
-            "dataset_seed"
+            "seed"
         ):
             # Copy only schedule metadata recorded by the continual learner.
             if name in details:
@@ -1568,15 +1582,24 @@ def main(
             to diffusion-classifier construction. It is not stored in config
             YAML.
         **kwargs (object): Direct dataset, model, training, and reporting
-            settings used when ``config`` is ``None``. Continual runs use
-            ``task="continual"`` and ``continually_learn_kwargs``; calling
-            :func:`common.learner.continually_learn` directly exposes the full
-            legacy keyword set without nesting.
+            settings. Continual runs use ``task="continual"`` and the canonical
+            ``continually_learn_kwargs`` mapping.
 
     Returns:
         dict[str, object]: ``model``, metric ``history``, final ``evaluations``,
         and the concrete timestamped ``results_path``.
+
+    Raises:
+        TypeError: If the selected training task is not a string.
+        ValueError: If the selected training task is unsupported.
     """
+
+    # Revalidate mutable typed configs at the complete-pipeline boundary.
+    if config is not None:
+        config.training.task = normalize_training_task(config.training.task)
+    # Canonicalize direct task selection before dataset/model side effects.
+    else:
+        kwargs["task"] = normalize_training_task(kwargs.get("task", "legacy"))
 
     # Announce typed configuration and obtain its seed.
     if config is not None:

@@ -767,10 +767,10 @@ def _schedule_rows(
     """
 
     class_order = details.get("class_order", [])
-    dataset_seed = _numeric_scalar(details.get("dataset_seed"))
+    seed = _numeric_scalar(details.get("seed"))
     # Use an empty cell when no scalar seed was recorded.
-    if dataset_seed is _MISSING:
-        dataset_seed = ""
+    if seed is _MISSING:
+        seed = ""
 
     rows = []
     for task_index, task_classes in enumerate(groups):
@@ -782,7 +782,7 @@ def _schedule_rows(
             "introduced_class_count": len(task_classes), 
             "seen_class_count": len(seen_classes), 
             "class_order": _json_cell(class_order), 
-            "dataset_seed": dataset_seed
+            "seed": seed
         })
 
     return rows
@@ -847,7 +847,7 @@ def _summary_rows(
         for key, value in metadata.items():
             append_value("metadata", str(key), value)
 
-    for key in ("class_order", "task_classes", "dataset_seed"):
+    for key in ("class_order", "task_classes", "seed"):
         # Retain only schedule metadata that the learner actually returned.
         if key in details:
             append_value("schedule", key, details[key])
@@ -864,7 +864,7 @@ def _summary_rows(
                 append_value(source_name, key, value)
 
     reserved = {
-        "class_order", "task_classes", "task_groups", "dataset_seed",
+        "class_order", "task_classes", "task_groups", "seed",
         "continual_metrics", "validation_continual_metrics", "histories",
         "generative_histories", "classifier_evaluations", "generative_evaluations", 
         "model", "generative_model", "task_resource_metrics",
@@ -965,7 +965,7 @@ def write_continual_csv_artifacts(
         (
             "task_index", "task_classes", "seen_classes", 
             "introduced_class_count", "seen_class_count", 
-            "class_order", "dataset_seed"
+            "class_order", "seed"
         ), 
         _schedule_rows(details, groups)
     )

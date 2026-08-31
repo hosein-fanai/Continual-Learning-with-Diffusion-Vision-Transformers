@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import unittest
+import os
+import subprocess
+import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
 
-from autoencoder import VariationalAutoencoder
+from autoencoder import VAEClassifier, VariationalAutoencoder
 from common.dataloader import preprocess_dataset
-from common.model import _get_classifier_model
+from common.model import _get_classifier_model, _make_optimizer, copy_model
 from common.replay_buffer import ReplayBuffer
 from common.runtime import configure_runtime
 from diffusion import (
@@ -89,6 +92,74 @@ class DtypeModelTests(unittest.TestCase):
             bool(tf.reduce_all(tf.math.is_finite(tf.cast(value, tf.float32))))
             for value in metrics.values()
         ))
+
+    def test_package_only_import_restores_canonical_vae_class(self) -> None:
+        """Load a SavedModel canonically after only importing its package.
+
+        Returns:
+            None: A fresh process resolves the lazy Keras registration proxy
+            to the real ``VariationalAutoencoder`` class.
+        """
+
+        model = VariationalAutoencoder(
+            data_dim=4,
+            latent_dim=2,
+            hiddens_dims=(3,),
+            compile=False,
+            seed=13,
+        )
+        inputs = tf.zeros((1, 4), dtype=tf.float32)
+        model(inputs, training=False)
+        classifier = tf.keras.Sequential([
+            tf.keras.layers.InputLayer(input_shape=(4,)),
+            tf.keras.layers.Dense(2, activation="softmax"),
+        ])
+        joint_model = VAEClassifier(
+            class_num=2,
+            classifier=classifier,
+            data_dim=4,
+            latent_dim=2,
+            hiddens_dims=(3,),
+            compile=False,
+            seed=17,
+        )
+        joint_model(
+            (inputs, tf.one_hot([0], depth=2)),
+            training=False,
+        )
+        script = (
+            "import sys\n"
+            "import autoencoder\n"
+            "assert 'autoencoder.variational_autoencoder' not in sys.modules\n"
+            "assert 'autoencoder.vae_classifier' not in sys.modules\n"
+            "import tensorflow as tf\n"
+            "vae = tf.keras.models.load_model(sys.argv[1] + '/vae')\n"
+            "joint = tf.keras.models.load_model(sys.argv[1] + '/joint')\n"
+            "assert type(vae) is autoencoder.VariationalAutoencoder\n"
+            "assert type(joint) is autoencoder.VAEClassifier\n"
+            "assert type(joint.classifier) is tf.keras.Sequential\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            model.save(Path(directory) / "vae", include_optimizer=False)
+            joint_model.save(
+                Path(directory) / "joint",
+                include_optimizer=False,
+            )
+            child_environment = dict(os.environ)
+            child_environment["CUDA_VISIBLE_DEVICES"] = "-1"
+            completed = subprocess.run(
+                [sys.executable, "-c", script, directory],
+                cwd=Path(__file__).parents[2],
+                env=child_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=completed.stdout + completed.stderr,
+        )
 
     def test_dit_classifier_mixed_float16_training_is_finite(self) -> None:
         """Train a tiny DiT classifier through its custom wrapper step.
@@ -289,6 +360,133 @@ class DtypeModelTests(unittest.TestCase):
                 self.assertEqual(model.layers[-1].dtype_policy.name, output_dtype.name)
                 self.assertEqual(output.dtype, output_dtype)
 
+    def test_hp_tuned_preserves_trunk_and_rebuilds_optimizer_config(self) -> None:
+        """Restore learned trunk weights without reusing stale optimizer slots.
+
+        Returns:
+            None: Trunk weights, new head, optimizer reset, and one update are
+            asserted.
+        """
+
+        configure_runtime(22, "float32")
+        source = tf.keras.Sequential([
+            tf.keras.layers.Dense(
+                3,
+                input_shape=(4,),
+                activation="relu",
+                name="learned_trunk",
+            ),
+            tf.keras.layers.Dense(2, activation="softmax", name="old_head"),
+        ])
+        source.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=1.25e-3),
+            loss="sparse_categorical_crossentropy",
+        )
+        inputs = np.asarray([
+            [1., 0., 0., 0.],
+            [0., 1., 0., 0.],
+        ], dtype=np.float32)
+        labels = np.asarray([0, 1], dtype=np.int32)
+        source.train_on_batch(inputs, labels)
+        expected_trunk = [weight.copy() for weight in source.layers[0].get_weights()]
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "compiled_classifier"
+            source.save(str(model_path), include_optimizer=True)
+            restored = _get_classifier_model(
+                class_num=4,
+                model_type="hp-tuned",
+                model_path=str(model_path),
+                use_loaded_opt=True,
+                verbose=0,
+            )
+
+        # The saved representation is retained while only its old head is replaced.
+        for actual, expected in zip(restored.layers[0].get_weights(), expected_trunk):
+            np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(restored.output_shape[-1], 4)
+        self.assertIsInstance(restored.optimizer, tf.keras.optimizers.Adam)
+        self.assertIsNot(restored.optimizer, source.optimizer)
+        self.assertEqual(int(restored.optimizer.iterations), 0)
+        restored.train_on_batch(inputs, labels)
+        self.assertEqual(int(restored.optimizer.iterations), 1)
+
+    def test_hp_tuned_loaded_optimizer_requires_compiled_saved_model(self) -> None:
+        """Reject an optimizer-restoration request when no optimizer was saved.
+
+        Returns:
+            None: The missing optimizer is reported before model compilation.
+        """
+
+        configure_runtime(23, "float32")
+        source = tf.keras.Sequential([
+            tf.keras.layers.Dense(3, input_shape=(4,), activation="relu"),
+            tf.keras.layers.Dense(2, activation="softmax"),
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "uncompiled_classifier"
+            source.save(str(model_path), include_optimizer=False)
+            with self.assertRaisesRegex(ValueError, "compiled optimizer"):
+                _get_classifier_model(
+                    class_num=3,
+                    model_type="hp-tuned",
+                    model_path=str(model_path),
+                    use_loaded_opt=True,
+                    verbose=0,
+                )
+
+    def test_optimizer_clipnorm_is_forwarded(self) -> None:
+        """Forward Keras clipnorm without duplicating its validation.
+
+        Returns:
+            None: The optimizer's clipping mode is asserted.
+        """
+
+        optimizer = _make_optimizer(
+            name="sgd",
+            schedule="constant",
+            clipnorm=2.5,
+        )
+        self.assertEqual(float(optimizer.clipnorm), 2.5)
+        self.assertIsNone(optimizer.global_clipnorm)
+
+    def test_copy_model_leaves_destination_optimizer_state_untouched(self) -> None:
+        """Copy classifier parameters without pretending optimizer slots match.
+
+        Returns:
+            None: Weight prefixes and destination iteration state are asserted.
+        """
+
+        configure_runtime(24, "float32")
+        previous = tf.keras.Sequential([
+            tf.keras.layers.Dense(3, input_shape=(2,), activation="relu"),
+            tf.keras.layers.Dense(2, activation="softmax"),
+        ])
+        expanded = tf.keras.Sequential([
+            tf.keras.layers.Dense(3, input_shape=(2,), activation="relu"),
+            tf.keras.layers.Dense(4, activation="softmax"),
+        ])
+        previous.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+        expanded.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+        inputs = np.asarray([[1., 0.], [0., 1.]], dtype=np.float32)
+        previous.train_on_batch(inputs, np.asarray([0, 1], dtype=np.int32))
+        expanded.train_on_batch(inputs, np.asarray([2, 3], dtype=np.int32))
+        destination_iteration = int(expanded.optimizer.iterations)
+        new_head_before = [weight.copy() for weight in expanded.layers[-1].get_weights()]
+
+        copy_model(previous, expanded)
+
+        self.assertEqual(int(expanded.optimizer.iterations), destination_iteration)
+        # Existing class columns are copied and new class columns keep initialization.
+        np.testing.assert_array_equal(
+            expanded.layers[-1].get_weights()[0][:, :2],
+            previous.layers[-1].get_weights()[0],
+        )
+        np.testing.assert_array_equal(
+            expanded.layers[-1].get_weights()[0][:, 2:],
+            new_head_before[0][:, 2:],
+        )
+
     def test_stale_loaded_and_teacher_policies_are_rejected(self) -> None:
         """Fail before using float32 serialized models in a mixed experiment.
 
@@ -311,7 +509,7 @@ class DtypeModelTests(unittest.TestCase):
             model_path = Path(directory) / "stale_classifier"
             stale_classifier.save(str(model_path), include_optimizer=False)
             configure_runtime(22, "mixed_float16")
-            with self.assertRaisesRegex(ValueError, "does not retrofit"):
+            with self.assertRaisesRegex(ValueError, "incompatible with dtype policy"):
                 _get_classifier_model(
                     class_num=2,
                     model_type="hp-tuned",

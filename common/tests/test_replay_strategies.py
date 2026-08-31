@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import random
 import tempfile
 import unittest
@@ -67,13 +69,6 @@ class ReplayStrategyTests(unittest.TestCase):
         replay.extend(stream)
         self.assertEqual(list(replay.buffer), expected)
         self.assertEqual(replay.state_dict()["items_seen"], len(stream))
-
-        before = replay.state_dict()
-        replay.pop_and_append()
-        after = replay.state_dict()
-        self.assertEqual(before["items"], after["items"])
-        self.assertEqual(before["items_seen"], after["items_seen"])
-        self.assertEqual(before["rng_state"], after["rng_state"])
 
     def test_reservoir_has_uniform_long_run_inclusion(self) -> None:
         """Each stream position approaches the common ``capacity / n`` rate.
@@ -200,6 +195,59 @@ class ReplayStrategyTests(unittest.TestCase):
         replay = ReplayBuffer(2, strategy="class_balanced")
         with self.assertRaisesRegex(TypeError, "pair"):
             replay.append("not-a-pair")
+
+    def test_restore_rejects_impossible_balanced_state(self) -> None:
+        """Reject serialized counts and contents no insertion path can produce.
+
+        Returns:
+            None.
+        """
+
+        source = ReplayBuffer(4, seed=79, strategy="class_balanced")
+        source.extend(
+            ((label, occurrence), label)
+            for label in (0, 1)
+            for occurrence in range(10)
+        )
+        valid_state = source.state_dict()
+
+        malformed_count = deepcopy(valid_state)
+        malformed_count["classes"][0]["seen"] = 1.5
+        with self.assertRaisesRegex(ValueError, "non-integral class count"):
+            ReplayBuffer(4, strategy="class_balanced").load_state_dict(
+                malformed_count
+            )
+
+        impossible_quota = deepcopy(valid_state)
+        zero_item = next(
+            item for item in impossible_quota["items"] if item[1] == 0
+        )
+        one_index = next(
+            index
+            for index, item in enumerate(impossible_quota["items"])
+            if item[1] == 1
+        )
+        impossible_quota["items"][one_index] = zero_item
+        with self.assertRaisesRegex(ValueError, "allocation quota"):
+            ReplayBuffer(4, strategy="class_balanced").load_state_dict(
+                impossible_quota
+            )
+
+        unsupported_schema = deepcopy(valid_state)
+        unsupported_schema["schema_version"] = 2
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            ReplayBuffer(4, strategy="class_balanced").load_state_dict(
+                unsupported_schema
+            )
+
+        target = ReplayBuffer(4, seed=83, strategy="class_balanced")
+        target.extend([(("retained", 0), 0), (("retained", 1), 1)])
+        target_before = target.state_dict()
+        invalid_rng = deepcopy(valid_state)
+        invalid_rng["rng_state"] = ("invalid",)
+        with self.assertRaisesRegex(ValueError, "RNG state"):
+            target.load_state_dict(invalid_rng)
+        self.assertEqual(target.state_dict(), target_before)
 
 
 # Support direct execution in addition to unittest discovery.

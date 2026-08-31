@@ -9,6 +9,7 @@ import math
 from typing import Any
 
 from common.argument_saver import ArgumentSaverModel
+from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
@@ -52,7 +53,7 @@ def _batch_size(value: tf.Tensor) -> tf.Tensor:
     return tf.shape(value)[0]
 
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class VariationalReshaper(ArgumentSaverModel, Functional):
     """Flatten or restore one static image-feature shape.
 

@@ -5,15 +5,16 @@ from __future__ import annotations
 import tensorflow as tf
 from tensorflow.keras import losses
 
-import numpy as np
-
 from copy import deepcopy
 
 from collections.abc import Callable, Mapping, Sequence
-from numbers import Integral, Real
 from typing import Any
 
-from common.config import Config, resolve_continual_schedule
+from common.config import (
+    Config,
+    normalize_training_task,
+    resolve_continual_schedule
+)
 from common.dataloader import get_dataset_spec
 from common.runtime import (
     configure_runtime, 
@@ -30,7 +31,8 @@ _DIFFUSION_MODELS = {
     "unet", "unet_classifier"
 }
 _DIFFUSION_CLASSIFIER_MODELS = {
-    "dit_classifier", "dit_encoder_decoder_classifier", "unet_classifier"
+    "dit_classifier", "dit_encoder_decoder_classifier", 
+    "unet_classifier"
 }
 _VAE_MODELS = {"vae", "variational_autoencoder", "vae_classifier"}
 _MODEL_SECTION_NAMES = {
@@ -72,13 +74,11 @@ def get_compile_args(
         and ``metrics`` keys, suitable for ``model.compile(**result)``.
     """
 
-    compile_args = {
+    return {
         "optimizer": optimizer, 
         "loss": loss, 
         "metrics": metrics
     }
-
-    return compile_args
 
 
 def get_callbacks(
@@ -161,8 +161,8 @@ def _make_optimizer(config: Config | None = None,
 
     Raises:
         ValueError: If a schedule/optimizer is unsupported, cosine decay lacks
-            a positive duration, or weight decay is requested for a TensorFlow
-            2.10 optimizer other than experimental AdamW.
+            a positive duration, or weight decay is paired with a non-AdamW
+            optimizer.
     """
 
     from tensorflow.keras import optimizers
@@ -209,10 +209,9 @@ def _make_optimizer(config: Config | None = None,
         if config is not None:
             config.optimizer.decay_steps = decay_steps
 
-    # Require a positive integral duration for cosine decay.
-    if schedule == "cosine" and (not isinstance(decay_steps, int) \
-    or decay_steps <= 0):
-        raise ValueError("decay_steps must be a positive integer for cosine decay.")
+    # Catch the common invalid duration; Keras owns detailed type validation.
+    if schedule == "cosine" and decay_steps <= 0:
+        raise ValueError("decay_steps must be positive for cosine decay.")
 
     learning_rate = initial_learning_rate
     # Construct the requested cosine learning-rate schedule.
@@ -233,55 +232,33 @@ def _make_optimizer(config: Config | None = None,
     if clipnorm is not None:
         optimizer_kwargs["clipnorm"] = clipnorm
 
-    # Construct the TensorFlow 2.10 Adam optimizer.
-    if name == "adam":
-        # Prevent unsupported Adam weight decay from being silently ignored.
-        if weight_decay not in (None, 0, 0.):
-            raise ValueError("weight_decay requires optimizer name 'adamw'.")
-        return optimizers.Adam(**optimizer_kwargs)
-
-    # Construct experimental AdamW when explicitly requested.
+    # AdamW is the only supported optimizer with decoupled weight decay.
     if name == "adamw":
         adamw = getattr(optimizers, "AdamW", None)
-        # Report TensorFlow installations that do not expose AdamW.
+        # TensorFlow 2.10 exposes AdamW below the experimental namespace.
         if adamw is None:
             adamw = optimizers.experimental.AdamW
-
         return adamw(
             weight_decay=0. if weight_decay is None else weight_decay,
             **optimizer_kwargs
         )
 
-    # Construct the TensorFlow 2.10 Nadam optimizer.
-    if name == "nadam":
-        # Prevent unsupported Nadam weight decay from being silently ignored.
-        if weight_decay not in (None, 0, 0.):
-            raise ValueError("weight_decay requires optimizer name 'adamw'.")
-        return optimizers.Nadam(**optimizer_kwargs)
-
-    # Construct RMSprop with its configured momentum.
-    if name == "rmsprop":
-        # Prevent unsupported RMSprop weight decay from being silently ignored.
-        if weight_decay not in (None, 0, 0.):
-            raise ValueError("weight_decay requires optimizer name 'adamw'.")
-        return optimizers.RMSprop(
-            momentum=momentum, 
-            **optimizer_kwargs
-        )
-
-    # Construct SGD with its configured momentum.
-    if name == "sgd":
-        # Prevent unsupported SGD weight decay from being silently ignored.
-        if weight_decay not in (None, 0, 0.):
-            raise ValueError("weight_decay requires optimizer name 'adamw'.")
-        return optimizers.SGD(
-            momentum=momentum, 
-            **optimizer_kwargs
-        )
-
-    raise ValueError(
-        "Unsupported optimizer name: " + str(name)
-    )
+    optimizer_type = {
+        "adam": optimizers.Adam, 
+        "nadam": optimizers.Nadam, 
+        "rmsprop": optimizers.RMSprop, 
+        "sgd": optimizers.SGD
+    }.get(name)
+    # Keep unsupported names explicit at this public factory boundary.
+    if optimizer_type is None:
+        raise ValueError("Unsupported optimizer name: " + str(name))
+    # Avoid silently discarding a scientifically meaningful regularizer.
+    if weight_decay not in (None, 0, 0.):
+        raise ValueError("weight_decay requires optimizer name 'adamw'.")
+    # Only the momentum-based optimizers consume this option.
+    if name in {"rmsprop", "sgd"}:
+        optimizer_kwargs["momentum"] = momentum
+    return optimizer_type(**optimizer_kwargs)
 
 
 def _get_classifier_model(
@@ -323,8 +300,11 @@ def _get_classifier_model(
             Valid additional keys are those accepted by ``Model.compile``, for
             example ``{"optimizer": Adam(1e-4), "run_eagerly": True}``.
         use_loaded_opt (bool): In ``"hp-tuned"`` mode, replace any requested
-            optimizer with the optimizer deserialized from ``model_path``.
-            Ignored by other modes.
+            optimizer with a fresh optimizer reconstructed from the serialized
+            optimizer configuration in ``model_path``. Slot variables and the
+            iteration counter are intentionally not reused because the output
+            head changes the optimized variable set. A saved model without a
+            compiled optimizer is rejected. Ignored by other modes.
         verbose (bool | int): Truthy values print ``model.summary()``.
         architecture_kwargs (Mapping[str, object]): Optional architecture
             controls for ``CNN`` or ``DNN``.  An empty mapping preserves the
@@ -349,43 +329,18 @@ def _get_classifier_model(
 
     Raises:
         TypeError: If ``architecture_kwargs`` contains an unsupported key.
-        ValueError: If a size/rate is invalid, an hp-tuned model path is empty,
-            CNN filter/depth lengths differ, or a pooling/model option is
-            unsupported.
+        ValueError: If a fine-tuning depth is negative, an hp-tuned model path
+            or optimizer is unavailable, CNN filter/depth lengths differ, or a
+            pooling/model option is unsupported.
 
     Note:
-        ``hp-tuned`` clones layer configuration, not the loaded layer weights;
-        :func:`copy_model` is used separately when prior weights are required.
+        ``hp-tuned`` preserves every loaded non-output layer and its weights,
+        while replacing the saved output head with a freshly initialized head
+        of width ``class_num``.
     """
 
     from tensorflow.keras import models, layers, applications
 
-
-    # Require a positive non-boolean classifier output width.
-    if not isinstance(class_num, Integral) or isinstance(class_num, bool) \
-    or class_num <= 0:
-        raise ValueError("class_num must be a positive integer.")
-    # Require a numeric dropout rate rather than a boolean flag.
-    if isinstance(dropout_rate, bool) or not isinstance(dropout_rate, Real):
-        raise TypeError("dropout_rate must be a real number.")
-    # Keep dropout probability within its mathematical domain.
-    if not 0. <= dropout_rate < 1.:
-        raise ValueError("dropout_rate must lie in [0, 1).")
-    # Require a nonnegative fine-tuning depth, or None for the complete base.
-    if num_last_not_frozen is not None and (
-        not isinstance(num_last_not_frozen, Integral)
-        or isinstance(num_last_not_frozen, bool)
-        or num_last_not_frozen < 0
-    ):
-        raise ValueError(
-            "num_last_not_frozen must be a nonnegative integer or None."
-        )
-    # Require two positive resize dimensions.
-    if not isinstance(resize, Sequence) or len(resize) != 2 or any(
-        not isinstance(size, Integral) or isinstance(size, bool) or size <= 0
-        for size in resize
-    ):
-        raise ValueError("resize must contain two positive integers.")
 
     class_num = int(class_num)
     model_type = str(model_type).lower()
@@ -393,12 +348,14 @@ def _get_classifier_model(
     # Preserve None as the explicit all-trainable Xception setting.
     if num_last_not_frozen is not None:
         num_last_not_frozen = int(num_last_not_frozen)
+        # A negative tail would silently freeze the complete pretrained base.
+        if num_last_not_frozen < 0:
+            raise ValueError("num_last_not_frozen must be nonnegative or None.")
 
     resize = tuple(int(size) for size in resize)
 
-    compile_args_default = get_compile_args()
     compile_args = {
-        **compile_args_default, 
+        **get_compile_args(),
         **(compile_args or {})
     }
     architecture_kwargs = dict(architecture_kwargs or {})
@@ -453,18 +410,35 @@ def _get_classifier_model(
         ])
     # Restore the requested hyperparameter-tuned classifier.
     elif model_type == "hp-tuned":
-        model = models.load_model(model_path)
+        loaded_model = models.load_model(model_path)
         validate_model_dtype_policy(
-            model, 
+            loaded_model,
             role="hp-tuned classifier"
         )
 
-        # Reuse the deserialized optimizer when requested.
+        # Rebuild only optimizer configuration for the changed variable topology.
         if use_loaded_opt:
-            compile_args["optimizer"] = model.optimizer
+            loaded_optimizer = getattr(loaded_model, "optimizer", None)
+            # A model saved without compilation has no optimizer to reconstruct.
+            if loaded_optimizer is None:
+                raise ValueError(
+                    "use_loaded_opt=True requires a saved compiled optimizer."
+                )
+            try:
+                optimizer_config = tf.keras.optimizers.serialize(loaded_optimizer)
+                compile_args["optimizer"] = tf.keras.optimizers.deserialize(
+                    optimizer_config
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "The saved optimizer configuration could not be reconstructed."
+                ) from error
 
+        cloned_model = models.clone_model(loaded_model)
+        # Restore learned trunk parameters before replacing the output head.
+        cloned_model.set_weights(loaded_model.get_weights())
         model = models.Sequential([
-            *models.clone_model(model).layers[:-1], 
+            *cloned_model.layers[:-1],
             layers.Dense(
                 class_num, 
                 activation="softmax", 
@@ -718,10 +692,16 @@ def get_model(
     if config is not None and not isinstance(config, Config):
         raise TypeError("config must be a Config, mapping, integer class count, or None.")
 
+    # Validate the task before runtime policy changes or model imports/builds.
+    task = normalize_training_task(
+        config.training.task
+        if config is not None
+        else kwargs.get("task", "legacy")
+    )
     runtime_seed = effective_seed(
         config, 
         seed=kwargs.get("seed"), 
-        task=kwargs.get("task")
+        task=task,
     )
 
     # Configured factories own the policy. Internal direct calls preserve the
@@ -813,7 +793,6 @@ def get_model(
         classifier_kwargs = deepcopy(kwargs.get("classifier_kwargs", {}))
         trainset_len = kwargs.get("trainset_len")
         onehot_labels = kwargs.get("onehot_labels", False)
-        task = kwargs.get("task", "legacy")
         loss_function = kwargs.get("loss_function", "mse")
         show_network_summary = kwargs.get("show_network_summary", False)
         weights_path = kwargs.get("weights_path")
@@ -836,10 +815,9 @@ def get_model(
         )
         trainset_len = config.dataset.trainset_len
         onehot_labels = config.dataset.onehot_labels
-        task = config.training.task
         loss_function = config.model.loss_function
         # Size continual heads from the validated selected-class schedule.
-        if task.lower() == "continual":
+        if task == "continual":
             continual_seed = config.continually_learn.seed if config.continually_learn.seed is not None \
                             else config.training.seed
             class_order, _ = resolve_continual_schedule(
@@ -908,26 +886,20 @@ def get_model(
     classifier_name = None if classifier_name is None \
         else str(classifier_name).lower()
 
-    # Reject booleans and non-integral padding widths before shape changes.
-    if isinstance(pad, (bool, np.bool_)) or not isinstance(pad, Integral):
-        raise TypeError("pad must be a non-boolean integer.")
-    # Keep spatial padding nonnegative.
+    pad = int(pad)
+    # Keep the frequent invalid padding case explicit at the public boundary.
     if pad < 0:
         raise ValueError("pad must be nonnegative.")
 
-    task = str(task).lower()
     # Resolve the automatic previous-task teacher mode for continual wrappers.
     if config is not None:
         continual_self_distillation = bool(
             task == "continual"
             and config.continually_learn.use_distillation
         )
-    # Direct mode keeps continual-only options in its nested compatibility map.
+    # Direct mode reads continual-only options from the canonical nested map.
     else:
-        continual_options = kwargs.get(
-            "continually_learn_kwargs",
-            kwargs.get("continual_kwargs", {}),
-        )
+        continual_options = kwargs.get("continually_learn_kwargs", {})
         continual_options = continual_options \
             if isinstance(continual_options, Mapping) else {}
         continual_self_distillation = bool(
@@ -1405,7 +1377,7 @@ def get_model(
     return finalize_selected(build_selected(model_name))
 
 
-def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=False
+def copy_model(prev_model: Any, new_model: Any) -> None:
     """Copy a classifier while preserving its existing softmax-head prefix.
 
     All non-final layers receive exact copies of their predecessors' weights.
@@ -1427,11 +1399,6 @@ def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=Fal
         ValueError: If layer counts, corresponding weights, or output-head
             widths are incompatible.
     """
-    # from tensorflow.keras import backend as K
-
-    # import numpy as np
-
-
     layers_num = len(prev_model.layers)
     # Require matching layer structures before copying classifier weights.
     if layers_num != len(new_model.layers):
@@ -1455,27 +1422,3 @@ def copy_model(prev_model: Any, new_model: Any) -> None: # , copy_opt_states=Fal
     new_last_layer_bias[:old_width] = old_last_layer_bias
 
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])
-
-    # if not copy_opt_states:
-    #     return
-
-    # lr = new_model.optimizer.learning_rate
-    # K.set_value(new_model.optimizer.lr, 0.)
-    # new_model.train_on_batch(
-    #     np.random.normal(size=(1, *prev_model.input_shape[1:])),
-    #     np.zeros((1,), dtype="float32")
-    # )
-    # K.set_value(new_model.optimizer.lr, lr)
-
-    # prev_states = prev_model.optimizer.get_weights()
-    # new_states = new_model.optimizer.get_weights()
-
-    # new_states[:-2] = prev_states[:-2]
-    # last_weight_prev_state, last_bias_prev_state = prev_states[-2:]
-
-    # new_states[-2][:, :-1] = last_weight_prev_state
-    # new_states[-1][:-1] = last_bias_prev_state
-
-    # new_model.optimizer.set_weights(new_states)
-
-    pass

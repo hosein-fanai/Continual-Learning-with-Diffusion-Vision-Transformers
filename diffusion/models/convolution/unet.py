@@ -10,6 +10,7 @@ from copy import deepcopy
 from . import UNetFullOutput, UNetInputs
 
 from common.argument_saver import ArgumentSaverModel
+from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
@@ -20,7 +21,7 @@ from diffusion.layers.convolution import LayerDict
 from diffusion.layers.convolution import ResidualConvStack
 from diffusion.layers.convolution import VariationalReshaper
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class UNet(ArgumentSaverModel):
     """Build a hierarchical convolutional diffusion network.
 

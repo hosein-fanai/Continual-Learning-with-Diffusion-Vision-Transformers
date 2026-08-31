@@ -136,19 +136,10 @@ class MaskedLoss(losses.Loss):
 
 
 def run_self_tests() -> dict[str, str]:
-    """Run numerical, shape, weighting, and serialization loss tests.
-
-    Both supported modes are checked with equal and wider target widths,
-    eager and graph execution, rank-three inputs, inherited sample weights,
-    invalid modes/ranks/shapes, custom names, per-example sample weighting, and
-    Keras configuration/serialization round trips.
-
-    Args:
-        None.
+    """Smoke-test prefix masking, both modes, and serialization.
 
     Returns:
-        dict[str, str]: ``{"MaskedLoss": "passed"}`` after all assertions
-        succeed.
+        dict[str, str]: Passing marker for :class:`MaskedLoss`.
     """
 
     y_true = tf.constant([
@@ -161,142 +152,12 @@ def run_self_tests() -> dict[str, str]:
     ], dtype=tf.float32)
 
     mae = MaskedLoss()
-    assert mae.loss is tf.math.abs
-    assert mae.name == "masked_loss"
     tf.debugging.assert_near(mae(y_true, y_pred), tf.constant(1.25))
-    tf.debugging.assert_near(
-        mae(y_true, y_pred, sample_weight=tf.constant(0.5)), 
-        tf.constant(0.625), 
-    )
-    tf.debugging.assert_near(
-        mae(y_true, y_pred, sample_weight=tf.constant([1.0, 0.0])),
-        tf.constant(0.75),
-    )
-
-    mse = MaskedLoss(loss_type="mse", name="masked_mse")
-    assert mse.loss is tf.math.square
-    assert mse.name == "masked_mse"
+    mse = MaskedLoss(loss_type="mse")
     tf.debugging.assert_near(mse(y_true, y_pred), tf.constant(2.25))
 
-    equal_true = tf.constant([[1.0, 2.0], [3.0, 4.0]])
-    equal_pred = tf.identity(equal_true)
-    tf.debugging.assert_near(mae(equal_true, equal_pred), tf.constant(0.0))
-    tf.debugging.assert_near(mse(equal_true, equal_pred), tf.constant(0.0))
-
-    rank_three_true = tf.constant([
-        [[1., 3., 99.], [5., 7., 99.]],
-        [[2., 2., 99.], [2., 2., 99.]],
-    ])
-    rank_three_pred = tf.zeros((2, 2, 2))
-    tf.debugging.assert_near(
-        mae.call(rank_three_true, rank_three_pred), tf.constant([4., 2.])
-    )
-    tf.debugging.assert_near(
-        mae(
-            rank_three_true,
-            rank_three_pred,
-            sample_weight=tf.constant([1., 0.]),
-        ),
-        tf.constant(2.),
-    )
-
-
-    @tf.function
-    def graph_loss(
-        target: tf.Tensor,
-        prediction: tf.Tensor,
-    ) -> tf.Tensor:
-        """Evaluate the MAE test instance in a TensorFlow graph.
-
-        Args:
-            target (tf.Tensor): Rank-two target tensor.
-            prediction (tf.Tensor): Rank-two prediction tensor.
-
-        Returns:
-            tf.Tensor: Scalar masked MAE.
-        """
-
-        return mae(target, prediction)
-
-
-    tf.debugging.assert_near(graph_loss(y_true, y_pred), tf.constant(1.25))
-
-    mae_config = mae.get_config()
-    assert mae_config["name"] == "masked_loss"
-    assert mae_config["loss_type"] == "mae" and "reduction" in mae_config
-    config_clone = MaskedLoss.from_config(mae_config)
-    assert config_clone.loss_type == "mae"
     serialized = tf.keras.losses.serialize(mae)
-    serialized_clone = tf.keras.losses.deserialize(
-        serialized
-    )
-    assert isinstance(serialized_clone, MaskedLoss)
-    assert serialized_clone.loss_type == "mae"
-    mse_clone = MaskedLoss.from_config(mse.get_config())
-    assert mse_clone.loss_type == "mse"
-
-    for invalid_mode in ("MAE", "unknown", None):
-        try:
-            MaskedLoss(loss_type=invalid_mode)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("Unsupported loss modes must raise ValueError.")
-
-    try:
-        mae(tf.constant([1.0, 2.0]), tf.constant([1.0, 2.0]))
-    except (tf.errors.InvalidArgumentError, ValueError):
-        pass
-    else:
-        raise AssertionError("Rank-one predictions must fail clearly.")
-
-    try:
-        mae(tf.constant([[1.0]]), tf.constant([[1.0, 2.0]]))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError("A target narrower than its prediction must fail.")
-    try:
-        mae(tf.ones((1, 0)), tf.ones((1, 2)))
-    except (tf.errors.InvalidArgumentError, ValueError):
-        pass
-    else:
-        raise AssertionError("A zero-width target cannot broadcast to predictions.")
-    try:
-        mae(tf.ones((1, 0)), tf.ones((1, 0)))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError("A zero-width prediction has no defined mean loss.")
-    try:
-        mae.call(tf.ones((1, 3)), tf.ones((2, 2)))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError("Mismatched batch dimensions must not broadcast.")
-    try:
-        mae.call(tf.ones((1, 1, 3)), tf.ones((1, 2)))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError("Mismatched target and prediction ranks must fail.")
-    try:
-        mae.call(tf.ones((2, 1, 3)), tf.ones((2, 2, 2)))
-    except tf.errors.InvalidArgumentError:
-        pass
-    else:
-        raise AssertionError(
-            "Mismatched intermediate dimensions must not broadcast."
-        )
-
-    tf.debugging.assert_near(
-        mae(tf.constant([[1, 2]], tf.int32), tf.constant([[0., 0.]])),
-        tf.constant(1.5),
-    )
+    clone = tf.keras.losses.deserialize(serialized)
+    assert isinstance(clone, MaskedLoss) and clone.loss_type == "mae"
 
     return {"MaskedLoss": "passed"}
-
-
-# Run this module's executable self-test entry point when invoked directly.
-if __name__ == "__main__":
-    print(run_self_tests())

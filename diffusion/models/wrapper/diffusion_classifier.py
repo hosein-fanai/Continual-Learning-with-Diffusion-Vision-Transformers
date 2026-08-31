@@ -11,13 +11,14 @@ from tensorflow.keras import callbacks, metrics, losses
 import numpy as np
 
 from math import ceil
-from numbers import Integral, Real
 
+from numbers import Integral, Real
 from typing import get_args, Literal
 
 from . import NetworkName, TrainType, copy_network_weights_by_layer
 
 from common.runtime import validate_model_dtype_policy
+from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -179,34 +180,34 @@ class DiffusionClassifier(DiffusionModel):
 
         # Null-only masking requires a nonzero probability of null labels.
         if local_vars["mask_by_nulls"]:
-            assert self.p_uncond > 0., \
-                "mask_by_nulls is not campatible with p_uncond = 0."
+            require(self.p_uncond > 0., \
+                "mask_by_nulls is not campatible with p_uncond = 0.")
 
-        assert isinstance(local_vars["mask_t_percentage"], Integral) and \
+        require(isinstance(local_vars["mask_t_percentage"], Integral) and \
             not isinstance(local_vars["mask_t_percentage"], bool) and \
             0 <= local_vars["mask_t_percentage"] <= 100, \
-            "mask_t_percentage must be an integer in [0, 100]."
+            "mask_t_percentage must be an integer in [0, 100].")
 
         for name in (
             "clf_loss_coef", "distil_loss_coef", "clf_acc_coef",
             "ctr_acc_coef", "distil_acc_coef"
         ):
             value = local_vars[name]
-            assert isinstance(value, Real) and not isinstance(value, bool) and \
+            require(isinstance(value, Real) and not isinstance(value, bool) and \
                 np.isfinite(value) and value >= 0., \
-                f"{name} must be a finite nonnegative number."
+                f"{name} must be a finite nonnegative number.")
 
-        assert local_vars["distil_type"] in ("hard", "soft"), \
-            "distil_type must be either 'hard' or 'soft'."
-        assert isinstance(local_vars["distil_temperature"], Real) and \
+        require(local_vars["distil_type"] in ("hard", "soft"), \
+            "distil_type must be either 'hard' or 'soft'.")
+        require(isinstance(local_vars["distil_temperature"], Real) and \
             not isinstance(local_vars["distil_temperature"], bool) and \
             np.isfinite(local_vars["distil_temperature"]) and \
             local_vars["distil_temperature"] > 0., \
-            "distil_temperature must be a finite positive number."
-        assert local_vars["distil_scope"] in (
+            "distil_temperature must be a finite positive number.")
+        require(local_vars["distil_scope"] in (
             "old_classes", "replay_only", "current_and_replay"
         ), "distil_scope must be 'old_classes', 'replay_only', or " \
-            "'current_and_replay'."
+            "'current_and_replay'.")
 
         # A positive token objective requires targets from a teacher network.
         if (local_vars["distil_loss_coef"] > 0. and
@@ -216,23 +217,23 @@ class DiffusionClassifier(DiffusionModel):
         ) or getattr(self.network, "cls_token_regularizer_kwargs", {})
         ).get("train_type", "normal") in ("distil", "both")
         ):
-            assert local_vars["teacher_network"] is not None \
+            require(local_vars["teacher_network"] is not None \
                 or local_vars["defer_teacher"], \
                 "teacher_network is required for distillation " \
-                "training unless defer_teacher=True."
+                "training unless defer_teacher=True.")
 
         # The four-step ensemble requires at least four available timesteps.
         if local_vars["use_ensemble_loss_instead"]:
-            assert self.timesteps >= 4, \
-                "use_ensemble_loss_instead requires at least four timesteps."
+            require(self.timesteps >= 4, \
+                "use_ensemble_loss_instead requires at least four timesteps.")
 
-        assert local_vars["clf_train_type"] in get_args(TrainType), \
-            f"clf_train_type can only be one of {TrainType}."
+        require(local_vars["clf_train_type"] in get_args(TrainType), \
+            f"clf_train_type can only be one of {TrainType}.")
 
         # Unconditional classifier training requires an explicit CFG pass.
         if local_vars["clf_train_type"] == "uncond":
-            assert self.use_cfg and self.train_cfg_scale is not None, \
-                "Unconditional classifier training requires CFG and train_cfg_scale."
+            require(self.use_cfg and self.train_cfg_scale is not None, \
+                "Unconditional classifier training requires CFG and train_cfg_scale.")
 
     def _refresh_loss_flags(self) -> None:
         """Refresh diffusion and classifier auxiliary-loss availability.
@@ -392,7 +393,7 @@ class DiffusionClassifier(DiffusionModel):
 
         self.ensemble_loss_fn = EnsembleAccuracy(
             self,
-            netwrok_name="raw",
+            network_name="raw",
             max_t=4,
             seed=self.seed,
             dtype=self.dtype_policy.variable_dtype,
@@ -832,18 +833,54 @@ class DiffusionClassifier(DiffusionModel):
                 evaluation dataset.
             verbose (bool): Print batch progress when true.
             **kwargs (object): Options forwarded to :class:`EnsembleAccuracy`,
-                including ``netwrok_name``, ``compute_type``, ``weighted``,
+                including ``network_name`` (or legacy ``netwrok_name``),
+                ``compute_type``, ``weighted``,
                 ``max_t``, ``t_chunk_size``, and ``seed``.
 
         Returns:
             float: Sparse categorical accuracy across the full dataset.
         """
 
+        # Replay-only continual datasets use their third tensor as KD
+        # provenance, not as an accuracy sample weight. Remove that metadata
+        # before the generic ensemble metric interprets Keras triples.
+        element_spec = getattr(dataset, "element_spec", None)
+
+        # Strip replay metadata only from the documented replay-only triple.
+        if self.distil_scope == "replay_only" \
+        and isinstance(element_spec, (tuple, list)) \
+        and len(element_spec) == 3:
+            def _drop_replay_provenance(
+                images: tf.Tensor, 
+                labels: tf.Tensor, 
+                replay_mask: tf.Tensor
+            ) -> tuple[tf.Tensor, tf.Tensor]:
+                """Remove KD-only provenance before generic accuracy evaluation.
+
+                Args:
+                    images (tf.Tensor): Clean image batch.
+                    labels (tf.Tensor): Sparse class-label batch.
+                    replay_mask (tf.Tensor): Per-row replay indicator, unused by accuracy.
+
+                Returns:
+                    tuple[tf.Tensor, tf.Tensor]: The unchanged image/label pair.
+                """
+
+                del replay_mask
+
+                return images, labels
+
+
+            dataset = dataset.map(
+                _drop_replay_provenance, 
+                num_parallel_calls=self.map_num_parallel_calls
+            )
+
         # Default to the configured test network, or raw when EMA is disabled.
-        kwargs.setdefault(
-            "netwrok_name", 
-            self.test_network_name
-        )
+        # Prefer the corrected selector unless either spelling was supplied.
+        if "network_name" not in kwargs:
+            kwargs["network_name"] = self.test_network_name
+
         kwargs.setdefault(
             "max_t", 
             min(128, self.timesteps)
@@ -1642,50 +1679,50 @@ class DiffusionClassifier(DiffusionModel):
             AssertionError: If a requested optional metric lacks its input.
         """
 
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        batch_weight = tf.cast(tf.shape(classes)[0], stable_dtype)
-        default_distil_mask = clf_acc_mask
-        selected_weight = batch_weight if clf_acc_mask is None else tf.reduce_sum(
-            tf.cast(clf_acc_mask, stable_dtype)
-        )
-        distil_acc_mask = default_distil_mask \
-            if distil_acc_mask is None else distil_acc_mask
-        distil_selected_weight = batch_weight \
-            if distil_acc_mask is None else tf.reduce_sum(
-                tf.cast(distil_acc_mask, stable_dtype)
-            )
         clf_acc_mask = slice(None) if clf_acc_mask is None else clf_acc_mask
-        distil_acc_mask = slice(None) \
-            if distil_acc_mask is None else distil_acc_mask
+        distil_acc_mask = slice(None) if distil_acc_mask is None else distil_acc_mask
         use_kl_loss = self.use_clf_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_clf_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_distil_loss = self.use_distil_loss if use_distil_loss is None else use_distil_loss
-        use_total_loss = use_kl_loss or use_ctr_loss or use_distil_loss if use_total_loss is None else use_total_loss
+        use_total_loss = use_kl_loss or use_ctr_loss or use_distil_loss \
+                        if use_total_loss is None else use_total_loss
+        distil_acc_mask = clf_acc_mask if distil_acc_mask is None else distil_acc_mask
+
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        batch_weight = tf.cast(tf.shape(classes)[0], stable_dtype)
+        selected_weight = tf.reduce_sum(
+            tf.cast(clf_acc_mask, stable_dtype)
+        ) if clf_acc_mask is not None else batch_weight 
+        distil_selected_weight = tf.reduce_sum(
+                tf.cast(distil_acc_mask, stable_dtype)
+        ) if distil_acc_mask is not None else batch_weight 
 
         # TensorFlow 2.10 misreads one-column predictions as binary outputs.
         if self.network.dynamic_num_classes:
             # Pad the primary prediction while the dynamic head has one class.
             if classes_pred.shape[-1] == 1:
                 classes_pred = tf.concat([
-                    classes_pred,
-                    tf.zeros_like(classes_pred),
+                    classes_pred, 
+                    tf.zeros_like(classes_pred)
                 ], axis=-1)
+
             # Apply the same compatibility padding to token predictions.
             if tf.is_tensor(clf_ctr_preds) and clf_ctr_preds.shape[-1] == 1:
                 clf_ctr_preds = tf.concat([
-                    clf_ctr_preds,
-                    tf.zeros_like(clf_ctr_preds),
+                    clf_ctr_preds, 
+                    tf.zeros_like(clf_ctr_preds)
                 ], axis=-1)
+
             # Apply the same compatibility padding to distillation predictions.
-            if tf.is_tensor(clf_distil_preds) \
-            and clf_distil_preds.shape[-1] == 1:
+            if tf.is_tensor(clf_distil_preds) and clf_distil_preds.shape[-1] == 1:
                 clf_distil_preds = tf.concat([
-                    clf_distil_preds,
-                    tf.zeros_like(clf_distil_preds),
+                    clf_distil_preds, 
+                    tf.zeros_like(clf_distil_preds)
                 ], axis=-1)
 
         self.clf_loss_tracker.update_state(
-            clf_loss, sample_weight=selected_weight
+            clf_loss, 
+            sample_weight=selected_weight
         )
         self.accuracy_tracker.update_state(
             classes[clf_acc_mask], 
@@ -1696,12 +1733,14 @@ class DiffusionClassifier(DiffusionModel):
 
         # Update total loss only when the caller enabled that tracker.
         if use_total_loss:
-            assert total_loss is not None, \
+            require(
+                total_loss is not None, 
                 "When use_total_loss is True, total_loss cannot be None."
-
+            )
 
             self.total_loss_tracker.update_state(
-                total_loss, sample_weight=batch_weight
+                total_loss, 
+                sample_weight=batch_weight
             )
             results.update({
                 self.total_loss_tracker.name: 
@@ -1715,12 +1754,14 @@ class DiffusionClassifier(DiffusionModel):
 
         # Update classifier KL loss only when its objective is active.
         if use_kl_loss:
-            assert clf_kl_loss is not None, \
+            require(
+                clf_kl_loss is not None, 
                 "When use_kl_loss is True, kl_loss cannot be None."
-
+            )
 
             self.clf_kl_loss_tracker.update_state(
-                clf_kl_loss, sample_weight=batch_weight
+                clf_kl_loss, 
+                sample_weight=batch_weight
             )
             results.update({
                 self.clf_kl_loss_tracker.name: 
@@ -1729,14 +1770,15 @@ class DiffusionClassifier(DiffusionModel):
 
         # Update classifier token loss only when predictions are available.
         if use_ctr_loss:
-            assert clf_ctr_loss is not None \
-            and clf_ctr_preds is not None, \
-                "When use_ctr_loss is True, "\
-                "clf_ctr_loss and clf_ctr_preds cannot be None."
-
+            require(
+                clf_ctr_loss is not None and clf_ctr_preds is not None, 
+                "When use_ctr_loss is True, clf_ctr_loss "
+                "and clf_ctr_preds cannot be None."
+            )
 
             self.clf_ctr_loss_tracker.update_state(
-                clf_ctr_loss, sample_weight=batch_weight
+                clf_ctr_loss, 
+                sample_weight=batch_weight
             )
             results.update({
                 self.clf_ctr_loss_tracker.name: 
@@ -1764,45 +1806,57 @@ class DiffusionClassifier(DiffusionModel):
             use_distil_loss and self.distil_acc_coef > 0.
         ):
             total_preds = classes_pred[clf_acc_mask] * self.clf_acc_coef
+
             # Add classifier-regularizer predictions when weighted in.
             if use_ctr_loss and self.ctr_acc_coef > 0.:
-                assert clf_ctr_preds is not None, \
+                require(
+                    clf_ctr_preds is not None, 
                     "ctr_acc_coef > 0 requires clf_ctr_preds."
+                )
+
                 total_preds += (
                     clf_ctr_preds[clf_acc_mask] * self.ctr_acc_coef
                 )
+
             # Add independent distillation-head predictions when weighted in.
             if use_distil_loss and self.distil_acc_coef > 0.:
-                assert clf_distil_preds is not None, \
+                require(
+                    clf_distil_preds is not None, 
                     "distil_acc_coef > 0 requires clf_distil_preds."
+                )
+
                 distil_component = clf_distil_preds[clf_acc_mask]
+
                 # A scoped KD head contributes only on rows in its valid scope.
                 if not isinstance(distil_acc_mask, slice):
                     selected_scope = tf.cast(
-                        distil_acc_mask[clf_acc_mask],
-                        distil_component.dtype,
+                        distil_acc_mask[clf_acc_mask], 
+                        distil_component.dtype
                     )[:, tf.newaxis]
                     distil_component = distil_component * selected_scope
+
                 total_preds += distil_component * self.distil_acc_coef
 
             self.total_accuracy_tracker.update_state(
-                classes[clf_acc_mask],
+                classes[clf_acc_mask], 
                 total_preds,
             )
             results.update({
-                self.total_accuracy_tracker.name:
-                self.total_accuracy_tracker.result(),
+                self.total_accuracy_tracker.name: 
+                self.total_accuracy_tracker.result()
             })
 
         # Track the independent distillation objective and prediction accuracy.
         if use_distil_loss:
-            assert clf_distil_loss is not None \
-            and clf_distil_preds is not None, \
-                "When use_distil_loss is True, "\
-                "clf_distil_loss and clf_distil_preds cannot be None."
+            require(
+                clf_distil_loss is not None and clf_distil_preds is not None, 
+                "When use_distil_loss is True, clf_distil_loss "
+                "and clf_distil_preds cannot be None."
+            )
 
             self.distil_loss_tracker.update_state(
-                clf_distil_loss, sample_weight=distil_selected_weight
+                clf_distil_loss, 
+                sample_weight=distil_selected_weight
             )
             self.distil_accuracy_tracker.update_state(
                 classes[distil_acc_mask],
@@ -1810,9 +1864,9 @@ class DiffusionClassifier(DiffusionModel):
             )
 
             results.update({
-                self.distil_loss_tracker.name:
+                self.distil_loss_tracker.name: 
                 self.distil_loss_tracker.result(), 
-                self.distil_accuracy_tracker.name:
+                self.distil_accuracy_tracker.name: 
                 self.distil_accuracy_tracker.result()
             })
 

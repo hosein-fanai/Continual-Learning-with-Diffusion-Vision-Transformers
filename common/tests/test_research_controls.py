@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 
@@ -171,8 +172,8 @@ class ResearchControlTests(unittest.TestCase):
             "experiment_phase": "development",
         }
 
-    def test_baseline_aliases_and_reservoir_settings_resolve_exactly(self) -> None:
-        """Map readable aliases and preserve non-strategy reservoir settings.
+    def test_baselines_and_reservoir_settings_resolve_exactly(self) -> None:
+        """Resolve canonical baselines and preserve reservoir settings.
 
         Args:
             None.
@@ -189,7 +190,7 @@ class ResearchControlTests(unittest.TestCase):
             "strategy": "fifo",
         }
         sequential = _resolve_baseline_controls(
-            "Sequential_Finetuning",
+            "sequential",
             None,
             True,
             source,
@@ -202,7 +203,7 @@ class ResearchControlTests(unittest.TestCase):
             "sequential", True, False, False, False, False,
         ))
         cumulative = _resolve_baseline_controls(
-            "cumulative_upper_bound",
+            "cumulative",
             None,
             True,
             source,
@@ -268,8 +269,8 @@ class ResearchControlTests(unittest.TestCase):
 
         manifest = create_paired_block_manifest(
             {
-                "raw_teacher": {"teacher_network_name": "raw"},
-                "ema_teacher": {"teacher_network_name": "ema"},
+                "raw_teacher": {"snapshot_network_name": "raw"},
+                "ema_teacher": {"snapshot_network_name": "ema"},
             },
             [
                 {
@@ -708,6 +709,50 @@ class ResearchControlTests(unittest.TestCase):
                     41,
                     "a" * 64,
                 )
+
+    def test_replay_cache_concurrent_commit_keeps_first_complete_pool(self) -> None:
+        """A colliding publisher must authenticate rather than replace a winner.
+
+        Returns:
+            None.
+        """
+
+        samples = np.arange(8, dtype="float32").reshape((2, 4))
+        labels = np.asarray([0, 1], dtype="int32")
+        real_link = os.link
+
+        def commit_then_report_collision(source: Path, destination: Path) -> None:
+            """Simulate another writer winning immediately before publication.
+
+            Args:
+                source (pathlib.Path): Complete private candidate archive.
+                destination (pathlib.Path): Shared immutable cache path.
+
+            Returns:
+                None.
+            """
+
+            real_link(source, destination)
+            raise FileExistsError(destination)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "common.learner.os.link",
+            side_effect=commit_then_report_collision,
+        ) as link_mock:
+            committed = _cached_replay_candidates(
+                samples,
+                labels,
+                directory,
+                "write",
+                1,
+                [0, 1],
+                43,
+                "c" * 64,
+            )
+
+        self.assertEqual(link_mock.call_count, 1)
+        np.testing.assert_array_equal(committed[0], samples)
+        np.testing.assert_array_equal(committed[1], labels)
 
 
 # Run the focused research-control tests when invoked directly.

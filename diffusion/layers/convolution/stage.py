@@ -7,9 +7,10 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.keras_registry import register_canonical_keras_serializable
 
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class LayerDict(ArgumentSaverLayer):
     """Store named child layers with mapping access and Keras variable tracking.
 

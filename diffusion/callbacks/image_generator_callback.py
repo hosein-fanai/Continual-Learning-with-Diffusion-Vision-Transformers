@@ -76,6 +76,11 @@ class ImageGeneratorCallback(callbacks.Callback):
 
         Returns:
             ``None``.
+
+        Raises:
+            TypeError: If ``project_tag`` is neither a string nor ``None``.
+            ValueError: If ``project_tag`` is not a portable filename fragment,
+                or if the requested output mode cannot emit artifacts.
         """
 
         super().__init__(**kwargs)
@@ -86,6 +91,21 @@ class ImageGeneratorCallback(callbacks.Callback):
         # Require an output directory whenever GIF saving is enabled.
         if save_gifs and results_path is None:
             raise ValueError("save_gifs requires results_path.")
+        # Reject project tags with an unsupported runtime type.
+        if project_tag is not None and not isinstance(project_tag, str):
+            raise TypeError("project_tag must be a string or None.")
+
+        normalized_project_tag = "" if project_tag is None else project_tag.strip()
+        invalid_filename_characters = frozenset('/\\<>:"|?*')
+        # Keep the directory suffix portable and inside the requested root.
+        if any(
+            ord(character) < 32
+            or character in invalid_filename_characters
+            for character in normalized_project_tag
+        ) or normalized_project_tag.endswith("."):
+            raise ValueError(
+                "project_tag must be a portable filename fragment."
+            )
 
 
         self.add_null_label = add_null_label
@@ -96,7 +116,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         self.base_seed = seed
         self.artifact_prefix = ""
 
-        project_tag = "" if project_tag is None else " " + project_tag
+        project_tag = "" if not normalized_project_tag else " " + normalized_project_tag
 
         # Create a timestamped artifact directory when saving is requested.
         if self.results_path is not None:
@@ -118,8 +138,8 @@ class ImageGeneratorCallback(callbacks.Callback):
                 )
 
     def set_artifact_prefix(
-        self,
-        prefix: str | None,
+        self, 
+        prefix: str | None
     ) -> None:
         """Set a safe filename prefix for a later training phase or task.
 
@@ -132,12 +152,23 @@ class ImageGeneratorCallback(callbacks.Callback):
 
         Raises:
             TypeError: If ``prefix`` is neither a string nor ``None``.
+            ValueError: If ``prefix`` is not a portable filename fragment.
         """
 
         # Reject filesystem prefixes with an unsupported runtime type.
         if prefix is not None and not isinstance(prefix, str):
             raise TypeError("prefix must be a string or None.")
+
         normalized = "" if prefix is None else prefix.strip()
+        invalid_filename_characters = frozenset('/\\<>:"|?*')
+        # Keep the artifact name portable and inside its callback-owned folder.
+        if any(
+            ord(character) < 32
+            or character in invalid_filename_characters
+            for character in normalized
+        ) or normalized.endswith("."):
+            raise ValueError("prefix must be a portable filename fragment.")
+
         self.artifact_prefix = normalized + "_" if normalized else ""
 
     def get_config(self) -> dict[str, object]:
@@ -149,10 +180,10 @@ class ImageGeneratorCallback(callbacks.Callback):
         """
 
         return {
-            "add_null_label": self.add_null_label,
-            "show_images": self.show_images,
-            "save_gifs": self.save_gifs,
-            "seed": self.base_seed,
+            "add_null_label": self.add_null_label, 
+            "show_images": self.show_images, 
+            "save_gifs": self.save_gifs, 
+            "seed": self.base_seed
         }
 
     def on_epoch_end(
@@ -262,6 +293,29 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Invalid output-mode combinations must fail.")
+    for unsafe_tag in (
+        "../escape",
+        "..\\escape",
+        "bad\0name",
+        "bad:name",
+        "bad*name",
+        "bad\nname",
+        "trailing.",
+    ):
+        try:
+            ImageGeneratorCallback(project_tag=unsafe_tag)
+        except ValueError:
+            pass
+        # Project tags must not escape the callback's results root.
+        else:
+            raise AssertionError("Path-like project tags must fail.")
+    try:
+        ImageGeneratorCallback(project_tag=3)
+    except TypeError:
+        pass
+    # Non-text project tags must fail at the constructor boundary.
+    else:
+        raise AssertionError("Non-string project tags must fail.")
 
     display_callback = ImageGeneratorCallback(
         add_null_label=False,
@@ -321,6 +375,22 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Non-string artifact prefixes must fail.")
+        for unsafe_prefix in (
+            "../escape",
+            "..\\escape",
+            "bad\0name",
+            "bad:name",
+            "bad*name",
+            "bad\nname",
+            "trailing.",
+        ):
+            try:
+                saving_callback.set_artifact_prefix(unsafe_prefix)
+            except ValueError:
+                pass
+            # Unsafe path fragments must never reach artifact path assembly.
+            else:
+                raise AssertionError("Path-like artifact prefixes must fail.")
 
         frames_one = ["frame-1"]
         frames_two = ["frame-2"]

@@ -78,8 +78,8 @@ NOTEBOOKS = {
         ), 
         "dnn": (
             30, 
-            "Tune classification from extracted feature vectors with the project's DNN "
-            "baseline. The space compares compact hidden templates, activation, "
+            "Tune classification from normalized flattened raw pixels with the project's "
+            "DNN baseline. The space compares compact hidden templates, activation, "
             "normalization, dropout, and optimization choices."
         ), 
         "pretrained": (

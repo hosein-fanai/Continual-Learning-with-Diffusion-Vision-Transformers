@@ -7,6 +7,8 @@ from math import isqrt
 
 from copy import deepcopy
 
+from common.validation import require
+
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
 from diffusion.layers.feature_handler import FeatureHandler
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
@@ -209,30 +211,30 @@ class DiTDecoder(DiffusionTransformer):
             base_local_vars = dict(local_vars)
             base_local_vars["cls_token_regularizer_ids"] = [None]
         super()._check_assertions(base_local_vars)
-        assert self.encoder_output_grid_size > 0
-        assert self.encoder_output_dim > 0
-        assert len(self.encoder_feature_dims) > 0
-        assert len(self.encoder_feature_dims) == len(
+        require(self.encoder_output_grid_size > 0)
+        require(self.encoder_output_dim > 0)
+        require(len(self.encoder_feature_dims) > 0)
+        require(len(self.encoder_feature_dims) == len(
             self.encoder_feature_grid_sizes
-        ), "encoder feature dimensions and grid sizes must have equal length."
-        assert all(int(dim) == dim and dim > 0 for dim in self.encoder_feature_dims)
-        assert all(
+        ), "encoder feature dimensions and grid sizes must have equal length.")
+        require(all(int(dim) == dim and dim > 0 for dim in self.encoder_feature_dims))
+        require(all(
             grid is None or (int(grid) == grid and grid > 0)
             for grid in self.encoder_feature_grid_sizes
-        )
-        assert self.encoder_feature_dims[-1] == self.encoder_output_dim
-        assert self.encoder_feature_grid_sizes[-1] == self.encoder_output_grid_size
+        ))
+        require(self.encoder_feature_dims[-1] == self.encoder_output_dim)
+        require(self.encoder_feature_grid_sizes[-1] == self.encoder_output_grid_size)
 
         for mapping_name in (
             "feature_aggregation_ids_dict", 
             "cross_attention_aggregation_ids_dict", 
         ):
             mapping = getattr(self, mapping_name)
-            assert isinstance(mapping, dict), f"{mapping_name} must be a dictionary."
-            assert all(
+            require(isinstance(mapping, dict), f"{mapping_name} must be a dictionary.")
+            require(all(
                 isinstance(key, int) and 1 <= key <= local_vars["depth"]
                 for key in mapping
-            ), f"keys in {mapping_name} must be decoder depths in [1, depth]."
+            ), f"keys in {mapping_name} must be decoder depths in [1, depth].")
 
         for kwargs_name in (
             "feature_aggregation_kwargs", 
@@ -246,10 +248,10 @@ class DiTDecoder(DiffusionTransformer):
             invalid = set(handler_kwargs) - set(
                 self.feature_handler_kwargs_allowed_vals
             )
-            assert not invalid, f"Unknown keys in {kwargs_name}: {sorted(invalid)}."
-            assert handler_kwargs.get("connect_axis", -1) in (
+            require(not invalid, f"Unknown keys in {kwargs_name}: {sorted(invalid)}.")
+            require(handler_kwargs.get("connect_axis", -1) in (
                 -2, -1, 1, 2
-            ), "decoder feature handlers support token or channel axes only."
+            ), "decoder feature handlers support token or channel axes only.")
 
     def _normalize_encoder_ids(
         self, 
@@ -272,9 +274,9 @@ class DiTDecoder(DiffusionTransformer):
             return list(range(count))
 
         normalized = [value + count if value < 0 else value for value in values]
-        assert all(0 <= value < count for value in normalized), (
+        require(all(0 <= value < count for value in normalized), (
             "encoder feature IDs must reference encoder_feature_dims."
-        )
+        ))
 
         return normalized
 
@@ -317,14 +319,14 @@ class DiTDecoder(DiffusionTransformer):
             # Channel concatenation combines all selected widths.
             if self._uses_channel_axis(connect_axis, grids):
                 return sum(dims)
-            assert len(set(dims)) == 1, (
+            require(len(set(dims)) == 1, (
                 "Non-channel concatenation requires equal feature dimensions."
-            )
+            ))
             return dims[0]
 
-        assert len(set(dims)) == 1, (
+        require(len(set(dims)) == 1, (
             "In connect_type == add, all encoder feature dimensions must be equal."
-        )
+        ))
 
         return dims[0]
 
@@ -351,16 +353,16 @@ class DiTDecoder(DiffusionTransformer):
         has_flat = any(grid is None for grid in grid_sizes)
         # Prevent flat and spatial encoder features from sharing one merge.
         if has_flat:
-            assert all(grid is None for grid in grid_sizes), (
+            require(all(grid is None for grid in grid_sizes), (
                 "Feature concatenation requires matching tensor ranks."
-            )
-            assert connect_axis in (-1, 1), (
+            ))
+            require(connect_axis in (-1, 1), (
                 "Flat features support concatenation only on their width axis."
-            )
+            ))
             return True
-        assert connect_axis in (-2, -1, 1, 2), (
+        require(connect_axis in (-2, -1, 1, 2), (
             "Token features support token or channel concatenation axes."
-        )
+        ))
 
         return connect_axis in (-1, 2)
 
@@ -404,9 +406,9 @@ class DiTDecoder(DiffusionTransformer):
             channel_axis = True
         # Require all added flat/spatial features to have matching tensor rank.
             if any(grid is None for grid in grids):
-                assert all(grid is None for grid in grids), (
+                require(all(grid is None for grid in grids), (
                     "Feature addition requires matching tensor ranks."
-                )
+                ))
         # A merge of flat features has no spatial grid.
         if any(grid is None for grid in grids):
             return None
@@ -416,10 +418,10 @@ class DiTDecoder(DiffusionTransformer):
             token_count = sum(grid * grid for grid in grids)
             root = isqrt(token_count)
             return root if root * root == token_count else None
-        assert len(set(grids)) == 1, (
+        require(len(set(grids)) == 1, (
             "Encoder and decoder features must have matching token grids for "
             "this merge axis."
-        )
+        ))
 
         return grids[0]
 
@@ -463,19 +465,19 @@ class DiTDecoder(DiffusionTransformer):
             else:
                 # Require matching widths when appending decoder tokens.
                 if increased_dim:
-                    assert selected_dim == increased_dim, (
+                    require(selected_dim == increased_dim, (
                         "Non-channel concatenation requires equal encoder and "
                         "decoder dimensions."
-                    )
+                    ))
                 merged_dim = selected_dim
         # Elementwise addition preserves one common feature width.
         else:
             # Require matching encoder and decoder widths for addition.
             if increased_dim:
-                assert selected_dim == increased_dim, (
+                require(selected_dim == increased_dim, (
                     "In connect_type == add, encoder and decoder dimensions "
                     "must be equal."
-                )
+                ))
             merged_dim = selected_dim
         options = {
             "ids": ids, 
@@ -559,9 +561,9 @@ class DiTDecoder(DiffusionTransformer):
         # Addition or token concatenation requires one shared feature width.
         else:
             all_dims = dims + ([increased_dim] if increased_dim else [])
-            assert not all_dims or len(set(all_dims)) == 1, (
+            require(not all_dims or len(set(all_dims)) == 1, (
                 "Token concatenation/addition requires equal feature dimensions."
-            )
+            ))
             merged_dim = all_dims[0] if all_dims else 0
 
         # Token-axis concatenation may change the square token grid.
@@ -574,9 +576,9 @@ class DiTDecoder(DiffusionTransformer):
                 output_grid_size = root if root * root == token_count else None
         # Channel concatenation and addition require equal spatial grids.
         else:
-            assert not grids or len(set(grids)) == 1, (
+            require(not grids or len(set(grids)) == 1, (
                 "Channel concatenation/addition requires equal token grids."
-            )
+            ))
             output_grid_size = grids[0] if grids else None
 
         options = {
@@ -781,9 +783,9 @@ class DiTDecoder(DiffusionTransformer):
                 decoder_grid = stage[self.FC].output_grid_size \
                     if self.FC in stage else stage[self.FA].output_grid_size \
                     if self.FA in stage else previous_grid
-                assert query_grid == decoder_grid, (
+                require(query_grid == decoder_grid, (
                     "cross-attention queries must match the decoder token grid."
-                )
+                ))
 
             stage[self.VTB] = self._create_vit_block(
                 i=i,
@@ -1128,9 +1130,9 @@ class DiTDecoder(DiffusionTransformer):
             AssertionError: If ``min_depth`` is outside ``0..depth``.
         """
 
-        assert 0 <= min_depth <= self.depth, (
+        require(0 <= min_depth <= self.depth, (
             "min_depth must be in the range of [0, depth]."
-        )
+        ))
 
 
         decoder_input, times, labels = inputs

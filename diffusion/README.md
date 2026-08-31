@@ -5,6 +5,13 @@ Keras training/sampling wrappers, reusable transformer and spatial layers,
 noise schedules, callbacks, and metrics. The package targets TensorFlow 2.10
 and uses channels-last image tensors.
 
+Its existing package-level public exports are lazy and cached. Imports such as
+`from diffusion import DiffusionModel, UNet` keep the same API while a plain
+`import diffusion` avoids eagerly importing implementation modules. The package
+installs lazy registry proxies for its Keras-serializable convolution objects,
+so package-only `load_model(...)` resolves canonical classes while registered
+submodules still run exactly once through `python -m`.
+
 ## Architecture and wrapper roles
 
 The two model directories form one API boundary:
@@ -110,6 +117,17 @@ classifier optimizers. Use a separate raw network instance for each wrapper.
 The [convolution model guide](models/convolution/README.md) documents feature
 routing, classifier returns, progressive branch growth, and training calls.
 
+`DiffusionClassifierV2` requires CFG. Its classifier train/test noising caps
+mean clean timestep 0 for `None`, the full horizon for `-1`, or an exclusive
+`[0, cap)` draw for a positive cap; they do not inherit a progressive
+generator's current lower bound. Call `evaluate_generator`,
+`evaluate_discriminator`, `evaluate(test_part=...)`, or
+`evaluate(eval_both=True)`; evaluating without a selected phase is rejected,
+while `common.train.report` selects both. For continual
+`distil_scope="replay_only"`, an explicit third replay-provenance tensor is
+preserved through raw and mapped V2 discriminator batches so teacher-targeted
+losses and their accuracy metric use replay rows only.
+
 ## Schedule API
 
 ```python
@@ -129,6 +147,10 @@ and normalized `timesteps`. Supported names are `linear`, `scaled_linear`,
 `squaredcos_cap_v2`, `clipped_cosine`, `sigmoid`, `quadratic`, `ve`, `karras`,
 `sub_vp`, and `logistic`. See `schedulers.py` for every valid keyword and the
 difference between native sigma-space and beta-equivalent outputs.
+`sigmoid` directly interpolates per-step beta between `beta_start` and
+`beta_end`; `logistic` instead shapes decreasing cumulative signal power
+`alpha_bar` and converts it to beta. They share `logistic_k` as a steepness
+control but are not aliases.
 
 ### Schedule comparisons
 
@@ -171,6 +193,16 @@ save_schedule_plots(
     ),
 )
 ```
+
+## Ensemble classifier accuracy
+
+`EnsembleAccuracy` averages unconditional classifier predictions across
+timesteps in either bounded-memory `"chunked"` or single-call `"batched"` mode.
+Use the preferred `network_name="raw"|"ema"`; the historical misspelling
+`netwrok_name` remains a compatibility alias, and supplying both is rejected.
+Omitting both defaults to `"ema"`, which the wrapper resolves to raw when EMA
+is disabled. With a seed, stateless noise is derived per logical timestep, so
+batched and chunked results are invariant to chunk size and prior RNG use.
 
 ## Package map
 

@@ -5,6 +5,7 @@ from tensorflow.keras import layers
 
 from typing import Any, Literal, TypeAlias
 
+from common.validation import require
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -98,25 +99,20 @@ class Downsample(BaseEmbedding):
             ``None``.
         """
 
-        temp_val = kwargs.pop("circumvent_cls_token", None)
-        # Preserve legacy one-token configurations under the canonical option.
-        if temp_val is not None:
-            circumvent_tokens = temp_val
-
         super().__init__(
             use_layer_norm=use_layer_norm, 
             **kwargs
         )
         self._save_init_args(locals())
-
-        assert self.grid_size is not None and self.grid_size >= 2, \
+        require(
+            self.grid_size is not None and self.grid_size >= 2, 
             "grid_size must be at least 2 for downsampling."
-
+        )
 
         # Mirror Keras's spatial output formula so later transformer stages
         # receive the grid that this layer actually produces.
-        window_size = self.cnn_kernel_size \
-            if self.scaling_method == "cnn_stride" else 2
+        window_size = self.cnn_kernel_size if self.scaling_method == "cnn_stride" \
+                    else 2
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" else (

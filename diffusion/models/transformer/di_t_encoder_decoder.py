@@ -8,6 +8,7 @@ from math import isqrt
 from copy import deepcopy
 
 from common.runtime import derive_seed
+from common.validation import require
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 from diffusion.models.transformer.di_t_decoder import DiTDecoder
@@ -816,12 +817,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 (decoder_resolution, self.decoder.patch_size)
             )
         for branch_resolution, patch_size in resolutions_and_patches:
-            assert int(branch_resolution) == branch_resolution, \
-                "resolution must be an integer."
-            assert branch_resolution > 0, \
-                "resolution must be positive."
-            assert branch_resolution % patch_size == 0, \
-                "resolution must be divisible by both patch sizes."
+            require(int(branch_resolution) == branch_resolution, \
+                "resolution must be an integer.")
+            require(branch_resolution > 0, \
+                "resolution must be positive.")
+            require(branch_resolution % patch_size == 0, \
+                "resolution must be divisible by both patch sizes.")
 
         DiffusionTransformer.set_current_resolution(self, resolution)
         # Propagate active resolution changes to the attached decoder.

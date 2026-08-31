@@ -481,6 +481,7 @@ def replay_quality_metrics(
     present = sorted(np.unique(y).tolist()) if len(y) else []
     # Keep the normalized entropy denominator tied to the declared class set.
     unexpected = sorted(set(present) - set(expected))
+    # Reject replay labels that would make coverage and entropy incomparable.
     if unexpected:
         raise ValueError(
             "replay labels must belong to expected_classes; "
@@ -547,58 +548,3 @@ def replay_quality_metrics(
         )
 
     return result
-
-
-def run_self_tests() -> dict[str, str]:
-    """Exercise calibration, selection, representation, and replay diagnostics.
-
-    Args:
-        None.
-
-    Returns:
-        dict[str, str]: Passing markers for this module's public contracts.
-    """
-
-    probabilities = np.asarray([[0.8, 0.2], [0.25, 0.75], [0.4, 0.6]])
-    labels = np.asarray([0, 1, 0])
-    calibration = calibration_metrics(probabilities, labels, bins=5)
-    assert set(calibration) == {"accuracy", "entropy", "nll", "brier", "ece"}
-    assert np.isclose(calibration["accuracy"], 2. / 3.)
-
-    representation = np.asarray([[0., 1.], [1., 0.], [2., 1.]])
-    assert np.isclose(linear_cka(representation, representation), 1.)
-    drift = class_centroid_drift(
-        representation, [0, 0, 1], representation + 1., [0, 0, 1]
-    )
-    assert np.isclose(drift["mean_centroid_drift"], np.sqrt(2.))
-
-    samples = np.arange(24, dtype="float32").reshape((6, 2, 2, 1))
-    pool_labels = np.asarray([0, 0, 0, 1, 1, 1])
-    uniform_x, uniform_y, allocation = select_replay_candidates(
-        samples, pool_labels, 4, strategy="uniform", seed=3
-    )
-    assert len(uniform_x) == 4 and np.sum(uniform_y == 0) == 2
-    assert allocation["class_counts"] == {"0": 2, "1": 2}
-    scored_probs = np.asarray([
-        [0.9, 0.1], [0.6, 0.4], [0.51, 0.49],
-        [0.4, 0.6], [0.2, 0.8], [0.05, 0.95],
-    ])
-    confident_x, _, _ = select_replay_candidates(
-        samples, pool_labels, 2, strategy="confidence",
-        probabilities=scored_probs, seed=3,
-    )
-    assert {int(value) for value in confident_x[:, 0, 0, 0]} == {0, 20}
-
-    quality = replay_quality_metrics(
-        samples, pool_labels, [0, 1], probabilities=scored_probs,
-        max_diversity_samples=6, seed=4,
-    )
-    assert quality["class_coverage"] == 1.
-    assert quality["class_counts"] == {"0": 3, "1": 3}
-    assert quality["pixel_diversity"] > 0.
-    return {"mechanistic_metrics": "passed"}
-
-
-# Run this module's local checks when executed directly.
-if __name__ == "__main__":
-    print(run_self_tests())

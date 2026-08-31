@@ -8,17 +8,21 @@ class probabilities.  Training objectives, schedules, EMA, and sampling live in
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+import math
+
 from copy import deepcopy
 
+from numbers import Real
 from typing import Literal
-
-from common.runtime import derive_seed
 
 from . import (
     CondType, TokenType, IdsType, IdsDictType, 
     select_first_token, select_second_token, 
     remove_first_token, remove_second_token
 )
+
+from common.runtime import derive_seed
+from common.validation import require
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
@@ -375,17 +379,55 @@ class DiTClassifier(DiffusionTransformer):
 
         local_vars["depth"] = self.depth
 
-        assert self.use_cfg, \
+        require(
+            self.use_cfg, \
             "use_cfg must be True for classification to work."
+        )
+
+        for name in (
+            "aggregate_from_noises", 
+            "classifier_only_cls_token", 
+            "classifier_only_distil_token", 
+            "clf_dim_forced", 
+            "force_global_avg_pooling"
+        ):
+            require(
+                isinstance(local_vars[name], bool), 
+                f"{name} must be boolean."
+            )
+
+        require(isinstance(local_vars["clf_depth"], int) and not isinstance(
+            local_vars["clf_depth"], bool
+        ) and local_vars["clf_depth"] >= 0, \
+            "clf_depth must be a nonnegative integer.")
+        require(local_vars["clf_dim"] is None or (
+            isinstance(local_vars["clf_dim"], int)
+            and not isinstance(local_vars["clf_dim"], bool)
+            and local_vars["clf_dim"] > 0
+        ), "clf_dim must be None or a positive integer.")
+        classifier_mlp_ratio = local_vars["classifier_mlp_ratio"]
+        require(classifier_mlp_ratio is None or (
+            isinstance(classifier_mlp_ratio, int)
+            and not isinstance(classifier_mlp_ratio, bool)
+            and classifier_mlp_ratio > 0
+        ), "classifier_mlp_ratio must be None or a positive integer.")
+        dropout_rate = local_vars["dropout_rate"]
+        require(isinstance(dropout_rate, Real) and not isinstance(
+            dropout_rate, bool
+        ) and math.isfinite(float(dropout_rate)) and \
+            0.0 <= dropout_rate < 1.0, \
+            "dropout_rate must be finite and in the range [0, 1).")
 
         # Noise aggregation requires image-shaped denoiser output.
         if local_vars["aggregate_from_noises"]:
-            assert self.use_unpatchify, \
+            require(
+                self.use_unpatchify, 
                 "aggregate_from_noises requires use_unpatchify to be True."
+            )
 
-        assert 1 in local_vars["feature_aggregation_ids_dict"] and \
+        require(1 in local_vars["feature_aggregation_ids_dict"] and \
             "There must be at least one feature vector "\
-            "to connect to the classifier part."
+            "to connect to the classifier part.")
         self._check_dict_assertions(
             local_vars, 
             "feature_aggregation_ids_dict", 
@@ -415,9 +457,9 @@ class DiTClassifier(DiffusionTransformer):
             check_values=False, 
         )
 
-        assert -1 in local_vars["clf_connection_ids_dict"], \
+        require(-1 in local_vars["clf_connection_ids_dict"], \
             "There must be at least one feature vector "\
-            "to extract from the classifier part."
+            "to extract from the classifier part.")
         self._check_dict_assertions(
             local_vars, 
             "clf_connection_ids_dict", 
@@ -532,6 +574,12 @@ class DiTClassifier(DiffusionTransformer):
             allowed_keys=self.reshaper_kwargs_allowed_vals, 
             check_values=False, 
         ) if local_vars[key:="clf_reshaper_kwargs"] is not None else None
+        # Validate classifier reshaper geometry after its generic mapping checks.
+        if local_vars["clf_reshaper_kwargs"] is not None:
+            self._check_reshaper_kwargs(
+                local_vars["clf_reshaper_kwargs"],
+                prefix="classifier ",
+            )
         self._check_dict_assertions(
             local_vars, 
             "clf_cls_token_regularizer_ids", 
@@ -553,20 +601,20 @@ class DiTClassifier(DiffusionTransformer):
             regularizer_mlp_ratio = local_vars[
                 "clf_cls_token_regularizer_kwargs"
             ].get("mlp_ratio", None)
-            assert regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
-                "classifier regularizer mlp_ratio must be None or positive."
-            assert local_vars["clf_cls_token_regularizer_kwargs"].get(
+            require(regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
+                "classifier regularizer mlp_ratio must be None or positive.")
+            require(local_vars["clf_cls_token_regularizer_kwargs"].get(
                 "train_type", "normal"
             ) in ("normal", "distil", "both"), \
-                "classifier regularizer train_type must be normal, distil, or both."
-            assert local_vars["clf_cls_token_regularizer_kwargs"].get(
+                "classifier regularizer train_type must be normal, distil, or both.")
+            require(local_vars["clf_cls_token_regularizer_kwargs"].get(
                 "distil_type", "hard"
             ) in ("hard", "soft"), \
-                "classifier regularizer distil_type must be hard or soft."
+                "classifier regularizer distil_type must be hard or soft.")
 
-        assert local_vars["clf_cross_attention_plug_type"] in (
+        require(local_vars["clf_cross_attention_plug_type"] in (
             None, "values", "queries"
-        ), "clf_cross_attention_plug_type can only be values or queries."
+        ), "clf_cross_attention_plug_type can only be values or queries.")
 
     def _set_defaults(self, local_vars: dict, 
                     exclude: list[str]=["clf_dim", "clf_cond_type", 
@@ -610,8 +658,8 @@ class DiTClassifier(DiffusionTransformer):
 
         # A forced classifier width requires an explicit target width.
         if self.clf_dim_forced:
-            assert self.clf_dim is not None, \
-                "When clf_dim_forced is true, clf_dim cannot be None."
+            require(self.clf_dim is not None, \
+                "When clf_dim_forced is true, clf_dim cannot be None.")
 
     def _handle_all_clf_ids(self) -> None:
         """Normalize every classifier and main-feature aggregation ID set.
@@ -2495,6 +2543,18 @@ def run_self_tests() -> dict[str, str]:
 
     invalid_cases = (
         {"use_cfg": False}, 
+        {"aggregate_from_noises": "false"},
+        {"classifier_only_cls_token": 1},
+        {"classifier_only_distil_token": 0},
+        {"clf_dim_forced": "false"},
+        {"force_global_avg_pooling": 1},
+        {"clf_depth": -1},
+        {"clf_dim": 0},
+        {"classifier_mlp_ratio": 0},
+        {"classifier_mlp_ratio": 0.5},
+        {"dropout_rate": -0.1},
+        {"dropout_rate": float("nan")},
+        {"dropout_rate": 1.0},
         {"aggregate_from_noises": True, "use_unpatchify": False}, 
         {"feature_aggregation_ids_dict": {2: [0]}}, 
         {"clf_connection_ids_dict": {1: [0]}}, 
@@ -2507,6 +2567,9 @@ def run_self_tests() -> dict[str, str]:
         {"clf_downsample_kwargs": {"unknown": 1}}, 
         {"clf_upsample_kwargs": {"unknown": 1}}, 
         {"clf_reshaper_kwargs": {"unknown": 1}}, 
+        {"clf_reshaper_kwargs": {"add_kl": "yes"}},
+        {"clf_reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
+        {"clf_reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
         {"clf_cls_token_regularizer_kwargs": {
             "start": 0, "end": 1, "mlp_ratio": 0

@@ -58,8 +58,11 @@ class ScheduleKind(str, Enum):
         ``num_steps + 1`` interval edges, matching improved-diffusion.
     CLIPPED_COSINE
         Interpolate cosine angles between configured signal bounds.
-    SIGMOID, LOGISTIC
-        Use smooth S-shaped cumulative-alpha decay curves.
+    SIGMOID
+        Interpolate beta through a centered sigmoid between ``beta_start``
+        and ``beta_end``, following the common Diffusers-style schedule.
+    LOGISTIC
+        Discretize a smooth S-shaped cumulative-alpha decay curve.
     QUADRATIC
         Increase beta quadratically over normalized time.
     VE
@@ -101,9 +104,10 @@ class ScheduleConfig:
     num_steps : int, default=1000
         Number of discrete points.  Generation functions require at least 2.
     beta_start, beta_end : float, default=1e-4 and 2e-2
-        Endpoints used by ``linear``, ``scaled_linear``, and ``quadratic``.
-        Values are expected to describe valid variances; final values are
-        clipped to ``[clip_min, clip_max]``.
+        Bounds used by ``linear``, ``scaled_linear``, ``sigmoid``, and
+        ``quadratic``. Values are expected to describe valid variances; final
+        values are clipped to ``[clip_min, clip_max]``. For ``sigmoid`` they
+        are asymptotic bounds rather than exact finite-grid endpoints.
     cosine_s : float, default=0.008
         Offset in the cosine cumulative-alpha curve.  Larger values change
         the amount of early-time noise.
@@ -495,9 +499,10 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
     ----------
     config : ScheduleConfig
         Complete schedule configuration.  ``kind`` selects the algorithm:
-        beta endpoints affect ``linear``, ``scaled_linear``, and ``quadratic``;
-        cosine fields affect cosine-based schedules; ``logistic_k`` affects
-        S-shaped schedules; and sigma/rho fields affect ``ve`` and ``karras``.
+        beta endpoints affect ``linear``, ``scaled_linear``, ``sigmoid``, and
+        ``quadratic``; cosine fields affect cosine-based schedules;
+        ``logistic_k`` affects S-shaped schedules; and sigma/rho fields affect
+        ``ve`` and ``karras``.
 
     Returns
     -------
@@ -608,17 +613,30 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
             clip_max=config.clip_max, 
         )
 
-    # Convert a normalized sigmoid decay curve into discrete betas.
+    # Interpolate beta directly through a centered sigmoid ramp.
     if config.kind == ScheduleKind.SIGMOID:
-        # Sigmoid-shaped alpha_bar decay: slow early/late, steeper mid-way.
-        alpha_bar = 1.0 - _sigmoid01(t, k=config.logistic_k)
-        alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
-        alpha_bar = np.clip(alpha_bar, 1e-12, 1.0)
+        # This is the generalized Diffusers sigmoid-beta construction.  It is
+        # intentionally distinct from LOGISTIC, which shapes cumulative
+        # alpha_bar instead. A sharpness of 12 spans the conventional logits
+        # [-6, 6]; logistic_k keeps that span configurable.
+        betas = config.beta_start + (
+            config.beta_end - config.beta_start
+        ) * _sigmoid01(t, k=config.logistic_k)
+        betas = np.clip(betas, config.clip_min, config.clip_max)
+
+        # Preserve the canonical beta ramp when no log-SNR shift is requested.
+        if config.snr_shift == 0.0:
+            return betas
+
+        alpha_bar = _apply_snr_shift(
+            betas_to_alpha_bar(betas),
+            config.snr_shift,
+        )
 
         return alpha_bar_to_betas(
-            alpha_bar, 
-            clip_min=config.clip_min, 
-            clip_max=config.clip_max, 
+            alpha_bar,
+            clip_min=config.clip_min,
+            clip_max=config.clip_max,
         )
 
     # Convert the centered logistic signal curve into discrete betas.
@@ -1292,6 +1310,30 @@ def run_self_tests() -> dict[str, str]:
     quadratic = replace(linear, kind=ScheduleKind.QUADRATIC)
     quadratic_betas = generate_betas(quadratic)
     assert quadratic_betas[1] < generate_betas(linear)[1]
+
+    sigmoid = replace(
+        linear,
+        kind=ScheduleKind.SIGMOID,
+        logistic_k=12.0,
+    )
+    sigmoid_times = np.linspace(0.0, 1.0, sigmoid.num_steps)
+    reference_sigmoid_betas = sigmoid.beta_start + (
+        sigmoid.beta_end - sigmoid.beta_start
+    ) * _sigmoid01(sigmoid_times, sigmoid.logistic_k)
+    np.testing.assert_allclose(
+        generate_betas(sigmoid),
+        reference_sigmoid_betas,
+        rtol=1e-13,
+        atol=1e-13,
+    )
+    assert np.all(np.diff(generate_betas(sigmoid)) > 0.0)
+    logistic = replace(sigmoid, kind=ScheduleKind.LOGISTIC)
+    assert not np.allclose(generate_betas(sigmoid), generate_betas(logistic))
+    shifted_sigmoid = replace(sigmoid, snr_shift=0.75)
+    assert np.all(
+        betas_to_alpha_bar(generate_betas(shifted_sigmoid))
+        > betas_to_alpha_bar(generate_betas(sigmoid))
+    )
 
     cosine_config = ScheduleConfig(
         kind=ScheduleKind.COSINE,

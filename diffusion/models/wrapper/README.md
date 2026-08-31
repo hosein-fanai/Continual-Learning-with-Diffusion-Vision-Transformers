@@ -252,8 +252,9 @@ no timesteps. Set either switch false to remove that selection criterion.
 Use `model.evaluate_ensemble_accuracy(dataset, weighted=True)` to
 average classifier predictions across diffusion timesteps. It defaults to the
 configured test network, accepts the `EnsembleAccuracy` options, and is also
-inherited by `DiffusionClassifierV2`; pass `netwrok_name="raw"` or `"ema"` to
-select a network explicitly.
+inherited by `DiffusionClassifierV2`; pass `network_name="raw"` or `"ema"` to
+select a network explicitly. The historical `netwrok_name` spelling remains a
+compatibility alias.
 
 Classifier progressive depth can target both branches:
 
@@ -344,8 +345,9 @@ before either loss is computed.
 
 `distil_type="hard"` takes `argmax(teacher_labels)` and applies sparse
 categorical cross-entropy. `"soft"` applies KL divergence in the
-teacher-to-student direction to the two probability tensors; there is no
-temperature parameter. The scalar optimization objective adds
+teacher-to-student direction. Its positive `distil_temperature` defaults to
+`1.0`; other values soften teacher and student distributions consistently and
+scale the KL term by the temperature squared. The scalar optimization objective adds
 `distil_loss_coef * distil_loss` to the existing diffusion and classifier
 terms. The coefficient defaults to `0.0`; at zero, distillation-token loss and
 its metrics are disabled. Teacher mapping remains enabled only when a

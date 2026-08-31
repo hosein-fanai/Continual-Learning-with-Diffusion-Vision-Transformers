@@ -6,6 +6,7 @@ from tensorflow.keras import layers
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
 
@@ -33,7 +34,7 @@ def _split_inputs(
 
     return inputs, None
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class ResidualConvBlock(ArgumentSaverLayer):
     """Apply two spatial convolutions with residual and condition projections.
 
@@ -231,7 +232,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
         return residual + h
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class ResidualConvStack(ArgumentSaverLayer):
     """Run a fixed number of `ResidualConvBlock` objects in sequence."""
 

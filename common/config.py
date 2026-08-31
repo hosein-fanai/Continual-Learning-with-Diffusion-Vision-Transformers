@@ -8,27 +8,160 @@ class-incremental runs while the other sections remain reusable.
 
 from __future__ import annotations
 
-from dataclasses import (
-    MISSING,
-    Field,
-    asdict,
-    dataclass,
-    field,
-    fields,
-    is_dataclass,
-)
-from typing import Any, TypeVar
-from collections.abc import Mapping
-from math import isfinite
-from numbers import Integral, Real
-
 import os
+
 import random
 
 import yaml
 
+from dataclasses import (
+    MISSING, 
+    Field, 
+    asdict, 
+    dataclass, 
+    field, 
+    fields, 
+    is_dataclass
+)
+from typing import Any, TextIO, TypeVar
+from collections.abc import Mapping
+
 
 SectionT = TypeVar("SectionT")
+
+_TRAINING_TASKS = frozenset({
+    "legacy", "generation", "joint", 
+    "classification", "continual"
+})
+"""Task selectors implemented by the shared experiment pipeline."""
+
+
+def _reject_duplicate_yaml_keys(
+    loader: yaml.SafeLoader, 
+    node: yaml.Node, 
+    visited: set[int] | None = None
+) -> None:
+    """Reject duplicate explicit keys anywhere in one parsed YAML document.
+
+    YAML merge keys retain their standard precedence semantics: collisions
+    introduced by ``<<`` are permitted, while duplicate keys written directly
+    in the same mapping are rejected.  Key comparison uses the same safely
+    constructed Python values that PyYAML would use for the resulting mapping.
+
+    Args:
+        loader (yaml.SafeLoader): Safe loader that parsed ``node``.
+        node (yaml.Node): Scalar, sequence, or mapping node to validate.
+        visited (set[int] | None): Identity set used to terminate recursive
+            YAML alias graphs. Callers normally omit it.
+
+    Returns:
+        None: Every reachable mapping has unique explicit keys.
+
+    Raises:
+        yaml.constructor.ConstructorError: If a mapping repeats an explicit
+            key or contains an unhashable key.
+    """
+
+    # Anchors may create recursive node graphs; inspect each node only once.
+    if visited is None:
+        visited = set()
+    node_id = id(node)
+    # A previously inspected alias target cannot introduce a new local key.
+    if node_id in visited:
+        return
+    visited.add(node_id)
+
+    # Mapping nodes need local duplicate detection plus recursive validation.
+    if isinstance(node, yaml.MappingNode):
+        seen: dict[object, yaml.Node] = {}
+        for key_node, value_node in node.value:
+            # Merge keys intentionally inherit YAML's ordinary override rules.
+            if key_node.tag != "tag:yaml.org,2002:merge":
+                key = loader.construct_object(key_node, deep=True)
+                try:
+                    duplicate = key in seen
+                except TypeError as error:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "found an unhashable key",
+                        key_node.start_mark,
+                    ) from error
+
+                # Silent last-value-wins behavior can invalidate experiments.
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"found duplicate key {key!r}",
+                        key_node.start_mark,
+                    )
+                seen[key] = key_node
+
+            _reject_duplicate_yaml_keys(loader, key_node, visited)
+            _reject_duplicate_yaml_keys(loader, value_node, visited)
+        return
+
+    # Sequence children can themselves contain mappings with duplicate keys.
+    if isinstance(node, yaml.SequenceNode):
+        for child_node in node.value:
+            _reject_duplicate_yaml_keys(loader, child_node, visited)
+
+
+def _safe_load_unique_yaml(stream: TextIO) -> object:
+    """Safely construct one YAML document after duplicate-key validation.
+
+    Args:
+        stream (TextIO): Open UTF-8 text stream containing one YAML document.
+
+    Returns:
+        object: Safely constructed YAML value, or ``None`` for an empty file.
+
+    Raises:
+        yaml.YAMLError: If syntax, document count, keys, or construction are
+            invalid.
+    """
+
+    loader = yaml.SafeLoader(stream)
+    try:
+        node = loader.get_single_node()
+        # Preserve ``yaml.safe_load`` semantics for an empty document.
+        if node is None:
+            return None
+        _reject_duplicate_yaml_keys(loader, node)
+        return loader.construct_document(node)
+    finally:
+        loader.dispose()
+
+
+def normalize_training_task(task: object) -> str:
+    """Return one canonical task selector used across common-layer APIs.
+
+    Args:
+        task (object): Candidate task name. Supported strings are ``"legacy"``,
+            ``"generation"``, ``"joint"``, ``"classification"``, and
+            ``"continual"``; spelling is case-insensitive.
+
+    Returns:
+        str: Lowercase supported task selector.
+
+    Raises:
+        TypeError: If ``task`` is not a string.
+        ValueError: If the normalized task is unsupported.
+    """
+
+    # Require an actual selector instead of coercing unrelated objects.
+    if not isinstance(task, str):
+        raise TypeError("training task must be a string.")
+
+    normalized = task.lower()
+    # Reject unknown tasks before dataset/model construction can misroute them.
+    if normalized not in _TRAINING_TASKS:
+        raise ValueError(
+            "training task must be one of " + str(sorted(_TRAINING_TASKS)) + "."
+        )
+
+    return normalized
 
 
 def _all_depth_ids() -> list[int | None]:
@@ -50,10 +183,10 @@ def _default_regularizer_range() -> dict[str, object]:
     """
 
     return {
-        "start": 0,
-        "end": 1,
-        "train_type": "normal",
-        "distil_type": "hard",
+        "start": 0, 
+        "end": 1, 
+        "train_type": "normal", 
+        "distil_type": "hard"
     }
 
 
@@ -110,8 +243,8 @@ def _default_buffer_kwargs() -> dict[str, object]:
         "maxlen": 10_000, 
         "sample_num": 1_000, 
         "insert_num": 1_000, 
-        "seed": None,
-        "strategy": "fifo",
+        "seed": None, 
+        "strategy": "fifo"
     }
 
 
@@ -126,14 +259,14 @@ def _default_generative_replay_kwargs() -> dict[str, int]:
 
 
 def resolve_continual_schedule(
-    class_num: int | None,
-    class_order: list[int] | tuple[int, ...] | None = None,
-    task_groups: list[list[int]] | tuple[tuple[int, ...], ...] | None = None,
-    available_class_num: int | None = None,
-    task_size: int = 1,
-    class_order_mode: str = "fixed",
-    task_order_mode: str = "fixed",
-    seed: int | None = None,
+    class_num: int | None, 
+    class_order: list[int] | tuple[int, ...] | None = None, 
+    task_groups: list[list[int]] | tuple[tuple[int, ...], ...] | None = None, 
+    available_class_num: int | None = None, 
+    task_size: int = 1, 
+    class_order_mode: str = "fixed", 
+    task_order_mode: str = "fixed", 
+    seed: int | None = None
 ) -> tuple[list[int], list[list[int]]]:
     """Validate and resolve a class-incremental experiment schedule.
 
@@ -532,7 +665,9 @@ class DiffusionModelConfig(KwargsMixin):
     ``num_classes=None``
     and the wrapper uses this mapping to restore the grown topology.
     ``test_steps=None`` lets the model factory cap the default at the raw
-    network's timestep count.
+    network's timestep count. For backward compatibility,
+    ``test_network_name="ema"`` resolves to the raw network when
+    ``use_ema=False``.
     """
 
     use_ema: bool = True
@@ -589,34 +724,6 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_acc_coef: float = 0.5
     distil_acc_coef: float = 0.5
     ctr_acc_coef: float = 0.0
-
-    def __post_init__(self: DiffusionClassifierConfig) -> None:
-        """Validate optional knowledge-distillation controls.
-
-        Args:
-            None.
-
-        Returns:
-            None: Values are validated and scope spelling is normalized.
-        """
-
-        # Require a mathematically defined soft-target temperature.
-        if isinstance(self.distil_temperature, bool) \
-        or not isinstance(self.distil_temperature, Real) \
-        or not isfinite(self.distil_temperature) \
-        or self.distil_temperature <= 0.:
-            raise ValueError(
-                "distil_temperature must be a finite positive number."
-            )
-        self.distil_scope = str(self.distil_scope).lower()
-        # Restrict KD sample allocation to the three implemented protocols.
-        if self.distil_scope not in (
-            "old_classes", "replay_only", "current_and_replay"
-        ):
-            raise ValueError(
-                "distil_scope must be 'old_classes', 'replay_only', or "
-                "'current_and_replay'."
-            )
 
 
 @dataclass
@@ -854,7 +961,9 @@ class OptimizerConfig:
         weight_decay (float | None): Optional AdamW-style weight decay; nonzero
             values require ``name="adamw"`` under TensorFlow 2.10.
         momentum (float): Momentum used by RMSprop/SGD.
-        clipnorm (float | None): Optional global gradient-norm clipping value.
+        clipnorm (float | None): Optional positive finite norm used to clip each
+            variable's gradient tensor independently. This is Keras
+            ``clipnorm`` semantics, not global-gradient clipping.
     """
 
     initial_learning_rate: float = 5e-3
@@ -900,12 +1009,13 @@ class ContinuallyLearnConfig(KwargsMixin):
             introduced class when true; otherwise train on every seen class.
         keep_same_model (bool): Carry shared classifier weights and old output
             columns into the next expanded classifier.
-        use_loaded_opt (bool): Reuse the optimizer stored with the configured
-            classifier template. This preserves the optimizer created by
-            :func:`common.model.get_model` by default.
+        use_loaded_opt (bool): Reconstruct a fresh optimizer from the
+            configuration stored with the classifier template. Optimizer slots
+            and its iteration counter are intentionally not reused by
+            :func:`common.model.get_model`.
         use_buffer (bool): Use fixed-size sample replay instead of a generative
             replay model.
-        buffer_kwargs (dict): ``ReplayBuffer`` controls ``maxlen``,
+        buffer_kwargs (dict | None): ``ReplayBuffer`` controls ``maxlen``,
             ``sample_num``, ``insert_num``, ``seed``, and the optional storage
             ``strategy``. Omitting ``strategy`` retains FIFO exactly.
         baseline (str | None): Optional named research control. ``None`` leaves
@@ -955,9 +1065,6 @@ class ContinuallyLearnConfig(KwargsMixin):
             stored in this YAML-safe section.
         snapshot_network_name (str): ``"raw"`` or ``"ema"`` branch cloned for
             previous-task distillation.
-        teacher_network_name (str | None): Readable alias for
-            ``snapshot_network_name``. ``None`` preserves the established field;
-            an explicit value overrides it.
         use_ensemble_accuracy (bool): Use timestep-ensemble values as the
             authoritative continual accuracy matrix and derived metrics.
         evaluate_ensemble_accuracy (bool): Also evaluate diffusion-classifier
@@ -995,7 +1102,7 @@ class ContinuallyLearnConfig(KwargsMixin):
     keep_same_model: bool = True
     use_loaded_opt: bool = True
     use_buffer: bool = False
-    buffer_kwargs: dict[str, object] = field(
+    buffer_kwargs: dict[str, object] | None = field(
         default_factory=_default_buffer_kwargs
     )
     baseline: str | None = None
@@ -1018,7 +1125,6 @@ class ContinuallyLearnConfig(KwargsMixin):
     train_classifier_separately: bool = False
     use_distillation: bool = False
     snapshot_network_name: str = "raw"
-    teacher_network_name: str | None = None
     use_ensemble_accuracy: bool = False
     evaluate_ensemble_accuracy: bool = False
     ensemble_accuracy_kwargs: dict[str, object] = field(default_factory=dict)
@@ -1031,162 +1137,6 @@ class ContinuallyLearnConfig(KwargsMixin):
     experiment_manifest_hash: str | None = None
     experiment_run_id: str | None = None
     optimizer_steps_per_epoch: int | None = None
-
-    def __post_init__(self: ContinuallyLearnConfig) -> None:
-        """Validate and normalize optional continual research controls.
-
-        ``buffer_kwargs`` remains an extensible mapping because the continual
-        API owns capacity and sampling validation. This hook validates its
-        strategy plus named baselines, matched budgets, gates, cache mode,
-        teacher branch, diagnostic cap, and experiment phase.
-
-        Returns:
-            None: ``buffer_kwargs`` is copied and contains a canonical strategy.
-
-        Raises:
-            TypeError: If ``buffer_kwargs`` is not a mapping or ``None``.
-            ValueError: If its strategy is not FIFO, reservoir, or
-                class-balanced reservoir storage.
-        """
-
-        # Preserve the historical explicit-None shorthand for all defaults.
-        if self.buffer_kwargs is None:
-            self.buffer_kwargs = _default_buffer_kwargs()
-        # Require keyword-style replay controls before inspecting strategy.
-        if not isinstance(self.buffer_kwargs, Mapping):
-            raise TypeError("buffer_kwargs must be a mapping or None.")
-
-        normalized = dict(self.buffer_kwargs)
-        strategy = normalized.get("strategy", "fifo")
-        aliases = {
-            "fifo": "fifo",
-            "reservoir": "reservoir",
-            "class_balanced": "class_balanced",
-            "class-balanced": "class_balanced",
-            "class_balanced_reservoir": "class_balanced",
-        }
-        # Validate the policy before publishing its canonical spelling.
-        if not isinstance(strategy, str) or strategy.lower() not in aliases:
-            raise ValueError(
-                "buffer_kwargs.strategy must be 'fifo', 'reservoir', or "
-                "'class_balanced'."
-            )
-        normalized["strategy"] = aliases[strategy.lower()]
-        self.buffer_kwargs = normalized
-
-        baseline_names = {
-            "sequential", "sequential_finetuning", "cumulative",
-            "cumulative_upper_bound", "reservoir_er", "lwf", "vae_replay",
-            "diffusion_replay", "joint_none", "joint_replay", "joint_kd",
-            "joint_both",
-        }
-        # Reject misspelled named controls before model construction.
-        if self.baseline is not None \
-        and str(self.baseline).lower() not in baseline_names:
-            raise ValueError("baseline is not a supported continual control.")
-        self.replay_budget_mode = str(self.replay_budget_mode).lower()
-        # Keep exposure accounting within the two implemented budget regimes.
-        if self.replay_budget_mode not in ("legacy", "fixed_total"):
-            raise ValueError(
-                "replay_budget_mode must be 'legacy' or 'fixed_total'."
-            )
-        for name in ("replay_old_examples", "replay_current_examples"):
-            value = getattr(self, name)
-            # Exposure counts must be exact nonnegative integers when supplied.
-            if value is not None and (
-                isinstance(value, bool)
-                or not isinstance(value, Integral)
-                or value < 0
-            ):
-                raise ValueError(f"{name} must be nonnegative or None.")
-        # Fixed update accounting is disabled by default and positive when used.
-        if self.optimizer_steps_per_epoch is not None and (
-            isinstance(self.optimizer_steps_per_epoch, bool)
-            or not isinstance(self.optimizer_steps_per_epoch, Integral)
-            or self.optimizer_steps_per_epoch <= 0
-        ):
-            raise ValueError(
-                "optimizer_steps_per_epoch must be positive or None."
-            )
-        # Store an ordinary integer for stable YAML serialization.
-        if self.optimizer_steps_per_epoch is not None:
-            self.optimizer_steps_per_epoch = int(
-                self.optimizer_steps_per_epoch
-            )
-        # Fixed-total mode cannot infer a cross-treatment old-data budget.
-        if self.replay_budget_mode == "fixed_total" \
-        and self.replay_old_examples is None:
-            raise ValueError(
-                "fixed_total replay requires replay_old_examples."
-            )
-        # Candidate generation must be a positive multiple of the final budget.
-        if isinstance(self.replay_candidate_multiplier, bool) \
-        or not isinstance(self.replay_candidate_multiplier, Integral) \
-        or self.replay_candidate_multiplier <= 0:
-            raise ValueError(
-                "replay_candidate_multiplier must be a positive integer."
-            )
-        selection_names = {
-            "all", "uniform", "random", "confidence", "surprise",
-            "confidence_surprise",
-        }
-        self.replay_selection = str(self.replay_selection).lower()
-        # Refuse an unknown replay gate rather than changing a treatment silently.
-        if self.replay_selection not in selection_names:
-            raise ValueError("replay_selection is unsupported.")
-        # Combined confidence-surprise scores use a convex weight.
-        if isinstance(self.replay_surprise_weight, bool) \
-        or not isinstance(self.replay_surprise_weight, Real) \
-        or not 0. <= float(self.replay_surprise_weight) <= 1.:
-            raise ValueError("replay_surprise_weight must be in [0, 1].")
-        # PyYAML 1.1 parses the unquoted token ``off`` as boolean false.
-        self.replay_cache_mode = "off" if self.replay_cache_mode is False \
-            else str(self.replay_cache_mode).lower()
-        # Limit cache behavior to explicit immutable/read-through policies.
-        if self.replay_cache_mode not in (
-            "off", "write", "read", "read_write"
-        ):
-            raise ValueError("replay_cache_mode is unsupported.")
-        # Enabled caching needs a concrete pool shared by treatment variants.
-        if self.replay_cache_mode != "off" and not self.replay_cache_dir:
-            raise ValueError(
-                "replay_cache_dir is required when replay caching is enabled."
-            )
-        # Bound optional quadratic diversity diagnostics by a positive cap.
-        if isinstance(self.mechanistic_max_samples, bool) \
-        or not isinstance(self.mechanistic_max_samples, Integral) \
-        or self.mechanistic_max_samples <= 0:
-            raise ValueError(
-                "mechanistic_max_samples must be a positive integer."
-            )
-        # Normalize the optional readable teacher-branch alias when present.
-        if self.teacher_network_name is not None:
-            self.teacher_network_name = str(self.teacher_network_name).lower()
-            # Restrict snapshots to branches actually exposed by the wrapper.
-            if self.teacher_network_name not in ("raw", "ema"):
-                raise ValueError("teacher_network_name must be 'raw' or 'ema'.")
-        self.snapshot_network_name = str(self.snapshot_network_name).lower()
-        # Keep the established snapshot field under the same branch contract.
-        if self.snapshot_network_name not in ("raw", "ema"):
-            raise ValueError("snapshot_network_name must be 'raw' or 'ema'.")
-        self.experiment_phase = str(self.experiment_phase).lower()
-        # Separate legacy, development-only, and confirmatory evaluation paths.
-        if self.experiment_phase not in (
-            "legacy", "development", "confirmation"
-        ):
-            raise ValueError("experiment_phase is unsupported.")
-        # Confirmation access is valid only through one externally
-        # authenticated, preregistered run declaration.
-        if self.experiment_phase == "confirmation" and not all((
-            self.experiment_manifest_path,
-            self.experiment_manifest_hash,
-            self.experiment_run_id,
-        )):
-            raise ValueError(
-                "confirmation requires experiment_manifest_path, "
-                "experiment_manifest_hash, and experiment_run_id."
-            )
-
 
 @dataclass
 class TrainingConfig:
@@ -1234,8 +1184,9 @@ class TrainingConfig:
         show_images (bool): Display callback sample grids during training.
         save_gifs (bool): Save callback denoising animations during training.
             Trajectory callbacks are skipped for no-EMA and VAE/swap models.
-        results_path (str | None): Base artifact directory passed to the image
-            callback; ``None`` delegates path selection to that callback.
+        results_path (str | os.PathLike[str] | None): Base artifact directory
+            passed to the image callback. ``None`` is supported only by
+            display-only runs whose runtime saving options are all disabled.
         save_weights (bool): Save final wrapper weights and record their path.
             Dynamic diffusion weights require a paired updated config file;
             training writes it even if ordinary config saving was disabled.
@@ -1282,7 +1233,7 @@ class TrainingConfig:
     use_valset: bool = True
     show_images: bool = False
     save_gifs: bool = True
-    results_path: str | None = "./results"
+    results_path: str | os.PathLike[str] | None = "./results"
     save_weights: bool = True
     task: str = "legacy"
     seed: int | None = None
@@ -1296,6 +1247,17 @@ class TrainingConfig:
     tensorboard_path: str | None = None
     tensorboard_run_name: str | None = None
     report_every_epoch: bool = True
+
+    def __post_init__(self: TrainingConfig) -> None:
+        """Convert an optional path-like artifact root.
+
+        Returns:
+            None: The path is normalized in place when present.
+        """
+
+        # Leave disabled artifact output unchanged.
+        if self.results_path is not None:
+            self.results_path = os.fspath(self.results_path)
 
 
 @dataclass
@@ -1432,7 +1394,8 @@ def load_config(
 
     Raises:
         FileNotFoundError: If ``path`` does not exist.
-        yaml.YAMLError: If YAML syntax is invalid.
+        yaml.YAMLError: If YAML syntax is invalid or a mapping repeats an
+            explicit key.
         TypeError: If the YAML root/section is not a mapping or contains an
             unknown dataclass field.
     """
@@ -1442,7 +1405,7 @@ def load_config(
         return Config()
 
     with open(path, "r", encoding="utf-8") as stream:
-        data = yaml.safe_load(stream)
+        data = _safe_load_unique_yaml(stream)
     
     # Require a mapping at the YAML document root.
     if not isinstance(data, Mapping):
@@ -1596,772 +1559,94 @@ def save_config(
 
 
 def run_self_tests() -> dict[str, str]:
-    """Run exhaustive, file-local tests for every configuration class.
-
-    The suite checks defaults and complementary overrides, inheritance,
-    recursive ``kwargs`` copying, mapping-to-dataclass normalization, distinct
-    default factories, YAML full, shortened, and partial round trips, and
-    representative invalid mappings/files. Temporary files are removed
-    automatically.
-
-    Args:
-        None.
+    """Smoke-test construction, passive values, schedules, and YAML safety.
 
     Returns:
-        dict[str, str]: One ``"passed"`` entry for each of the twenty classes
-        defined by this module.
+        dict[str, str]: One passing result for each configuration class.
     """
 
-    from dataclasses import make_dataclass
+    from io import StringIO
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-
-    mixin_probe_type = make_dataclass(
-        "KwargsMixinProbe", 
-        [("values", list[int]), ("options", dict[str, object])], 
-        bases=(KwargsMixin,)
-    )
-    original_values = [1, 2]
-    mixin_probe = mixin_probe_type(original_values, {"nested": [3]})
-    kwargs_copy = mixin_probe.kwargs()
-    assert kwargs_copy == {"values": [1, 2], "options": {"nested": [3]}}
-    kwargs_copy["values"].append(9)
-    kwargs_copy["options"]["nested"].append(4)
-    assert original_values == [1, 2]
-    assert mixin_probe.options == {"nested": [3]}
-    try:
-        KwargsMixin().kwargs()
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("KwargsMixin.kwargs must reject non-dataclass instances.")
-
-    transformer_defaults = DiffusionTransformerConfig()
-    assert transformer_defaults.num_classes == 10
-    assert transformer_defaults.timesteps == 1_000
-    assert transformer_defaults.use_cfg is True
-    assert transformer_defaults.distil_token_type is None
-    assert transformer_defaults.cls_token_regularizer_kwargs == {
-        "start": 0,
-        "end": 1,
-        "train_type": "normal",
-        "distil_type": "hard",
-    }
-    transformer_custom = DiffusionTransformerConfig(
-        num_classes=0, 
-        timesteps=1, 
-        use_cfg=False, 
-        image_size=8, 
-        channels=3, 
-        patch_size=4, 
-        dim=16, 
-        patchify_with_cnn=True, 
-        patches_pos_merger_type="concat", 
-        patches_conds_merger_type="concat", 
-        time_freq_dim=32, 
-        time_mlp_ratio=2, 
-        mha_key_dim=4, 
-        mha_num_heads=2, 
-        depth=0, 
-        vit_block_mlp_ratio=1, 
-        ln_mlp_ratio=3, 
-        cls_token_regularizer_kwargs={
-            "start": 0,
-            "end": 1,
-            "mlp_ratio": 2.0,
-            "activation_function": "relu",
-        },
-        use_refiner_cnn=True, 
-        refiner_cnn_hidden_dim=7, 
-        refiner_cnn_residual=False, 
-    )
-    assert transformer_custom.kwargs() == asdict(transformer_custom)
-    assert transformer_custom.depth == 0 and transformer_custom.use_cfg is False
-    assert (
-        transformer_custom.cls_token_regularizer_kwargs["activation_function"]
-        == "relu"
-    )
-    transformer_none_values = DiffusionTransformerConfig(
-        time_freq_dim=None, 
-        time_mlp_ratio=None, 
-        mha_key_dim=None, 
-        ln_mlp_ratio=None, 
-        refiner_cnn_hidden_dim=None, 
-    )
-    assert transformer_none_values.mha_key_dim is None
-
-    decoder_defaults = DiTDecoderConfig()
-    assert decoder_defaults.encoder_output_grid_size is None
-    assert decoder_defaults.shift_inputs is True
-    assert decoder_defaults.use_decoder_ids == [None]
-    decoder_custom = DiTDecoderConfig(
-        encoder_output_grid_size=4,
-        encoder_output_dim=8,
-        shift_inputs=False,
-        use_causal_mask=False,
-    )
-    assert decoder_custom.kwargs()["encoder_output_dim"] == 8
-
-    encoder_decoder_defaults = DiTEncoderDecoderConfig()
-    encoder_decoder_custom = DiTEncoderDecoderConfig(
-        encoder_kwargs={"depth": 1},
-        decoder_kwargs={"depth": 1},
-    )
-    assert encoder_decoder_defaults.encoder_kwargs is None
-    assert encoder_decoder_custom.kwargs()["decoder_kwargs"] == {"depth": 1}
-
-    classifier_defaults = DiTClassifierConfig()
-    assert isinstance(classifier_defaults, DiffusionTransformerConfig)
-    assert classifier_defaults.aggregate_from_noises is False
-    assert classifier_defaults.classifier_only_cls_token is True
-    assert classifier_defaults.classifier_only_distil_token is True
-    assert classifier_defaults.clf_distil_token_type is None
-    classifier_custom = DiTClassifierConfig(
-        num_classes=3, 
-        aggregate_from_noises=True, 
-        classifier_only_cls_token=False, 
-        cls_token_pos_merger_type="concat", 
-        clf_cls_token_regularizer_kwargs={
-            "start": 0,
-            "end": 1,
-            "mlp_ratio": 1.5,
-            "activation_function": "tanh",
-        },
-        dropout_rate=0.5, 
-    )
-    assert classifier_custom.kwargs()["aggregate_from_noises"] is True
-    assert classifier_custom.kwargs()["num_classes"] == 3
-    assert (
-        classifier_custom.kwargs()["clf_cls_token_regularizer_kwargs"][
-            "mlp_ratio"
-        ] == 1.5
-    )
-
-    encoder_decoder_classifier_defaults = DiTEncoderDecoderClassifierConfig()
-    assert isinstance(encoder_decoder_classifier_defaults, DiTClassifierConfig)
-    encoder_decoder_classifier_custom = DiTEncoderDecoderClassifierConfig(
-        encoder_kwargs={"clf_depth": 2},
-        decoder_kwargs={"depth": 1},
-    )
-    assert encoder_decoder_classifier_custom.encoder_kwargs == {"clf_depth": 2}
-
-    unet_defaults = UNetConfig()
-    unet_custom = UNetConfig(
-        image_size=8,
-        widths=[4, 8],
-        use_skip_connections=False,
-    )
-    assert unet_defaults.widths == [32, 64, 96]
-    assert unet_custom.kwargs()["widths"] == [4, 8]
-    unet_defaults.widths.append(128)
-    assert UNetConfig().widths == [32, 64, 96]
-
-    unet_classifier_defaults = UNetClassifierConfig()
-    assert isinstance(unet_classifier_defaults, UNetConfig)
-    assert unet_classifier_defaults.feature_aggregation_ids_dict == {1: [-1]}
-    assert unet_classifier_defaults.classifier_only_distil_token is False
-    unet_classifier_custom = UNetClassifierConfig(
-        aggregate_from_noises=True,
-        clf_depth=2,
-        force_global_avg_pooling=False,
-    )
-    assert unet_classifier_custom.kwargs()["clf_depth"] == 2
-
-    diffusion_defaults = DiffusionModelConfig()
-    assert diffusion_defaults.test_network_name == "ema"
-    assert diffusion_defaults.test_steps is None
-    assert diffusion_defaults.swap_noise_image is False
-    assert diffusion_defaults.show_separate_noise_losses is False
-    assert diffusion_defaults.map_preprocess is False
-    assert diffusion_defaults.map_num_parallel_calls == 1
-    assert diffusion_defaults.train_noisified_max_timesteps is None
-    assert diffusion_defaults.test_noisified_max_timesteps is None
-    assert diffusion_defaults.seen_classes == {}
-    diffusion_custom = DiffusionModelConfig(
-        test_network_name="raw", 
-        ema_decay=0.0, 
-        scheduler_name="linear", 
-        modify_first_t=True, 
-        p_uncond=0.0, 
-        test_steps=2, 
-        test_cfg_scale=1.0, 
-        swap_noise_image=True, 
-        show_separate_noise_losses=True,
-        seen_classes={4: 0},
-    )
-    assert diffusion_custom.kwargs() == asdict(diffusion_custom)
-    assert diffusion_custom.modify_first_t and diffusion_custom.swap_noise_image
-    assert diffusion_custom.show_separate_noise_losses is True
-    diffusion_defaults.seen_classes[9] = 0
-    assert DiffusionModelConfig().seen_classes == {}
-
-    diffusion_classifier_defaults = DiffusionClassifierConfig()
-    assert isinstance(diffusion_classifier_defaults, DiffusionModelConfig)
-    assert diffusion_classifier_defaults.mask_by_nulls is None
-    assert diffusion_classifier_defaults.distil_type == "hard"
-    assert diffusion_classifier_defaults.distil_loss_coef == 0.0
-    assert diffusion_classifier_defaults.clf_acc_coef == 0.5
-    assert diffusion_classifier_defaults.distil_acc_coef == 0.5
-    assert diffusion_classifier_defaults.ctr_acc_coef == 0.0
-    diffusion_classifier_custom = DiffusionClassifierConfig(
-        mask_by_nulls=False, 
-        mask_by_t_threshold=True, 
-        mask_t_percentage=0, 
-        clf_loss_coef=0.0, 
-        test_network_name="raw", 
-    )
-    assert diffusion_classifier_custom.kwargs()["mask_by_t_threshold"] is True
-    assert diffusion_classifier_custom.kwargs()["clf_loss_coef"] == 0.0
-
-    diffusion_classifier_v2_defaults = DiffusionClassifierV2Config()
-    assert isinstance(diffusion_classifier_v2_defaults, DiffusionClassifierConfig)
-    assert diffusion_classifier_v2_defaults.clf_loss_coef == 1.0
-    diffusion_classifier_v2_custom = DiffusionClassifierV2Config(
-        clf_vars_embedding_ids=[0, 2],
-        clf_vars_noise_part_ids=[-1],
-        clf_train_noisified_max_timesteps=3,
-    )
-    assert diffusion_classifier_v2_custom.kwargs()["clf_vars_noise_part_ids"] == [-1]
-
-    vae_defaults = VariationalAutoencoderConfig()
-    vae_custom = VariationalAutoencoderConfig(
-        data_dim=4,
-        hiddens_dims=[],
-        conditioned=True,
-        class_num=2,
-        compile=False,
-    )
-    assert vae_defaults.hiddens_dims == [16]
-    assert vae_custom.kwargs()["class_num"] == 2
-
-    vae_classifier_defaults = VAEClassifierConfig()
-    vae_classifier_custom = VAEClassifierConfig(
-        data_dim=4,
-        hiddens_dims=[],
-        alpha=0.0,
-    )
-    assert "conditioned" not in vae_classifier_defaults.kwargs()
-    assert "class_num" not in vae_classifier_defaults.kwargs()
-    assert "compile" not in vae_classifier_defaults.kwargs()
-    assert vae_classifier_custom.kwargs()["alpha"] == 0.0
-
-    dataset_defaults = DatasetConfig()
-    dataset_boundary = DatasetConfig(batch_size=1, shuffle_buffer=0)
-    assert dataset_defaults == DatasetConfig(batch_size=128, shuffle_buffer=10_000)
-    assert dataset_boundary.batch_size == 1 and dataset_boundary.shuffle_buffer == 0
-
-    transformer_instance = DiffusionTransformerConfig(dim=5)
-    model_from_instances = ModelConfig(
-        with_classifier=False, 
-        show_network_summary=False, 
-        weights_path="weights.h5", 
-        loss_function="mae", 
-        diffusion_transformer=transformer_instance, 
-        dit_classifier=classifier_custom, 
-        dit_decoder=decoder_custom,
-        dit_encoder_decoder=encoder_decoder_custom,
-        dit_encoder_decoder_classifier=encoder_decoder_classifier_custom,
-        unet=unet_custom,
-        unet_classifier=unet_classifier_custom,
-        variational_autoencoder=vae_custom,
-        vae_classifier=vae_classifier_custom,
-        diffusion_model=diffusion_custom, 
-        diffusion_classifier=diffusion_classifier_custom, 
-        diffusion_classifier_v2=diffusion_classifier_v2_custom,
-    )
-    assert model_from_instances.diffusion_transformer is transformer_instance
-    assert model_from_instances.dit_classifier is classifier_custom
-    assert model_from_instances.loss_function == "mae"
-    model_from_mappings = ModelConfig(
-        diffusion_transformer={"dim": 11, "use_cfg": False}, 
-        dit_classifier={"dropout_rate": 0.25}, 
-        dit_decoder={"encoder_output_grid_size": 7},
-        dit_encoder_decoder={"decoder_kwargs": {"depth": 1}},
-        dit_encoder_decoder_classifier={"encoder_kwargs": {"clf_depth": 2}},
-        unet={"widths": [4, 8]},
-        unet_classifier={"clf_depth": 2},
-        variational_autoencoder={"latent_dim": 3},
-        vae_classifier={"alpha": 0.5},
-        diffusion_model={"test_network_name": "raw"}, 
-        diffusion_classifier={"mask_by_nulls": False}, 
-        diffusion_classifier_v2={"clf_vars_embedding_ids": [0]},
-    )
-    assert isinstance(model_from_mappings.diffusion_transformer, DiffusionTransformerConfig)
-    assert isinstance(model_from_mappings.dit_classifier, DiTClassifierConfig)
-    assert isinstance(model_from_mappings.dit_decoder, DiTDecoderConfig)
-    assert isinstance(model_from_mappings.dit_encoder_decoder, DiTEncoderDecoderConfig)
-    assert isinstance(
-        model_from_mappings.dit_encoder_decoder_classifier,
-        DiTEncoderDecoderClassifierConfig,
-    )
-    assert isinstance(model_from_mappings.unet, UNetConfig)
-    assert isinstance(model_from_mappings.unet_classifier, UNetClassifierConfig)
-    assert isinstance(
-        model_from_mappings.variational_autoencoder,
-        VariationalAutoencoderConfig,
-    )
-    assert isinstance(model_from_mappings.vae_classifier, VAEClassifierConfig)
-    assert isinstance(model_from_mappings.diffusion_model, DiffusionModelConfig)
-    assert isinstance(model_from_mappings.diffusion_classifier, DiffusionClassifierConfig)
-    assert isinstance(
-        model_from_mappings.diffusion_classifier_v2,
-        DiffusionClassifierV2Config,
-    )
-    assert model_from_mappings.diffusion_transformer.dim == 11
-    assert ModelConfig().diffusion_transformer is not ModelConfig().diffusion_transformer
-    try:
-        ModelConfig(diffusion_transformer={"unknown": 1})
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("Unknown nested model fields must be rejected.")
-
-    optimizer_defaults = OptimizerConfig()
-    optimizer_custom = OptimizerConfig(initial_learning_rate=0.0, decay_steps=1)
-    assert optimizer_defaults.decay_steps is None
-    assert optimizer_custom == OptimizerConfig(0.0, 1)
-
-    continually_learn_defaults = ContinuallyLearnConfig()
-    continually_learn_custom = ContinuallyLearnConfig(
-        class_num=3,
-        class_order=[2, 0, 1],
-        task_groups=[[2, 0], [1]],
-        remove_prev_classes=False,
-        keep_same_model=False,
-        use_loaded_opt=False,
-        use_buffer=True,
-        buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
-        plot_results=False,
-        generative_model_kwargs={"train_num": -1, "samples_per_class": 2},
-        use_distillation=True,
-        evaluate_ensemble_accuracy=True,
-        ensemble_accuracy_kwargs={"weighted": True, "max_t": 2},
-        return_details=True,
-    )
-    assert continually_learn_defaults.class_num is None
-    assert continually_learn_defaults.buffer_kwargs["maxlen"] == 10_000
-    assert continually_learn_custom.class_num == 3
-    assert continually_learn_custom.class_order == [2, 0, 1]
-    assert continually_learn_custom.task_groups == [[2, 0], [1]]
-    assert continually_learn_custom.use_buffer is True
-    assert continually_learn_defaults.evaluate_ensemble_accuracy is False
-    assert continually_learn_defaults.use_distillation is False
-    assert continually_learn_custom.use_distillation is True
-    assert continually_learn_custom.ensemble_accuracy_kwargs["max_t"] == 2
-    continually_learn_defaults.buffer_kwargs["maxlen"] = 1
-    continually_learn_defaults.ensemble_accuracy_kwargs["max_t"] = 1
-    assert ContinuallyLearnConfig().buffer_kwargs["maxlen"] == 10_000
-    assert ContinuallyLearnConfig().ensemble_accuracy_kwargs == {}
-
-    resolved_order, resolved_groups = resolve_continual_schedule(
-        None,
-        class_order=[3, 1, 2, 0],
-        task_groups=[[3, 1], [2, 0]],
-        available_class_num=4,
-    )
-    assert resolved_order == [3, 1, 2, 0]
-    assert resolved_groups == [[3, 1], [2, 0]]
-    assert resolve_continual_schedule(4, available_class_num=4) == (
-        [0, 1, 2, 3], [[0], [1], [2], [3]]
-    )
-    random_schedule = resolve_continual_schedule(
-        6,
-        available_class_num=6,
-        task_size=2,
-        class_order_mode="random",
-        seed=17,
-    )
-    assert random_schedule == resolve_continual_schedule(
-        6,
-        available_class_num=6,
-        task_size=2,
-        class_order_mode="random",
-        seed=17,
-    )
-    assert all(len(group) == 2 for group in random_schedule[1])
-    try:
-        resolve_continual_schedule(
-            3,
-            class_order=[0, 1, 2],
-            task_groups=[[0, 2], [1]],
-            available_class_num=4,
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Mismatched continual schedules must be rejected.")
-
-    training_defaults = TrainingConfig()
-    training_custom = TrainingConfig(
-        project_tag="self-test", 
-        epochs=1, 
-        fit_method="fit_progressively",
-        stage_tasks=[
-            {"timesteps": [1, 4], "resolution": 4},
-            ["depth", "vision_transformer_block"],
-        ],
-        stages_num=2,
-        stages_verbose=False,
-        stage_epochs=2,
-        final_epochs=0,
-        timestep_boundaries=[[1, 4], None],
-        timestep_clustering_type="uniform",
-        resolutions=[4, None],
-        depths=[None, "vision_transformer_block"],
-        pacing_type="plateau",
-        earlystopping_type="batch_wise",
-        progressive_monitor="noise_loss",
-        progressive_patience=3,
-        min_delta=0.0,
-        stopper_mode="max",
-        fit_kwargs={"steps_per_epoch": 1},
-        use_valset=False, 
-        show_images=True, 
-        save_gifs=False, 
-        results_path=None, 
-        save_weights=False, 
-    )
-    assert training_defaults.dtype_policy == "float32"
-    assert training_defaults.deterministic_ops is False
-    assert training_defaults.use_valset is True and training_defaults.save_gifs is True
-    assert training_defaults.fit_method == "fit"
-    assert training_defaults.stage_tasks is None
-    assert training_defaults.stages_num is None
-    assert training_defaults.stages_verbose is True
-    assert training_defaults.stage_epochs == 1
-    assert training_defaults.final_epochs is None
-    assert training_defaults.timestep_boundaries is None
-    assert training_defaults.timestep_clustering_type == "log_snr"
-    assert training_defaults.resolutions is None
-    assert training_defaults.depths is None
-    assert training_defaults.pacing_type == "fixed"
-    assert training_defaults.earlystopping_type == "epoch_wise"
-    assert training_defaults.progressive_monitor == "val_noise_loss"
-    assert training_defaults.progressive_patience == 10
-    assert training_defaults.min_delta == 1e-3
-    assert training_defaults.stopper_mode == "min"
-    assert training_defaults.fit_kwargs == {}
-    assert training_custom.show_images is True and training_custom.results_path is None
-    assert training_custom.fit_method == "fit_progressively"
-    assert training_custom.stage_tasks[0]["timesteps"] == [1, 4]
-    assert training_custom.stages_num == 2
-    assert training_custom.stages_verbose is False
-    assert training_custom.stage_epochs == 2
-    assert training_custom.final_epochs == 0
-    assert training_custom.timestep_boundaries == [[1, 4], None]
-    assert training_custom.timestep_clustering_type == "uniform"
-    assert training_custom.resolutions == [4, None]
-    assert training_custom.depths == [None, "vision_transformer_block"]
-    assert training_custom.pacing_type == "plateau"
-    assert training_custom.earlystopping_type == "batch_wise"
-    assert training_custom.progressive_monitor == "noise_loss"
-    assert training_custom.progressive_patience == 3
-    assert training_custom.min_delta == 0.0
-    assert training_custom.stopper_mode == "max"
-    assert training_custom.fit_kwargs == {"steps_per_epoch": 1}
-    training_defaults.fit_kwargs["steps_per_epoch"] = 2
-    assert TrainingConfig().fit_kwargs == {}
-
-    reporting_defaults = ReportingConfig()
-    reporting_custom = ReportingConfig(
-        show_history_plot=True, 
-        save_history_plot=False, 
-        final_images_cfg_scale=0.0, 
-        final_images_steps=2, 
-        show_final_images=True, 
-        save_final_images=False, 
-        save_final_gifs=False, 
-        plot_without_20percent=False, 
-        run_trainset_eval=False, 
-        run_valset_eval=False, 
-        evaluate_ensemble_accuracy=True,
-        ensemble_accuracy_kwargs={"weighted": True, "max_t": 2},
-        save_csv=False,
-    )
-    assert reporting_defaults.save_history_plot is True
-    assert reporting_custom.show_history_plot is True
-    assert reporting_defaults.evaluate_ensemble_accuracy is False
-    assert reporting_custom.ensemble_accuracy_kwargs["max_t"] == 2
-    reporting_defaults.ensemble_accuracy_kwargs["max_t"] = 1
-    assert ReportingConfig().ensemble_accuracy_kwargs == {}
-    assert not any((
-        reporting_custom.save_history_plot, 
-        reporting_custom.save_final_images, 
-        reporting_custom.save_final_gifs, 
-        reporting_custom.plot_without_20percent, 
-        reporting_custom.run_trainset_eval, 
-        reporting_custom.run_valset_eval, 
-        reporting_custom.save_csv,
-    ))
-
-    default_config_a = Config()
-    default_config_b = Config()
-    assert isinstance(default_config_a.dataset, DatasetConfig)
-    assert isinstance(default_config_a.model, ModelConfig)
-    assert default_config_a.model.loss_function == "mse"
-    assert isinstance(default_config_a.optimizer, OptimizerConfig)
-    assert isinstance(default_config_a.training, TrainingConfig)
-    assert isinstance(
-        default_config_a.continually_learn, ContinuallyLearnConfig
-    )
-    assert isinstance(default_config_a.reporting, ReportingConfig)
-    assert default_config_a.dataset is not default_config_b.dataset
-    assert default_config_a.model is not default_config_b.model
-    assert default_config_a.continually_learn is not \
-        default_config_b.continually_learn
-    mapped_config = Config(
-        dataset={"batch_size": 2, "shuffle_buffer": 0}, 
+    config = Config(
+        dataset={"batch_size": 4},
         model={
-            "with_classifier": False, 
-            "loss_function": "mae", 
-            "diffusion_transformer": {"depth": 0}
-        }, 
-        optimizer={"initial_learning_rate": 1e-4, "decay_steps": 3}, 
-        training={
-            "epochs": 1,
-            "save_weights": False,
-            "fit_method": "fit_progressively",
-            "stage_tasks": [{"timesteps": [0, 1]}],
-            "stage_epochs": 2,
-            "final_epochs": 0,
-            "fit_kwargs": {"steps_per_epoch": 1},
-        },
-        continually_learn={
-            "class_num": 4,
-            "plot_results": False,
-            "evaluate_ensemble_accuracy": True
-        },
-        reporting={
-            "run_trainset_eval": False,
-            "run_valset_eval": False,
-            "ensemble_accuracy_kwargs": {"max_t": 4}
-        },
-        hpo={
-            "study_name": "short-save-probe",
-            "sampled": {"dropout_rate": 0.0},
-        },
-    )
-    assert mapped_config.dataset.batch_size == 2
-    assert mapped_config.model.loss_function == "mae"
-    assert mapped_config.model.diffusion_transformer.depth == 0
-    assert mapped_config.optimizer.decay_steps == 3
-    assert mapped_config.training.epochs == 1
-    assert mapped_config.training.fit_method == "fit_progressively"
-    assert mapped_config.training.stage_tasks == [{"timesteps": [0, 1]}]
-    assert mapped_config.training.stage_epochs == 2
-    assert mapped_config.training.final_epochs == 0
-    assert mapped_config.training.fit_kwargs == {"steps_per_epoch": 1}
-    assert mapped_config.continually_learn.class_num == 4
-    assert mapped_config.continually_learn.evaluate_ensemble_accuracy is True
-    assert mapped_config.reporting.run_trainset_eval is False
-    assert mapped_config.reporting.ensemble_accuracy_kwargs["max_t"] == 4
-    assert mapped_config.hpo["sampled"]["dropout_rate"] == 0.0
-    assert _section(mapped_config.dataset, DatasetConfig) is mapped_config.dataset
-    assert _section({"batch_size": 4}, DatasetConfig).batch_size == 4
-    for invalid_value in (None, 1, "dataset"):
-        try:
-            _section(invalid_value, DatasetConfig)
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("Non-mapping configuration sections must fail.")
-
-    distillation_config = Config(
-        model={
-            "name": "unet_classifier",
-            "unet_classifier": {"classifier_only_distil_token": True},
+            "diffusion_transformer": {"dim": 16},
             "diffusion_classifier": {
-                "distil_type": "soft",
-                "distil_loss_coef": 0.25,
-                "ctr_acc_coef": 0.2,
+                "distil_temperature": 0.0,
+                "distil_scope": "EXPERIMENTAL",
             },
         },
-        training={
-            "task": "continual",
-            "fit_method": "fit_progressively",
-            "stage_tasks": "timesteps_only",
-            "stages_num": 2,
+        optimizer={"clipnorm": 0.0},
+        continually_learn={
+            "baseline": "experimental",
+            "buffer_kwargs": {"strategy": "experimental"},
         },
-        continually_learn={"use_distillation": True},
+        training={"task": "EXPERIMENTAL", "results_path": Path("artifacts")},
     )
-    assert distillation_config.model.unet_classifier.classifier_only_distil_token
-    assert distillation_config.model.diffusion_classifier.distil_type == "soft"
-    assert distillation_config.training.fit_method == "fit_progressively"
-    assert distillation_config.continually_learn.use_distillation is True
-
-    with TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        full_path = temp_path / "full.yaml"
-        save_config(mapped_config, full_path)
-        full_text = full_path.read_text(encoding="utf-8")
-        assert full_text == yaml.safe_dump(asdict(mapped_config), sort_keys=True)
-        assert full_text.index("dataset:") < full_text.index("training:")
-        loaded_full = load_config(full_path)
-        assert loaded_full == mapped_config
-        assert loaded_full.training.stage_tasks == [{"timesteps": [0, 1]}]
-        assert loaded_full.training.fit_kwargs == {"steps_per_epoch": 1}
-
-        shortened_path = temp_path / "shortened.yaml"
-        save_config(mapped_config, shortened_path, shorten=True)
-        shortened_data = yaml.safe_load(
-            shortened_path.read_text(encoding="utf-8")
-        )
-        assert shortened_data == {
-            "dataset": {"batch_size": 2, "shuffle_buffer": 0},
-            "model": {
-                "with_classifier": False,
-                "loss_function": "mae",
-                "diffusion_transformer": {"depth": 0},
-            },
-            "optimizer": {
-                "initial_learning_rate": 1e-4,
-                "decay_steps": 3,
-            },
-            "training": {
-                "epochs": 1,
-                "fit_method": "fit_progressively",
-                "stage_tasks": [{"timesteps": [0, 1]}],
-                "stage_epochs": 2,
-                "final_epochs": 0,
-                "fit_kwargs": {"steps_per_epoch": 1},
-                "save_weights": False,
-            },
-            "continually_learn": {
-                "class_num": 4,
-                "plot_results": False,
-                "evaluate_ensemble_accuracy": True,
-            },
-            "reporting": {
-                "run_trainset_eval": False,
-                "run_valset_eval": False,
-                "ensemble_accuracy_kwargs": {"max_t": 4},
-            },
-            "hpo": {
-                "study_name": "short-save-probe",
-                "sampled": {"dropout_rate": 0.0},
-            },
-        }
-        assert load_config(shortened_path) == mapped_config
-
-        default_shortened_path = temp_path / "default-shortened.yaml"
-        default_before_save = asdict(default_config_a)
-        save_config(default_config_a, default_shortened_path, shorten=True)
-        assert yaml.safe_load(
-            default_shortened_path.read_text(encoding="utf-8")
-        ) == {}
-        assert asdict(default_config_a) == default_before_save
-        assert load_config(default_shortened_path) == Config()
-
-        distillation_path = temp_path / "distillation-progressive.yaml"
-        save_config(distillation_config, distillation_path)
-        loaded_distillation = load_config(distillation_path)
-        assert loaded_distillation == distillation_config
-        assert "teacher_network:" not in distillation_path.read_text(
-            encoding="utf-8"
-        )
-
-        partial_path = temp_path / "partial.yaml"
-        partial_path.write_text(
-            "dataset:\n  batch_size: 3\nmodel:\n  diffusion_model:\n"
-            "    scheduler_name: linear\n",
-            encoding="utf-8",
-        )
-        loaded_partial = load_config(partial_path)
-        assert loaded_partial.dataset.batch_size == 3
-        assert loaded_partial.dataset.shuffle_buffer == 10_000
-        assert loaded_partial.model.diffusion_model.scheduler_name == "linear"
-        assert (
-            loaded_partial.model.diffusion_model.train_noisified_max_timesteps
-            is None
-        )
-        assert (
-            loaded_partial.model.diffusion_model.test_noisified_max_timesteps
-            is None
-        )
-        assert loaded_partial.training.fit_method == "fit"
-        assert loaded_partial.training.stage_tasks is None
-        assert loaded_partial.training.fit_kwargs == {}
-
-        explicit_null_path = temp_path / "explicit-null.yaml"
-        explicit_null_path.write_text(
-            "model:\n  diffusion_model:\n"
-            "    train_noisified_max_timesteps: null\n"
-            "    test_noisified_max_timesteps: null\n",
-            encoding="utf-8",
-        )
-        loaded_explicit_null = load_config(explicit_null_path)
-        null_diffusion = loaded_explicit_null.model.diffusion_model
-        assert null_diffusion.train_noisified_max_timesteps is None
-        assert null_diffusion.test_noisified_max_timesteps is None
-
-        invalid_yaml_path = temp_path / "invalid.yaml"
-        invalid_yaml_path.write_text("dataset: [", encoding="utf-8")
-        try:
-            load_config(invalid_yaml_path)
-        except yaml.YAMLError:
-            pass
-        else:
-            raise AssertionError("Malformed YAML must raise yaml.YAMLError.")
-
-        non_mapping_path = temp_path / "list.yaml"
-        non_mapping_path.write_text("- one\n- two\n", encoding="utf-8")
-        try:
-            load_config(non_mapping_path)
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("A non-mapping YAML root must be rejected.")
-
-        unknown_path = temp_path / "unknown.yaml"
-        unknown_path.write_text("unknown: true\n", encoding="utf-8")
-        try:
-            load_config(unknown_path)
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("Unknown top-level YAML keys must be rejected.")
-
-        try:
-            load_config(temp_path / "missing.yaml")
-        except FileNotFoundError:
-            pass
-        else:
-            raise AssertionError("Missing configuration files must fail.")
-
-        try:
-            save_config({"not": "a dataclass"}, temp_path / "invalid-save.yaml")
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("save_config must reject non-dataclass roots.")
-
-    assert load_config() == Config()
-
-    return {
-        "KwargsMixin": "passed", 
-        "DiffusionTransformerConfig": "passed", 
-        "DiTDecoderConfig": "passed",
-        "DiTEncoderDecoderConfig": "passed",
-        "DiTClassifierConfig": "passed", 
-        "DiTEncoderDecoderClassifierConfig": "passed",
-        "UNetConfig": "passed",
-        "UNetClassifierConfig": "passed",
-        "DiffusionModelConfig": "passed", 
-        "DiffusionClassifierConfig": "passed", 
-        "DiffusionClassifierV2Config": "passed",
-        "VariationalAutoencoderConfig": "passed",
-        "VAEClassifierConfig": "passed",
-        "DatasetConfig": "passed", 
-        "ModelConfig": "passed", 
-        "OptimizerConfig": "passed", 
-        "ContinuallyLearnConfig": "passed",
-        "TrainingConfig": "passed", 
-        "ReportingConfig": "passed", 
-        "Config": "passed", 
+    assert config.dataset.batch_size == 4
+    assert config.model.diffusion_transformer.dim == 16
+    assert config.model.diffusion_classifier.distil_temperature == 0.0
+    assert config.model.diffusion_classifier.distil_scope == "EXPERIMENTAL"
+    assert config.optimizer.clipnorm == 0.0
+    assert config.continually_learn.baseline == "experimental"
+    assert config.continually_learn.buffer_kwargs == {
+        "strategy": "experimental"
     }
+    assert config.training.task == "EXPERIMENTAL"
+    assert config.training.results_path == "artifacts"
 
+    kwargs_copy = config.model.diffusion_transformer.kwargs()
+    kwargs_copy["dim"] = 99
+    assert config.model.diffusion_transformer.dim == 16
 
-# Run this module's executable self-test entry point when invoked directly.
-if __name__ == "__main__":
-    print(run_self_tests())
+    order, groups = resolve_continual_schedule(
+        3,
+        class_order=[2, 0, 1],
+        task_groups=[[2], [0, 1]],
+        available_class_num=3,
+    )
+    assert order == [2, 0, 1] and groups == [[2], [0, 1]]
+    assert normalize_training_task("Joint") == "joint"
+
+    merged = _safe_load_unique_yaml(StringIO(
+        "base: &base\n  task: classification\n"
+        "training:\n  <<: *base\n  task: continual\n"
+    ))
+    assert merged["training"]["task"] == "continual"
+    try:
+        _safe_load_unique_yaml(StringIO("training:\n  task: joint\n  task: continual\n"))
+    except yaml.constructor.ConstructorError:
+        pass
+    else:
+        raise AssertionError("Duplicate YAML keys must be rejected.")
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "config.yaml"
+        save_config(config, path)
+        assert load_config(path) == config
+
+    expected_classes = (
+        "KwargsMixin",
+        "DiffusionTransformerConfig",
+        "DiTDecoderConfig",
+        "DiTEncoderDecoderConfig",
+        "DiTClassifierConfig",
+        "DiTEncoderDecoderClassifierConfig",
+        "UNetConfig",
+        "UNetClassifierConfig",
+        "DiffusionModelConfig",
+        "DiffusionClassifierConfig",
+        "DiffusionClassifierV2Config",
+        "VariationalAutoencoderConfig",
+        "VAEClassifierConfig",
+        "DatasetConfig",
+        "ModelConfig",
+        "OptimizerConfig",
+        "ContinuallyLearnConfig",
+        "TrainingConfig",
+        "ReportingConfig",
+        "Config",
+    )
+    return {name: "passed" for name in expected_classes}

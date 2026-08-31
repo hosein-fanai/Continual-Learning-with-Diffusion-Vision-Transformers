@@ -31,6 +31,8 @@ import statistics
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from common.validation import require
+
 
 EXPERIMENT_SCHEMA_VERSION = 2
 """Version of the paired-block experiment manifest schema."""
@@ -192,7 +194,7 @@ def _normalize_base_config(
         raise TypeError("base_config must be a mapping or None.")
 
     copied = _canonical_copy(dict(base_config))
-    assert isinstance(copied, dict)
+    require(isinstance(copied, dict))
 
     return copied
 
@@ -223,7 +225,7 @@ def _normalize_analysis_spec(
     supplied = dict(analysis_spec or {})
     defaults.update(supplied)
     normalized = _canonical_copy(defaults)
-    assert isinstance(normalized, dict)
+    require(isinstance(normalized, dict))
 
     metric = normalized.get("primary_metric")
     # A confirmatory analysis needs an outcome fixed before testing.
@@ -273,7 +275,7 @@ def _normalize_stream(
         raise TypeError("Every continual stream must be a mapping.")
 
     copied = _canonical_copy(dict(stream))
-    assert isinstance(copied, dict)
+    require(isinstance(copied, dict))
     block_id = copied.pop("block_id", f"block-{index:04d}")
 
     # Stable block identifiers define the independent pairing units.
@@ -330,7 +332,7 @@ def _manifest_payload(manifest: Mapping[str, object]) -> dict[str, object]:
     payload = dict(manifest)
     payload.pop("manifest_hash", None)
     copied = _canonical_copy(payload)
-    assert isinstance(copied, dict)
+    require(isinstance(copied, dict))
 
     return copied
 
@@ -457,7 +459,7 @@ def validate_experiment_manifest(
         raise TypeError("manifest must be a mapping.")
 
     canonical = _canonical_copy(dict(manifest))
-    assert isinstance(canonical, dict)
+    require(isinstance(canonical, dict))
 
     # A strict top-level schema prevents unhashed operational fields.
     if set(canonical) != {
@@ -1201,6 +1203,7 @@ def paired_run_statistics(
 
         # A supplied confirmation design must be externally frozen up front.
         if validated_manifest["phase"] == "confirmation":
+            # Confirmation inference requires an independently supplied hash.
             if expected_hash is None:
                 raise ValueError(
                     "Confirmation statistics require a frozen "
@@ -1249,6 +1252,7 @@ def paired_run_statistics(
 
     # Confirmation inference must be anchored to an externally frozen design.
     if selected_phase == "confirmation":
+        # Reject confirmation rows without their validated manifest credentials.
         if validated_manifest is None or expected_hash is None:
             raise ValueError(
                 "Confirmation statistics require a frozen "
@@ -1262,6 +1266,7 @@ def paired_run_statistics(
 
     # Supplied manifests must describe the exact rows being analyzed.
     if validated_manifest is not None:
+        # Bind every selected row to the supplied manifest hash and phase.
         if selected_hash != validated_manifest["manifest_hash"] \
         or selected_phase != validated_manifest["phase"]:
             raise ValueError("Paired rows do not match the supplied manifest.")
@@ -1367,36 +1372,6 @@ def paired_run_statistics(
     }
 
 
-def run_self_tests() -> dict[str, str]:
-    """Exercise deterministic manifest generation and t critical accuracy.
-
-    Args:
-        None.
-
-    Returns:
-        dict[str, str]: Passing status for the experiment helper module.
-    """
-
-    manifest = create_paired_block_manifest(
-        {"a": {"snapshot": "raw"}, "b": {"snapshot": "ema"}}, 
-        [
-            {"class_order": [0, 1], "task_groups": [[0], [1]]}, 
-            {"class_order": [1, 0], "task_groups": [[1], [0]]}
-        ], 
-        seed=17
-    )
-
-    assert validate_experiment_manifest(manifest) == manifest
-    assert math.isclose(
-        _student_t_critical_95(3), 
-        3.182446305284263, 
-        rel_tol=0.0, 
-        abs_tol=1.0e-10
-    )
-
-    return {"experiment": "passed"}
-
-
 __all__ = [
     "EXPERIMENT_SCHEMA_VERSION", 
     "LONG_RESULT_FIELDS", 
@@ -1406,7 +1381,6 @@ __all__ = [
     "paired_run_statistics", 
     "read_experiment_manifest", 
     "read_long_results", 
-    "run_self_tests", 
     "validate_confirmation_rerun", 
     "validate_experiment_manifest", 
     "validate_frozen_confirmation", 

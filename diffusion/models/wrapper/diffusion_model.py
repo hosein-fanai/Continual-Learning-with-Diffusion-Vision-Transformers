@@ -17,6 +17,7 @@ from . import NetworkName, TrainType, ClusteringType
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
+from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -26,7 +27,6 @@ from diffusion.models.transformer.di_t_decoder import DiTDecoder
 from diffusion.schedulers import make_schedule, SchedulerName
 
 
-# @tf.keras.saving.register_keras_serializable()
 class DiffusionModel(ArgumentSaverModel):
     """Orchestrate diffusion training and sampling around a raw transformer.
 
@@ -84,9 +84,9 @@ class DiffusionModel(ArgumentSaverModel):
         kl_train_type: TrainType = "cond", 
         ctr_train_type: TrainType = "cond", 
         train_noisified_min_timesteps: int = 0, 
-        train_noisified_max_timesteps: int | None = -1,
+        train_noisified_max_timesteps: int | None = -1, 
         test_noisified_min_timesteps: int = 0, 
-        test_noisified_max_timesteps: int | None = -1,
+        test_noisified_max_timesteps: int | None = -1, 
         resize_method: str = "area", 
         resize_antialias: bool = True, 
         swap_noise_image: bool = False, 
@@ -257,21 +257,21 @@ class DiffusionModel(ArgumentSaverModel):
             self.ctr_loss_coef, dtype=stable_dtype
         )
         self.use_image_loss = bool(self.image_loss_coef > 0.)
-        self.train_noisified_max_timesteps = self.timesteps if self.train_noisified_max_timesteps == -1 \
-                                            else self.train_noisified_max_timesteps
         self.train_noisified_max_timesteps = 0 if self.train_noisified_max_timesteps is None \
                                             else self.train_noisified_max_timesteps
-        self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps == -1 \
-                                            else self.test_noisified_max_timesteps
+        self.train_noisified_max_timesteps = self.timesteps if self.train_noisified_max_timesteps == -1 \
+                                            else int(self.train_noisified_max_timesteps)
         self.test_noisified_max_timesteps = 0 if self.test_noisified_max_timesteps is None \
-                                            else self.test_noisified_max_timesteps
+                                            else self.test_noisified_max_timestep
+        self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps == -1 \
+                                            else int(self.test_noisified_max_timesteps)
         self.map_num_parallel_calls = tf.data.AUTOTUNE if self.map_num_parallel_calls is None \
-                                    else self.map_num_parallel_calls
+                                    else int(self.map_num_parallel_calls)
+        self.seed = self._normalize_seed(self.seed)
         self._preprocess_training = None
 
         self.load_schedules()
         self.set_timestep_bounds()
-        # Avoid subclass resolution hooks until subclass fields are initialized.
         DiffusionModel.set_current_resolution(self)
         self.build(())
 
@@ -306,73 +306,82 @@ class DiffusionModel(ArgumentSaverModel):
             "swap_noise_image", "map_preprocess", 
             "show_separate_noise_losses"
         ):
-            assert isinstance(local_vars[name], bool), f"{name} must be boolean."
+            require(
+                isinstance(local_vars[name], bool), 
+                f"{name} must be boolean."
+            )
 
-        assert local_vars["test_network_name"] in get_args(NetworkName), \
-            f"test_network_name must be one of {get_args(NetworkName)}."
+        require(local_vars["test_network_name"] in get_args(NetworkName), \
+            f"test_network_name must be one of {get_args(NetworkName)}.")
 
-        assert isinstance(local_vars["ema_decay"], Real) and \
+        require(isinstance(local_vars["ema_decay"], Real) and \
             not isinstance(local_vars["ema_decay"], bool) and \
             np.isfinite(local_vars["ema_decay"]) and \
             0. <= local_vars["ema_decay"] < 1., \
-            "ema_decay must be in the range of [0., 1.)."
+            "ema_decay must be in the range of [0., 1.).")
 
-        assert isinstance(local_vars["test_steps"], Integral) and \
+        require(isinstance(local_vars["test_steps"], Integral) and \
             not isinstance(local_vars["test_steps"], bool) and \
             2 <= local_vars["test_steps"] <= network.timesteps, \
-            "steps must be in the range of [2, timesteps]."
+            "steps must be in the range of [2, timesteps].")
 
-        assert isinstance(local_vars["test_eta"], Real) and \
+        require(isinstance(local_vars["test_eta"], Real) and \
             not isinstance(local_vars["test_eta"], bool) and \
             np.isfinite(local_vars["test_eta"]) and \
             0. <= local_vars["test_eta"] <= 1., \
-            "eta must be in the range of [0., 1.]."
+            "eta must be in the range of [0., 1.].")
 
-        assert isinstance(local_vars["p_uncond"], Real) and \
+        require(isinstance(local_vars["p_uncond"], Real) and \
             not isinstance(local_vars["p_uncond"], bool) and \
             np.isfinite(local_vars["p_uncond"]) and \
             0. <= local_vars["p_uncond"] <= 1., \
-            "p_uncond must be in the range of [0., 1.]."
+            "p_uncond must be in the range of [0., 1.].")
 
         for name in ("train_cfg_scale", "test_cfg_scale"):
             value = local_vars[name]
-            assert value is None or (
+            require(value is None or (
                 isinstance(value, Real)
                 and not isinstance(value, bool)
                 and np.isfinite(value)
-            ), f"{name} must be None or a finite number."
+            ), f"{name} must be None or a finite number.")
 
         for name in (
-            "noise_loss_coef", "image_loss_coef",
+            "noise_loss_coef", "image_loss_coef", 
             "kl_loss_coef", "ctr_loss_coef"
         ):
             value = local_vars[name]
-            assert isinstance(value, Real) and \
+            require(isinstance(value, Real) and \
                 not isinstance(value, bool) and np.isfinite(value) and value >= 0., \
-                f"{name} must be a finite nonnegative number."
+                f"{name} must be a finite nonnegative number.")
 
-        assert local_vars["kl_train_type"] in get_args(TrainType), \
-            f"kl_train_type can be one of {TrainType}."
+        require(local_vars["kl_train_type"] in get_args(TrainType), \
+            f"kl_train_type can be one of {TrainType}.")
 
-        assert local_vars["ctr_train_type"] in get_args(TrainType), \
-            f"ctr_train_type can be one of {TrainType}."
+        require(local_vars["ctr_train_type"] in get_args(TrainType), \
+            f"ctr_train_type can be one of {TrainType}.")
 
         # Require CFG and a training scale for unconditional auxiliary losses.
         if local_vars["kl_train_type"] == "uncond" or \
         local_vars["ctr_train_type"] == "uncond":
-            assert local_vars["network"].use_cfg and \
-                local_vars["train_cfg_scale"] is not None, \
-                "Unconditional auxiliary losses require "\
+            require(
+                local_vars["network"].use_cfg and
+                local_vars["train_cfg_scale"] is not None, 
+                "Unconditional auxiliary losses require "
                 "CFG and a non-None train_cfg_scale."
+            )
 
         # Normalize persisted continual state before constructor serialization.
-        assert isinstance(local_vars["seen_classes"], dict), \
+        require(
+            isinstance(local_vars["seen_classes"], dict), 
             "seen_classes must be a mapping."
+        )
 
         # Validate restoration width only when saved continual state is present.
         if local_vars["seen_classes"]:
-            assert network.num_classes <= len(local_vars["seen_classes"]), \
+            require(
+                network.num_classes <= len(local_vars["seen_classes"]), 
                 "seen_classes cannot be smaller than network.num_classes."
+            )
 
     def _get_progressive_timestep_boundaries(
         self, 
@@ -404,9 +413,9 @@ class DiffusionModel(ArgumentSaverModel):
                 partition cannot be constructed.
         """
 
-        assert 1 <= stages_num <= self.timesteps, \
+        require(1 <= stages_num <= self.timesteps, \
             f"num_stages must be in [1, {self.timesteps}] range, "\
-            f"but got {stages_num}."
+            f"but got {stages_num}.")
 
 
         # Divide the discrete timestep axis evenly for uniform clustering.
@@ -698,6 +707,137 @@ class DiffusionModel(ArgumentSaverModel):
             tf.argmax(matches, axis=-1, output_type=tf.int32)
         )
 
+    def _is_prepared_dataset_spec(self, element_spec: object) -> bool:
+        """Return whether one dataset element is already wrapper-prepared.
+
+        Raw classifier datasets may contain a third replay-provenance tensor,
+        so arity greater than two alone cannot distinguish raw data from the
+        seven-tensor diffusion representation. Phase-specific wrappers can
+        override this method for their own prepared arity.
+
+        Args:
+            element_spec (object): ``tf.data.Dataset.element_spec`` value.
+
+        Returns:
+            bool: True for the base seven-or-more-tensor prepared contract.
+        """
+
+        return isinstance(element_spec, (tuple, list)) and len(element_spec) >= 7
+
+    def _prepare_sampling_labels(
+        self, 
+        network: ArgumentSaverModel, 
+        labels: tf.Tensor | Sequence[int]
+    ) -> tf.Tensor:
+        """Normalize and validate explicit network condition IDs.
+
+        Args:
+            network (ArgumentSaverModel): Selected raw or EMA network.
+            labels (tf.Tensor | Sequence[int]): One condition ID per sample.
+
+        Returns:
+            tf.Tensor: Nonempty int32 vector whose IDs are valid for network.
+
+        Raises:
+            TypeError: If labels cannot form an integer tensor.
+            ValueError: If labels are not a vector or contain an invalid ID.
+        """
+
+        try:
+            labels = tf.convert_to_tensor(labels)
+        except (TypeError, ValueError) as error:
+            raise TypeError("labels must be an integer tensor or sequence.") \
+                from error
+        # Network condition IDs must use an integer, non-Boolean dtype.
+        if not labels.dtype.is_integer or labels.dtype == tf.bool:
+            raise TypeError("labels must have an integer dtype.")
+        # Reject a statically known non-vector label structure early.
+        if labels.shape.rank is not None and labels.shape.rank != 1:
+            raise ValueError(
+                "labels must be a one-dimensional tensor or sequence."
+            )
+        # Require at least one requested sample when static shape is available.
+        if labels.shape.rank == 1 and labels.shape[0] == 0:
+            raise ValueError("labels must contain at least one condition ID.")
+
+        num_labels = getattr(network, "num_labels", None)
+        # Sampling requires a finite, positive network condition vocabulary.
+        if isinstance(num_labels, bool) or not isinstance(num_labels, Integral) \
+        or num_labels < 1:
+            raise ValueError(
+                "The selected network must expose a positive num_labels."
+            )
+
+        static_labels = tf.get_static_value(labels)
+        # Report statically visible out-of-vocabulary labels before graph tracing.
+        if static_labels is not None and (
+        np.any(static_labels < 0) or 
+        np.any(static_labels >= num_labels)):
+            raise ValueError(
+                f"labels must contain network IDs in [0, {num_labels})."
+            )
+
+        label_assertions = (
+            tf.debugging.assert_rank(
+                labels, 1, 
+                message="labels must be one-dimensional."
+            ), 
+            tf.debugging.assert_positive(
+                tf.size(labels), 
+                message="labels must not be empty."
+            ),
+            tf.debugging.assert_greater_equal(
+                labels, 
+                tf.cast(0, labels.dtype), 
+                message="label IDs must be nonnegative."
+            ),
+            tf.debugging.assert_less(
+                labels, 
+                tf.cast(num_labels, labels.dtype), 
+                message="label IDs exceed the selected network vocabulary."
+            )
+        )
+        with tf.control_dependencies([
+            assertion for assertion in label_assertions
+            if assertion is not None
+        ]):
+            return tf.cast(tf.identity(labels), tf.int32)
+
+    @staticmethod
+    def _normalize_seed(
+        seed: int | None, 
+        name: str = "seed"
+    ) -> int | None:
+        """Validate and normalize a TensorFlow/NumPy-compatible seed.
+
+        Args:
+            seed (int | None): Optional non-Boolean integral seed.
+            name (str): Public argument name used in error messages.
+
+        Returns:
+            int | None: A plain Python integer in ``[0, 2**32)``, or None.
+
+        Raises:
+            TypeError: If the value is not an integer or None.
+            ValueError: If the integer is outside the shared runtime range.
+        """
+
+        # Preserve None as the explicit request for advancing runtime randomness.
+        if seed is None:
+            return None
+
+        # Reject Booleans and non-integral seeds before normalizing NumPy scalars.
+        if isinstance(seed, bool) or not isinstance(seed, Integral):
+            raise TypeError(f"{name} must be a non-Boolean integer or None.")
+
+        seed = int(seed)
+
+        # Keep seeds inside the unsigned range shared by runtime seed helpers.
+        if not 0 <= seed < 2 ** 32:
+            raise ValueError(f"{name} must be in [0, 2**32).")
+
+        return seed
+
     @property
     def current_timesteps_bounds(self) -> tuple[int, int]:
         """Return active forward-noising bounds as ``[minimum, maximum)``.
@@ -954,14 +1094,14 @@ class DiffusionModel(ArgumentSaverModel):
                 # validation dataset was already prepared above, so do not map
                 # the resulting seven/eight-tensor element a second time.
                 element_spec = x.element_spec
-                already_prepared = isinstance(
-                    element_spec, (tuple, list)
-                ) and len(element_spec) > 2
+                already_prepared = self._is_prepared_dataset_spec(
+                    element_spec
+                )
                 # Map only raw two-tensor image/label dataset elements.
                 if not already_prepared:
                     self._preprocess_training = False
                     x = x.map(
-                        self.prep_inputs_map,
+                        self.prep_inputs_map, 
                         num_parallel_calls=self.map_num_parallel_calls
                     )
                     self._preprocess_training = None
@@ -1016,9 +1156,7 @@ class DiffusionModel(ArgumentSaverModel):
         uncond_labels, classes) = prepared_inputs
 
         with tf.GradientTape() as tape:
-            (loss, noise_loss, cond_noise_loss, 
-            uncond_noise_loss, image_loss, kl_loss, 
-            ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+            outputs = self.forward_and_compute_loss(
                 "raw", x0, noises, t, x_t, 
                 cond_labels=cfg_labels, 
                 uncond_labels=uncond_labels, 
@@ -1026,6 +1164,9 @@ class DiffusionModel(ArgumentSaverModel):
                 cfg_scale=self.train_cfg_scale, 
                 training=True
             )
+            (loss, noise_loss, cond_noise_loss, 
+            uncond_noise_loss, image_loss, kl_loss, 
+            ctr_loss, ctr_preds) = outputs
 
         self.apply_grads(tape, loss)
         self.update_ema()
@@ -1065,9 +1206,7 @@ class DiffusionModel(ArgumentSaverModel):
         (x0, noises, t, x_t, cond_labels, 
         uncond_labels, classes) = prepared_inputs
 
-        (loss, noise_loss, cond_noise_loss, 
-        uncond_noise_loss, image_loss, kl_loss, 
-        ctr_loss, ctr_preds) = self.forward_and_compute_loss(
+        outputs = self.forward_and_compute_loss(
             self.test_network_name, 
             x0, noises, t, x_t, 
             cond_labels=cond_labels, 
@@ -1077,6 +1216,9 @@ class DiffusionModel(ArgumentSaverModel):
             use_image_loss=True, 
             training=False
         )
+        (loss, noise_loss, cond_noise_loss, 
+        uncond_noise_loss, image_loss, kl_loss, 
+        ctr_loss, ctr_preds) = outputs
 
         results = self.get_results_dict(
             noise_loss, 
@@ -1293,27 +1435,40 @@ class DiffusionModel(ArgumentSaverModel):
             verbose=fit_kwargs.get("verbose", True)
         )
 
-        assert "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, \
-            "Do not pass epochs/initial_epoch to fit_progressively(); "\
+        require(
+            "epochs" not in fit_kwargs and "initial_epoch" not in fit_kwargs, 
+            "Do not pass epochs/initial_epoch to fit_progressively(); "
             "use stage_epochs and final_epochs instead."
-        assert timestep_clustering_type in get_args(ClusteringType), \
-                    "timestep_clustering_type must be one of "\
-                    f"{get_args(ClusteringType)} but not "\
-                    f"{timestep_clustering_type}."
-        assert pacing_type in (vals:=("fixed", "plateau")), \
+        )
+        require(
+            timestep_clustering_type in get_args(ClusteringType), 
+            "timestep_clustering_type must be one of "
+            f"{get_args(ClusteringType)} but not "
+            f"{timestep_clustering_type}."
+        )
+        require(
+            pacing_type in (vals:=("fixed", "plateau")), 
             f"pacing_type must be one of {vals} but not {pacing_type}."
-        assert earlystopping_type in (vals:=("batch_wise", "epoch_wise")), \
+        )
+        require(
+            earlystopping_type in (vals:=("batch_wise", "epoch_wise")), 
             f"earlystopping_type must be one of {vals} but not {earlystopping_type}."
+        )
 
         # Follow the opt-in aggregate metric rename for progressive callbacks.
         if self.show_separate_noise_losses and \
         monitor.removeprefix("val_") == "noise_loss":
             monitor = monitor.replace("noise_loss", "total_noise_loss")
-        assert monitor.removeprefix("val_") in (vals:=self.metrics_names), \
+
+        require(
+            monitor.removeprefix("val_") in (vals:=self.metrics_names), 
             f"monitor must be one of {vals} (or with val_) but not {monitor}."
+        )
 
         only_task = stage_tasks if stage_tasks in (
-            "timesteps_only", "resolutions_only", "depths_only"
+            "timesteps_only", 
+            "resolutions_only", 
+            "depths_only"
         ) else None
         # Infer timestep-only stage count from the supplied boundaries.
         if only_task == "timesteps_only" and timestep_boundaries is not None:
@@ -1633,15 +1788,15 @@ class DiffusionModel(ArgumentSaverModel):
 
     def set_timestep_bounds(
         self, 
-        min_timesteps: int | None = None, 
-        max_timesteps: int | None = None
+        min_timesteps: int = 0, 
+        max_timesteps: int | None = -1
     ) -> None:
         """Set the active half-open timestep interval for forward noising.
 
         Args:
-            min_timesteps (int | None): Inclusive lower bound; ``None`` means 0.
+            min_timesteps (int): Inclusive lower bound.
             max_timesteps (int | None): Exclusive upper bound; ``None`` means
-                the current full schedule length.
+                0 and -1 means the current full schedule length.
 
         Returns:
             None: Changed bounds invalidate cached Keras train/test/predict
@@ -1650,19 +1805,27 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             AssertionError: Unless ``0 <= min < max <= timesteps``.
         """
-        min_timesteps = 0 if min_timesteps is None else min_timesteps
-        max_timesteps = self.timesteps if max_timesteps is None else max_timesteps
+        max_timesteps = 0 if max_timesteps is None else max_timesteps
+        max_timesteps = self.timesteps if max_timesteps == -1 else max_timesteps
 
 
-        assert isinstance(min_timesteps, int) and \
-            not isinstance(min_timesteps, bool), \
+        require(
+            isinstance(min_timesteps, Integral) and 
+            not isinstance(min_timesteps, bool), 
             "min_timesteps must be an integer."
-        assert isinstance(max_timesteps, int) and \
-            not isinstance(max_timesteps, bool), \
+        )
+        require(
+            isinstance(max_timesteps, Integral) and 
+            not isinstance(max_timesteps, bool), 
             "max_timesteps must be an integer."
-        assert 0 <= min_timesteps < max_timesteps <= self.timesteps, \
-            "Expected 0 <= min_timesteps < max_timesteps <= timesteps, "\
+        )
+        min_timesteps = int(min_timesteps)
+        max_timesteps = int(max_timesteps)
+        require(
+            0 <= min_timesteps < max_timesteps <= self.timesteps, 
+            "Expected 0 <= min_timesteps < max_timesteps <= timesteps, "
             f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
+        )
 
 
         # Retrace train/test steps only when the active timestep range changes.
@@ -1861,17 +2024,81 @@ class DiffusionModel(ArgumentSaverModel):
 
         min_timesteps = self._active_min_timestep if min_timesteps is None else min_timesteps
         max_timesteps = self._active_max_timestep if max_timesteps is None else max_timesteps
-        seed = self.seed if seed is None else seed
+        seed = self._normalize_seed(
+            self.seed if seed is None else seed, 
+            "noisify seed"
+        )
 
         x_shape = tf.shape(x0)
 
-        t = tf.random.uniform(
-            (x_shape[0],), 
-            minval=min_timesteps, 
-            maxval=max_timesteps, 
-            dtype=tf.int32, 
-            seed=seed
-        ) if t is None else t
+        # Draw timesteps only when the caller did not supply explicit IDs.
+        if t is None:
+            # Reject invalid lower bounds before TensorFlow reports an RNG error.
+            if isinstance(min_timesteps, bool) or not isinstance(
+                min_timesteps, Integral
+            ):
+                raise TypeError("min_timesteps must be an integer.")
+            # Reject invalid upper bounds before TensorFlow reports an RNG error.
+            if isinstance(max_timesteps, bool) or not isinstance(
+                max_timesteps, Integral
+            ):
+                raise TypeError("max_timesteps must be an integer.")
+
+            min_timesteps = int(min_timesteps)
+            max_timesteps = int(max_timesteps)
+
+            # Require a nonempty half-open range inside the diffusion horizon.
+            if not 0 <= min_timesteps < max_timesteps <= self.timesteps:
+                raise ValueError(
+                    "Expected 0 <= min_timesteps < max_timesteps <= "
+                    f"timesteps, got [{min_timesteps}, {max_timesteps}) "
+                    f"with T={self.timesteps}."
+                )
+
+            t = tf.random.uniform(
+                (x_shape[0],), 
+                minval=min_timesteps, 
+                maxval=max_timesteps, 
+                dtype=tf.int32, 
+                seed=seed
+            )
+        # Validate caller-supplied timestep IDs before forward noising.
+        else:
+            t = tf.convert_to_tensor(t)
+
+            # Timesteps are discrete schedule indices, never floating or Boolean.
+            if not t.dtype.is_integer or t.dtype == tf.bool:
+                raise TypeError("t must have an integer dtype.")
+            # Reject a statically known non-vector timestep structure early.
+            if t.shape.rank is not None and t.shape.rank != 1:
+                raise ValueError("t must be a one-dimensional tensor.")
+            timestep_assertions = (
+                tf.debugging.assert_rank(
+                    t, 1, 
+                    message="t must be one-dimensional."
+                ), 
+                tf.debugging.assert_equal(
+                    tf.shape(t)[0], 
+                    x_shape[0], 
+                    message="t batch size must match x0."
+                ), 
+                tf.debugging.assert_greater_equal(
+                    t, 
+                    tf.cast(0, t.dtype), 
+                    message="timestep IDs must be nonnegative."
+                ), 
+                tf.debugging.assert_less(
+                    t, 
+                    tf.cast(self.timesteps, t.dtype), 
+                    message="timestep IDs must be less than timesteps."
+                )
+            )
+            with tf.control_dependencies([
+                assertion for assertion in timestep_assertions
+                if assertion is not None
+            ]):
+                t = tf.cast(tf.identity(t), tf.int32)
+
         noises = tf.random.normal(
             x_shape, 
             mean=0., 
@@ -1943,10 +2170,10 @@ class DiffusionModel(ArgumentSaverModel):
         if not self.use_ema:
             return False
 
-
-        assert len(self.network.weights) == len(self.ema_network.weights), \
+        require(
+            len(self.network.weights) == len(self.ema_network.weights), 
             "Raw and EMA networks must have the same topology."
-
+        )
 
         for w, ew in zip(self.network.weights, self.ema_network.weights):
             ew.assign(self.ema_decay * ew + (1 - self.ema_decay) * w)
@@ -1976,10 +2203,10 @@ class DiffusionModel(ArgumentSaverModel):
             variables = self.network.trainable_variables
 
         apply_policy_gradients(
-            tape,
-            self.optimizer,
-            loss,
-            variables,
+            tape, 
+            self.optimizer, 
+            loss, 
+            variables
         )
 
     def get_cfg_labels(
@@ -2110,9 +2337,10 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Compute reporting-only conditional losses without changing `loss`.
         if self.show_separate_noise_losses:
-            assert cond_labels is not None, \
+            require(
+                cond_labels is not None, 
                 "cond_labels are required to show separate noise losses."
-
+            )
 
             # Without CFG, zero is a real class and every row is conditional.
             if self.use_cfg:
@@ -2126,23 +2354,24 @@ class DiffusionModel(ArgumentSaverModel):
 
             cond_has_rows = tf.reduce_any(cond_mask)
             cond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, cond_mask),
-                tf.boolean_mask(noises_pred, cond_mask),
+                tf.boolean_mask(noises, cond_mask), 
+                tf.boolean_mask(noises_pred, cond_mask)
             )
             cond_noise_loss = tf.where(
-                cond_has_rows,
-                cond_noise_loss,
-                tf.zeros_like(cond_noise_loss),
+                cond_has_rows, 
+                cond_noise_loss, 
+                tf.zeros_like(cond_noise_loss)
             )
+
             uncond_has_rows = tf.reduce_any(uncond_mask)
             uncond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, uncond_mask),
-                tf.boolean_mask(noises_pred, uncond_mask),
+                tf.boolean_mask(noises, uncond_mask), 
+                tf.boolean_mask(noises_pred, uncond_mask)
             )
             uncond_noise_loss = tf.where(
-                uncond_has_rows,
-                uncond_noise_loss,
-                tf.zeros_like(uncond_noise_loss),
+                uncond_has_rows, 
+                uncond_noise_loss, 
+                tf.zeros_like(uncond_noise_loss)
             )
         # Leave both reporting losses absent when the feature is disabled.
         else:
@@ -2624,53 +2853,61 @@ class DiffusionModel(ArgumentSaverModel):
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
         use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss \
                         if use_total_loss is None else use_total_loss
+
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         batch_weight = tf.cast(tf.shape(classes)[0], stable_dtype) \
                        if classes is not None else tf.cast(1., stable_dtype)
-
         results = {}
 
         # Update the total-loss tracker only when that loss was requested.
         if use_total_loss:
-            assert total_loss is not None, \
+            require(
+                total_loss is not None, 
                 "When use_total_loss is True, total_loss cannot be None."
-
+            )
 
             self.total_loss_tracker.update_state(
-                total_loss, sample_weight=batch_weight
+                total_loss, 
+                sample_weight=batch_weight
             )
             results.update({
-                self.total_loss_tracker.name: 
+                self.total_loss_tracker.name:
                 self.total_loss_tracker.result()
             })
 
         self.noise_loss_tracker.update_state(
-            noise_loss, sample_weight=batch_weight
+            noise_loss, 
+            sample_weight=batch_weight
         )
         results.update({
             self.noise_loss_tracker.name: 
-            self.noise_loss_tracker.result(), 
+            self.noise_loss_tracker.result()
         })       
 
         # Update optional split means using sample counts rather than batches.
         if cond_noise_loss is not None and uncond_noise_loss is not None:
             cond_weight = tf.cast(1., stable_dtype)
             uncond_weight = tf.cast(1., stable_dtype)
+
             # Derive conditional/null population sizes when labels are available.
             if cond_labels is not None:
                 cond_mask = cond_labels != 0 if self.use_cfg else tf.ones_like(
-                    cond_labels, dtype=tf.bool
+                    cond_labels, 
+                    dtype=tf.bool
                 )
                 cond_weight = tf.reduce_sum(tf.cast(cond_mask, stable_dtype))
                 uncond_weight = tf.reduce_sum(tf.cast(
-                    tf.logical_not(cond_mask), stable_dtype
+                    tf.logical_not(cond_mask), 
+                    stable_dtype
                 ))
 
             self.cond_noise_loss_tracker.update_state(
-                cond_noise_loss, sample_weight=cond_weight
+                cond_noise_loss, 
+                sample_weight=cond_weight
             )
             self.uncond_noise_loss_tracker.update_state(
-                uncond_noise_loss, sample_weight=uncond_weight
+                uncond_noise_loss, 
+                sample_weight=uncond_weight
             )
             results.update({
                 self.cond_noise_loss_tracker.name:
@@ -2681,12 +2918,14 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Update image reconstruction metrics only when image loss is active.
         if use_image_loss:
-            assert image_loss is not None, \
+            require(
+                image_loss is not None, 
                 "When use_image_loss is True, image_loss cannot be None."
-
+            )
 
             self.image_loss_tracker.update_state(
-                image_loss, sample_weight=batch_weight
+                image_loss, 
+                sample_weight=batch_weight
             )
             results.update({
                 self.image_loss_tracker.name: 
@@ -2695,27 +2934,33 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Update the KL tracker only when a KL objective is active.
         if use_kl_loss:
-            assert kl_loss is not None, \
+            require(
+                kl_loss is not None, 
                 "When use_kl_loss is True, kl_loss cannot be None."
-
+            )
 
             self.kl_loss_tracker.update_state(
-                kl_loss, sample_weight=batch_weight
+                kl_loss, 
+                sample_weight=batch_weight
             )
             results.update({
                 self.kl_loss_tracker.name: 
-                self.kl_loss_tracker.result(), 
+                self.kl_loss_tracker.result()
             })
 
         # Update class-token metrics only when their objective is active.
         if use_ctr_loss:
-            assert ctr_loss is not None and ctr_preds is not None and \
-                classes is not None, "When use_ctr_loss is True, "\
-                "ctr_loss, ctr_preds, and classes cannot be None."
+            require(
+                ctr_loss is not None and ctr_preds is not None and 
+                classes is not None, 
+                "When use_ctr_loss is True, ctr_loss, "
+                "ctr_preds, and classes cannot be None."
+            )
 
 
             self.ctr_loss_tracker.update_state(
-                ctr_loss, sample_weight=batch_weight
+                ctr_loss, 
+                sample_weight=batch_weight
             )
             self.ctr_accuracy_tracker.update_state(
                 classes, 
@@ -2725,7 +2970,7 @@ class DiffusionModel(ArgumentSaverModel):
                 self.ctr_loss_tracker.name: 
                 self.ctr_loss_tracker.result(), 
                 self.ctr_accuracy_tracker.name: 
-                self.ctr_accuracy_tracker.result(), 
+                self.ctr_accuracy_tracker.result()
             })
 
         return results
@@ -2806,31 +3051,70 @@ class DiffusionModel(ArgumentSaverModel):
         ] if network.dynamic_num_classes else list(
             range(int(network.use_cfg), network.num_labels)
         )
-        labels = tf.cast(tf.convert_to_tensor(
+        labels = self._prepare_sampling_labels(
+            network, 
             default_labels if labels is None else labels
-        ), tf.int32)
-        # Require one condition label per generated sample.
-        if labels.shape.rank != 1:
-            raise ValueError(
-                "labels must be a one-dimensional tensor or list."
-            )
-        n = len(labels)
-        seed = self.seed if seed is None else seed
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        ts = tf.zeros(
-            shape=(n,), 
-            dtype=tf.int32
         )
-        z = tf.random.normal(
-            shape=(
-                n, 
-                reshaper.output_shape[1][-1]
-            ), 
-            mean=0., 
-            stddev=1., 
-            dtype=stable_dtype,
-            seed=seed
-        ) if z is None else z
+        n = tf.shape(labels)[0]
+        seed = self._normalize_seed(
+            self.seed if seed is None else seed, 
+            "sample seed"
+        )
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        ts = tf.zeros_like(labels, dtype=tf.int32)
+        latent_width = int(reshaper.output_shape[1][-1])
+
+        # Draw one latent per requested label when no latent is supplied.
+        if z is None:
+            z = tf.random.normal(
+                shape=tf.stack((n, latent_width)), 
+                mean=0., 
+                stddev=1., 
+                dtype=stable_dtype, 
+                seed=seed
+            )
+        # Normalize and validate caller-supplied variational latents.
+        else:
+            try:
+                z = tf.convert_to_tensor(z)
+            except (TypeError, ValueError) as error:
+                raise TypeError("z must be a floating tensor.") from error
+            # Latent arithmetic requires a floating dtype.
+            if not z.dtype.is_floating:
+                raise TypeError("z must have a floating dtype.")
+            # The variational bottleneck consumes one vector per example.
+            if z.shape.rank is not None and z.shape.rank != 2:
+                raise ValueError("z must be a rank-2 latent tensor.")
+            # Reject a statically incompatible bottleneck width early.
+            if z.shape.rank == 2 and z.shape[-1] is not None \
+            and int(z.shape[-1]) != latent_width:
+                raise ValueError(
+                    f"z width must be {latent_width}, got {z.shape[-1]}."
+                )
+            # Reject a statically incompatible batch size early.
+            if z.shape.rank == 2 and z.shape[0] is not None \
+            and labels.shape[0] is not None \
+            and int(z.shape[0]) != int(labels.shape[0]):
+                raise ValueError("z batch size must match labels.")
+            z_assertions = (
+                tf.debugging.assert_rank(
+                    z, 2, message="z must be a rank-2 latent tensor."
+                ),
+                tf.debugging.assert_equal(
+                    tf.shape(z)[0], n,
+                    message="z batch size must match labels.",
+                ),
+                tf.debugging.assert_equal(
+                    tf.shape(z)[1], latent_width,
+                    message="z width does not match the variational bottleneck.",
+                ),
+            )
+            with tf.control_dependencies([
+                assertion for assertion in z_assertions
+                if assertion is not None
+            ]):
+                z = tf.cast(tf.identity(z), stable_dtype)
+
         z = z_projector(
             z, 
             training=False
@@ -2893,8 +3177,24 @@ class DiffusionModel(ArgumentSaverModel):
             lists of NumPy arrays, one per reverse step.
         """
 
+        for name, value in (
+            ("return_x_ts", return_x_ts), 
+            ("return_x0s", return_x0s), 
+            ("verbose", verbose)
+        ):
+            # Sampling-control flags must be true Booleans.
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be boolean.")
+
         # Route sampling through the variational decoder in swapped-objective mode.
         if self.swap_noise_image:
+            # The direct variational path has no reverse-diffusion trajectory.
+            if return_x_ts or return_x0s:
+                raise ValueError(
+                    "Sampling trajectories are unavailable "
+                    "when swap_noise_image=True."
+                )
+
             return self.sample_vae(
                 network_name=network_name, 
                 labels=labels, 
@@ -2910,19 +3210,85 @@ class DiffusionModel(ArgumentSaverModel):
             range(int(network.use_cfg), network.num_labels)
         )
 
-        labels = default_labels if labels is None else labels
-        n = len(labels)
-        seed = self.seed if seed is None else seed
+        labels = self._prepare_sampling_labels(
+            network,
+            default_labels if labels is None else labels,
+        )
+        n = tf.shape(labels)[0]
+        seed = self._normalize_seed(
+            self.seed if seed is None else seed, 
+            "sample seed"
+        )
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        x_t = tf.random.normal((
-            n, 
-            self._current_resolution, # self.image_size, 
-            self._current_resolution, # self.image_size, 
-            self.channels
-        ), dtype=stable_dtype, seed=seed) if x_t is None else x_t
+
+        # Draw one initial Gaussian image per requested label when absent.
+        if x_t is None:
+            x_t = tf.random.normal(
+                tf.stack((
+                    n, 
+                    self._current_resolution, 
+                    self._current_resolution, 
+                    self.channels
+                )),
+                dtype=stable_dtype, 
+                seed=seed
+            )
+        # Normalize and validate a caller-supplied reverse-process state.
+        else:
+            try:
+                x_t = tf.convert_to_tensor(x_t)
+            except (TypeError, ValueError) as error:
+                raise TypeError("x_t must be a floating image tensor.") from error
+            # Reverse diffusion requires real-valued image states.
+            if not x_t.dtype.is_floating:
+                raise TypeError("x_t must have a floating dtype.")
+            # Sampling operates on NHWC image batches.
+            if x_t.shape.rank is not None and x_t.shape.rank != 4:
+                raise ValueError("x_t must be a rank-4 image tensor.")
+            expected_tail = (
+                self._current_resolution, 
+                self._current_resolution, 
+                self.channels
+            )
+            # Validate every statically known image dimension before tracing.
+            if x_t.shape.rank == 4:
+                for axis, (actual, expected) in enumerate(
+                    zip(x_t.shape[1:], expected_tail), start=1
+                ):
+                    # Reject a statically incompatible spatial or channel axis.
+                    if actual is not None and int(actual) != expected:
+                        raise ValueError(
+                            f"x_t axis {axis} must have size {expected}, "
+                            f"got {actual}."
+                        )
+                # Reject a statically incompatible sample count early.
+                if x_t.shape[0] is not None and labels.shape[0] is not None \
+                and int(x_t.shape[0]) != int(labels.shape[0]):
+                    raise ValueError("x_t batch size must match labels.")
+            x_t_assertions = (
+                tf.debugging.assert_rank(
+                    x_t, 4, message="x_t must be a rank-4 image tensor."
+                ),
+                tf.debugging.assert_equal(
+                    tf.shape(x_t)[0], n,
+                    message="x_t batch size must match labels.",
+                ),
+                tf.debugging.assert_equal(
+                    tf.shape(x_t)[1:],
+                    tf.constant(expected_tail, dtype=tf.int32),
+                    message="x_t spatial/channel shape is incompatible.",
+                ),
+            )
+            with tf.control_dependencies([
+                assertion for assertion in x_t_assertions
+                if assertion is not None
+            ]):
+                x_t = tf.cast(tf.identity(x_t), stable_dtype)
+
         steps = self.test_steps if steps is None else steps
         scale = self.test_cfg_scale if scale is None else scale
         eta = self.test_eta if eta is None else eta
+
         # Validate the requested number of reverse steps against the schedule.
         if isinstance(steps, bool) or not isinstance(steps, (int, np.integer)) \
                 or not 2 <= int(steps) <= self.timesteps:
@@ -2936,15 +3302,23 @@ class DiffusionModel(ArgumentSaverModel):
             raise ValueError(
                 f"eta must be a finite number in [0, 1], got {eta!r}."
             )
+        # Guidance may extrapolate in either direction but must remain finite.
+        if isinstance(scale, bool) or not isinstance(scale, Real) \
+        or not np.isfinite(scale):
+            raise ValueError(
+                f"scale must be a finite number, got {scale!r}."
+            )
+
         steps = int(steps)
         eta = float(eta)
+        scale = float(scale)
         ts = np.linspace(
             0, self.timesteps-1, 
             num=steps, 
             dtype="int32"
         )[::-1]
-        cond_labels = tf.constant(labels)
-        uncond_labels = tf.zeros((n,), dtype=tf.uint8)
+        cond_labels = labels
+        uncond_labels = tf.zeros_like(labels, dtype=tf.int32)
         
         steps = len(ts)
         x0s, x_ts = [], []
@@ -2955,7 +3329,7 @@ class DiffusionModel(ArgumentSaverModel):
 
             t = ts[i]
             t_next = ts[i + 1] if i < len(ts) - 1 else 0
-            t_batch = tf.fill((n,), t)
+            t_batch = tf.fill(tf.shape(labels), t)
 
             x0, eps, *_ = self.forward(
                 network_name, 
@@ -3106,6 +3480,22 @@ def run_self_tests() -> dict[str, str]:
     assert wrapper.image_size == wrapper.current_resolution[0] == 4
     assert wrapper.current_resolution == (4, 4)
     assert wrapper.current_timesteps_bounds == (0, 4)
+    normalized_policy = make_wrapper(
+        train_noisified_max_timesteps=None,
+        test_noisified_max_timesteps=None,
+        map_num_parallel_calls=np.int64(2),
+        seed=np.int64(17),
+    )
+    assert normalized_policy.train_noisified_max_timesteps == 4
+    assert normalized_policy.test_noisified_max_timesteps == 4
+    assert normalized_policy.map_num_parallel_calls == 2
+    assert normalized_policy.seed == 17
+    assert normalized_policy.get_config()[
+        "train_noisified_max_timesteps"
+    ] is None
+    autotuned_mapping = make_wrapper(map_num_parallel_calls=None)
+    assert autotuned_mapping.map_num_parallel_calls == tf.data.AUTOTUNE
+    assert autotuned_mapping.get_config()["map_num_parallel_calls"] is None
     assert wrapper.use_ema and wrapper.ema_network is not wrapper.network
     assert len(wrapper.network.weights) == len(wrapper.ema_network.weights)
     for raw_weight, ema_weight in zip(
@@ -3262,6 +3652,8 @@ def run_self_tests() -> dict[str, str]:
 
     wrapper.set_timestep_bounds(1, 3)
     assert wrapper.current_timesteps_bounds == (1, 3)
+    wrapper.set_timestep_bounds(np.int64(1), np.int64(4))
+    assert wrapper.current_timesteps_bounds == (1, 4)
     wrapper.set_timestep_bounds(None, None)
     assert wrapper.current_timesteps_bounds == (0, 4)
     for invalid_bounds in ((-1, 2), (2, 2), (3, 2), (0, 5)):
@@ -3373,6 +3765,23 @@ def run_self_tests() -> dict[str, str]:
     )
     assert random_x_t.shape == random_noise.shape == images.shape
     assert bool(tf.reduce_all((1 <= random_t) & (random_t < 3)))
+    for invalid_noisify_kwargs in (
+        {"min_timesteps": 2, "max_timesteps": 2},
+        {"min_timesteps": True, "max_timesteps": 2},
+        {"t": tf.constant([[0], [1]], dtype=tf.int32)},
+        {"t": tf.constant([0], dtype=tf.int32)},
+        {"t": tf.constant([-1, 0], dtype=tf.int32)},
+        {"t": tf.constant([0, 4], dtype=tf.int32)},
+        {"t": tf.constant([0.0, 1.0])},
+    ):
+        try:
+            wrapper.noisify(images, seed=19, **invalid_noisify_kwargs)
+        except (TypeError, ValueError, tf.errors.InvalidArgumentError):
+            pass
+        else:
+            raise AssertionError(
+                f"Invalid noising inputs accepted: {invalid_noisify_kwargs}"
+            )
 
     processed = wrapper.postprocess(tf.constant([-3.0, -1.0, 0.0, 1.0, 3.0]))
     tf.debugging.assert_near(processed, [0.0, 0.0, 0.5, 1.0, 1.0])
@@ -3662,6 +4071,8 @@ def run_self_tests() -> dict[str, str]:
         {"steps": 5, "eta": 0.0},
         {"steps": 2, "eta": -0.1},
         {"steps": 2, "eta": 1.1},
+        {"steps": 2, "scale": float("inf")},
+        {"steps": 2, "return_x_ts": 1},
     ):
         try:
             wrapper.sample(
@@ -3670,11 +4081,36 @@ def run_self_tests() -> dict[str, str]:
                 seed=31,
                 **invalid_sample_kwargs,
             )
-        except ValueError:
+        except (TypeError, ValueError):
             pass
         else:
             raise AssertionError(
                 f"Invalid sampling overrides accepted: {invalid_sample_kwargs}"
+            )
+    invalid_sampling_inputs = (
+        {"labels": []},
+        {"labels": [[1]]},
+        {"labels": [1.0]},
+        {"labels": [-1]},
+        {"labels": [wrapper.network.num_labels]},
+        {"labels": [1], "x_t": tf.zeros((2, 4, 4, 1))},
+        {"labels": [1], "x_t": tf.zeros((1, 2, 4, 1))},
+        {"labels": [1], "x_t": tf.zeros((1, 4, 4, 1), tf.int32)},
+    )
+    for invalid_inputs in invalid_sampling_inputs:
+        try:
+            wrapper.sample(
+                network_name="raw",
+                steps=2,
+                eta=0.0,
+                seed=31,
+                **invalid_inputs,
+            )
+        except (TypeError, ValueError, tf.errors.InvalidArgumentError):
+            pass
+        else:
+            raise AssertionError(
+                f"Invalid sampling inputs accepted: {invalid_inputs}"
             )
     try:
         wrapper.sample_vae(network_name="raw", labels=[1])
@@ -3761,6 +4197,22 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=tensor_vae_labels, z=supplied_full_latent
     )
     assert supplied_vae_images.shape == (2, 4, 4, 1)
+    for invalid_z in (
+        tf.zeros((1, full_latent_width), dtype=tf.float32),
+        tf.zeros((2, full_latent_width + 1), dtype=tf.float32),
+        tf.zeros((2, full_latent_width), dtype=tf.int32),
+        tf.zeros((2, 1, full_latent_width), dtype=tf.float32),
+    ):
+        try:
+            variational_cond.sample_vae(
+                network_name="raw",
+                labels=tensor_vae_labels,
+                z=invalid_z,
+            )
+        except (TypeError, ValueError, tf.errors.InvalidArgumentError):
+            pass
+        else:
+            raise AssertionError("Invalid VAE sampling latents must fail")
     list_vae_images = variational_cond.sample_vae(
         network_name="raw", labels=[1, 2], seed=53
     )
@@ -4206,6 +4658,11 @@ def run_self_tests() -> dict[str, str]:
         {"test_eta": float("nan")},
         {"map_num_parallel_calls": False},
         {"map_num_parallel_calls": 0},
+        {"train_noisified_min_timesteps": -1},
+        {"train_noisified_max_timesteps": 0},
+        {"test_noisified_min_timesteps": 3,
+         "test_noisified_max_timesteps": 2},
+        {"test_noisified_max_timesteps": 5},
         {"p_uncond": -0.25},
         {"p_uncond": 1.25},
         {"p_uncond": float("nan")},
@@ -4224,11 +4681,22 @@ def run_self_tests() -> dict[str, str]:
     )
     for overrides in invalid_cases:
         try:
-            DiffusionModel(network=make_network(), **overrides)
+            DiffusionModel(
+                network=make_network(),
+                **{"test_steps": 2, **overrides},
+            )
         except AssertionError:
             pass
         else:
             raise AssertionError(f"Expected invalid wrapper config: {overrides}")
+
+    for invalid_seed in (True, -1, 2 ** 32, 1.5):
+        try:
+            DiffusionModel(network=make_network(), test_steps=2, seed=invalid_seed)
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError("Invalid wrapper seeds must fail")
 
     try:
         DiffusionModel(network=object(), test_steps=2)

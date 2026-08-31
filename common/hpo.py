@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import tensorflow as tf
 
-import pandas as pd
 import numpy as np
+
+import pandas as pd
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,10 +32,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from common.config import (
-    Config,
-    load_config,
-    resolve_continual_schedule,
-    save_config,
+    Config, 
+    load_config, 
+    normalize_training_task, 
+    resolve_continual_schedule, 
+    save_config
 )
 from common.dataloader import get_dataset_spec
 from common.recovery import find_latest_task_checkpoint, fingerprint_state
@@ -298,9 +300,9 @@ _FIT_METHODS = {"fit", "fit_progressively"}
 
 
 def _validate_fit_request(
-    model_name: str,
-    fit_method: str,
-    fit_kwargs: Mapping[str, object],
+    model_name: str, 
+    fit_method: str, 
+    fit_kwargs: Mapping[str, object]
 ) -> None:
     """Validate the training-method part of an HPO request.
 
@@ -344,7 +346,7 @@ def _value_tag(value: object) -> str:
         "linear": "l", "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
         "clipped_cosine": "cc", "convolution": "c", "pool": "p", 
         "timestep": "t", "both": "b", "null": "n", "neither": "x", 
-        "last": "l", "all": "a", "new_weight": "nw", 
+        "all": "a", "new_weight": "nw",
         "time_label": "tl", "label": "y", 
         "diffusion_classifier": "v1", 
         "diffusion_classifier_v2": "v2", 
@@ -464,7 +466,7 @@ def _suggest_optimizer(
 
 
 def _suggest_diffusion_wrapper(
-    trial: Any, 
+    trial: Any
 ) -> tuple[int, dict[str, object]]:
     """Suggest diffusion process and evaluation settings.
 
@@ -1018,8 +1020,8 @@ def _suggest_classifier(
 
 
 def _default_objective_metrics(
-    task: str,
-    use_ensemble_accuracy: bool = False,
+    task: str, 
+    use_ensemble_accuracy: bool = False
 ) -> tuple[str, ...]:
     """Return stable, human-readable metric names for a study task.
 
@@ -1071,10 +1073,10 @@ def _inferred_objective_direction(metric_name: str) -> str:
 
 
 def _normalize_objective_spec(
-    task: str,
-    objective_metrics: str | Sequence[str] | None = None,
-    objective_directions: str | Sequence[str] | None = None,
-    use_ensemble_accuracy: bool = False,
+    task: str, 
+    objective_metrics: str | Sequence[str] | None = None, 
+    objective_directions: str | Sequence[str] | None = None, 
+    use_ensemble_accuracy: bool = False
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Normalize objective names/directions and validate their cardinality.
 
@@ -1297,30 +1299,30 @@ def _teacher_study_signature(model: object | None) -> object:
 
 
 def _make_study_spec(
-    *,
-    study_name: str,
-    task: str,
-    model_name: str,
-    dataset_name: str,
-    epochs: int,
-    seed: int,
-    use_ensemble_accuracy: bool,
-    ensemble_accuracy_kwargs: Mapping[str, object] | None,
-    fit_method: str,
-    fit_kwargs: Mapping[str, object],
-    teacher_network: object | None,
-    effective_distillation: bool,
-    objective_metrics: Sequence[str],
-    objective_directions: Sequence[str],
-    dtype_policy: str,
-    deterministic_ops: bool,
-    snapshot_network_name: str,
-    class_num: int | None,
-    class_order: Sequence[int] | None,
-    task_groups: Sequence[Sequence[int]] | None,
-    task_size: int,
-    class_order_mode: str,
-    task_order_mode: str,
+    *, 
+    study_name: str, 
+    task: str, 
+    model_name: str, 
+    dataset_name: str, 
+    epochs: int, 
+    seed: int, 
+    use_ensemble_accuracy: bool, 
+    ensemble_accuracy_kwargs: Mapping[str, object] | None, 
+    fit_method: str, 
+    fit_kwargs: Mapping[str, object], 
+    teacher_network: object | None, 
+    effective_distillation: bool, 
+    objective_metrics: Sequence[str], 
+    objective_directions: Sequence[str], 
+    dtype_policy: str, 
+    deterministic_ops: bool, 
+    snapshot_network_name: str, 
+    class_num: int | None, 
+    class_order: Sequence[int] | None, 
+    task_groups: Sequence[Sequence[int]] | None, 
+    task_size: int, 
+    class_order_mode: str, 
+    task_order_mode: str
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -1354,34 +1356,34 @@ def _make_study_spec(
     """
 
     return _study_json_value({
-        "schema_version": 1,
-        "study_name": study_name,
-        "task": task,
-        "model_name": model_name,
-        "dataset_name": dataset_name.lower(),
-        "epochs": int(epochs),
-        "seed": int(seed),
-        "use_ensemble_accuracy": bool(use_ensemble_accuracy),
-        "ensemble_accuracy_kwargs": dict(ensemble_accuracy_kwargs or {}),
-        "fit_method": fit_method,
-        "fit_kwargs": dict(fit_kwargs),
-        "effective_distillation": bool(effective_distillation),
-        "teacher": _teacher_study_signature(teacher_network),
-        "objective_metrics": list(objective_metrics),
-        "objective_directions": list(objective_directions),
-        "dtype_policy": dtype_policy,
-        "deterministic_ops": bool(deterministic_ops),
-        "snapshot_network_name": snapshot_network_name,
+        "schema_version": 1, 
+        "study_name": study_name, 
+        "task": task, 
+        "model_name": model_name, 
+        "dataset_name": dataset_name.lower(), 
+        "epochs": int(epochs), 
+        "seed": int(seed), 
+        "use_ensemble_accuracy": bool(use_ensemble_accuracy), 
+        "ensemble_accuracy_kwargs": dict(ensemble_accuracy_kwargs or {}), 
+        "fit_method": fit_method, 
+        "fit_kwargs": dict(fit_kwargs), 
+        "effective_distillation": bool(effective_distillation), 
+        "teacher": _teacher_study_signature(teacher_network), 
+        "objective_metrics": list(objective_metrics), 
+        "objective_directions": list(objective_directions), 
+        "dtype_policy": dtype_policy, 
+        "deterministic_ops": bool(deterministic_ops), 
+        "snapshot_network_name": snapshot_network_name, 
         "continual_schedule": {
-            "class_num": class_num,
-            "class_order": None if class_order is None else list(class_order),
+            "class_num": class_num, 
+            "class_order": None if class_order is None else list(class_order), 
             "task_groups": None if task_groups is None else [
                 list(group) for group in task_groups
-            ],
-            "task_size": task_size,
-            "class_order_mode": class_order_mode,
-            "task_order_mode": task_order_mode,
-        },
+            ], 
+            "task_size": task_size, 
+            "class_order_mode": class_order_mode, 
+            "task_order_mode": task_order_mode
+        }
     })
 
 
@@ -1405,6 +1407,7 @@ def _read_study_spec(study_root: Path) -> dict[str, object]:
         raise FileNotFoundError(
             "HPO resume study root has no study_spec.json: " + str(study_root)
         )
+
     with path.open("r", encoding="utf-8") as stream:
         payload = json.load(stream)
     # Require the documented envelope and mapping-shaped specification.
@@ -1413,6 +1416,7 @@ def _read_study_spec(study_root: Path) -> dict[str, object]:
     # Authenticate the sidecar against its stable specification hash.
     if payload.get("fingerprint") != fingerprint_state(payload["spec"]):
         raise ValueError("HPO study specification checksum is invalid.")
+
     return payload["spec"]
 
 
@@ -1430,19 +1434,20 @@ def _write_study_spec(study_root: Path, spec: Mapping[str, object]) -> None:
     study_root.mkdir(parents=True, exist_ok=True)
     path = study_root / _STUDY_SPEC_FILE
     payload = {
-        "spec": dict(spec),
-        "fingerprint": fingerprint_state(spec),
+        "spec": dict(spec), 
+        "fingerprint": fingerprint_state(spec)
     }
     temporary = study_root / f".{_STUDY_SPEC_FILE}.tmp-{uuid.uuid4().hex}"
+
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             json.dump(
-                payload,
-                stream,
-                ensure_ascii=False,
-                allow_nan=False,
-                sort_keys=True,
-                separators=(",", ":"),
+                payload, 
+                stream, 
+                ensure_ascii=False, 
+                allow_nan=False, 
+                sort_keys=True, 
+                separators=(",", ":")
             )
             stream.write("\n")
             stream.flush()
@@ -1481,6 +1486,7 @@ def _sampler_random_states(sampler: object) -> tuple[object, object]:
         raise RuntimeError(
             "Optuna TPESampler RNG internals are incompatible with recovery."
         )
+
     return tpe_rng, random_rng
 
 
@@ -1495,12 +1501,13 @@ def _random_state_payload(rng: np.random.RandomState) -> dict[str, object]:
     """
 
     name, keys, position, has_gauss, cached_gaussian = rng.get_state()
+
     return {
-        "bit_generator": name,
-        "keys": keys.tolist(),
-        "position": int(position),
-        "has_gauss": int(has_gauss),
-        "cached_gaussian": float(cached_gaussian),
+        "bit_generator": name, 
+        "keys": keys.tolist(), 
+        "position": int(position), 
+        "has_gauss": int(has_gauss), 
+        "cached_gaussian": float(cached_gaussian)
     }
 
 
@@ -1515,16 +1522,17 @@ def _capture_sampler_rng_state(sampler: object) -> dict[str, object]:
     """
 
     tpe_rng, random_rng = _sampler_random_states(sampler)
+
     return {
-        "schema_version": 1,
-        "tpe": _random_state_payload(tpe_rng),
-        "random_sampler": _random_state_payload(random_rng),
+        "schema_version": 1, 
+        "tpe": _random_state_payload(tpe_rng), 
+        "random_sampler": _random_state_payload(random_rng)
     }
 
 
 def _restore_sampler_rng_state(
-    sampler: object,
-    state: Mapping[str, object],
+    sampler: object, 
+    state: Mapping[str, object]
 ) -> None:
     """Restore both TPESampler RandomState streams in place.
 
@@ -1543,12 +1551,14 @@ def _restore_sampler_rng_state(
     # Reject state created by an unknown future representation.
     if int(state.get("schema_version", -1)) != 1:
         raise ValueError("Unsupported Optuna sampler RNG-state schema.")
+
     tpe_rng, random_rng = _sampler_random_states(sampler)
     for rng, name in ((tpe_rng, "tpe"), (random_rng, "random_sampler")):
         payload = state.get(name)
         # Require both independent streams for next-suggestion equivalence.
         if not isinstance(payload, Mapping):
             raise ValueError(f"Optuna sampler RNG state is missing {name!r}.")
+
         rng.set_state((
             str(payload["bit_generator"]),
             np.asarray(payload["keys"], dtype=np.uint32),
@@ -1574,6 +1584,7 @@ def _has_committed_task_checkpoint(checkpoint_dir: Path) -> bool:
         # A marker alone is not durable evidence: validation checks the sealed
         # manifest, schedule, payload set, and every recorded checksum.
         return False
+
     return True
 
 
@@ -1594,7 +1605,7 @@ def _trial_checkpoint_dir(study_root: Path, trial: Any) -> Path:
 
     user_attrs = dict(getattr(trial, "user_attrs", {}) or {})
     configured = user_attrs.get("resume_checkpoint_dir") \
-        or user_attrs.get("checkpoint_dir")
+                or user_attrs.get("checkpoint_dir")
     # Reuse the original checkpoint root for an automatically queued retry.
     if configured is not None:
         candidate = Path(str(configured)).resolve()
@@ -1605,11 +1616,13 @@ def _trial_checkpoint_dir(study_root: Path, trial: Any) -> Path:
         ).resolve()
 
     checkpoint_root = (study_root / "checkpoints").resolve()
+
     # Reject tampered SQLite metadata that escapes the selected study root.
     if candidate != checkpoint_root and checkpoint_root not in candidate.parents:
         raise ValueError(
             "Trial checkpoint directory must remain below the HPO study root."
         )
+
     return candidate
 
 
@@ -1664,11 +1677,11 @@ def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
         study.enqueue_trial(
             dict(frozen.params),
             user_attrs={
-                "resume_checkpoint_dir": str(checkpoint_dir),
-                "resume_has_task_checkpoint": has_task_checkpoint,
-                "resume_original_trial_number": canonical_original,
-                "resume_source_trial_number": source_number,
-            },
+                "resume_checkpoint_dir": str(checkpoint_dir), 
+                "resume_has_task_checkpoint": has_task_checkpoint, 
+                "resume_original_trial_number": canonical_original, 
+                "resume_source_trial_number": source_number
+            }
         )
         tracked.add(source_number)
         enqueued.append(source_number)
@@ -1676,6 +1689,7 @@ def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
     # Persist deduplication state after queued trials are durable in storage.
     if enqueued:
         study.set_user_attr(_RECOVERY_ENQUEUED_ATTR, sorted(tracked))
+
     return tuple(enqueued)
 
 
@@ -1903,7 +1917,7 @@ def _build_trial_config(
     elif task == "classification":
         model_kwargs = _suggest_classifier(trial, model_name)
 
-        # Use saved features for dense-classifier trials.
+        # Normalize the flattened raw pixels used by dense-classifier trials.
         if model_name == "dnn":
             preprocess = "normalize"
         # Preserve raw image scale for pretrained preprocessing layers.
@@ -2257,8 +2271,8 @@ def _ensemble_accuracy_value(
 
 
 def _continual_validation_value(
-    evaluations: Mapping[str, object],
-    metric_name: str,
+    evaluations: Mapping[str, object], 
+    metric_name: str
 ) -> float:
     """Read one scalar exclusively from validation continual metrics.
 
@@ -2288,22 +2302,24 @@ def _continual_validation_value(
             "Requested continual validation objective was not reported: "
             + metric_name
         )
+
     value = np.asarray(metrics[metric_name])
     # Keep every Optuna objective dimension scalar.
     if value.ndim != 0:
         raise TypeError(
             "Continual validation objective must be scalar: " + metric_name
         )
+
     return float(value)
 
 
 def _configured_objective_value(
-    task: str,
-    model_name: str,
-    history: Mapping[str, Sequence[float]],
-    evaluations: Mapping[str, object],
-    metric_name: str,
-    direction: str,
+    task: str, 
+    model_name: str, 
+    history: Mapping[str, Sequence[float]], 
+    evaluations: Mapping[str, object], 
+    metric_name: str, 
+    direction: str
 ) -> float:
     """Resolve one explicit objective without changing legacy defaults.
 
@@ -2338,16 +2354,16 @@ def _configured_objective_value(
     # Resolve the semantic joint classifier accuracy alias.
     if metric_name == "classification_accuracy":
         return _history_value(history, [
-            "val_total_accuracy",
-            "val_classifier_accuracy",
-            "val_cls_token_accuracy",
-            "val_avg_pooling_accuracy",
-            "val_clf_accuracy",
-            "total_accuracy",
-            "classifier_accuracy",
-            "cls_token_accuracy",
-            "avg_pooling_accuracy",
-            "clf_accuracy",
+            "val_total_accuracy", 
+            "val_classifier_accuracy", 
+            "val_cls_token_accuracy", 
+            "val_avg_pooling_accuracy", 
+            "val_clf_accuracy", 
+            "total_accuracy", 
+            "classifier_accuracy", 
+            "cls_token_accuracy", 
+            "avg_pooling_accuracy", 
+            "clf_accuracy"
         ], best=best)
     # Resolve the semantic standalone validation accuracy alias.
     if metric_name == "validation_accuracy":
@@ -2357,11 +2373,12 @@ def _configured_objective_value(
     # Accept a readable validation prefix alongside Keras's ``val_`` prefix.
     if metric_name.startswith("validation_"):
         history_names.append("val_" + metric_name[len("validation_"):])
+
     return _history_value(history, history_names, best=best)
 
 
 def _objective_values(
-    task: str,  
+    task: str, 
     model_name: str,  
     history: Mapping[str, Sequence[float]], 
     evaluations: Mapping[str, object] | None = None, 
@@ -2569,10 +2586,12 @@ def run_hpo(
 
     Raises:
         ImportError: If Optuna is unavailable.
+        TypeError: If ``task`` is not a string.
         ValueError: If the task/model pair, fit selection, or positive budgets
             are invalid, or progressive training omits ``stage_tasks``.
     """
 
+    task = normalize_training_task(task)
     try:
         import optuna
     except ImportError as error:
@@ -2581,8 +2600,6 @@ def run_hpo(
             "Install the project requirements."
         ) from error
 
-
-    task = task.lower()
     model_name = model_name.lower()
     fit_kwargs = dict(fit_kwargs or {})
     snapshot_network_name = str(snapshot_network_name).lower()

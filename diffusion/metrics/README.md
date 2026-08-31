@@ -27,7 +27,7 @@ from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 metric = EnsembleAccuracy(
     diffusion_clf=model, 
-    netwrok_name="ema",       # spelling is part of the current public API
+    network_name="ema",
     compute_type="chunked", 
     weighted=True, 
     max_t=128, 
@@ -72,5 +72,7 @@ and returns a NumPy scalar. Metric state is cumulative: neither `evaluate` nor
 `test_step` resets prior results. Both `test_step` and `update_state` accept
 per-example `sample_weight`.
 
-`netwrok_name` is intentionally documented with its existing misspelling.
-Use exactly `"ema"` or `"raw"`; any other value raises `ValueError`.
+Use `network_name="ema"` or `network_name="raw"`. The historical
+`netwrok_name` misspelling remains accepted as a compatibility alias, but the
+two spellings cannot be supplied together; any other selector raises
+`ValueError`.

@@ -4,37 +4,30 @@ __pycache__
 .agents
 
 old
-data
-
-configs
-gifs
-others
-results
 
 *.h5
 *.tf
-*.yaml
 
 test.ipynb
 
 # Keep directory-level documentation visible while ignoring generated/data
 # contents in the directories above.
+data
 !data/
 data/*
 !data/README.md
 
-!configs/
-configs/*
-!configs/README.md
-
+gifs
 !gifs/
 gifs/*
 !gifs/README.md
 
+others
 !others/
 others/*
 !others/README.md
 
+results
 !results/
 results/*
 !results/README.md

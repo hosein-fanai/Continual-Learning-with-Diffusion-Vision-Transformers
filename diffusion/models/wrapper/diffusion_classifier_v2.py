@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras import callbacks, optimizers
 
 from common.gradients import apply_policy_gradients
+from common.validation import require
 
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
@@ -98,14 +99,15 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *self.clf_vars_noise_part_ids
         ]))
 
-        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
-                                                else self.clf_train_noisified_max_timesteps
         self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
                                                 else self.clf_train_noisified_max_timesteps
-        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
-                                                else self.clf_test_noisified_max_timesteps
+        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
+                                                else int(self.clf_train_noisified_max_timesteps)
         self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
                                                 else self.clf_test_noisified_max_timesteps
+        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
+                                                else int(self.clf_test_noisified_max_timesteps)
+        
         self.clf_trainable_variables = None
         self.gen_trainable_variables = None
         self._active_trainable_variables = None
@@ -124,27 +126,35 @@ class DiffusionClassifierV2(DiffusionClassifier):
         """
 
         for id_ in local_vars["clf_vars_embedding_ids"]:
-            assert id_ is None or 0 <= id_ <= 4 , \
+            require(
+                id_ is None or 0 <= id_ <= 4 , 
                 "clf_vars_embedding_ids can only include (None, 0, 1, 2, 3, 4)."
+            )
 
         for id_ in local_vars["clf_vars_noise_part_ids"]:
-            assert -self.network.depth <= id_ <= self.network.depth and id_ != 0, \
+            require(
+                -self.network.depth <= id_ <= self.network.depth and id_ != 0, 
                 "clf_vars_noise_part_ids items can only be in [-depth, 0) or [1, depth]."
+            )
 
         for name in (
             "clf_train_noisified_max_timesteps", 
             "clf_test_noisified_max_timesteps"
         ):
             value = local_vars[name]
-            assert value is None or (
+            require(
+                value is None or (
                 isinstance(value, int)
                 and not isinstance(value, bool)
-                and (value == -1 or 1 <= value <= self.timesteps)
-            ), f"{name} must be None, -1, or an integer in [1, timesteps]."
+                and (value == -1 or 1 <= value <= self.timesteps)), 
+                f"{name} must be None, -1, or an integer in [1, timesteps]."
+            )
 
-        assert self.use_cfg, \
-            "DiffusionClassifierV2 requires CFG "\
+        require(
+            self.use_cfg, 
+            "DiffusionClassifierV2 requires CFG "
             "for its null-label classifier phase."
+        )
 
     def _set_clf_variables(self) -> None:
         """Assemble variables owned by the classifier optimizer.
@@ -253,7 +263,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             AssertionError: If classifier variables have not been initialized.
         """
 
-        assert self.clf_trainable_variables is not None
+        require(self.clf_trainable_variables is not None, None)
 
 
         clf_variable_ids = {id(v) for v in self.clf_trainable_variables}
@@ -297,8 +307,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self.test_function = None
 
     def _merge_result_dicts(
-        self,
-        dicts: tuple[dict | None, ...] | list[dict | None],
+        self, 
+        dicts: tuple[dict | None, ...] | list[dict | None], 
         names: tuple[str, ...] | list[str]
     ) -> dict[str, object]:
         """Merge phase result dictionaries, prefixing colliding metric names.
@@ -392,6 +402,25 @@ class DiffusionClassifierV2(DiffusionClassifier):
         elif self._train_part == "discriminator":
             self._active_trainable_variables = self.clf_trainable_variables
 
+    def _is_prepared_dataset_spec(self, element_spec: object) -> bool:
+        """Recognize phase-specific mapped dataset structures.
+
+        Args:
+            element_spec (object): ``tf.data.Dataset.element_spec`` value.
+
+        Returns:
+            bool: True for seven-tensor generator data or five-or-more-tensor
+            discriminator data. A raw provenance triple remains unprepared.
+        """
+
+        # Non-sequence specifications still need phase-specific preparation.
+        if not isinstance(element_spec, (tuple, list)):
+            return False
+
+        minimum_length = 5 if self._test_part == "discriminator" else 7
+
+        return len(element_spec) >= minimum_length
+
     @property
     def clf_vars_names(self) -> list[str]:
         """Return TensorFlow names assigned to classifier optimization.
@@ -479,16 +508,16 @@ class DiffusionClassifierV2(DiffusionClassifier):
             or variables is self.clf_trainable_variables
         ) else self.gen_optimizer
         apply_policy_gradients(
-            tape,
-            optimizer,
-            loss,
-            variables,
+            tape, 
+            optimizer, 
+            loss, 
+            variables
         )
 
     def prep_clfv2_inputs(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor], 
-        noisified_max_timesteps: int | None,
+        noisified_max_timesteps: int | None, 
         return_x0: bool = False
     ) -> tuple[tf.Tensor, ...]:
         """Prepare clean or bounded-noise inputs for a classifier-only phase.
@@ -497,8 +526,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             inputs (tuple[tf.Tensor, tf.Tensor]): Clean float images
                 ``[B,H,W,C]`` and zero-based classes ``[B]``.
             noisified_max_timesteps (int | None): Exclusive noising upper bound.
-                A number draws timesteps from the active minimum to this bound;
-                None leaves images clean and sets all times to 0.
+                A number draws timesteps from ``[0, bound)`` independently of
+                progressive generator bounds; None leaves images clean and
+                sets all times to 0.
             return_x0 (bool): Append the resized clean images for an ensemble
                 loss that performs its own noising.
 
@@ -513,10 +543,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         x0 = tf.image.resize(x0,
             size=(
-                self._current_resolution,
+                self._current_resolution, 
                 self._current_resolution
-            ),
-            method=self.resize_method,
+            ), 
+            method=self.resize_method, 
             antialias=self.resize_antialias
         ) if self._current_resolution != self.image_size else x0
 
@@ -529,6 +559,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         noisified_max_timesteps != 0:
             x_t, _, t = self.noisify(
                 x0, 
+                # Classifier caps define [0, cap) independently
+                # of any active progressive generator interval.
+                min_timesteps=0, 
                 max_timesteps=noisified_max_timesteps
             )
         # Use clean inputs at timestep zero when None selects clean-only mode.
@@ -546,49 +579,125 @@ class DiffusionClassifierV2(DiffusionClassifier):
     def prep_inputs_map(
         self, 
         x0: tf.Tensor, 
-        labels: tf.Tensor
+        labels: tf.Tensor, 
+        replay_mask: tf.Tensor | None = None
     ) -> tuple[tf.Tensor, ...]:
         """Prepare one generator or discriminator input-pipeline batch.
 
         Args:
             x0 (tf.Tensor): Clean image batch.
             labels (tf.Tensor): Dataset class labels.
+            replay_mask (tf.Tensor | None): Optional per-row replay
+                provenance supplied by the continual learner.
         Returns:
             tuple[tf.Tensor, ...]: Seven diffusion tensors for the generator,
             or five classifier tensors (including clean images) with optional
-            teacher probabilities for the discriminator.
+            teacher probabilities and final replay provenance for the
+            discriminator.
         """
 
-        # Generator mapping performs only the inherited diffusion prep.
+        # Generator loss does not consume KD provenance; accept and discard it.
         if self._test_part != "discriminator":
             return DiffusionModel.prep_inputs_map(self, x0, labels)
 
-        max_timesteps = self.clf_test_noisified_max_timesteps \
-                        if self._preprocess_training is False \
+        max_timesteps = self.clf_test_noisified_max_timesteps if self._preprocess_training is False \
                         else self.clf_train_noisified_max_timesteps
         prepared_inputs = self.prep_clfv2_inputs(
             (x0, labels), 
-            max_timesteps,
+            max_timesteps, 
             return_x0=True
         )
 
-        # Preserve the ordinary discriminator batch without teacher targets.
-        if not self.use_teacher:
-            return prepared_inputs
+        # Append the frozen target before final replay provenance, matching the
+        # joint classifier wrapper's unambiguous mapped-batch ordering.
+        if self.use_teacher:
+            teacher_labels = self._predict_teacher_labels(
+                prepared_inputs[1], 
+                prepared_inputs[0], 
+                prepared_inputs[2]
+            )
+            prepared_inputs = (*prepared_inputs, teacher_labels)
 
-        teacher_labels = self._predict_teacher_labels(
-            prepared_inputs[1], 
-            prepared_inputs[0], 
-            prepared_inputs[2]
+        return prepared_inputs if replay_mask is None else (
+            *prepared_inputs, 
+            replay_mask
         )
 
-        return (*prepared_inputs, teacher_labels)
+    def _prepare_discriminator_batch(
+        self, 
+        inputs: tuple[tf.Tensor, ...], 
+        noisified_max_timesteps: int | None
+    ) -> tuple[tuple[tf.Tensor, ...], tf.Tensor | None, tf.Tensor | None]:
+        """Separate V2 discriminator tensors, teacher target, and provenance.
+
+        Args:
+            inputs (tuple[tf.Tensor, ...]): Raw image/class data with optional
+                replay mask, or its mapped discriminator representation.
+            noisified_max_timesteps (int | None): Phase-specific noising cap.
+
+        Returns:
+            tuple: Five student tensors, optional teacher probabilities, and
+            optional replay mask.
+
+        Raises:
+            ValueError: If a mapped or raw structure has an invalid arity.
+        """
+
+        replay_mask = None
+        # Decode the exact tensor contract emitted by mapped preprocessing.
+        if self.map_preprocess:
+            expected_length = 5 + int(self.use_teacher)
+            # Treat one final mapped tensor as replay provenance.
+            if len(inputs) == expected_length + 1:
+                inputs, replay_mask = inputs[:-1], inputs[-1]
+            # Reject mapped arities that cannot be decoded unambiguously.
+            elif len(inputs) != expected_length:
+                raise ValueError(
+                    "Mapped V2 discriminator batches must contain five "
+                    "student tensors, an optional teacher target, and an "
+                    "optional final replay mask."
+                )
+
+            prepared_inputs = inputs
+            # Extract the teacher target from mapped teacher-enabled batches.
+            if self.use_teacher:
+                prepared_inputs, teacher_labels = (
+                    prepared_inputs[:-1], prepared_inputs[-1]
+                )
+            # Keep ordinary mapped batches teacher-free.
+            else:
+                teacher_labels = None
+        # Prepare raw supervised batches inside the discriminator step.
+        else:
+            raw_inputs = inputs
+            # Separate optional replay provenance from the raw input pair.
+            if len(inputs) == 3:
+                raw_inputs, replay_mask = inputs[:2], inputs[-1]
+            # Reject every raw structure outside the pair-or-triple contract.
+            elif len(inputs) != 2:
+                raise ValueError(
+                    "Raw V2 discriminator batches must contain images, "
+                    "classes, and optional replay provenance."
+                )
+
+            prepared_inputs = self.prep_clfv2_inputs(
+                raw_inputs, 
+                noisified_max_timesteps, 
+                return_x0=True
+            )
+            teacher_labels = self._predict_teacher_labels(
+                prepared_inputs[1], 
+                prepared_inputs[0], 
+                prepared_inputs[2]
+            ) if self.use_teacher else None
+
+        return prepared_inputs, teacher_labels, replay_mask
 
     def _fit_selected_part(
-        self,
-        part_name: str,
-        progressive: bool,
-        fit_kwargs: dict[str, object],
+        self, 
+        part_name: str, 
+        progressive: bool, 
+        fit_kwargs: dict[str, object]
     ) -> callbacks.History:
         """Fit one optimizer phase and always restore neutral wrapper state.
 
@@ -615,7 +724,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             variables = self.clf_trainable_variables
         # Reject internal phase names that would silently skip optimization.
         else:
-            raise ValueError("part_name must be 'generator' or 'discriminator'.")
+            raise ValueError(
+                "part_name must be 'generator' or 'discriminator'."
+            )
 
         self._switch_train_part(part_name)
         self._switch_test_part(part_name)
@@ -731,7 +842,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         return merged_history
 
     def evaluate_generator(
-        self, **kwargs: object
+        self, 
+        **kwargs: object
     ) -> float | list[float] | dict[str, float]:
         """Evaluate only generator/diffusion metrics.
 
@@ -751,7 +863,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         return super().evaluate(**kwargs)
 
     def evaluate_discriminator(
-        self, **kwargs: object
+        self, 
+        **kwargs: object
     ) -> float | list[float] | dict[str, float]:
         """Evaluate only classifier/discriminator metrics.
 
@@ -769,10 +882,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
         return super().evaluate(**kwargs)
 
     def evaluate(
-        self,
-        eval_both: bool = False,
-        test_part: str | None = None,
-        **kwargs: object,
+        self, 
+        eval_both: bool = False, 
+        test_part: str | None = None, 
+        **kwargs: object
     ) -> dict[str, float]:
         """Evaluate one selected phase or both and merge result dictionaries.
 
@@ -780,8 +893,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             eval_both (bool): Evaluate generator then discriminator regardless of
                 ``test_part``.
             test_part (str | None): ``"generator"`` or ``"discriminator"``;
-                None reuses the most recently selected test phase.  If no phase
-                has been selected and ``eval_both=False``, the result is empty.
+                None reuses the most recently selected valid test phase.
             **kwargs (object): Forwarded to both phase evaluators.  ``return_dict=True``
                 is forced; other accepted keys include ``x``, ``y``,
                 ``network_name``, ``batch_size``, ``verbose``, ``steps``, and
@@ -789,9 +901,35 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         Returns:
             dict[str, float]: Merged metrics; collisions are phase-prefixed.
+
+        Raises:
+            TypeError: If ``eval_both`` is not Boolean.
+            ValueError: If ``test_part`` is invalid or no phase is selected
+                while ``eval_both=False``.
         """
 
+        # Reject truthy non-Booleans that could silently select both phases.
+        if not isinstance(eval_both, bool):
+            raise TypeError("eval_both must be boolean.")
+
         test_part = self._test_part if test_part is None else test_part
+
+        # Restrict explicit phase selection to the two implemented evaluators.
+        if test_part not in (None, "", "generator", "discriminator"):
+            raise ValueError(
+                "test_part must be 'generator', 'discriminator', or None."
+            )
+
+        # Require one concrete phase when combined evaluation is disabled.
+        if not eval_both and test_part not in (
+            "generator", 
+            "discriminator"
+        ):
+            raise ValueError(
+                "Select test_part='generator' or 'discriminator', "
+                "or set eval_both=True."
+            )
+
         kwargs["return_dict"] = True
 
         gen_eval = self.evaluate_generator(
@@ -809,7 +947,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
     def generator_train_step(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor]
+        inputs: tuple[tf.Tensor, ...]
     ) -> dict[str, tf.Tensor]:
         """Run the inherited diffusion update for the generator phase.
 
@@ -821,11 +959,28 @@ class DiffusionClassifierV2(DiffusionClassifier):
             dict[str, tf.Tensor]: Running generator loss metrics.
         """
 
+        # Forward mapped generator data only after enforcing its exact arity.
+        if self.map_preprocess:
+            # The inherited generator step consumes seven diffusion tensors.
+            if len(inputs) != 7:
+                raise ValueError(
+                    "Mapped V2 generator batches must contain seven tensors."
+                )
+        # Discard raw replay provenance because generation does not consume it.
+        elif len(inputs) == 3:
+            inputs = inputs[:2]
+        # Reject every other raw generator batch structure.
+        elif len(inputs) != 2:
+            raise ValueError(
+                "Raw V2 generator batches must contain images, "
+                "classes, and optional replay provenance."
+            )
+
         return DiffusionModel.train_step(self, inputs)
 
     def generator_test_step(
         self, 
-        inputs: tuple[tf.Tensor, tf.Tensor]
+        inputs: tuple[tf.Tensor, ...]
     ) -> dict[str, tf.Tensor]:
         """Run the inherited diffusion evaluation for the generator phase.
 
@@ -836,6 +991,23 @@ class DiffusionClassifierV2(DiffusionClassifier):
         Returns:
             dict[str, tf.Tensor]: Running generator evaluation metrics.
         """
+
+        # Forward mapped generator data only after enforcing its exact arity.
+        if self.map_preprocess:
+            # The inherited generator step consumes seven diffusion tensors.
+            if len(inputs) != 7:
+                raise ValueError(
+                    "Mapped V2 generator batches must contain seven tensors."
+                )
+        # Discard validation provenance because generation does not consume it.
+        elif len(inputs) == 3:
+            inputs = inputs[:2]
+        # Reject every other raw generator batch structure.
+        elif len(inputs) != 2:
+            raise ValueError(
+                "Raw V2 generator batches must contain images, "
+                "classes, and optional replay provenance."
+            )
 
         return DiffusionModel.test_step(self, inputs)
 
@@ -855,19 +1027,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clean or bounded-noise input from ``prep_clfv2_inputs``.
         """
 
-        prepared_inputs =  self.prep_clfv2_inputs(
-            inputs, 
-            self.clf_train_noisified_max_timesteps, 
-            return_x0=True
-        ) if not self.map_preprocess else inputs
-        # Separate the mapped teacher target from discriminator inputs.
-        if self.use_teacher:
-            prepared_inputs, teacher_labels = (
-                prepared_inputs[:-1], prepared_inputs[-1]
+        prepared_inputs, teacher_labels, replay_mask = (
+            self._prepare_discriminator_batch(
+                inputs, 
+                self.clf_train_noisified_max_timesteps
             )
-        # Keep ordinary discriminator training teacher-free.
-        else:
-            teacher_labels = None
+        )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
         with tf.GradientTape() as tape:
@@ -884,10 +1049,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             if self.use_distil_loss:
                 distil_preds = class_outputs[5]
 
-            (loss, clf_loss, kl_loss, 
-            ctr_loss, distil_loss, 
-            classes_pred, ctr_preds, 
-            distil_preds) = self.compute_clf_kl_ctr_distil_loss(
+            outputs = self.compute_clf_kl_ctr_distil_loss(
                 classes, None, None, None, None, 
                 classes_pred, clf_z_vals, 
                 clf_regs_list, distil_preds, 
@@ -895,9 +1057,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 kl_train_type="uncond", 
                 ctr_train_type="uncond",
                 teacher_labels=teacher_labels,
+                replay_mask=replay_mask,
                 x0=x0,
                 training=True
             )
+            (loss, clf_loss, kl_loss, 
+            ctr_loss, distil_loss, 
+            classes_pred, ctr_preds, 
+            distil_preds) = outputs
 
         self.apply_grads(tape, loss, self.clf_trainable_variables)
         self.update_ema()
@@ -910,11 +1077,11 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_ctr_loss=ctr_loss, 
             clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds,
+            clf_distil_preds=distil_preds, 
             distil_acc_mask=self._distillation_metric_mask(
-                classes,
-                teacher_labels,
-                None,
+                classes, 
+                teacher_labels, 
+                replay_mask
             ) if self.use_distil_loss else None,
         )
 
@@ -934,19 +1101,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
             dict[str, tf.Tensor]: Running classifier evaluation metrics.
         """
 
-        prepared_inputs =  self.prep_clfv2_inputs(
-            inputs, 
-            self.clf_test_noisified_max_timesteps,
-            return_x0=True
-        ) if not self.map_preprocess else inputs
-        # Separate the mapped teacher target from discriminator inputs.
-        if self.use_teacher:
-            prepared_inputs, teacher_labels = (
-                prepared_inputs[:-1], prepared_inputs[-1]
+        prepared_inputs, teacher_labels, replay_mask = (
+            self._prepare_discriminator_batch(
+                inputs, 
+                self.clf_test_noisified_max_timesteps
             )
-        # Keep ordinary discriminator evaluation teacher-free.
-        else:
-            teacher_labels = None
+        )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
         class_outputs = self.get_network(self.test_network_name).predict_class(
@@ -962,10 +1122,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         if self.use_distil_loss:
             distil_preds = class_outputs[5]
 
-        (loss, clf_loss, kl_loss, 
-        ctr_loss, distil_loss, 
-        classes_pred, ctr_preds, 
-        distil_preds) = self.compute_clf_kl_ctr_distil_loss(
+        outputs = self.compute_clf_kl_ctr_distil_loss(
             classes, None, None, None, None, 
             classes_pred, clf_z_vals, 
             clf_regs_list, distil_preds, 
@@ -973,9 +1130,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
             teacher_labels=teacher_labels,
+            replay_mask=replay_mask,
             x0=x0,
             training=False
         )
+        (loss, clf_loss, kl_loss, 
+        ctr_loss, distil_loss, 
+        classes_pred, ctr_preds, 
+        distil_preds) = outputs
 
         results = self.get_clf_results_dict(
             clf_loss, 
@@ -988,9 +1150,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_ctr_preds=ctr_preds, 
             clf_distil_preds=distil_preds,
             distil_acc_mask=self._distillation_metric_mask(
-                classes,
-                teacher_labels,
-                None,
+                classes, 
+                teacher_labels, 
+                replay_mask
             ) if self.use_distil_loss else None,
         )
 
@@ -1258,11 +1420,35 @@ def run_self_tests() -> dict[str, str]:
     noisy_t, noisy_x, _, _ = wrapper.prep_clfv2_inputs((images, classes), 2)
     assert noisy_x.shape == images.shape
     assert bool(tf.reduce_all((0 <= noisy_t) & (noisy_t < 2)))
+    wrapper.set_timestep_bounds(3, 4)
+    capped_t, _, _, _ = wrapper.prep_clfv2_inputs((images, classes), 2)
+    assert bool(tf.reduce_all((0 <= capped_t) & (capped_t < 2)))
+    wrapper.set_timestep_bounds()
     prepared_with_clean = wrapper.prep_clfv2_inputs(
         (images, classes), 2, return_x0=True
     )
     assert len(prepared_with_clean) == 5
     tf.debugging.assert_near(prepared_with_clean[-1], images)
+    mapped_wrapper = make_wrapper(map_preprocess=True)
+    mapped_wrapper._switch_test_part("discriminator")
+    mapped_without_metadata = mapped_wrapper.prep_inputs_map(images, classes)
+    mapped_with_metadata = mapped_wrapper.prep_inputs_map(
+        images, classes, tf.constant([False, True])
+    )
+    assert len(mapped_without_metadata) == 5
+    assert len(mapped_with_metadata) == 6
+    _, no_teacher_target, parsed_replay = (
+        mapped_wrapper._prepare_discriminator_batch(
+            mapped_with_metadata,
+            mapped_wrapper.clf_train_noisified_max_timesteps,
+        )
+    )
+    assert no_teacher_target is None
+    tf.debugging.assert_equal(parsed_replay, [False, True])
+    mapped_wrapper._switch_test_part("generator")
+    assert len(mapped_wrapper.prep_inputs_map(
+        images, classes, tf.constant([False, True])
+    )) == 7
 
     capped = make_wrapper(
         clf_train_noisified_max_timesteps=2, 
@@ -1328,6 +1514,7 @@ def run_self_tests() -> dict[str, str]:
         ),
         defer_teacher=True,
         distil_loss_coef=1.0,
+        distil_scope="replay_only",
     )
     assert continual_v2.teacher_network is None
     assert continual_v2.use_distil_loss is False
@@ -1345,13 +1532,51 @@ def run_self_tests() -> dict[str, str]:
     new_v2_dataset = tf.data.Dataset.from_tensor_slices((
         images[:1],
         tf.constant([2], dtype=tf.uint8),
+        tf.constant([True]),
     )).batch(1)
+    continual_v2._switch_test_part("generator")
+    continual_v2._preprocess_training = True
+    mapped_generator = continual_v2.prep_inputs_map(
+        images[:1],
+        tf.constant([2], dtype=tf.uint8),
+        tf.constant([True]),
+    )
+    assert len(mapped_generator) == 7
+    continual_v2._switch_test_part("discriminator")
+    mapped_discriminator = continual_v2.prep_inputs_map(
+        images[:1],
+        tf.constant([2], dtype=tf.uint8),
+        tf.constant([True]),
+    )
+    assert len(mapped_discriminator) == 7
+    _, mapped_teacher, mapped_replay = (
+        continual_v2._prepare_discriminator_batch(
+            mapped_discriminator,
+            continual_v2.clf_train_noisified_max_timesteps,
+        )
+    )
+    assert mapped_teacher is not None
+    tf.debugging.assert_equal(mapped_replay, [True])
+    continual_v2._preprocess_training = None
     continual_v2_history = continual_v2.fit_discriminator(
         x=new_v2_dataset,
         epochs=1,
         verbose=0,
     )
     assert "distil_loss" in continual_v2_history.history
+    continual_v2_eval = continual_v2.evaluate_discriminator(
+        x=new_v2_dataset,
+        network_name="raw",
+        verbose=0,
+        return_dict=True,
+    )
+    assert "distil_loss" in continual_v2_eval
+    continual_v2_generator_history = continual_v2.fit_generator(
+        x=new_v2_dataset,
+        epochs=1,
+        verbose=0,
+    )
+    assert "noise_loss" in continual_v2_generator_history.history
 
     gen_history = wrapper.fit_generator(x=dataset, epochs=1, verbose=0)
     clf_history = wrapper.fit_discriminator(x=dataset, epochs=1, verbose=0)
@@ -1372,9 +1597,21 @@ def run_self_tests() -> dict[str, str]:
         test_part="generator", x=dataset, network_name="raw", verbose=0
     )
     assert "noise_loss" in selected_eval
-    assert wrapper.evaluate(
-        test_part="unknown", x=dataset, network_name="raw", verbose=0
-    ) == {}
+    try:
+        wrapper.evaluate(
+            test_part="unknown", x=dataset, network_name="raw", verbose=0
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown V2 evaluation phases must fail")
+    wrapper._switch_test_part("")
+    try:
+        wrapper.evaluate(x=dataset, network_name="raw", verbose=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("V2 evaluation requires an explicit active phase")
 
     combined = wrapper.fit(
         {"x": dataset, "epochs": 1, "verbose": 0}, 

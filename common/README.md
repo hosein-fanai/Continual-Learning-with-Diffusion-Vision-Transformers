@@ -13,7 +13,7 @@ Use a `Config` for new experiments and `main` when all stages are needed:
 from common.config import load_config
 from common.train import main
 
-config = load_config("configs/my-run.yaml")
+config = load_config("configs/default.yaml")
 run = main(config)
 
 model = run["model"]
@@ -81,6 +81,14 @@ linear reconstruction.
 For `training.task="continual"`, `get_datasets` returns the selected loader so
 the learner can create class-specific datasets for each task.
 
+`save_samples(..., ".npy")` writes homogeneous numeric arrays as ordinary NPY
+and heterogeneous numeric feature splits as an ordered, non-pickled NPZ
+container behind the same `.npy` filename. `load_samples` never enables pickle
+by default. A trusted legacy object-NPY can be loaded once with
+`allow_pickle=True` (which emits a security warning) and immediately migrated by
+passing the returned object array back to `save_samples`; never opt in for an
+untrusted archive.
+
 ## Model construction
 
 `get_model(config)` supports these families:
@@ -112,6 +120,12 @@ from common.model import get_model
 classifier = get_model(10, model_type="CNN")
 ```
 
+An `hp-tuned` classifier preserves all learned non-output-layer weights and
+creates a fresh output head of the requested width. With `use_loaded_opt=True`,
+it reconstructs a fresh optimizer from the saved optimizer configuration; slot
+variables and iteration state are deliberately not reused across the changed
+head, and uncompiled saved models are rejected.
+
 ## Training and reporting
 
 `train_model` keeps one return format for every family: a dictionary of metric
@@ -124,6 +138,16 @@ names to epoch values. It supports:
 - continual model bundles;
 - callbacks, TensorBoard, weight saving, and paired configuration saving.
 
+`training.task` is case-insensitive but restricted to `legacy`, `generation`,
+`joint`, `classification`, or `continual`. `training.results_path=None` is valid
+only when the active call is display/evaluation-only and every file-producing
+option is disabled; missing or non-text paths are rejected before plotting,
+callbacks, or file joins. Final diffusion reporting validates
+`final_images_steps` against that concrete wrapper's `[2, timesteps]` range;
+the field remains inert for classifier-only and VAE-only output paths.
+Direct callers can use `common.config.normalize_training_task(value)` to apply
+the same validation and lowercase normalization before dispatch.
+
 Set `training.fit_method="fit_progressively"` and provide
 `training.stage_tasks` for a diffusion curriculum. Stage and final epoch fields
 own the progressive budget; `training.epochs` continues to control ordinary
@@ -133,6 +157,15 @@ phases.
 optional ensemble accuracy, and generates final images or GIFs. Saving dynamic
 diffusion weights also saves the class mapping and resolved topology required
 to reconstruct them.
+
+For `DiffusionClassifierV2`, ordinary configured fitting runs generator then
+classifier with independent optimizers; progressive fitting changes only the
+generator phase and keeps the classifier on ordinary `fit`. Classifier noising
+caps mean clean timestep 0 for `None`, the full horizon for `-1`, or `[0, cap)`
+for a positive cap, independently of progressive generator bounds. Reporting
+evaluates both phases. A continual `distil_scope="replay_only"` carries an
+explicit row-level provenance mask through raw or mapped V2 batches, restricts
+teacher-targeted losses/metrics to replay rows, and requires generative replay.
 
 `continually_learn.seed` (falling back to `training.seed`) is the master seed
 for a continual run. It is derived for data, schedules, models and stochastic

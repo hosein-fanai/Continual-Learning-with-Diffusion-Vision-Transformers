@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from collections.abc import Mapping
 
+from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
 from diffusion.layers.convolution import LayerDict
@@ -16,7 +17,7 @@ from diffusion.models.convolution import UNetFullOutput, UNetInputs
 from diffusion.models.convolution.unet import UNet
 
 
-@tf.keras.utils.register_keras_serializable(package="continual_learning")
+@register_canonical_keras_serializable(package="continual_learning")
 class UNetClassifier(UNet):
     """Attach a small convolutional classifier to a conditional U-Net.
 

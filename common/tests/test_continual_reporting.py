@@ -44,7 +44,7 @@ def _details_fixture() -> dict[str, object]:
     return {
         "class_order": [3, 1, 2],
         "task_classes": [[3, 1], [2]],
-        "dataset_seed": 7,
+        "seed": 7,
         "histories": [
             {
                 "loss": [1.0, 0.5],

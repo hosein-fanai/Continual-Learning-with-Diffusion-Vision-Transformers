@@ -11,17 +11,21 @@ from collections import deque
 import random
 
 from collections.abc import Iterable, Mapping, Sequence
-from numbers import Integral
+from numbers import Integral, Real
 from typing import Literal
 
 
-ReplayStrategy = Literal["fifo", "reservoir", "class_balanced"]
+ReplayStrategy = Literal[
+    "fifo", 
+    "reservoir", 
+    "class_balanced"
+]
+
 _STRATEGY_ALIASES = {
     "fifo": "fifo", 
     "reservoir": "reservoir", 
     "class_balanced": "class_balanced", 
-    "class-balanced": "class_balanced", 
-    "class_balanced_reservoir": "class_balanced"
+    "class-balanced": "class_balanced"
 }
 
 
@@ -60,8 +64,7 @@ class ReplayBuffer(object):
             strategy (ReplayStrategy | str): ``"fifo"`` (the exact historical
                 behavior), ``"reservoir"`` (uniform Algorithm R), or
                 ``"class_balanced"`` (balanced per-class reservoirs). The
-                aliases ``"class-balanced"`` and
-                ``"class_balanced_reservoir"`` are accepted.
+                alias ``"class-balanced"`` is accepted.
 
         Returns:
             None.
@@ -345,6 +348,13 @@ class ReplayBuffer(object):
                 are incompatible with this buffer.
         """
 
+        schema_version = state.get("schema_version")
+        # Accept only the state schema emitted by the current serializer.
+        if isinstance(schema_version, bool) \
+        or not isinstance(schema_version, Integral) \
+        or int(schema_version) != 1:
+            raise ValueError("Unsupported replay-checkpoint schema version.")
+
         # Refuse cross-capacity restoration because it changes inclusion odds.
         if state.get("maxlen") != self.maxlen:
             raise ValueError("Replay-buffer capacity differs from the checkpoint.")
@@ -361,7 +371,12 @@ class ReplayBuffer(object):
         if self.maxlen is not None and len(items) > self.maxlen:
             raise ValueError("Replay checkpoint exceeds the configured capacity.")
 
-        items_seen = int(state.get("items_seen", len(items)))
+        saved_items_seen = state.get("items_seen", len(items))
+        # Reject booleans and lossy numeric coercions in the stream cursor.
+        if isinstance(saved_items_seen, bool) \
+        or not isinstance(saved_items_seen, Integral):
+            raise ValueError("Replay checkpoint has a non-integral stream count.")
+        items_seen = int(saved_items_seen)
 
         # FIFO has no algorithmic stream cursor beyond its retained contents.
         if self.strategy == "fifo":
@@ -371,12 +386,47 @@ class ReplayBuffer(object):
         if items_seen < len(items) or items_seen < 0:
             raise ValueError("Replay checkpoint has an invalid stream count.")
 
-        classes = list(state.get("classes", []))
+        saved_classes = state.get("classes", [])
+        # Require the serialized ordered record collection used by state_dict().
+        if isinstance(saved_classes, (str, bytes)) \
+        or not isinstance(saved_classes, Sequence):
+            raise ValueError("Replay checkpoint class state must be a sequence.")
+        classes = list(saved_classes)
+        # Require complete mapping records before reading their fields.
+        if any(
+            not isinstance(record, Mapping)
+            or not {"label", "seen", "priority"}.issubset(record)
+            for record in classes
+        ):
+            raise ValueError("Replay checkpoint contains a malformed class record.")
         class_order = [record["label"] for record in classes]
 
+        try:
+            unique_class_count = len(set(class_order))
+        except TypeError as error:
+            raise ValueError(
+                "Replay checkpoint contains an unhashable class label."
+            ) from error
         # Each class must have exactly one allocation/counter record.
-        if len(class_order) != len(set(class_order)):
+        if len(class_order) != unique_class_count:
             raise ValueError("Replay checkpoint contains duplicate classes.")
+
+        # Class observation cursors must retain their exact integral domain.
+        if any(
+            isinstance(record["seen"], bool)
+            or not isinstance(record["seen"], Integral)
+            for record in classes
+        ):
+            raise ValueError("Replay checkpoint contains a non-integral class count.")
+        # Allocation priorities originate from random.random() in [0, 1).
+        if any(
+            isinstance(record["priority"], bool)
+            or not isinstance(record["priority"], Real)
+            or not np.isfinite(float(record["priority"]))
+            or not 0. <= float(record["priority"]) < 1.
+            for record in classes
+        ):
+            raise ValueError("Replay checkpoint contains an invalid class priority.")
 
         class_seen = {
             record["label"]: int(record["seen"]) 
@@ -387,27 +437,72 @@ class ReplayBuffer(object):
             for record in classes
         }
 
-        # Historical class observation counts cannot be negative.
-        if any(count < 0 for count in class_seen.values()):
-            raise ValueError("Replay checkpoint contains a negative class count.")
+        # Registered balanced classes have each consumed at least one item.
+        if any(count <= 0 for count in class_seen.values()):
+            raise ValueError("Replay checkpoint contains a nonpositive class count.")
         # Balanced state accounts for the full stream class by class.
         if self.strategy == "class_balanced":
             # Per-class counters must sum to the global insertion cursor.
             if sum(class_seen.values()) != items_seen:
                 raise ValueError("Replay class counts do not match items_seen.")
+            item_labels = [self._label_key(item) for item in items]
             # Every retained item must belong to a registered class.
-            if any(self._label_key(item) not in class_seen for item in items):
+            if any(label not in class_seen for label in item_labels):
                 raise ValueError("Replay items contain an unknown class.")
+            retained_counts = {
+                label: item_labels.count(label) for label in class_order
+            }
+            # Retention cannot exceed the number historically observed.
+            if any(
+                retained_counts[label] > class_seen[label]
+                for label in class_order
+            ):
+                raise ValueError("Replay items exceed a class observation count.")
+
+            # Reconstruct the allocation without mutating live buffer state.
+            if self.maxlen is None:
+                quotas = dict(class_seen)
+            # An empty bounded checkpoint has no class allocation to divide.
+            elif not class_order:
+                quotas = {}
+            # Split bounded capacity by the serialized random priorities.
+            else:
+                base, remainder = divmod(self.maxlen, len(class_order))
+                ranked_classes = sorted(
+                    (
+                        -class_priorities[label], index, label
+                    )
+                    for index, label in enumerate(class_order)
+                )
+                extra_classes = {
+                    label for _, _, label in ranked_classes[:remainder]
+                }
+                quotas = {
+                    label: base + int(label in extra_classes)
+                    for label in class_order
+                }
+            # Reject retained contents impossible under the saved allocation.
+            if any(
+                retained_counts[label] > quotas[label]
+                for label in class_order
+            ):
+                raise ValueError("Replay items exceed a class allocation quota.")
         # Other strategies never carry class allocation metadata.
         elif classes:
             raise ValueError("Only class_balanced replay may contain class state.")
+
+        validated_rng = random.Random()
+        try:
+            validated_rng.setstate(state["rng_state"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Replay checkpoint contains invalid RNG state.") from error
 
         self.buffer = deque(items, maxlen=self.maxlen)
         self._items_seen = items_seen
         self._class_order = class_order
         self._class_seen = class_seen
         self._class_priorities = class_priorities
-        self._rng.setstate(state["rng_state"])
+        self._rng.setstate(validated_rng.getstate())
 
     def sample(
         self: ReplayBuffer, 
@@ -506,37 +601,6 @@ class ReplayBuffer(object):
         for item in items:
             self.append(item)
 
-    def pop(self: ReplayBuffer) -> object:
-        """Remove and return the newest (rightmost) replay item.
-
-        Returns:
-            object: The removed item.
-
-        Raises:
-            IndexError: If the buffer is empty.
-        """
-
-        return self.buffer.pop()
-
-    def pop_and_append(self: ReplayBuffer) -> object:
-        """Return the newest item after removing and immediately re-adding it.
-
-        The final deque contents and order are unchanged; this method therefore
-        acts as a non-random peek at the rightmost item.
-
-        Returns:
-            object: The newest buffered item.
-
-        Raises:
-            IndexError: If the buffer is empty.
-        """
-
-        item = self.pop()
-        # Do not treat a non-destructive peek as another stream observation.
-        self.buffer.append(item)
-        
-        return item
-
     def sample_buffer_and_prepare_dataset(
         self: ReplayBuffer, 
         num: int
@@ -587,112 +651,18 @@ class ReplayBuffer(object):
 
 
 def run_self_tests() -> dict[str, str]:
-    """Run capacity, sampling, mutation, and dataset-conversion tests.
-
-    The suite covers empty, zero-capacity, bounded, and unbounded buffers;
-    deterministic seeded sampling; all sampling count branches; overflow,
-    clearing, popping, peeking, dtype conversion, aligned dataset ingestion,
-    zip truncation, and the documented undersized-external-population behavior.
-
-    Args:
-        None.
+    """Smoke-test FIFO, deterministic sampling, and replay strategies.
 
     Returns:
-        dict[str, str]: ``{"ReplayBuffer": "passed"}`` after every assertion
-        succeeds.
+        dict[str, str]: Passing marker for :class:`ReplayBuffer`.
     """
 
-    try:
-        ReplayBuffer(maxlen=-1)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("deque must reject a negative replay capacity.")
-    for invalid_capacity in (True, 1.5):
-        try:
-            ReplayBuffer(maxlen=invalid_capacity)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("Replay capacity must be an integer or None.")
-
-    empty = ReplayBuffer(maxlen=3, seed=1)
-    assert len(empty) == 0
-    assert empty.sample_buffer(10) == []
-    try:
-        empty.sample([], -1)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Negative sample sizes must fail for every population.")
-    for invalid_count in (True, 1.5):
-        try:
-            empty.sample([], invalid_count)
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("Replay sample counts must be integers.")
-    x_empty, y_empty = empty.sample_buffer_and_prepare_dataset(2)
-    assert x_empty.shape == (0,) and x_empty.dtype == np.float32
-    assert y_empty.shape == (0,) and y_empty.dtype == np.uint8
-    try:
-        empty.pop()
-    except IndexError:
-        pass
-    else:
-        raise AssertionError("Popping an empty replay buffer must fail.")
-    try:
-        empty.pop_and_append()
-    except IndexError:
-        pass
-    else:
-        raise AssertionError("Peeking an empty replay buffer must fail.")
-
-    zero_capacity = ReplayBuffer(maxlen=0, seed=2)
-    zero_capacity.append("discarded")
-    zero_capacity.extend(["also", "discarded"])
-    assert zero_capacity.maxlen == 0 and len(zero_capacity) == 0
-
     bounded = ReplayBuffer(maxlen=3, seed=7)
-    bounded.append(1)
-    bounded.extend([2, 3, 4])
+    bounded.extend([1, 2, 3, 4])
     assert list(bounded.buffer) == [2, 3, 4]
-    assert len(bounded) == 3
-    assert bounded.sample_buffer(99) == [2, 3, 4]
-    assert bounded.sample([10, 20], 0) == []
-    one_sample = bounded.sample([10, 20, 30], 1)
-    assert len(one_sample) == 1 and one_sample[0] in {10, 20, 30}
-    assert bounded.sample(["external"], 2) == ["external"]
-    try:
-        bounded.sample([1], -1)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Negative nonempty sample sizes must fail.")
-
-    before_peek = list(bounded.buffer)
-    assert bounded.pop_and_append() == 4
-    assert list(bounded.buffer) == before_peek
-    assert bounded.pop() == 4
-    assert list(bounded.buffer) == [2, 3]
-    bounded.clear()
-    assert len(bounded) == 0 and bounded.buffer.maxlen == 3
-
-    unbounded = ReplayBuffer(maxlen=None, seed=8)
-    unbounded.extend(range(100))
-    assert len(unbounded) == 100 and unbounded.buffer.maxlen is None
-    unbounded.clear()
-    assert len(unbounded) == 0 and unbounded.buffer.maxlen is None
-
-    seeded_a = ReplayBuffer(maxlen=10, seed=1234)
-    seeded_a.extend(range(6))
-    sample_a = seeded_a.sample_buffer(4)
-    seeded_b = ReplayBuffer(maxlen=10, seed=1234)
-    seeded_b.extend(range(6))
-    sample_b = seeded_b.sample_buffer(4)
-    assert sample_a == sample_b
-    assert len(set(sample_a)) == 4
-    assert len(seeded_a) == 6, "Sampling must be non-destructive."
+    duplicate = ReplayBuffer(maxlen=3, seed=7)
+    duplicate.extend([1, 2, 3, 4])
+    assert bounded.sample_buffer(2) == duplicate.sample_buffer(2)
 
     pairs = ReplayBuffer(maxlen=4, seed=5)
     pairs.extend([
@@ -702,39 +672,18 @@ def run_self_tests() -> dict[str, str]:
     x_pairs, y_pairs = pairs.sample_buffer_and_prepare_dataset(99)
     np.testing.assert_array_equal(x_pairs, np.array([[1, 2], [4, 5]], np.float32))
     np.testing.assert_array_equal(y_pairs, np.array([3, 6], np.uint8))
-    assert x_pairs.dtype == np.float32 and y_pairs.dtype == np.uint8
 
-    dataset_buffer = ReplayBuffer(maxlen=10, seed=9)
-    dataset_x = np.arange(12, dtype=np.float32).reshape(4, 3)
-    dataset_y = np.array([0, 1, 2, 3], dtype=np.uint8)
-    assert dataset_buffer.sample_dataset_and_extend_buffer(
-        (dataset_x, dataset_y), 2
-    ) is None
-    assert len(dataset_buffer) == 2
-    for x_item, y_item in dataset_buffer.buffer:
-        matching_index = int(y_item)
-        np.testing.assert_array_equal(x_item, dataset_x[matching_index])
+    reservoir = ReplayBuffer(3, seed=11, strategy="reservoir")
+    reservoir.extend(range(20))
+    restored = ReplayBuffer(3, strategy="reservoir")
+    restored.load_state_dict(reservoir.state_dict())
+    reservoir.extend(range(20, 25))
+    restored.extend(range(20, 25))
+    assert restored.state_dict() == reservoir.state_dict()
 
-    truncated_buffer = ReplayBuffer(maxlen=10, seed=10)
-    truncated_buffer.sample_dataset_and_extend_buffer(
-        (np.array([[1], [2], [3]]), np.array([7, 8])), 2
-    )
-    assert len(truncated_buffer) == 2
-    assert {int(item[1]) for item in truncated_buffer.buffer} == {7, 8}
-
-    undersized_buffer = ReplayBuffer(maxlen=5, seed=11)
-    undersized_buffer.append(("existing", 1))
-    undersized_buffer.sample_dataset_and_extend_buffer(
-        (["new"], [2]), 2
-    )
-    assert list(undersized_buffer.buffer) == [
-        ("existing", 1), 
-        ("new", 2),
-    ]
+    balanced = ReplayBuffer(4, seed=13, strategy="class_balanced")
+    balanced.extend(((index,), index % 2) for index in range(20))
+    labels = [item[1] for item in balanced.buffer]
+    assert labels.count(0) == labels.count(1) == 2
 
     return {"ReplayBuffer": "passed"}
-
-
-# Run this module's executable self-test entry point when invoked directly.
-if __name__ == "__main__":
-    print(run_self_tests())

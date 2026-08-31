@@ -9,12 +9,16 @@ the diffusion schedule, noising, losses, optimization, EMA, and sampling.
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+import math
+
+from numbers import Real
 from typing import Literal, get_args
 
 from . import CondType, TokenType, IdsType, IdsDictType
 
 from common.argument_saver import ArgumentSaverModel
 from common.runtime import derive_seed
+from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -150,11 +154,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         reshaper_kwargs: dict = {}, 
         cls_token_regularizer_ids: IdsType = [], 
         cls_token_regularizer_kwargs: dict = {
-            "start": 0,
-            "end": 1,
-            "train_type": "normal",
-            "distil_type": "hard",
-        },
+            "start": 0, 
+            "end": 1, 
+            "train_type": "normal", 
+            "distil_type": "hard"
+        }, 
         final_ffn_activation_func: str = "linear", 
         use_refiner_cnn: bool = False, 
         refiner_cnn_hidden_dim: int | None = None, 
@@ -162,7 +166,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         final_activation_func: str = "linear", 
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
-        seed: int | None = None,
+        seed: int | None = None, 
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -364,8 +368,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._handle_all_ids()
         self.set_current_resolution()
         derive_seed(self.seed, "diffusion_transformer", "validation")
-        self.seed = None if seed is None else int(self.seed)
 
+        self.seed = None if self.seed is None else int(self.seed)
         self.dynamic_num_classes = self.num_classes is None
         self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
@@ -448,9 +452,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Limit routed entries to the number of available target depths.
         if check_items_num:
-            assert local_vars[depth_name] == 0 or \
+            require(local_vars[depth_name] == 0 or \
                 len(local_vars[dict_name]) <= local_vars[depth_name], \
-                f"Items (id sets) in {dict_name} cannot be more than {depth_name}."
+                f"Items (id sets) in {dict_name} cannot be more than {depth_name}.")
 
         # Normalize a flat ID sequence as a route for depth one.
         if not isinstance((dict_:=local_vars[dict_name]), dict):
@@ -461,13 +465,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             if check_keys:
                 # Use the full target-depth range when no explicit key set was given.
                 if len(allowed_keys) == 0:
-                    assert local_vars[depth_name] == 0 or \
+                    require(local_vars[depth_name] == 0 or \
                         1 <= key <= local_vars[depth_name], \
-                        f"Keys in {dict_name} need to be in [1, {local_vars[depth_name]}] range."
+                        f"Keys in {dict_name} need to be in [1, {local_vars[depth_name]}] range.")
                 # Otherwise restrict targets to the caller's allowed key set.
                 else:
-                    assert key in allowed_keys, \
-                        f"Keys in {dict_name} need to be one of {allowed_keys}."
+                    require(key in allowed_keys, \
+                        f"Keys in {dict_name} need to be one of {allowed_keys}.")
 
             # Validate every routed source ID when requested.
             if check_values:
@@ -477,23 +481,53 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         normalized_id = id_ + local_vars[
                             second_depth_name
                         ] + 1 if id_ is not None and id_ < 0 else id_
-                        assert (none_is_filler and id_ is None) or \
+                        require((none_is_filler and id_ is None) or \
                             normalized_id < key, \
-                            f"The ids in each set of {dict_name} can only be less than their key."
+                            f"The ids in each set of {dict_name} can only be less than their key.")
 
                     # Use the full source-depth range when no explicit set was given.
                     if len(allowed_values) == 0:
-                        assert local_vars[second_depth_name] == 0 or \
+                        require(local_vars[second_depth_name] == 0 or \
                             (none_is_filler and id_ is None) or \
                             -(local_vars[second_depth_name]+1) <= id_ <= local_vars[second_depth_name], \
                             f"The ids in each set of {dict_name} can only be None or in "\
-                            f"[-{second_depth_name}-1, {second_depth_name}] range."
+                            f"[-{second_depth_name}-1, {second_depth_name}] range.")
                     # Otherwise restrict sources to the caller's allowed value set.
                     else:
-                        assert local_vars[second_depth_name] == 0 or \
+                        require(local_vars[second_depth_name] == 0 or \
                         id_ in allowed_values, \
-                        f"The ids in each set of {dict_name} can only be one of {allowed_values} ."
+                        f"The ids in each set of {dict_name} can only be one of {allowed_values} .")
 
+    @staticmethod
+    def _check_reshaper_kwargs(
+        kwargs: dict[str, object], 
+        prefix: str = ""
+    ) -> None:
+        """Validate variational switches shared by both transformer branches.
+
+        Args:
+            kwargs (dict[str, object]): Reshaper option mapping after its key
+                whitelist has been checked.
+            prefix (str): Optional branch name used in assertion messages.
+
+        Returns:
+            None: Valid values return normally; invalid values raise
+            ``AssertionError``.
+        """
+
+        add_kl = kwargs.get("add_kl", False)
+        latent_dim_ratio = kwargs.get("latent_dim_ratio", 1.0)
+
+        require(
+            isinstance(add_kl, bool), 
+            f"{prefix}reshaper add_kl must be boolean."
+        )
+        require(
+            isinstance(latent_dim_ratio, Real) and not isinstance(latent_dim_ratio, bool) and 
+            math.isfinite(float(latent_dim_ratio)) and latent_dim_ratio > 0.0, 
+            f"{prefix}reshaper latent_dim_ratio must be finite and positive."
+        )
+    
     def _check_assertions(self, local_vars: dict) -> None:
         """Validate constructor values and record each kwargs whitelist.
 
@@ -507,69 +541,69 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             the instance for classifier-branch validation.
         """
 
-        assert isinstance(local_vars["image_size"], int) and \
+        require(isinstance(local_vars["image_size"], int) and \
             not isinstance(local_vars["image_size"], bool) and \
             local_vars["image_size"] > 0, \
-            "image_size must be a positive integer."
-        assert isinstance(local_vars["patch_size"], int) and \
+            "image_size must be a positive integer.")
+        require(isinstance(local_vars["patch_size"], int) and \
             not isinstance(local_vars["patch_size"], bool) and \
             local_vars["patch_size"] > 0, \
-            "patch_size must be a positive integer."
-        assert local_vars["image_size"] % local_vars["patch_size"] == 0, \
-            "image_size must be divisible by patch_size."
-        assert isinstance(local_vars["dim"], int) and \
+            "patch_size must be a positive integer.")
+        require(local_vars["image_size"] % local_vars["patch_size"] == 0, \
+            "image_size must be divisible by patch_size.")
+        require(isinstance(local_vars["dim"], int) and \
             not isinstance(local_vars["dim"], bool) and local_vars["dim"] > 0, \
-            "dim must be a positive integer."
-        assert isinstance(local_vars["depth"], int) and \
+            "dim must be a positive integer.")
+        require(isinstance(local_vars["depth"], int) and \
             not isinstance(local_vars["depth"], bool) and local_vars["depth"] >= 0, \
-            "depth must be a nonnegative integer."
-        assert isinstance(local_vars["timesteps"], int) and \
+            "depth must be a nonnegative integer.")
+        require(isinstance(local_vars["timesteps"], int) and \
             not isinstance(local_vars["timesteps"], bool) and local_vars["timesteps"] >= 2, \
-            "timesteps must be an integer greater than or equal to 2."
-        assert local_vars["num_classes"] is None or (
+            "timesteps must be an integer greater than or equal to 2.")
+        require(local_vars["num_classes"] is None or (
             isinstance(local_vars["num_classes"], int) and
             not isinstance(local_vars["num_classes"], bool) and
             local_vars["num_classes"] > 0
-        ), "num_classes must be None or a positive integer."
-        assert local_vars["num_classes"] is not None or local_vars["use_cfg"], \
-            "num_classes=None requires use_cfg=True."
-        assert isinstance(local_vars["channels"], int) and \
+        ), "num_classes must be None or a positive integer.")
+        require(local_vars["num_classes"] is not None or local_vars["use_cfg"], \
+            "num_classes=None requires use_cfg=True.")
+        require(isinstance(local_vars["channels"], int) and \
             not isinstance(local_vars["channels"], bool) and local_vars["channels"] > 0, \
-            "channels must be a positive integer."
-        assert isinstance(local_vars["mha_num_heads"], int) and \
+            "channels must be a positive integer.")
+        require(isinstance(local_vars["mha_num_heads"], int) and \
             not isinstance(local_vars["mha_num_heads"], bool) and \
             local_vars["mha_num_heads"] > 0, \
-            "mha_num_heads must be a positive integer."
+            "mha_num_heads must be a positive integer.")
         effective_cond_dim = (
             local_vars["dim"]
             if local_vars["cond_dim"] is None
             else local_vars["cond_dim"]
         )
-        assert isinstance(effective_cond_dim, int) and \
+        require(isinstance(effective_cond_dim, int) and \
             not isinstance(effective_cond_dim, bool) and effective_cond_dim > 0, \
-            "cond_dim must be None or a positive integer."
+            "cond_dim must be None or a positive integer.")
 
         # Additive patch conditioning requires equal token and condition widths.
         if local_vars["patches_conds_merger_type"] == "add":
-            assert local_vars["dim"] == effective_cond_dim, \
-                "When patches_conds_merger_type is add, dim and cond_dim must be equal."
+            require(local_vars["dim"] == effective_cond_dim, \
+                "When patches_conds_merger_type is add, dim and cond_dim must be equal.")
 
         # Split concatenated time/label conditions into two equal-width halves.
         if local_vars["conds_merger_type"] == "concat" and \
                 local_vars["cond_type"] == "time_label":
-            assert effective_cond_dim % 2 == 0, \
-                "cond_dim must be even when time and label embeddings are concatenated."
+            require(effective_cond_dim % 2 == 0, \
+                "cond_dim must be even when time and label embeddings are concatenated.")
 
         # Disable adaptive normalization when no condition tensor exists.
         if local_vars["cond_type"] is None:
-            assert local_vars["ln_no_adaptation"], \
-                "When cond_type is None, layer_norm cannot use adaptation."
+            require(local_vars["ln_no_adaptation"], \
+                "When cond_type is None, layer_norm cannot use adaptation.")
 
-        assert local_vars["cls_token_type"] in (
+        require(local_vars["cls_token_type"] in (
             vals:=(None, *get_args(TokenType))), \
-            f"cls_token_type can only be one of {vals}."
-        assert local_vars["distil_token_type"] in vals, \
-            f"distil_token_type can only be one of {vals}."
+            f"cls_token_type can only be one of {vals}.")
+        require(local_vars["distil_token_type"] in vals, \
+            f"distil_token_type can only be one of {vals}.")
 
         self._check_dict_assertions(
             local_vars, 
@@ -701,6 +735,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )), 
             check_values=False, 
         ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
+        self._check_reshaper_kwargs(local_vars["reshaper_kwargs"])
         self._check_dict_assertions(
             local_vars, 
             "cls_token_regularizer_ids", 
@@ -721,19 +756,19 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         regularizer_mlp_ratio = local_vars["cls_token_regularizer_kwargs"].get(
             "mlp_ratio", None
         )
-        assert regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
-            "regularizer mlp_ratio must be None or positive."
-        assert local_vars["cls_token_regularizer_kwargs"].get(
+        require(regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
+            "regularizer mlp_ratio must be None or positive.")
+        require(local_vars["cls_token_regularizer_kwargs"].get(
             "train_type", "normal"
         ) in ("normal", "distil", "both"), \
-            "regularizer train_type must be normal, distil, or both."
-        assert local_vars["cls_token_regularizer_kwargs"].get(
+            "regularizer train_type must be normal, distil, or both.")
+        require(local_vars["cls_token_regularizer_kwargs"].get(
             "distil_type", "hard"
         ) in ("hard", "soft"), \
-            "regularizer distil_type must be hard or soft."
+            "regularizer distil_type must be hard or soft.")
 
-        assert local_vars["cross_attention_plug_type"] in ("values", "queries"), \
-            "cross_attention_plug_type can only be values or queries."
+        require(local_vars["cross_attention_plug_type"] in ("values", "queries"), \
+            "cross_attention_plug_type can only be values or queries.")
 
     def _fill_none_ids(
         self, 
@@ -1054,8 +1089,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         for dim_1 in dims:
             for dim_2 in dims:
-                assert dim_1 == dim_2, \
+                require(
+                    dim_1 == dim_2, 
                     "In connect_type == add, all of the feature dimensions must be equal."
+                )
 
         return dims[0]
 
@@ -1184,8 +1221,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         for grid_size_1 in grid_sizes:
             for grid_size_2 in grid_sizes:
-                assert grid_size_1 == grid_size_2, \
+                require(
+                    grid_size_1 == grid_size_2, 
                     "All of the feature grid sizes must be equal."
+                )
 
         return grid_sizes[0]
 
@@ -1424,8 +1463,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             increased_dim_ += increased_dim
         # Additive features must all contribute the same width.
         elif increased_dim != 0:
-            assert increased_dim_ == increased_dim, \
+            require(
+                increased_dim_ == increased_dim, 
                 "In connect_type == add, all of the feature dimensions must be equal."
+            )
 
         mlp_output_dim = base_dim if dim_forced and \
                         increased_dim_ > base_dim and \
@@ -1903,9 +1944,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Add a variational latent projection only on KL-enabled flatten stages.
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
             latent_dim_ratio = kwargs.get("latent_dim_ratio", 1)
-            latent_dim = int(
-                target_shape[-1] * latent_dim_ratio
-            )
+            latent_dim = int(target_shape[-1] * latent_dim_ratio)
+
+            # A positive fractional ratio can still truncate to an unusable
+            # zero-width latent for a small flattened feature.
+            if latent_dim < 1:
+                raise ValueError(
+                    "latent_dim_ratio creates an empty latent vector."
+                )
 
             z_mean = layers.Dense(
                 latent_dim, 
@@ -2493,12 +2539,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         resolution = self.image_size if resolution is None else resolution
 
-        assert not isinstance(resolution, bool) and int(resolution) == resolution, \
+        require(
+            not isinstance(resolution, bool) and int(resolution) == resolution, 
             "resolution must be an integer."
-        assert resolution > 0, \
+        )
+        require(
+            resolution > 0, 
             "resolution must be positive."
-        assert resolution % self.patch_size == 0, \
+        )
+        require(
+            resolution % self.patch_size == 0, 
             "resolution must be divisible by patch_size."
+        )
 
 
         self._current_resolution = int(resolution)
@@ -2828,8 +2880,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             AssertionError: If ``min_depth`` is outside ``0..depth``.
         """
 
-        assert 0 <= min_depth <= self.depth, \
+        require(
+            0 <= min_depth <= self.depth, 
             "min_depth must be in the range of [0, depth]."
+        )
 
 
         # Embed raw inputs when execution starts at the network entrance.
@@ -3955,6 +4009,10 @@ def run_self_tests() -> dict[str, str]:
         {"downsample_kwargs": {"unknown": 1}}, 
         {"upsample_kwargs": {"unknown": 1}}, 
         {"reshaper_kwargs": {"unknown": 1}}, 
+        {"reshaper_kwargs": {"add_kl": 1}},
+        {"reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
+        {"reshaper_kwargs": {"latent_dim_ratio": float("inf")}},
+        {"reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"cls_token_regularizer_kwargs": {"unknown": 1}}, 
         {"cls_token_regularizer_kwargs": {
             "start": 0, "end": 1, "mlp_ratio": 0
@@ -3967,6 +4025,22 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError(f"Expected invalid configuration to fail: {overrides}")
+    try:
+        DiffusionTransformer(
+            depth=1,
+            vit_block_ids=[],
+            reshaper_ids_dict={1: "flatten"},
+            reshaper_kwargs={
+                "add_kl": True,
+                "latent_dim_ratio": 1e-12,
+            },
+            build=False,
+            **base,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("A zero-width transformer latent must fail.")
     for bad_resolution in (0, 3, 4.5):
         try:
             depth_zero.set_current_resolution(bad_resolution)

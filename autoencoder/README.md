@@ -66,12 +66,40 @@ x_replay, y_replay = vae.generate(
 - `kernel_init`: a Keras initializer name or object.
 
 Do not include `units`; widths come from `hiddens_dims`.
+Each Dense block receives an independent clone of the selected initializer;
+this prevents one reused unseeded initializer object from repeating the same
+draw across encoder and decoder layers under TensorFlow 2.10.
 
 `compile_args` starts with Nadam at learning rate `0.1` and MSE, then accepts
 any `tf.keras.Model.compile` key such as `optimizer`, `loss`, `metrics`,
 `run_eagerly`, or `jit_compile` when supported by the installed TensorFlow.
 Top-level `**kwargs` goes to `tf.keras.Model`, so common valid examples are
 `name`, `dtype`, and `trainable`; unknown keys fail in Keras.
+
+### Serialization
+
+`VariationalAutoencoder` is registered with Keras and its `get_config()` records
+the complete encoder/decoder topology, conditioning, activation/initializer,
+dtype/name, and seed settings. `from_config(...)` and `clone_model(...)` rebuild
+an independent, uncompiled architecture. Architecture config deliberately does
+not carry learned weights, optimizer slots/iterations, or compile arguments;
+use normal model/weight persistence for learned state and compile a direct clone
+explicitly.
+
+The three package-level exports are lazy and cached: `from autoencoder import
+VariationalAutoencoder`, `VAEClassifier`, and `DecoderAccuracyCallback` retain
+their public API without eagerly importing every registered Keras module.
+Importing the package installs lazy Keras registry proxies for both model
+classes. Consequently, `import autoencoder` before `load_model(...)` restores
+the canonical Python class (including `isinstance` and custom methods), while
+direct `python -m autoencoder.<module>` execution still loads each module once.
+
+`VAEClassifier` follows the same rule and additionally serializes its nested
+classifier through Keras object serialization while omitting the inherited
+`conditioned` key that its constructor fixes internally. Its classifier must
+therefore be a registered/serializable Keras object for a portable config
+round-trip; an arbitrary callable may still run but is not promised to
+deserialize.
 
 `train` accepts `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
 `validation_data`, `callbacks_list`, `callbacks_monitor`, `clf`, `verbose`, and

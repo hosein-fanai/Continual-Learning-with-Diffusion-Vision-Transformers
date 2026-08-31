@@ -13,6 +13,10 @@ from diffusion import UNet, UNetClassifier
 from diffusion.models.convolution import UNet, UNetClassifier
 ```
 
+Both package surfaces resolve these classes lazily and cache them after first
+access; importing the package alone does not eagerly load every convolutional
+layer module.
+
 Compile and fit a wrapper, not the bare raw network, for diffusion training.
 
 ## U-Net hierarchy and depth contract
@@ -266,6 +270,15 @@ Both wrappers consume datasets of `(clean_images, zero_based_class_labels)`.
 `DiffusionClassifier` optimizes denoising and classification jointly;
 `DiffusionClassifierV2` maintains independent generator and classifier
 optimizers and exposes the phase-specific fit methods shown above.
+
+V2 requires CFG. `clf_train_noisified_max_timesteps` and
+`clf_test_noisified_max_timesteps` use clean timestep 0 for `None`, the complete
+horizon for `-1`, or sample `[0, cap)` for a positive value; these classifier
+caps are independent of progressive generator bounds. Direct evaluation must
+select a phase with `evaluate_generator`, `evaluate_discriminator`, or
+`test_part`, or request `eval_both=True`. An optional third replay-provenance
+tensor is accepted by raw V2 batches and retained by mapped preprocessing for
+`distil_scope="replay_only"`.
 
 Classifier progression accepts ordinary main-network specifications or a
 targeted mapping:

@@ -16,13 +16,18 @@ The root CLI loads a YAML configuration without training by default, or runs
 the configured experiment with `--train`:
 
 ```powershell
-python . configs/my-run.yaml
-python . --train configs/my-run.yaml
+python . configs/default.yaml
+python . --train configs/default.yaml
 ```
 
-Use `python . --help` for the complete command contract. Because the
-repository has no root package initializer, `python -m <package>` and relative
-imports from the root entry point are intentionally not used.
+Use `python . --help` for the complete command contract. The repository root
+has no importable package initializer, so the CLI uses `python .` rather than a
+root-package `python -m` target and the entry point uses absolute imports.
+Individual `autoencoder.*` and `diffusion.*` modules can still be run with
+`python -m`; their package-level public re-exports are loaded and cached lazily
+so a target module is not imported twice during registered Keras self-tests.
+Lazy Keras registry proxies also let package-only imports restore registered
+SavedModels as their canonical Python classes.
 
 ## Environment
 
@@ -103,6 +108,13 @@ separates generator and classifier variable groups/optimizers. Their READMEs
 define the branch state, progressive-depth behavior, and variable-selection
 IDs.
 
+`DiffusionClassifierV2` requires CFG. Its classifier-only train/test timestep
+caps use clean timestep 0 for `None`, the full horizon for `-1`, or an exclusive
+`[0, cap)` range for a positive value; this range is independent of any active
+progressive generator interval. Direct evaluation must select
+`test_part="generator"` or `"discriminator"`, call a phase-specific evaluator,
+or use `eval_both=True`. Shared reporting requests both phases.
+
 Transformer classifiers can also prepend a distillation token after the class
 token. `DiffusionClassifier` maps `tf.data.Dataset` batches through a frozen
 teacher, supports hard cross-entropy or soft KL targets, and reports the class,
@@ -165,6 +177,10 @@ karras = generate_sigmas(ScheduleConfig(
 and normalized-time arrays. Use `generate_sigmas` directly for native VE or
 Karras magnitudes and endpoint-sampled sub-VP marginal deviations; the
 all-in-one helper reports a VP beta-equivalent curve.
+`"sigmoid"` and `"logistic"` are distinct: sigmoid interpolates per-step beta
+between `beta_start` and `beta_end`, while logistic shapes a decreasing
+cumulative `alpha_bar` and derives beta from it. Both use `logistic_k` for
+transition steepness.
 
 ## Configuration-driven experiments
 
@@ -189,11 +205,18 @@ See [`common/README.md`](common/README.md) for the concise API guide. Exact
 configuration fields and compatibility keywords remain documented in the
 corresponding dataclasses and function docstrings.
 
+Feature persistence is non-pickling by default. Homogeneous numeric `.npy`
+files remain ordinary NPY; heterogeneous numeric feature splits use ordered NPZ
+content behind the same public `.npy` filename. Loading a legacy object-NPY
+requires explicit `allow_pickle=True`, emits a security warning, and is only
+appropriate for a trusted file that will immediately be re-saved in the safe
+format.
+
 ```python
 from common.config import load_config
 from common.train import main
 
-config = load_config("configs/my-run.yaml")
+config = load_config("configs/default.yaml")
 result = main(config)
 print(result["results_path"])
 ```
@@ -201,6 +224,11 @@ print(result["results_path"])
 Generic model-specific constructor options live in `model.kwargs`; diffusion
 wrapper options live in `model.wrapper_kwargs`. Omitted fields keep defaults
 and unknown typed-section fields are rejected.
+`training.task` is normalized case-insensitively and must be `legacy`,
+`generation`, `joint`, `classification`, or `continual`. A path-like
+`training.results_path` is normalized to text; `None` is accepted only when all
+active consumers can run without an artifact directory, including interactive
+image display during training and disabled save/TensorBoard/checkpoint outputs.
 Set `training.fit_method="fit_progressively"` with `training.stage_tasks` and
 the desired stage controls to use the diffusion wrapper's existing progressive
 trainer; the default `"fit"` path is unchanged.
@@ -263,8 +291,9 @@ and replay-model phase then uses the shared training and reporting APIs.
 For a source-verified experimental protocol covering the baseline ladder,
 matched replay budgets, six-cell replay × KD design, candidate gates,
 development/confirmation manifests, paired stream-level inference, recovery,
-artifacts, and expected TensorFlow retracing, see the
-[`research-grade continual-learning workflow`](docs/research-grade-continual-learning.md).
+artifacts, and expected TensorFlow retracing, consult the optional local
+`others/research-grade-continual-learning.md` reference when that ignored
+workspace artifact is present.
 
 ```python
 from common.config import Config
@@ -319,6 +348,13 @@ reported continual metrics. Average forgetting is signed: the best score
 before the final evaluation minus the final score, so positive backward
 transfer appears as negative forgetting rather than being clipped to zero.
 
+Ensemble evaluation prefers the correctly spelled `network_name`; the legacy
+`netwrok_name` alias remains accepted, but supplying both is an error. Its
+`"chunked"` and `"batched"` computation modes implement the same aggregation;
+with a seed, stateless per-timestep noising makes results invariant to mode,
+chunk size, and unrelated prior random draws. An `"ema"` selection resolves to
+the raw branch when EMA is disabled.
+
 Fixed-buffer replay uses `buffer_kwargs["strategy"]`. `"fifo"` is the exact
 historical default, retaining the newest examples. `"reservoir"` gives every
 example offered to the buffer equal probability of occupying fixed memory, while
@@ -357,6 +393,12 @@ accuracies = continually_learn(
 )
 ```
 
+The `hp-tuned` template path keeps every learned non-output-layer weight and
+replaces only the output head. With `use_loaded_opt=True`, the new model receives
+a fresh optimizer reconstructed from the saved optimizer configuration; slots
+and iteration state are not transferred, and an uncompiled saved model is
+rejected. With it disabled, the supplied compile configuration is used.
+
 Each task rebuilds its training and validation inputs as `tf.data.Dataset`
 pipelines. Both training and test evaluation are reported through
 `common.train`. Fixed-buffer and generative rehearsal are mutually exclusive.
@@ -370,8 +412,9 @@ when its paired config contains zero-based `seen_classes`. The wrapper restores 
 topology before weight loading. Saving dynamic diffusion weights requires a
 `Config` and always writes the paired `config.yaml`, even when ordinary config
 saving was disabled.
-See `common/README.md` for the complete direct-key list, config-field mapping,
-supported raw-model/wrapper mappings, loader requirements, and dictionary keys;
+See `common/README.md` for the orchestration guide and inspect
+`help(continually_learn)` after importing it from `common.learner` for the
+complete direct-key contract;
 see
 `autoencoder/README.md` for conditional labels, training, and generation.
 

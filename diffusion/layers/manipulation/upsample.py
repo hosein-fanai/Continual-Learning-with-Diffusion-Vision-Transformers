@@ -5,6 +5,7 @@ from tensorflow.keras import layers, models
 
 from typing import Any, Literal, TypeAlias
 
+from common.validation import require
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -89,20 +90,15 @@ class Upsample(BaseEmbedding):
             ``None``.
         """
 
-        temp_val = kwargs.pop("circumvent_cls_token", None)
-        # Preserve legacy one-token configurations under the canonical option.
-        if temp_val is not None:
-            circumvent_tokens = temp_val
-
         super().__init__(
             use_layer_norm=use_layer_norm, 
             **kwargs
         )
         self._save_init_args(locals())
-
-        assert self.grid_size is not None and self.grid_size >= 1, \
+        require(
+            self.grid_size is not None and self.grid_size >= 1, 
             "grid_size must be positive."
-
+        )
 
         self.output_grid_size = self.grid_size * 2
 
