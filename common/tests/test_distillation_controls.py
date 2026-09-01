@@ -8,12 +8,16 @@ from types import SimpleNamespace
 import tensorflow as tf
 
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+from diffusion.models.wrapper.diffusion_model import DiffusionModel
+from diffusion.models.transformer.diffusion_transformer import (
+    DiffusionTransformer,
+)
 
 
 class _DistillationHarness:
     """Provide only the state used by the wrapper's KD loss helper."""
 
-    compute_distil_loss = DiffusionClassifier.compute_distil_loss
+    compute_distil_loss = DiffusionClassifier.compute_clf_distil_loss
     get_clf_results_dict = DiffusionClassifier.get_clf_results_dict
     _distillation_metric_mask = DiffusionClassifier._distillation_metric_mask
 
@@ -306,6 +310,109 @@ class DistillationControlTests(tf.test.TestCase):
 
         self.assertAllClose(results["distil_loss"], 2.5)
         self.assertAllClose(results["distil_token_accuracy"], 1.)
+
+    def test_noise_distillation_uses_a_frozen_base_teacher(self) -> None:
+        """Train a generator against an independent denoising snapshot.
+
+        Args:
+            None.
+
+        Returns:
+            None: The noise KD metric is positive and teacher weights are fixed.
+        """
+        network = DiffusionTransformer(
+            num_classes=2,
+            use_cfg=True,
+            timesteps=4,
+            image_size=4,
+            channels=1,
+            patch_size=2,
+            dim=4,
+            depth=0,
+            mha_num_heads=1,
+            vit_block_mlp_ratio=1.,
+        )
+        wrapper = DiffusionModel(
+            network,
+            use_ema=False,
+            test_network_name="raw",
+            scheduler_name="linear",
+            test_steps=2,
+            noise_distil_coef=1.,
+            defer_teacher=True,
+            seed=7,
+        )
+        wrapper.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3),
+            loss="mse",
+            run_eagerly=True,
+        )
+        teacher = wrapper.snapshot_teacher_network("raw")
+        wrapper.set_teacher_network(teacher)
+        teacher_before = [weight.numpy().copy() for weight in teacher.weights]
+        for weight in wrapper.network.trainable_weights:
+            weight.assign_add(tf.ones_like(weight) * .05)
+
+        results = wrapper.train_step((
+            tf.ones((2, 4, 4, 1), dtype=tf.float32),
+            tf.constant([0, 1], dtype=tf.int32),
+        ))
+
+        self.assertIn("noise_distil_loss", results)
+        self.assertGreater(float(results["noise_distil_loss"]), 0.)
+        self.assertFalse(teacher.trainable)
+        for expected, actual in zip(teacher_before, teacher.weights):
+            self.assertAllEqual(expected, actual)
+        self.assertEqual(teacher._diffusion_scheduler_name, "linear")
+        self.assertFalse(teacher._diffusion_modify_first_t)
+
+        mismatched_teacher = DiffusionModel(
+            DiffusionTransformer(
+                num_classes=2,
+                use_cfg=True,
+                timesteps=4,
+                image_size=4,
+                channels=1,
+                patch_size=2,
+                dim=4,
+                depth=0,
+                mha_num_heads=1,
+                vit_block_mlp_ratio=1.,
+            ),
+            use_ema=False,
+            test_network_name="raw",
+            scheduler_name="clipped_cosine",
+            test_steps=2,
+        )
+        with self.assertRaisesRegex(ValueError, "scheduler_name"):
+            wrapper.set_teacher_network(mismatched_teacher)
+
+        direct_student = DiffusionModel(
+            DiffusionTransformer(
+                num_classes=2,
+                use_cfg=True,
+                timesteps=4,
+                image_size=4,
+                channels=1,
+                patch_size=2,
+                dim=4,
+                depth=0,
+                mha_num_heads=1,
+                vit_block_mlp_ratio=1.,
+            ),
+            use_ema=False,
+            test_network_name="raw",
+            scheduler_name="linear",
+            test_steps=2,
+            noise_distil_coef=1.,
+            teacher_network=teacher,
+        )
+        self.assertTrue(direct_student.defer_teacher)
+        self.assertTrue(direct_student.get_config()["defer_teacher"])
+        direct_student.set_teacher_network(None)
+        restored = DiffusionModel.from_config(direct_student.get_config())
+        self.assertTrue(restored.defer_teacher)
+        self.assertIsNone(restored.teacher_network)
 
 
 # Support direct execution in addition to unittest discovery.

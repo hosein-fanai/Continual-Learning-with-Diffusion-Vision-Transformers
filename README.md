@@ -269,6 +269,14 @@ continual metrics. Joint models default to a two-objective Pareto study;
 other objectives. Continual objectives are read only from validation continual
 metrics and default to maximizing `final_average_accuracy`.
 
+For a teacher-distilled class-incremental architecture search, use
+`task="continual"`, `model_name="diffusion_classifier"`, and
+`use_distillation=True`. This umbrella space conditionally searches the DiT,
+encoder-decoder DiT, and U-Net classifier families together with their
+optimizer, diffusion, distillation, and replay choices. Dataset, split, seed,
+task schedule, training budget, and validation objective remain fixed across
+trials so their scores stay comparable.
+
 Study state, the sampler state, and per-trial continual task checkpoints are
 resumable by passing the existing study directory to `resume_from`. The saved
 study specification is checked before continuation, and a trial interrupted
@@ -348,9 +356,8 @@ reported continual metrics. Average forgetting is signed: the best score
 before the final evaluation minus the final score, so positive backward
 transfer appears as negative forgetting rather than being clipped to zero.
 
-Ensemble evaluation prefers the correctly spelled `network_name`; the legacy
-`netwrok_name` alias remains accepted, but supplying both is an error. Its
-`"chunked"` and `"batched"` computation modes implement the same aggregation;
+Ensemble evaluation selects `network_name="raw"|"ema"`. Its `"chunked"` and
+`"batched"` computation modes implement the same aggregation;
 with a seed, stateless per-timestep noising makes results invariant to mode,
 chunk size, and unrelated prior random draws. An `"ema"` selection resolves to
 the raw branch when EMA is disabled.

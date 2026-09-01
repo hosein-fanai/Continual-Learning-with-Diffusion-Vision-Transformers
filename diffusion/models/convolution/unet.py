@@ -252,8 +252,8 @@ class UNet(ArgumentSaverModel):
             min_id=0, 
             max_id=self.depth, 
         )
-        self.connection_ids_dict: dict[int, list[int]] = {}
-        self.cross_attention_ids_dict: dict[int, list[int]] = {}
+        self.connection_ids_dict: dict[int, list[int]] = self._no_dependency({})
+        self.cross_attention_ids_dict: dict[int, list[int]] = self._no_dependency({})
         self.set_current_resolution()
 
         # Persist resolved values so EMA/config cloning recreates one topology.

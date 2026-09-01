@@ -291,6 +291,7 @@ def resolve_continual_schedule(
             order; ``"random"`` shuffles it reproducibly before grouping.
         task_order_mode (str): ``"fixed"`` preserves task order; ``"random"``
             shuffles complete groups without changing within-task class order.
+            An automatic short remainder is never placed first.
         seed (int | None): Seed used for class/task shuffling.
 
     Returns:
@@ -335,6 +336,7 @@ def resolve_continual_schedule(
             raise ValueError(
                 "class_order_mode='random' cannot be combined with task_groups."
             )
+    automatic_task_groups = normalized_groups is None
 
     # Infer the order from explicit groups when no separate order was supplied.
     grouped_order = [label for group in normalized_groups for label in group] \
@@ -413,9 +415,25 @@ def resolve_continual_schedule(
             for index in range(0, len(resolved_order), task_size)
         ]
 
+    if len(normalized_groups) < 2:
+        raise ValueError(
+            "A continual schedule must contain at least two task groups."
+        )
+
     # Reorder complete tasks while preserving class order inside each group.
     if task_order_mode == "random":
+        remainder_group = None
+        # An automatic short final group may move, but task one must still
+        # contain the requested task_size classes.
+        if automatic_task_groups and len(normalized_groups[-1]) < task_size:
+            remainder_group = normalized_groups.pop()
         schedule_rng.shuffle(normalized_groups)
+        if remainder_group is not None:
+            insertion_index = schedule_rng.randrange(
+                1,
+                len(normalized_groups) + 1,
+            )
+            normalized_groups.insert(insertion_index, remainder_group)
 
     # The returned order always describes the actual resolved task stream.
     resolved_order = [label for group in normalized_groups for label in group]
@@ -681,6 +699,7 @@ class DiffusionModelConfig(KwargsMixin):
     test_steps: int | None = None
     test_eta: float = 0.0
     noise_loss_coef: float = 1.0
+    noise_distil_coef: float = 0.0
     show_separate_noise_losses: bool = False
     image_loss_coef: float = 0.0
     kl_loss_coef: float = 0.0
@@ -698,6 +717,7 @@ class DiffusionModelConfig(KwargsMixin):
     map_num_parallel_calls: int | None = 1
     seen_classes: dict[object, int] = field(default_factory=dict)
     seed: int | None = None
+    defer_teacher: bool = False
 
 
 @dataclass
@@ -730,6 +750,7 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
 class DiffusionClassifierV2Config(DiffusionClassifierConfig):
     """Arguments forwarded to ``DiffusionClassifierV2`` except ``network``."""
 
+    mask_by_nulls: bool = False
     clf_loss_coef: float = 1.0
     clf_vars_embedding_ids: list[int] = field(default_factory=list)
     clf_vars_noise_part_ids: list[int] = field(default_factory=list)
@@ -840,8 +861,9 @@ class ModelConfig:
             ``DiffusionTransformer`` inside ``DiffusionModel``.
         show_network_summary (bool): Print the wrapper/network summary after
             construction.
-        weights_path (str | None): Keras weights file loaded after construction,
-            or ``None`` for fresh weights. In continual runs it initializes a
+        weights_path (str | None): Keras weights file or TensorFlow checkpoint
+            prefix loaded after construction, or ``None`` for fresh weights.
+            In continual runs it initializes a
             VAE replay model, or the classifier and its incremental head
             prefixes for classifier-only and buffer-based runs. A continual
             diffusion checkpoint requires a paired config containing the
@@ -849,7 +871,7 @@ class ModelConfig:
             mapping. The
             continual factory still constructs a dynamic raw network and the
             wrapper grows it before loading these weights. Training updates
-            this field to its saved ``model.weights.h5`` path.
+            this field to the saved weight artifact path.
         diffusion_transformer (DiffusionTransformerConfig): Raw denoising
             network settings used only when ``with_classifier=False``.
         dit_classifier (DiTClassifierConfig): Raw joint network settings used

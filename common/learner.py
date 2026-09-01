@@ -231,12 +231,12 @@ def _recovery_descriptor(
     if value is None or isinstance(value, (bool, str, int)):
         return value
 
-    # Canonicalize round trips through float32-backed Keras variables.
+    # Canonicalize only float32-backed Keras configuration round trips.
     if isinstance(value, float):
         # Keras may materialize the same constructor scalar through float32 on
         # a compiled object (for example 0.9 -> 0.899999976). Seven significant
         # digits preserve float32 semantics while keeping the descriptor stable.
-        return float(format(value, ".7g"))
+        return float(format(value, ".7g")) if strip_config_names else value
 
     # Convert NumPy scalar wrappers into their Python scalar counterparts.
     if isinstance(value, np.generic):
@@ -669,10 +669,23 @@ def _reset_task_random_streams(
     if model is None:
         return
 
-    components = list(getattr(model, "submodules", ()))
-    # Include subclassed models whose submodule enumeration omits the root.
-    if not any(component is model for component in components):
-        components.insert(0, model)
+    components = []
+    pending = [model]
+    discovered: set[int] = set()
+    while pending:
+        component = pending.pop()
+        if id(component) in discovered:
+            continue
+        discovered.add(id(component))
+        components.append(component)
+        children = list(getattr(component, "layers", ()))
+        children.extend(
+            child for child in getattr(
+                component, "_self_tracked_trackables", ()
+            )
+            if isinstance(child, tf.Module)
+        )
+        pending.extend(reversed(children))
 
     visited: set[int] = set()
     for component_index, component in enumerate(components):
@@ -732,7 +745,8 @@ def _prepare_diffusion_x(
     """Map a supported loader representation to diffusion model space.
 
     Args:
-        x (numpy.ndarray): Preprocessed image batch ``[samples, H, W, C]``.
+        x (numpy.ndarray): Preprocessed image batch ``[samples, H, W]`` or
+            ``[samples, H, W, C]``.
         data_min (float): Minimum of the shared real training input.
         data_range (float): Nonzero maximum-minus-minimum training range.
 
@@ -745,6 +759,8 @@ def _prepare_diffusion_x(
     variable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
     numpy_dtype = tf.as_dtype(variable_dtype).as_numpy_dtype
     x = np.asarray(x, dtype=numpy_dtype)
+    if x.ndim == 3:
+        x = x[..., None]
 
     return ((x - data_min) / data_range * 2.) - 1.
 
@@ -1138,63 +1154,25 @@ def _reported_accuracy(
     return None
 
 
-def _copy_classifier_prefix(
-    source_model: tf.keras.Model,
-    target_model: tf.keras.Model
-) -> None:
-    """Copy shared weights and the target-width classifier head prefix.
-
-    Args:
-        source_model (tf.keras.Model): Built full-width source classifier.
-        target_model (tf.keras.Model): Built task-width target classifier.
-
-    Returns:
-        None: ``target_model`` is updated in place.
-    """
-
-    # Require matching layer structures before copying a classifier prefix.
-    if len(source_model.layers) != len(target_model.layers):
-        raise ValueError(
-            "Initial and continual classifiers must have matching layers."
-        )
-
-    for source_layer, target_layer in zip(
-        source_model.layers[:-1],
-        target_model.layers[:-1]
-    ):
-        target_layer.set_weights(source_layer.get_weights())
-
-    source_kernel, source_bias = source_model.layers[-1].get_weights()
-    target_kernel, target_bias = target_model.layers[-1].get_weights()
-    target_width = target_bias.shape[0]
-
-    # Require the source head to cover every target output column.
-    if source_bias.shape[0] < target_width:
-        raise ValueError(
-            "Initial classifier output is narrower than a continual task."
-        )
-
-    target_kernel[...] = source_kernel[..., :target_width]
-    target_bias[...] = source_bias[:target_width]
-    target_model.layers[-1].set_weights([target_kernel, target_bias])
-
-
 def _has_positive_distillation_objective(
-    model: DiffusionClassifier
+    model: DiffusionModel
 ) -> bool:
-    """Return whether a diffusion classifier has an active teacher objective.
+    """Return whether a diffusion wrapper has an active teacher objective.
 
     Args:
-        model (DiffusionClassifier): Wrapper whose token and regularizer losses
-            are inspected before the first continual task.
+        model (DiffusionModel): Wrapper whose noise, token, and regularizer
+            losses are inspected before the first continual task.
 
     Returns:
-        bool: True when token distillation or a teacher-backed classifier-token
-        regularizer has a positive coefficient.
+        bool: True when noise/token distillation or a teacher-backed
+        classifier-token regularizer has a positive coefficient.
     """
 
+    noise_distil_coef = float(tf.keras.backend.get_value(
+        model.noise_distil_coef
+    ))
     distil_loss_coef = float(tf.keras.backend.get_value(
-        model.distil_loss_coef
+        getattr(model, "distil_loss_coef", 0.)
     ))
     ctr_loss_coef = float(tf.keras.backend.get_value(model.ctr_loss_coef))
     regularizer_kwargs = getattr(
@@ -1207,12 +1185,15 @@ def _has_positive_distillation_objective(
         )
 
     uses_teacher_regularizer = (
+        isinstance(model, DiffusionClassifier)
+        and
         ctr_loss_coef > 0.
         and regularizer_kwargs.get("train_type", "normal") in (
             "distil", "both"
         )
     )
-    return distil_loss_coef > 0. or uses_teacher_regularizer
+    return noise_distil_coef > 0. or distil_loss_coef > 0. \
+        or uses_teacher_regularizer
 
 
 def _flatten_example_rows(values: np.ndarray) -> np.ndarray:
@@ -1350,9 +1331,8 @@ def _sample_exact_rows(
         tuple[numpy.ndarray, numpy.ndarray]: Selected aligned arrays.
 
     Raises:
-        TypeError: If ``count`` is neither ``None`` nor a non-boolean integer.
-        ValueError: If arrays are misaligned, empty for a positive request, or
-            ``count`` is negative.
+        ValueError: If arrays are misaligned or a positive request is made
+            from an empty task. NumPy validates the annotated count itself.
     """
 
     x = np.asarray(x)
@@ -1364,15 +1344,6 @@ def _sample_exact_rows(
     # Preserve the legacy complete current-data exposure.
     if count is None:
         return x, y
-
-    # Refuse boolean and fractional exposure counts.
-    if isinstance(count, bool) or not isinstance(count, (int, np.integer)):
-        raise TypeError("exposure counts must be non-boolean integers or None.")
-
-    count = int(count)
-    # Keep explicit exposure counts nonnegative.
-    if count < 0:
-        raise ValueError("exposure counts must be nonnegative.")
 
     # A positive exposure cannot be drawn from an empty task.
     if count > 0 and len(x) == 0:
@@ -1431,20 +1402,15 @@ def _balanced_generation_labels(
     Returns:
         numpy.ndarray: Integer labels with exactly ``count`` rows.
 
-    Raises:
-        ValueError: If count is negative or positive without any old class.
     """
 
     classes = [int(class_id) for class_id in classes]
-    # Keep total generation counts within their mathematical domain.
-    if count < 0 or (count > 0 and not classes):
-        raise ValueError("generation count requires a nonempty class set.")
 
     # Preserve an explicit zero replay budget.
     if count == 0:
         return np.empty((0,), dtype="int64")
 
-    base, remainder = divmod(int(count), len(classes))
+    base, remainder = divmod(count, len(classes))
     shuffled = list(np.asarray(classes)[rng.permutation(len(classes))])
     labels = np.concatenate([
         np.repeat(class_id, base + int(index < remainder))
@@ -1453,6 +1419,38 @@ def _balanced_generation_labels(
     rng.shuffle(labels)
 
     return labels
+
+
+def _sample_diffusion_replay(
+    generative_model: DiffusionModel,
+    labels: np.ndarray,
+    batch_size: int,
+    seed: int | None,
+    empty_samples: np.ndarray,
+) -> np.ndarray:
+    """Sample aligned diffusion replay without materializing one large batch.
+
+    Args:
+        generative_model (DiffusionModel): Conditional diffusion wrapper.
+        labels (numpy.ndarray): Candidate labels in their required order.
+        batch_size (int): Maximum sampling chunk size.
+        seed (int | None): Candidate-pool seed from which chunk streams derive.
+        empty_samples (numpy.ndarray): Correctly shaped empty loader-space view.
+
+    Returns:
+        numpy.ndarray: Generated candidates concatenated in label order.
+    """
+
+    chunks = []
+    for chunk_index, start in enumerate(range(0, len(labels), batch_size)):
+        chunk_labels = labels[start:start + batch_size]
+        chunks.append(generative_model.sample(
+            network_name=generative_model.test_network_name,
+            labels=chunk_labels + int(generative_model.use_cfg),
+            seed=derive_seed(seed, "replay_sample_chunk", chunk_index),
+        ).numpy())
+
+    return np.concatenate(chunks, axis=0) if chunks else empty_samples
 
 
 def _predict_teacher_probabilities(
@@ -1516,20 +1514,7 @@ def _cache_digest(value: np.ndarray) -> str:
         TypeError: If an object-dtype array is supplied.
     """
 
-    array = np.ascontiguousarray(np.asarray(value))
-    # Object bytes contain process-specific pointers and cannot be trusted.
-    if array.dtype.hasobject:
-        raise TypeError("object arrays cannot be used in a replay cache.")
-
-    digest = hashlib.sha256()
-    digest.update(array.dtype.str.encode("ascii"))
-    digest.update(str(tuple(array.shape)).encode("ascii"))
-
-    # Empty replay pools contribute metadata but have no content bytes.
-    if array.size:
-        digest.update(memoryview(array).cast("B"))
-
-    return digest.hexdigest()
+    return _array_recovery_descriptor(value)["sha256"]
 
 
 def _cached_replay_candidates(
@@ -1960,75 +1945,12 @@ def _run_continual_tasks(
 ) -> list[float] | dict[str, object]:
     """Train a class-incremental schedule with optional replay and recovery.
 
-    Args:
-        class_num (int): Total number of selected classes.
-        load_dataset_fn (DatasetLoader): Six-array dataset loader.
-        class_order (Sequence[int] | None): Class introduction order.
-        task_groups (Sequence[Sequence[int]] | None): Classes introduced per task.
-        task_size (int): Classes per automatically generated task.
-        class_order_mode (str): Fixed or seeded-random class ordering.
-        task_order_mode (str): Fixed or seeded-random task ordering.
-        load_dataset_fn_kwargs (dict[str, object] | None): Dataset loader options.
-        remove_prev_classes (bool): Train later tasks on only new classes.
-        keep_same_model (bool): Carry learned classifier weights between tasks.
-        tuned_model_path (str): Optional saved classifier template.
-        compile_args (dict[str, object] | None): Classifier compile overrides.
-        use_loaded_opt (bool): Recreate the template optimizer configuration.
-        batch_size (int): Per-task batch size.
-        epochs (int): Maximum epochs for ordinary fit phases.
-        fit_method (str): Ordinary or progressive diffusion fit method.
-        fit_kwargs (dict[str, object] | None): Diffusion fit options.
-        use_buffer (bool): Enable bounded real-example replay.
-        buffer_kwargs (dict[str, object] | None): Replay-buffer options.
-        baseline (str | None): Optional named continual baseline.
-        plot_results (bool): Plot the completed task-accuracy trajectory.
-        verbose (bool | int): Training and reporting verbosity.
-        generative_model (tf.keras.Model | None): Optional replay model.
-        teacher_network (tf.keras.Model | None): Optional first-task teacher.
-        generative_model_compile_args (dict[str, object] | None): Replay compile options.
-        generative_model_kwargs (dict[str, int] | None): Replay generation options.
-        use_generative_replay (bool): Generate examples from previous classes.
-        replay_budget_mode (str): Legacy or fixed-total replay accounting.
-        replay_old_examples (int | None): Fixed old-example exposure.
-        replay_current_examples (int | None): Fixed current-example exposure.
-        replay_candidate_multiplier (int): Candidate-pool size multiplier.
-        replay_selection (str): Candidate-selection strategy.
-        replay_surprise_weight (float): Surprise weight for combined selection.
-        replay_cache_dir (str | None): Optional candidate-cache directory.
-        replay_cache_mode (str): Candidate-cache access mode.
-        mechanistic_metrics (bool): Collect optional mechanism diagnostics.
-        mechanistic_max_samples (int): Diagnostic sample cap.
-        use_generative_model_classifier (bool): Use the replay model classifier.
-        train_classifier_separately (bool): Run a separate classifier phase.
-        use_distillation (bool): Distill from the previous task snapshot.
-        snapshot_network_name (str): Raw or EMA teacher branch.
-        use_ensemble_accuracy (bool): Make ensemble scores authoritative.
-        evaluate_ensemble_accuracy (bool): Compute ensemble scores.
-        ensemble_accuracy_kwargs (dict[str, object] | None): Ensemble options.
-        callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Shared callbacks.
-        generative_callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Replay callbacks.
-        return_details (bool): Return full task state instead of accuracies only.
-        use_valset (bool): Use the loader's validation split.
-        return_features (bool | None): Request saved features from the loader.
-        max_train_samples (int | None): Optional training-row limit.
-        max_val_samples (int | None): Optional validation-row limit.
-        shuffle_buffer (int | None): Optional training shuffle capacity.
-        pad (int): Symmetric raw-image padding.
-        seed (int | None): Master continual random seed.
-        dtype_policy (str | None): Keras numerical policy.
-        deterministic_ops (bool): Request deterministic TensorFlow kernels.
-        initial_classifier (tf.keras.Model | None): Optional classifier initializer.
-        callback_patience (int | None): Early-stopping patience.
-        callback_monitor (str | None): Early-stopping metric.
-        callback_monitor_mode (str | None): Early-stopping direction.
-        save_task_checkpoints (bool): Save each completed task boundary.
-        checkpoint_dir (str | None): Task-checkpoint output directory.
-        resume_from (str | None): Task checkpoint to resume.
-        experiment_phase (str): Legacy, development, or confirmation phase.
-        experiment_manifest_path (str | None): Confirmation manifest path.
-        experiment_manifest_hash (str | None): Confirmation manifest digest.
-        experiment_run_id (str | None): Confirmation run identifier.
-        optimizer_steps_per_epoch (int | None): Fixed updates per active phase.
+    The arguments configure five concerns: the class/task schedule, the direct
+    classifier, replay and distillation, evaluation, and task-boundary
+    recovery. Typed defaults above are the authoritative API; named baselines
+    resolve to the same explicit controls before training starts. Development
+    runs use validation only, while confirmation requires an authenticated
+    frozen manifest before the locked test split can be scored.
 
     Returns:
         list[float] | dict[str, object]: Per-task accuracies or complete histories,
@@ -2142,6 +2064,12 @@ def _run_continual_tasks(
         dtype_policy,
         "continual replay model",
     )
+    if isinstance(generative_model, VAEClassifier):
+        raise ValueError(
+            "Continual VAEClassifier is unsupported because its fixed "
+            "full-class head exposes future logits. Use a conditioned "
+            "VariationalAutoencoder with the expanding external classifier."
+        )
     # Validate caller-provided classifier artifacts before copying their state.
     if initial_classifier is not None:
         validate_model_dtype_policy(
@@ -2411,7 +2339,6 @@ def _run_continual_tasks(
         use_generative_model_classifier,
         use_distillation,
     )
-
     experiment_phase = str(experiment_phase).lower()
     # Restrict evaluation behavior to the three documented protocol roles.
     if experiment_phase not in ("legacy", "development", "confirmation"):
@@ -2442,6 +2369,25 @@ def _run_continual_tasks(
     if replay_budget_mode == "fixed_total" and replay_old_examples is None:
         raise ValueError(
             "fixed_total replay requires replay_old_examples to be set."
+        )
+    old_replay_count = replay_old_examples \
+        if replay_budget_mode == "fixed_total" else (
+            buffer_kwargs["sample_num"] if use_buffer
+            else generative_model_kwargs["samples_per_class"]
+        )
+    buffer_can_replay = use_buffer \
+        and buffer_kwargs["maxlen"] > 0 \
+        and (baseline == "reservoir_er" or buffer_kwargs["insert_num"] > 0)
+    generator_can_replay = generative_model is not None \
+        and use_generative_replay
+    has_old_replay = old_replay_count > 0 \
+        and (buffer_can_replay or generator_can_replay)
+    if len(original_task_groups[0]) == 1 \
+    and remove_prev_classes and not has_old_replay:
+        raise ValueError(
+            "A new-only singleton-first schedule cannot learn its one-way "
+            "softmax before discarding that class. Use cumulative or a "
+            "positive buffered/generative replay exposure instead."
         )
     replay_candidate_multiplier = int(replay_candidate_multiplier)
     # Candidate pools must be a positive multiple of the selected replay set.
@@ -2526,6 +2472,9 @@ def _run_continual_tasks(
     )): # Wrap raw generator-only diffusion networks.
         generative_model = DiffusionModel(
             network=generative_model, 
+            teacher_network=teacher_network,
+            defer_teacher=use_distillation,
+            noise_distil_coef=1. if use_distillation else 0.,
             test_steps=min(50, generative_model.timesteps),
             seed=seed,
         )
@@ -2533,7 +2482,7 @@ def _run_continual_tasks(
 
     # Install an optional first-task teacher on an existing wrapper.
     elif teacher_network is not None and isinstance(
-        generative_model, DiffusionClassifier
+        generative_model, DiffusionModel
     ) and getattr(generative_model, "teacher_network", None) is not teacher_network:
         generative_model.set_teacher_network(teacher_network)
     # Reject unsupported replay-model types before task construction.
@@ -2546,20 +2495,20 @@ def _run_continual_tasks(
             "diffusion network, or diffusion wrapper."
         )
 
-    # Reject teachers for replay models without a distillation-capable wrapper.
+    # Reject teachers for replay models without a diffusion wrapper.
     if teacher_network is not None and not isinstance(
-        generative_model, DiffusionClassifier
+        generative_model, DiffusionModel
     ):
         raise ValueError(
-            "teacher_network requires a diffusion classifier generative_model."
+            "teacher_network requires a diffusion generative_model."
         )
 
-    # Restrict automatic self-distillation to classifier diffusion wrappers.
+    # Restrict automatic self-distillation to diffusion wrappers.
     if use_distillation and not isinstance(
-        generative_model, DiffusionClassifier
+        generative_model, DiffusionModel
     ):
         raise ValueError(
-            "use_distillation requires a diffusion classifier generative_model."
+            "use_distillation requires a diffusion generative_model."
         )
     scored_replay_selection = replay_selection in {
         "confidence", "surprise", "confidence_surprise",
@@ -2590,9 +2539,12 @@ def _run_continual_tasks(
             "snapshot_network_name='ema' requires EMA to be enabled."
         )
     # Require an independent student head for continual self-distillation.
-    if use_distillation and getattr(
-        generative_model.network, "distil_token", None
-    ) is None:
+    if use_distillation \
+    and isinstance(generative_model, DiffusionClassifier) \
+    and float(tf.keras.backend.get_value(
+        generative_model.distil_loss_coef
+    )) > 0. \
+    and getattr(generative_model.network, "distil_token", None) is None:
         raise ValueError(
             "use_distillation requires the diffusion classifier to have a "
             "distil_token."
@@ -2607,6 +2559,7 @@ def _run_continual_tasks(
     # Replay-only KD is undefined when the continual treatment has no source
     # of replay rows; fail instead of reporting an identically zero objective.
     if use_distillation \
+    and isinstance(generative_model, DiffusionClassifier) \
     and generative_model.distil_scope == "replay_only" \
     and not use_generative_replay:
         raise ValueError(
@@ -3209,6 +3162,10 @@ def _run_continual_tasks(
             for label in group
         ]
         seen_class_num = len(seen_classes)
+        classification_objective_defined = seen_class_num > 1
+        task_resource["classification_objective_defined"] = (
+            classification_objective_defined
+        )
         # Print the classes visible in the current continual task.
         if verbose:
             print(
@@ -3255,7 +3212,7 @@ def _run_continual_tasks(
             if initial_classifier is not None and (
                 task_index == 0 or not keep_same_model
             ):
-                _copy_classifier_prefix(initial_classifier, new_model)
+                copy_model(initial_classifier, new_model, allow_truncate=True)
 
             # Carry learned trunk weights and visible head columns forward.
             elif keep_same_model:
@@ -3488,11 +3445,13 @@ def _run_continual_tasks(
                 # Use direct label-conditioned diffusion for every non-VAE model.
                 else:
                     y_buffer_ids = expected_candidate_ids
-                    x_buffer = generative_model.sample(
-                        network_name=generative_model.test_network_name,
-                        labels=y_buffer_ids + int(generative_model.use_cfg),
-                        seed=candidate_seed,
-                    ).numpy() if len(y_buffer_ids) else x_train[:0]
+                    x_buffer = _sample_diffusion_replay(
+                        generative_model,
+                        y_buffer_ids,
+                        batch_size,
+                        candidate_seed,
+                        x_train[:0],
+                    )
                     # Restore images to the shared loader preprocessing space.
                     # Convert generated diffusion values only when rows exist.
                     if len(x_buffer) and not return_features:
@@ -3512,6 +3471,12 @@ def _run_continual_tasks(
                     candidate_seed,
                     replay_cache_context,
                 )
+                if (
+                    x_train.ndim == 3
+                    and x_buffer.ndim == 4
+                    and x_buffer.shape[-1] == 1
+                ):
+                    x_buffer = x_buffer[..., 0]
             task_resource["seconds"]["generator_sampling"] = float(
                 time.perf_counter() - sample_started
             )
@@ -4102,14 +4067,15 @@ def _run_continual_tasks(
                 acc = prediction_accuracy
             matrix_row = [np.nan] * len(internal_task_groups)
             # Score learned groups separately without future-class rows.
-            for learned_index, learned_classes in enumerate(
-                internal_task_groups[:task_index + 1]
-            ):
-                group_mask = np.isin(y_test_ids, learned_classes)
-                matrix_row[learned_index] = float(accuracy_score(
-                    y_test_ids[group_mask],
-                    prediction_ids[group_mask],
-                ))
+            if classification_objective_defined:
+                for learned_index, learned_classes in enumerate(
+                    internal_task_groups[:task_index + 1]
+                ):
+                    group_mask = np.isin(y_test_ids, learned_classes)
+                    matrix_row[learned_index] = float(accuracy_score(
+                        y_test_ids[group_mask],
+                        prediction_ids[group_mask],
+                    ))
             ordinary_accuracy_matrix.append(matrix_row)
 
         # Build a validation matrix independently of the locked test matrix so
@@ -4142,16 +4108,17 @@ def _run_continual_tasks(
                 )
             validation_ids = np.argmax(validation_predictions, axis=-1)
             validation_row = [np.nan] * len(internal_task_groups)
-            for learned_index, learned_classes in enumerate(
-                internal_task_groups[:task_index + 1]
-            ):
-                group_mask = np.isin(y_val_ids, learned_classes)
-                # Leave NaN when split limiting removed every group example.
-                if np.any(group_mask):
-                    validation_row[learned_index] = float(accuracy_score(
-                        y_val_ids[group_mask],
-                        validation_ids[group_mask],
-                    ))
+            if classification_objective_defined:
+                for learned_index, learned_classes in enumerate(
+                    internal_task_groups[:task_index + 1]
+                ):
+                    group_mask = np.isin(y_val_ids, learned_classes)
+                    # Leave NaN when split limiting removed every group example.
+                    if np.any(group_mask):
+                        validation_row[learned_index] = float(accuracy_score(
+                            y_val_ids[group_mask],
+                            validation_ids[group_mask],
+                        ))
             validation_accuracy_matrix.append(validation_row)
             # Publish validation accuracy as the development task trajectory.
             if experiment_phase == "development":
@@ -4175,6 +4142,8 @@ def _run_continual_tasks(
                     derive_seed(seed, "ensemble", task_index, "test"),
                     verbose,
                 )
+                if not classification_objective_defined:
+                    ensemble_row = [np.nan] * len(internal_task_groups)
                 ensemble_accuracy_matrix.append(ensemble_row)
                 # Test ensemble values remain authoritative outside development.
                 ensemble_acc = _observed_mean(
@@ -4198,6 +4167,10 @@ def _run_continual_tasks(
                     derive_seed(seed, "ensemble", task_index, "validation"),
                     verbose,
                 )
+                if not classification_objective_defined:
+                    validation_ensemble_row = [
+                        np.nan
+                    ] * len(internal_task_groups)
                 validation_ensemble_accuracy_matrix.append(
                     validation_ensemble_row
                 )
@@ -4209,6 +4182,13 @@ def _run_continual_tasks(
                     # Make the validation ensemble authoritative when requested.
                     if use_ensemble_accuracy:
                         acc = ensemble_acc
+
+        # A one-class softmax has zero cross-entropy gradient and 100% trivial
+        # accuracy, so task-one classification is explicitly unavailable.
+        if not classification_objective_defined:
+            acc = float("nan")
+            if ensemble_acc is not None:
+                ensemble_acc = float("nan")
 
         # Expose joint generative history as task history when no separate fit ran.
         # This keeps classifier metrics present for joint-only attached heads.

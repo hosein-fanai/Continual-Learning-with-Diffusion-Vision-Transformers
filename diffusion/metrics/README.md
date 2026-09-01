@@ -45,6 +45,9 @@ metric.reset_state()
 `max_t` means timesteps `0` through `max_t - 1`; it must be positive and no
 larger than `model.timesteps`. Every image is independently noised at each
 selected timestep. Unconditional label 0 is passed to the classifier branch.
+With `separate_probas=True`, CFG models instead evaluate labels `0..num_classes`,
+add the complete null-label score vector to the matching score from each real
+label, and apply softmax after timestep aggregation.
 
 `weighted=False` computes a uniform mean. `weighted=True` uses normalized SNR
 weights from the wrapper's existing diffusion schedule, emphasizing cleaner
@@ -72,7 +75,5 @@ and returns a NumPy scalar. Metric state is cumulative: neither `evaluate` nor
 `test_step` resets prior results. Both `test_step` and `update_state` accept
 per-example `sample_weight`.
 
-Use `network_name="ema"` or `network_name="raw"`. The historical
-`netwrok_name` misspelling remains accepted as a compatibility alias, but the
-two spellings cannot be supplied together; any other selector raises
+Use `network_name="ema"` or `network_name="raw"`; any other selector raises
 `ValueError`.

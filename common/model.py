@@ -886,6 +886,13 @@ def get_model(
     classifier_name = None if classifier_name is None \
         else str(classifier_name).lower()
 
+    if task == "continual" and model_name == "vae_classifier":
+        raise ValueError(
+            "Continual VAEClassifier is unsupported because its attached "
+            "full-class head exposes future logits. Use model_name='vae' "
+            "with the learner's expanding external classifier."
+        )
+
     pad = int(pad)
     # Keep the frequent invalid padding case explicit at the public boundary.
     if pad < 0:
@@ -931,11 +938,11 @@ def get_model(
         )
         flat_dim = image_shape[0] * image_shape[1] * image_shape[2]
 
-    # Restrict runtime teachers to raw families with classifier wrappers.
+    # Runtime teachers are owned by every diffusion wrapper.
     if teacher_network is not None and \
-    model_name not in _DIFFUSION_CLASSIFIER_MODELS:
+    model_name not in _DIFFUSION_MODELS:
         raise ValueError(
-            "teacher_network requires a diffusion classifier model family."
+            "teacher_network requires a diffusion model family."
         )
 
     optimizer_options = dict(kwargs)
@@ -1216,20 +1223,16 @@ def get_model(
 
         # Keep live teacher objects out of serializable wrapper configuration.
         if teacher_network is not None:
-            # Require a wrapper that implements teacher preprocessing/losses.
-            if selected_wrapper_name not in _DIFFUSION_CLASSIFIER_WRAPPERS:
-                raise ValueError(
-                    "teacher_network requires a diffusion classifier wrapper."
-                )
             selected_wrapper_kwargs["teacher_network"] = teacher_network
 
         # Permit task one to train before an automatic past-version teacher exists.
-        if continual_self_distillation \
-        and selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS:
+        if continual_self_distillation:
             selected_wrapper_kwargs["defer_teacher"] = True
 
         # Resolve automatic null masking from the raw network's CFG convention.
-        if selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
+        if selected_wrapper_name == "diffusion_classifier_v2":
+            selected_wrapper_kwargs["mask_by_nulls"] = False
+        elif selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
         and selected_wrapper_kwargs.get("mask_by_nulls") is None:
             selected_wrapper_kwargs["mask_by_nulls"] = bool(network.use_cfg)
 
@@ -1377,7 +1380,11 @@ def get_model(
     return finalize_selected(build_selected(model_name))
 
 
-def copy_model(prev_model: Any, new_model: Any) -> None:
+def copy_model(
+    prev_model: Any,
+    new_model: Any,
+    allow_truncate: bool = False,
+) -> None:
     """Copy a classifier while preserving its existing softmax-head prefix.
 
     All non-final layers receive exact copies of their predecessors' weights.
@@ -1391,6 +1398,8 @@ def copy_model(prev_model: Any, new_model: Any) -> None:
         new_model (tf.keras.Model): Built destination with the same ``L`` layer
             count and final width at least ``old_classes``. Corresponding
             non-final layer weight shapes must match.
+        allow_truncate (bool): Copy only the destination-width prefix when the
+            source is a full-width initializer.
 
     Returns:
         None: ``new_model`` is modified in place.
@@ -1414,11 +1423,18 @@ def copy_model(prev_model: Any, new_model: Any) -> None:
     new_last_layer_weights, new_last_layer_bias = new_model.layers[-1].get_weights()
 
     old_width = old_last_layer_bias.shape[0]
+    if allow_truncate and old_width < new_last_layer_bias.shape[0]:
+        raise ValueError(
+            "A truncating initializer must cover every destination class."
+        )
     # Refuse to truncate learned classes when a destination head is too narrow.
-    if new_last_layer_bias.shape[0] < old_width:
+    if new_last_layer_bias.shape[0] < old_width and not allow_truncate:
         raise ValueError("Destination classifier head is narrower than the source.")
 
-    new_last_layer_weights[..., :old_width] = old_last_layer_weights
-    new_last_layer_bias[:old_width] = old_last_layer_bias
+    copy_width = min(old_width, new_last_layer_bias.shape[0])
+    new_last_layer_weights[..., :copy_width] = old_last_layer_weights[
+        ..., :copy_width
+    ]
+    new_last_layer_bias[:copy_width] = old_last_layer_bias[:copy_width]
 
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])

@@ -486,6 +486,8 @@ class DtypeModelTests(unittest.TestCase):
             expanded.layers[-1].get_weights()[0][:, 2:],
             new_head_before[0][:, 2:],
         )
+        with self.assertRaisesRegex(ValueError, "cover every destination"):
+            copy_model(previous, expanded, allow_truncate=True)
 
     def test_stale_loaded_and_teacher_policies_are_rejected(self) -> None:
         """Fail before using float32 serialized models in a mixed experiment.

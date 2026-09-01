@@ -32,6 +32,8 @@ class VAEClassifier(VariationalAutoencoder):
             from ``classifier``.
         alpha (float): Classification-loss multiplier initialized from
             ``alpha``.
+        generative_loss_tracker (tf.keras.metrics.Mean): Running mean of the
+            reconstruction plus beta-weighted KL objective.
         clf_loss_tracker (tf.keras.metrics.Mean): Running mean categorical
             loss, initialized with zero total/count.
         clf_accuracy_tracker (tf.keras.metrics.CategoricalAccuracy): Running
@@ -108,6 +110,10 @@ class VAEClassifier(VariationalAutoencoder):
         self.alpha = float(alpha)
 
         stable_dtype = self.dtype_policy.variable_dtype
+        self.generative_loss_tracker = metrics.Mean(
+            name="generative_loss",
+            dtype=stable_dtype,
+        )
         self.clf_loss_tracker = metrics.Mean(
             name="clf_loss",
             dtype=stable_dtype,
@@ -222,17 +228,18 @@ class VAEClassifier(VariationalAutoencoder):
         """Expose all VAE and classifier trackers to the Keras loop.
 
         Returns:
-            list[tf.keras.metrics.Metric]: Total, KL, reconstruction,
-            classification-loss, and classification-accuracy trackers in that
-            order, followed by configured reconstruction metrics. Keras resets
-            them between epochs/evaluations.
+            list[tf.keras.metrics.Metric]: Total, generative, KL,
+            reconstruction, classification-loss, and classification-accuracy
+            trackers in that order, followed by configured reconstruction
+            metrics. Keras resets them between epochs/evaluations.
         """
 
         compiled_metrics = self.compiled_metrics.metrics \
             if self.compiled_metrics is not None else []
 
         return [
-            self.total_loss_tracker, 
+            self.total_loss_tracker,
+            self.generative_loss_tracker,
             self.kl_loss_tracker, 
             self.recon_loss_tracker, 
             self.clf_loss_tracker, 
@@ -291,8 +298,9 @@ class VAEClassifier(VariationalAutoencoder):
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
-            ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
-            Configured reconstruction metrics are included as additional keys.
+            ``generative_loss``, ``kl_loss``, ``recon_loss``, ``clf_loss``, and
+            ``clf_accuracy``. Configured reconstruction metrics are included as
+            additional keys.
         """
 
         x, y = inputs
@@ -320,9 +328,10 @@ class VAEClassifier(VariationalAutoencoder):
                 ),
             )
 
-            total_loss = (
-                recon_loss + 
-                tf.cast(self.beta, stable_dtype) * kl_loss +
+            generative_loss = (
+                recon_loss + tf.cast(self.beta, stable_dtype) * kl_loss
+            )
+            total_loss = generative_loss + (
                 tf.cast(self.alpha, stable_dtype) * clf_loss
             )
         
@@ -335,6 +344,10 @@ class VAEClassifier(VariationalAutoencoder):
 
         batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
+        self.generative_loss_tracker.update_state(
+            generative_loss,
+            sample_weight=batch_weight,
+        )
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
@@ -342,7 +355,8 @@ class VAEClassifier(VariationalAutoencoder):
         self.compiled_metrics.update_state(x, x_recon)
 
         results = {
-            "loss": self.total_loss_tracker.result(), 
+            "loss": self.total_loss_tracker.result(),
+            "generative_loss": self.generative_loss_tracker.result(),
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
@@ -371,8 +385,9 @@ class VAEClassifier(VariationalAutoencoder):
 
         Returns:
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
-            ``kl_loss``, ``recon_loss``, ``clf_loss``, and ``clf_accuracy``.
-            Configured reconstruction metrics are included as additional keys.
+            ``generative_loss``, ``kl_loss``, ``recon_loss``, ``clf_loss``, and
+            ``clf_accuracy``. Configured reconstruction metrics are included as
+            additional keys.
         """
 
         x, y = inputs
@@ -399,14 +414,19 @@ class VAEClassifier(VariationalAutoencoder):
             )
         )
 
-        total_loss = (
-            recon_loss + 
-            tf.cast(self.beta, stable_dtype) * kl_loss +
+        generative_loss = (
+            recon_loss + tf.cast(self.beta, stable_dtype) * kl_loss
+        )
+        total_loss = generative_loss + (
             tf.cast(self.alpha, stable_dtype) * clf_loss
         )
 
         batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
+        self.generative_loss_tracker.update_state(
+            generative_loss,
+            sample_weight=batch_weight,
+        )
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
@@ -414,7 +434,8 @@ class VAEClassifier(VariationalAutoencoder):
         self.compiled_metrics.update_state(x, x_recon)
 
         results = {
-            "loss": self.total_loss_tracker.result(), 
+            "loss": self.total_loss_tracker.result(),
+            "generative_loss": self.generative_loss_tracker.result(),
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
@@ -726,7 +747,8 @@ def run_self_tests() -> dict[str, str]:
 
     metric_names = [metric.name for metric in model.metrics]
     assert metric_names == [
-        "total_loss", 
+        "total_loss",
+        "generative_loss",
         "kl_loss", 
         "recon_loss", 
         "clf_loss", 
@@ -741,7 +763,8 @@ def run_self_tests() -> dict[str, str]:
     ]
     train_result = model.train_step((x, y))
     assert set(train_result) == {
-        "loss", 
+        "loss",
+        "generative_loss",
         "kl_loss", 
         "recon_loss", 
         "clf_loss", 
@@ -749,6 +772,14 @@ def run_self_tests() -> dict[str, str]:
         "recon_mae",
     }
     assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
+    tf.debugging.assert_near(
+        train_result["generative_loss"],
+        train_result["recon_loss"] + model.beta * train_result["kl_loss"],
+    )
+    tf.debugging.assert_near(
+        train_result["loss"],
+        train_result["generative_loss"] + model.alpha * train_result["clf_loss"],
+    )
     assert any(
         not np.array_equal(before, after.numpy())
         for before, after in zip(weights_before_train, 
@@ -764,6 +795,14 @@ def run_self_tests() -> dict[str, str]:
     test_result = model.test_step((x, y))
     assert set(test_result) == set(train_result)
     assert all(bool(tf.math.is_finite(value)) for value in test_result.values())
+    tf.debugging.assert_near(
+        test_result["generative_loss"],
+        test_result["recon_loss"] + model.beta * test_result["kl_loss"],
+    )
+    tf.debugging.assert_near(
+        test_result["loss"],
+        test_result["generative_loss"] + model.alpha * test_result["clf_loss"],
+    )
     for before, after in zip(weights_before_test, model.trainable_weights):
         np.testing.assert_array_equal(before, after.numpy())
 

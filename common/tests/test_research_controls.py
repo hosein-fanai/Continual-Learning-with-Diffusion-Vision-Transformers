@@ -23,8 +23,10 @@ from common.learner import (
     _replay_cache_path,
     _resolve_baseline_controls,
     _run_continual_tasks,
+    _sample_diffusion_replay,
 )
 from common.mechanistic import calibration_metrics, replay_quality_metrics
+from common.runtime import derive_seed
 
 
 _TEST_SENTINEL = 77.0
@@ -234,6 +236,47 @@ class ResearchControlTests(unittest.TestCase):
         )
         self.assertEqual(source["strategy"], "fifo")
 
+    def test_singleton_new_only_requires_effective_positive_replay(
+        self,
+    ) -> None:
+        """Reject replay flags and sources that cannot expose any old rows."""
+
+        unavailable_loader = Mock(
+            side_effect=AssertionError("loader must not run")
+        )
+        zero_generator = tf.keras.Sequential()
+        cases = {
+            "missing generator": {},
+            "zero buffer sampling": {
+                "use_buffer": True,
+                "buffer_kwargs": {"sample_num": 0},
+            },
+            "zero buffer insertion": {
+                "use_buffer": True,
+                "buffer_kwargs": {"insert_num": 0},
+            },
+            "zero generator sampling": {
+                "generative_model": zero_generator,
+                "generative_model_kwargs": {"samples_per_class": 0},
+            },
+            "zero fixed exposure": {
+                "use_buffer": True,
+                "replay_budget_mode": "fixed_total",
+                "replay_old_examples": 0,
+            },
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError,
+                "new-only singleton-first",
+            ):
+                _run_continual_tasks(
+                    class_num=2,
+                    load_dataset_fn=unavailable_loader,
+                    **kwargs,
+                )
+        unavailable_loader.assert_not_called()
+
     def test_confirmation_requires_manifest_credentials_before_data_access(
         self,
     ) -> None:
@@ -329,6 +372,91 @@ class ResearchControlTests(unittest.TestCase):
                         experiment_run_id=planned_run["run_id"],
                     )
                 loader.assert_not_called()
+
+    def test_diffusion_replay_sampling_is_bounded_and_deterministic(
+        self,
+    ) -> None:
+        """Generate candidates in ordered, batch-bounded RNG streams."""
+
+        class FakeDiffusion:
+            """Record the minimal diffusion sampling protocol."""
+
+            test_network_name = "ema"
+            use_cfg = True
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def sample(self, **kwargs: object) -> tf.Tensor:
+                """Record one sampling request and return its labels."""
+
+                call = dict(kwargs)
+                call["labels"] = np.asarray(call["labels"]).copy()
+                self.calls.append(call)
+                return tf.convert_to_tensor(
+                    np.asarray(call["labels"])[:, None],
+                    dtype=tf.int64,
+                )
+
+        labels = np.asarray([4, 1, 3, 0, 2, 5, 6, 7], dtype="int64")
+        empty = np.empty((0, 1), dtype="int64")
+        first_model = FakeDiffusion()
+        first = _sample_diffusion_replay(
+            first_model,
+            labels,
+            batch_size=3,
+            seed=43,
+            empty_samples=empty,
+        )
+        second_model = FakeDiffusion()
+        second = _sample_diffusion_replay(
+            second_model,
+            labels,
+            batch_size=3,
+            seed=43,
+            empty_samples=empty,
+        )
+
+        self.assertEqual(
+            [len(call["labels"]) for call in first_model.calls],
+            [3, 3, 2],
+        )
+        self.assertEqual(
+            [call["seed"] for call in first_model.calls],
+            [
+                derive_seed(43, "replay_sample_chunk", chunk_index)
+                for chunk_index in range(3)
+            ],
+        )
+        self.assertEqual(
+            [call["network_name"] for call in first_model.calls],
+            ["ema", "ema", "ema"],
+        )
+        np.testing.assert_array_equal(first[:, 0], labels + 1)
+        np.testing.assert_array_equal(second, first)
+        self.assertEqual(
+            [call["seed"] for call in second_model.calls],
+            [call["seed"] for call in first_model.calls],
+        )
+        self.assertEqual(len(first), len(labels))
+
+    def test_empty_diffusion_replay_skips_sampling(self) -> None:
+        """Preserve the loader-shaped empty view without model work."""
+
+        model = Mock()
+        empty = np.empty((0, 4, 4, 1), dtype="float32")
+        sampled = _sample_diffusion_replay(
+            model,
+            np.empty((0,), dtype="int64"),
+            batch_size=4,
+            seed=43,
+            empty_samples=empty,
+        )
+
+        self.assertIs(sampled, empty)
+        self.assertEqual(sampled.shape, (0, 4, 4, 1))
+        self.assertEqual(sampled.dtype, np.dtype("float32"))
+        model.sample.assert_not_called()
 
     def test_fixed_total_buffer_exposure_is_exact(self) -> None:
         """Match current and old example exposure despite a tiny reservoir.
@@ -427,7 +555,7 @@ class ResearchControlTests(unittest.TestCase):
             self._write_template(template_path)
             details = _run_continual_tasks(
                 **self._run_args(template_path),
-                baseline="sequential",
+                baseline="cumulative",
                 optimizer_steps_per_epoch=3,
             )
 
@@ -452,6 +580,7 @@ class ResearchControlTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not both"):
                 _run_continual_tasks(
                     **self._run_args(template_path),
+                    baseline="cumulative",
                     optimizer_steps_per_epoch=2,
                     fit_kwargs={"steps_per_epoch": 2},
                 )
@@ -545,6 +674,7 @@ class ResearchControlTests(unittest.TestCase):
                     ):
                 details = _run_continual_tasks(
                     **self._run_args(template_path),
+                    baseline="cumulative",
                 )
 
         self.assertFalse(details["test_evaluated"])

@@ -40,7 +40,6 @@ class Upsample(BaseEmbedding):
             results unbounded.
         circumvent_tokens: Number of leading non-spatial tokens excluded from
             resizing and prepended afterward. ``True`` preserves one token.
-            The legacy ``circumvent_cls_token`` keyword remains accepted.
         **kwargs: :class:`BaseEmbedding` options. ``dim`` and positive
             ``grid_size`` are required. Positional, MLP, normalization, and
             standard Keras options are accepted; ``use_layer_norm`` and
@@ -266,8 +265,8 @@ def run_self_tests() -> dict[str, str]:
     for mode in modes:
         for interpolation in ("nearest", "bilinear"):
             for use_layer_norm in (False, True):
-                for circumvent_cls_token in (False, True):
-                    token_count = 5 if circumvent_cls_token else 4
+                for circumvent_tokens in (False, True):
+                    token_count = 5 if circumvent_tokens else 4
                     layer = Upsample(
                         dim=2, 
                         grid_size=2, 
@@ -276,7 +275,7 @@ def run_self_tests() -> dict[str, str]:
                         cnn_dim_ratio=2, 
                         cnn_kernel_size=3, 
                         cnn_activation_func="relu", 
-                        circumvent_tokens=circumvent_cls_token, 
+                        circumvent_tokens=circumvent_tokens,
                         use_layer_norm=use_layer_norm, 
                         pos_embed_type=None, 
                     )
@@ -284,7 +283,7 @@ def run_self_tests() -> dict[str, str]:
                         (tf.ones((2, token_count, 2)), condition), training=True,
                     )
                     expected_channels = 2 if mode == "interpolate" else 4
-                    expected_tokens = 17 if circumvent_cls_token else 16
+                    expected_tokens = 17 if circumvent_tokens else 16
                     assert output.shape == (2, expected_tokens, expected_channels)
                     assert (layer.layer_norm is not None) is use_layer_norm
                     assert layer.output_grid_size == 4

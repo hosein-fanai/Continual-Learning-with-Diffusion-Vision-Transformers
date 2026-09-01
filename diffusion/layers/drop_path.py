@@ -2,6 +2,8 @@
 
 import tensorflow as tf
 
+from functools import partial
+
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
@@ -38,7 +40,7 @@ class DropPath(ArgumentSaverLayer):
         drop_prob: float = 0., 
         scale_by_keep: bool = True, 
         per_sample: bool = True, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Initialize stochastic-depth probability and mask semantics.
@@ -67,6 +69,41 @@ class DropPath(ArgumentSaverLayer):
                 "drop_prob must satisfy 0.0 <= drop_prob < 1.0."
             )
 
+    def _apply_mask(self, x: tf.Tensor) -> tf.Tensor:
+        """Apply one stochastic path mask to a training tensor.
+
+        Args:
+            x (tf.Tensor): Floating tensor shaped ``[batch, ...]``.
+
+        Returns:
+            tf.Tensor: Masked tensor with the same shape and dtype.
+        """
+
+        keep_prob = 1. - self.drop_prob
+        x_shape = tf.shape(x)
+        rank = tf.rank(x)
+
+        if self.per_sample:
+            mask_shape = tf.concat([
+                x_shape[:1], 
+                tf.ones((rank - 1,), dtype=tf.int32)
+            ], axis=0)
+        else:
+            mask_shape = tf.ones((rank,), dtype=tf.int32)
+
+        random_tensor = keep_prob + tf.random.uniform(
+            mask_shape, 
+            minval=0., 
+            maxval=1., 
+            dtype=x.dtype, 
+            seed=self.seed
+        )
+        binary_mask = tf.floor(random_tensor)
+        if self.scale_by_keep:
+            binary_mask = binary_mask / keep_prob
+
+        return x * binary_mask
+
     def call(self, x: tf.Tensor, training: bool | None = None) -> tf.Tensor:
         """Apply a training-only path mask.
 
@@ -82,47 +119,17 @@ class DropPath(ArgumentSaverLayer):
             probability.
         """
 
-        training = False if training is None else training
-
-        # Skip stochastic masking during evaluation or when dropping is disabled.
-        if not training or self.drop_prob == 0.:
+        if self.drop_prob == 0. or training is None:
             return x
 
-        keep_prob = 1. - self.drop_prob
+        if not tf.is_tensor(training):
+            return self._apply_mask(x) if training else x
 
-        # Use dynamic rank so this works for:
-        #   [B, tokens, channels]
-        #   [B, H, W, C]
-        #   [B, ...]
-        x_shape = tf.shape(x)
-        rank = tf.rank(x)
-
-        # Draw one broadcastable path decision per example when requested.
-        if self.per_sample:
-            # Shape: [B, 1, 1, ..., 1]
-            mask_shape = tf.concat(
-                [x_shape[:1], tf.ones((rank - 1,), dtype=tf.int32)],
-                axis=0
-            )
-        # Otherwise share one path decision across the entire batch.
-        else:
-            # Shape: [1, 1, 1, ..., 1], one decision for whole batch.
-            mask_shape = tf.ones((rank,), dtype=tf.int32)
-
-        random_tensor = keep_prob + tf.random.uniform(
-            mask_shape, 
-            minval=0., 
-            maxval=1., 
-            dtype=x.dtype, 
-            seed=self.seed
+        return tf.cond(
+            tf.cast(training, tf.bool), 
+            partial(self._apply_mask, x), 
+            partial(tf.identity, x)
         )
-        binary_mask = tf.floor(random_tensor)
-
-        # Rescale retained paths to preserve their expected magnitude.
-        if self.scale_by_keep:
-            binary_mask = binary_mask / keep_prob
-
-        return x * binary_mask
 
 
 def run_self_tests() -> dict[str, str]:

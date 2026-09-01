@@ -161,6 +161,14 @@ hidden projection before that softmax. Its `activation_function` defaults to
 metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
+When several KL-enabled flatten stages execute, the network concatenates all
+posterior means and log-variances in depth order. The wrapper's standard-normal
+KL over that concatenation is exactly the sum of the per-level KL terms. This
+supports U-shaped multilevel variational classifiers with matching same-grid
+skips. It is not a conditional hierarchical VAE: the code does not define
+learned top-down priors `p(z_l | z_{l+1})` or sample and inject a latent pyramid.
+A patch grid must be divisible by `2**L` for `L` factor-two down/up levels.
+
 `DiTClassifier` adds main-feature aggregators and cross-attention aggregators
 before the analogous classifier components. Its final extraction behavior,
 including distillation-token exclusion from global averaging, is described

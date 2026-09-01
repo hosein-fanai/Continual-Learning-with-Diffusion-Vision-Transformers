@@ -432,7 +432,10 @@ class UNetClassifier(UNet):
         layer_config = old_layer.get_config()
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
-        new_layer.build((None, old_kernel.shape[0]))
+        new_layer(
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
+            training=False,
+        )
         new_kernel, new_bias = new_layer.get_weights()
         new_kernel[..., :-1] = old_kernel
         new_bias[:-1] = old_bias

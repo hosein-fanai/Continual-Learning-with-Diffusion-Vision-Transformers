@@ -15,6 +15,8 @@ from common.config import resolve_continual_schedule
 from common.learner import (
     _continual_metrics,
     _prepare_diffusion_x,
+    _recovery_descriptor,
+    _reset_task_random_streams,
     _run_continual_tasks,
     _validate_supplied_model_runtime,
 )
@@ -56,7 +58,36 @@ class _InterruptOnSecondFit(tf.keras.callbacks.Callback):
 
 
 class ContinualIntegrationTests(unittest.TestCase):
-    """Exercise the orchestration seams that unit helpers cannot cover."""
+    """Exercise orchestration seams that unit helpers cannot cover."""
+
+    def test_task_rng_reset_uses_stable_layer_traversal(self) -> None:
+        """Avoid TensorFlow weak-dictionary submodule flattening."""
+
+        class Wrapper(tf.keras.Model):
+            """Expose a model with a deliberately fragile submodule property."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.network = tf.keras.Sequential([
+                    tf.keras.layers.Dropout(0.1, seed=3),
+                    tf.keras.layers.Dense(2),
+                ])
+
+            def call(self, inputs: tf.Tensor) -> tf.Tensor:
+                """Delegate inference to the wrapped network."""
+
+                return self.network(inputs)
+
+            @property
+            def submodules(self) -> tuple[object, ...]:
+                """Fail if runtime code inspects TensorFlow's fragile property."""
+
+                raise ValueError("fragile TensorFlow flattening")
+
+        wrapper = Wrapper()
+        wrapper(tf.ones((1, 2)), training=True)
+        _reset_task_random_streams(wrapper, 19)
+        self.assertIsNone(wrapper.train_function)
 
     def test_diffusion_preparation_uses_policy_variable_dtype(self) -> None:
         """Diffusion arrays use stable variable precision under each policy.
@@ -77,6 +108,12 @@ class ContinualIntegrationTests(unittest.TestCase):
                 1.,
             )
             self.assertEqual(float64_result.dtype, np.dtype("float64"))
+            grayscale = _prepare_diffusion_x(
+                np.zeros((2, 4, 4), dtype="float32"),
+                0.,
+                1.,
+            )
+            self.assertEqual(grayscale.shape, (2, 4, 4, 1))
 
             tf.keras.mixed_precision.set_global_policy("mixed_float16")
             mixed_result = _prepare_diffusion_x(
@@ -246,6 +283,43 @@ class ContinualIntegrationTests(unittest.TestCase):
             for group in task_random[1]
         ))
 
+    def test_schedule_starts_at_task_size_and_requires_a_transition(self) -> None:
+        """Resolve singleton/pair starts and reject a one-task experiment.
+
+        Args:
+            None.
+
+        Returns:
+            None: Result produced by the test helper.
+        """
+        self.assertEqual(
+            resolve_continual_schedule(4, task_size=1)[1],
+            [[0], [1], [2], [3]],
+        )
+        self.assertEqual(
+            resolve_continual_schedule(5, task_size=2)[1],
+            [[0, 1], [2, 3], [4]],
+        )
+        randomized = resolve_continual_schedule(
+            5,
+            task_size=2,
+            task_order_mode="random",
+            seed=4,
+        )
+        self.assertEqual(
+            randomized,
+            resolve_continual_schedule(
+                5,
+                task_size=2,
+                task_order_mode="random",
+                seed=4,
+            ),
+        )
+        self.assertEqual(len(randomized[1][0]), 2)
+        self.assertCountEqual(randomized[1], [[0, 1], [2, 3], [4]])
+        with self.assertRaisesRegex(ValueError, "two task groups"):
+            resolve_continual_schedule(2, task_size=2)
+
     def test_completed_run_restores_from_latest_task(self) -> None:
         """A resumed run restores model/optimizer/history without retraining.
 
@@ -280,6 +354,7 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "checkpoint_dir": str(checkpoint_dir),
                 "save_task_checkpoints": True,
                 "return_details": True,
+                "baseline": "cumulative",
             }
             first = _run_continual_tasks(**common)
             restored = _run_continual_tasks(
@@ -402,6 +477,20 @@ class ContinualIntegrationTests(unittest.TestCase):
                 np.testing.assert_allclose(
                     expected.numpy(), actual.numpy(), rtol=0., atol=0.
                 )
+
+
+    def test_recovery_descriptor_preserves_exact_caller_floats(self) -> None:
+        """Keep scientifically distinct run settings in distinct identities.
+
+        Args:
+            None.
+
+        Returns:
+            None: Result produced by the test helper.
+        """
+        first = _recovery_descriptor({"coefficient": 0.123456741})
+        second = _recovery_descriptor({"coefficient": 0.123456749})
+        self.assertNotEqual(first, second)
 
 
 # Select the test action required by this condition.

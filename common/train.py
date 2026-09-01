@@ -34,7 +34,6 @@ from common.config import (
 )
 from common.dataloader import get_datasets, get_dataset_spec
 from common.model import get_model
-from common.learner import _run_continual_tasks
 from common.runtime import configure_runtime, derive_seed, effective_seed
 from common.recovery import find_latest_task_checkpoint, load_task_checkpoint
 from common.continual_reporting import (
@@ -830,7 +829,8 @@ def train_model(
             "callback_monitor", 
             "callback_monitor_mode",
             "fit_method",
-            "fit_kwargs"
+            "fit_kwargs",
+            "seed",
         ):
             continual_kwargs.pop(factory_owned_key, None)
 
@@ -856,6 +856,8 @@ def train_model(
             "features_path": features_path, 
             "seed": seed
         }
+
+        from common.learner import _run_continual_tasks
 
         details = _run_continual_tasks(
             class_num=class_num, 
@@ -1001,9 +1003,12 @@ def train_model(
 
     # Persist final trained weights when requested.
     if save_weights:
+        weights_name = "model.weights" if isinstance(
+            model, DiffusionModel
+        ) else "model.weights.h5"
         weights_path = os.path.join(
-            image_callback.results_path, 
-            "model.weights.h5"
+            image_callback.results_path,
+            weights_name,
         )
 
         checkpoint_model = model.get("generative_model") \
@@ -1082,9 +1087,12 @@ def train_model(
         # Save continual classifier and optional replay-model weights separately.
         if is_continual:
             model["classifier"].save_weights(weights_path)
+            replay_weights_name = "replay-model.weights" if isinstance(
+                model["generative_model"], DiffusionModel
+            ) else "replay-model.weights.h5"
             replay_weights_path = os.path.join(
-                image_callback.results_path, 
-                "replay-model.weights.h5"
+                image_callback.results_path,
+                replay_weights_name,
             )
 
             # Persist replay-model weights when generative replay was used.

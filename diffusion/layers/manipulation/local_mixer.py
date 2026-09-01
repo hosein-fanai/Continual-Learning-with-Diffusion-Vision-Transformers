@@ -39,8 +39,7 @@ class LocalMixer(BaseEmbedding):
             correction is zero. This covers the convolutional path, while an
             adaptive normalization gate also starts at zero by default.
         circumvent_tokens: Number of leading non-spatial tokens excluded from
-            convolution. ``True`` retains the original one-token mode. The
-            legacy ``circumvent_cls_token`` keyword remains accepted.
+            convolution. ``True`` retains the original one-token mode.
         **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size``. Positional/MLP options can change the final channel
             width. ``use_layer_norm`` and ``ln_dim`` are supplied internally
@@ -270,8 +269,8 @@ def run_self_tests() -> dict[str, str]:
     for use_layer_norm in (False, True):
         for use_pointwise in (False, True):
             for zero_init in (False, True):
-                for circumvent_cls_token in (False, True):
-                    token_count = 17 if circumvent_cls_token else 16
+                for circumvent_tokens in (False, True):
+                    token_count = 17 if circumvent_tokens else 16
                     inputs = tf.ones((2, token_count, 2), dtype=tf.float32)
                     layer = LocalMixer(
                         dim=2, 
@@ -282,7 +281,7 @@ def run_self_tests() -> dict[str, str]:
                         zero_init=zero_init, 
                         depth_multiplier=2, 
                         pointwise_dim_ratio=2, 
-                        circumvent_cls_token=circumvent_cls_token
+                        circumvent_tokens=circumvent_tokens
                     )
                     output = layer((inputs, condition), training=True)
                     assert output.shape == (2, token_count, 4)

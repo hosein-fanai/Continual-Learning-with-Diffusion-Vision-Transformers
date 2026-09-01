@@ -53,6 +53,55 @@ class _FakeDiffusion:
 class TrainReportingTests(unittest.TestCase):
     """Verify continual visual artifacts and isolated report RNG streams."""
 
+    def test_configured_continual_seed_is_forwarded_once(self) -> None:
+        """Use the effective training seed without duplicate keyword routing."""
+
+        inputs = tf.keras.Input((1,))
+        classifier = tf.keras.Model(
+            inputs,
+            tf.keras.layers.Dense(2, activation="softmax")(inputs),
+        )
+        details = {
+            "model": classifier,
+            "generative_model": None,
+            "accuracies": [],
+            "ensemble_accuracies": [],
+            "validation_accuracy_matrix": [],
+            "histories": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "common.learner._run_continual_tasks",
+            return_value=details,
+        ) as continual:
+            train_model(
+                model={
+                    "classifier_name": "tiny",
+                    "classifier": classifier,
+                },
+                trainset=object(),
+                results_path=temporary,
+                task="continual",
+                dataset_name="mnist",
+                seed=19,
+                epochs=1,
+                batch_size=2,
+                show_images=False,
+                save_gifs=False,
+                save_weights=False,
+                use_tensorboard=False,
+                verbose=0,
+                continually_learn_kwargs={
+                    "class_num": 4,
+                    "task_groups": [[0, 1], [2, 3]],
+                    "task_size": 2,
+                    "seed": 19,
+                    "baseline": "cumulative",
+                },
+            )
+
+        self.assertEqual(continual.call_args.kwargs["seed"], 19)
+
     def test_input_config_remains_pretraining_recovery_specification(
         self: "TrainReportingTests",
     ) -> None:

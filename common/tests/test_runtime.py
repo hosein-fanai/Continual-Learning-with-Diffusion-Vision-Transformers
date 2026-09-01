@@ -251,6 +251,36 @@ class RuntimeTests(TestCase):
             "mixed_float16",
         )
 
+    def test_policy_validation_uses_stable_layer_traversal(
+        self: RuntimeTests,
+    ) -> None:
+        """Avoid TensorFlow submodule flattening of heterogeneous weak keys."""
+
+        class Wrapper(tf.keras.Model):
+            """Expose a model with a deliberately fragile submodule property."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.network = tf.keras.Sequential([
+                    tf.keras.layers.Dense(2, activation="softmax"),
+                ])
+
+            def call(self, inputs: tf.Tensor) -> tf.Tensor:
+                """Delegate inference to the wrapped network."""
+
+                return self.network(inputs)
+
+            @property
+            def submodules(self) -> tuple[object, ...]:
+                """Fail if runtime code inspects TensorFlow's fragile property."""
+
+                raise ValueError("fragile TensorFlow flattening")
+
+        configure_runtime(seed=31, dtype_policy="float32")
+        wrapper = Wrapper()
+        wrapper(tf.ones((1, 2), dtype=tf.float32))
+        self.assertEqual(validate_model_dtype_policy(wrapper), "float32")
+
     def test_config_adapter_uses_continual_seed(self: RuntimeTests) -> None:
         """Read runtime controls from a typed-config-compatible object.
 

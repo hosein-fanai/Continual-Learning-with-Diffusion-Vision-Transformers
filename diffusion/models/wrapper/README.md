@@ -113,7 +113,8 @@ Important constructor controls are:
   runs an unconditional pass and applies CFG;
 - `test_cfg_scale`: evaluation/sampling guidance;
 - `test_steps` and `test_eta`: default sampler discretization/stochasticity;
-- `noise_loss_coef`, `image_loss_coef`, `kl_loss_coef`, `ctr_loss_coef`: loss
+- `noise_loss_coef`, `noise_distil_coef`, `image_loss_coef`, `kl_loss_coef`,
+  `ctr_loss_coef`: loss
   multipliers; a zero auxiliary coefficient disables that objective;
 - `show_separate_noise_losses=False`: keep the usual `noise_loss` progress
   metric. When true, rename it to `total_noise_loss` and also show
@@ -129,8 +130,8 @@ Important constructor controls are:
 - `map_preprocess=False`: keep `prep_inputs` in the train/test step. When true,
   `fit`, `evaluate`, validation, and progressive stages map each
   `tf.data.Dataset` through `prep_inputs_map` in the CPU input pipeline;
-- `swap_noise_image=True`: trains against `x_t` and makes `sample` use the
-  network's KL-enabled flatten bottleneck via `sample_vae`.
+- `swap_noise_image=True`: trains a direct clean-`x0` prediction and makes
+  `sample` use the network's KL-enabled flatten bottleneck via `sample_vae`.
 
 `compile(loss=..., **kwargs)` forwards `optimizer`, `run_eagerly`,
 `steps_per_execution`, supported `jit_compile`, metrics, weighted metrics, and
@@ -253,8 +254,7 @@ Use `model.evaluate_ensemble_accuracy(dataset, weighted=True)` to
 average classifier predictions across diffusion timesteps. It defaults to the
 configured test network, accepts the `EnsembleAccuracy` options, and is also
 inherited by `DiffusionClassifierV2`; pass `network_name="raw"` or `"ema"` to
-select a network explicitly. The historical `netwrok_name` spelling remains a
-compatibility alias.
+select a network explicitly.
 
 Classifier progressive depth can target both branches:
 
@@ -275,6 +275,13 @@ Classifier-specific progressive names also include `feature_aggregator` and
 `cross_attention_aggregator`.
 
 ## Distillation training
+
+`DiffusionModel` owns the shared teacher lifecycle. Set
+`noise_distil_coef > 0` to match the student's epsilon prediction to a frozen
+teacher on the same `x_t`, timestep, condition IDs, and CFG scale. The teacher
+is run with `training=False`, its outputs are stopped, and its variables are
+never optimized. `defer_teacher=True` permits task one to train before
+continual learning snapshots the first completed denoiser.
 
 Distillation-token loss is enabled only when the wrapped classifier has a
 distillation token, `teacher_network` is supplied, and

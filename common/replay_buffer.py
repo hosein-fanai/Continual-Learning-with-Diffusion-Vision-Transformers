@@ -10,6 +10,8 @@ from collections import deque
 
 import random
 
+from operator import index
+
 from collections.abc import Iterable, Mapping, Sequence
 from numbers import Integral, Real
 from typing import Literal
@@ -55,9 +57,8 @@ class ReplayBuffer(object):
         """Create an empty replay buffer with a local random generator.
 
         Args:
-            maxlen (int | None): Non-boolean, nonnegative capacity passed to
-                ``deque``. Once full, appending removes the oldest element;
-                ``None`` is unbounded.
+            maxlen (int | None): Capacity passed to ``deque``. Once full,
+                appending removes the oldest element; ``None`` is unbounded.
             seed (int | float | str | bytes | bytearray | None): Seed for this
                 buffer's private generator. ``None`` uses system entropy and
                 no module-level random state is changed.
@@ -70,19 +71,11 @@ class ReplayBuffer(object):
             None.
 
         Raises:
-            ValueError: If ``maxlen`` is neither ``None`` nor a non-boolean,
-                nonnegative integer, or if ``strategy`` is unsupported.
+            ValueError: If ``strategy`` is unsupported. ``deque`` validates
+                the annotated capacity.
         """
 
-        # Require an optional non-boolean integral buffer capacity.
-        if maxlen is not None and (
-            isinstance(maxlen, bool)
-            or not isinstance(maxlen, Integral)
-            or maxlen < 0
-        ):
-            raise ValueError("maxlen must be None or a nonnegative integer.")
-
-        self.maxlen = int(maxlen) if maxlen is not None else None
+        self.maxlen = None if maxlen is None else index(maxlen)
 
         # Restrict insertion behavior to the documented strategy vocabulary.
         if not isinstance(strategy, str) or strategy.lower() not in _STRATEGY_ALIASES:
@@ -514,29 +507,18 @@ class ReplayBuffer(object):
         Args:
             list_ (Sized iterable): Population accepted by ``random.sample``;
                 normally a list or the buffer's deque.
-            num (int): Non-boolean requested sample count. ``0`` returns an
-                empty list; positive values select that many items when
-                available.
+            num (int): Requested sample count. ``0`` returns an empty list;
+                positive values select that many items when available.
 
         Returns:
             list[object]: ``[]`` for an empty population, a random sample when
             ``len(list_) >= num``, or every supplied item in its current order
             when the requested count exceeds the population.
 
-        Raises:
-            TypeError: If ``num`` is not a non-boolean integer.
-            ValueError: If ``num`` is negative.
+        Python's ``random.sample`` validates the annotated count.
         """
 
-        # Reject booleans and non-integral replay sample counts.
-        if isinstance(num, bool) or not isinstance(num, Integral):
-            raise TypeError("num must be a non-boolean integer.")
-
-        # Keep replay sample counts nonnegative.
-        if num < 0:
-            raise ValueError("num must be nonnegative.")
-
-        num = int(num)
+        num = index(num)
 
         # Preserve the empty population without invoking random sampling.
         if len(list_) == 0:

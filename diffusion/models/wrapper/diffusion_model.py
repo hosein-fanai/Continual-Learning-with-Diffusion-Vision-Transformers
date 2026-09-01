@@ -10,13 +10,21 @@ from tensorflow.keras import metrics, losses, callbacks, optimizers
 
 import numpy as np
 
+from collections.abc import Mapping
+from importlib import import_module
 from numbers import Integral, Real
 from typing import Literal, Sequence, get_args
 
-from . import NetworkName, TrainType, ClusteringType
+from . import (
+    NetworkName, 
+    TrainType, 
+    ClusteringType, 
+    copy_network_weights_by_layer
+)
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
+from common.runtime import validate_model_dtype_policy
 from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
@@ -65,8 +73,10 @@ class DiffusionModel(ArgumentSaverModel):
 
     def __init__(
         self, 
-        network: ArgumentSaverModel,
+        network: ArgumentSaverModel, 
+        teacher_network: tf.keras.Model | None = None, 
         use_ema: bool = True, 
+        defer_teacher: bool = False, 
         test_network_name: NetworkName = "ema", 
         ema_decay: float = 0.999, 
         scheduler_name: SchedulerName = "clipped_cosine", 
@@ -93,6 +103,7 @@ class DiffusionModel(ArgumentSaverModel):
         map_preprocess: bool = False, 
         map_num_parallel_calls: int | None = 1, 
         seen_classes: dict[object, int] = {}, 
+        noise_distil_coef: float = 0., 
         seed: int | None = None, 
         **kwargs: object
     ) -> None:
@@ -153,12 +164,9 @@ class DiffusionModel(ArgumentSaverModel):
             test_noisified_min_timesteps (int): Inclusive evaluation lower bound.
             test_noisified_max_timesteps (int | None): Exclusive evaluation
                 upper bound; -1 becomes ``network.timesteps`` and None becomes 0.
-            resize_method (str): ``tf.image.resize`` method used during
-                progressive-resolution input preparation, for example ``"area"``
-                or ``"bilinear"``.
             resize_antialias (bool): Antialias flag passed to ``tf.image.resize``.
-            swap_noise_image (bool): Train the output against ``x_t`` instead of
-                sampled Gaussian noise and route :meth:`sample` to
+            swap_noise_image (bool): Train the raw output as a clean-image
+                prediction instead of epsilon and route :meth:`sample` to
                 :meth:`sample_vae`; this mode requires a compatible KL bottleneck.
             map_preprocess (bool): Map ``tf.data.Dataset`` inputs through
                 :meth:`prep_inputs_map` in :meth:`fit`, :meth:`evaluate`, and
@@ -174,6 +182,12 @@ class DiffusionModel(ArgumentSaverModel):
                 mapping restores dynamic growth and expands a smaller raw/EMA
                 topology before checkpoint weights are loaded. The normalized
                 dictionary is retained by reference in the wrapper config.
+            noise_distil_coef (float): Multiplier for matching a frozen
+                teacher's noise prediction on the same noisy inputs.
+            teacher_network (tf.keras.Model | None): Runtime-only frozen raw
+                diffusion network or wrapper used by noise distillation.
+            defer_teacher (bool): Permit a positive teacher objective to start
+                without a teacher so continual learning can attach one later.
             seed (int | None): Default TensorFlow random seed for noising,
                 label dropout, latent draws, and sampling; per-call seeds override.
             **kwargs (object): Standard ``tf.keras.Model`` keys: ``name`` (str),
@@ -236,6 +250,10 @@ class DiffusionModel(ArgumentSaverModel):
             if self.ema_network is not None:
                 self.ema_network.build()
 
+        network_config = tf.keras.utils.serialize_keras_object(self.network)
+        network_config["module"] = self.network.__class__.__module__
+        self._init_config["network"] = network_config
+
         self._init_config["seen_classes"] = self.seen_classes
         self.image_size = self.network.image_size
         self.channels = self.network.channels
@@ -245,16 +263,24 @@ class DiffusionModel(ArgumentSaverModel):
         self.test_cfg_scale = 1. if not self.use_cfg else self.test_cfg_scale
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         self.noise_loss_coef = tf.constant(
-            self.noise_loss_coef, dtype=stable_dtype
+            self.noise_loss_coef, 
+            dtype=stable_dtype
         )
         self.image_loss_coef = tf.constant(
-            self.image_loss_coef, dtype=stable_dtype
+            self.image_loss_coef, 
+            dtype=stable_dtype
         )
         self.kl_loss_coef = tf.constant(
-            self.kl_loss_coef, dtype=stable_dtype
+            self.kl_loss_coef, 
+            dtype=stable_dtype
         )
         self.ctr_loss_coef = tf.constant(
-            self.ctr_loss_coef, dtype=stable_dtype
+            self.ctr_loss_coef, 
+            dtype=stable_dtype
+        )
+        self.noise_distil_coef = tf.constant(
+            self.noise_distil_coef, 
+            dtype=stable_dtype
         )
         self.use_image_loss = bool(self.image_loss_coef > 0.)
         self.train_noisified_max_timesteps = 0 if self.train_noisified_max_timesteps is None \
@@ -268,11 +294,18 @@ class DiffusionModel(ArgumentSaverModel):
         self.map_num_parallel_calls = tf.data.AUTOTUNE if self.map_num_parallel_calls is None \
                                     else int(self.map_num_parallel_calls)
         self.seed = self._normalize_seed(self.seed)
+
         self._preprocess_training = None
+        self._map_preprocess_without_teacher = bool(self.map_preprocess)
+
+        if self.teacher_network is not None:
+            self.defer_teacher = True
+            self._init_config["defer_teacher"] = True
 
         self.load_schedules()
         self.set_timestep_bounds()
         DiffusionModel.set_current_resolution(self)
+        self.set_teacher_network(self.teacher_network)
         self.build(())
 
     def _check_assertions(self, local_vars: dict[str, object]) -> None:
@@ -304,11 +337,45 @@ class DiffusionModel(ArgumentSaverModel):
         for name in (
             "use_ema", "modify_first_t", "resize_antialias", 
             "swap_noise_image", "map_preprocess", 
-            "show_separate_noise_losses"
+            "show_separate_noise_losses", "defer_teacher"
         ):
             require(
                 isinstance(local_vars[name], bool), 
                 f"{name} must be boolean."
+            )
+
+        require(
+            local_vars["map_num_parallel_calls"] is None or (
+                isinstance(local_vars["map_num_parallel_calls"], Integral)
+                and not isinstance(local_vars["map_num_parallel_calls"], bool)
+                and local_vars["map_num_parallel_calls"] > 0
+            ),
+            "map_num_parallel_calls must be None or a positive integer.",
+        )
+
+        for prefix in ("train", "test"):
+            t_min = local_vars[f"{prefix}_noisified_min_timesteps"]
+            raw_t_max = local_vars[f"{prefix}_noisified_max_timesteps"]
+            require(
+                isinstance(t_min, Integral)
+                and not isinstance(t_min, bool)
+                and 0 <= t_min < network.timesteps,
+                f"{prefix}_noisified_min_timesteps must be in "
+                f"[0, {network.timesteps}).",
+            )
+            require(
+                raw_t_max is None or (
+                    isinstance(raw_t_max, Integral)
+                    and not isinstance(raw_t_max, bool)
+                ),
+                f"{prefix}_noisified_max_timesteps must be an integer or None.",
+            )
+            t_max = network.timesteps if raw_t_max in (None, -1) \
+                    else raw_t_max
+            require(
+                t_min < t_max <= network.timesteps,
+                f"{prefix}_noisified_max_timesteps must be greater than its "
+                f"minimum and no greater than {network.timesteps}.",
             )
 
         require(local_vars["test_network_name"] in get_args(NetworkName), \
@@ -347,12 +414,32 @@ class DiffusionModel(ArgumentSaverModel):
 
         for name in (
             "noise_loss_coef", "image_loss_coef", 
-            "kl_loss_coef", "ctr_loss_coef"
+            "kl_loss_coef", "ctr_loss_coef", "noise_distil_coef"
         ):
             value = local_vars[name]
             require(isinstance(value, Real) and \
                 not isinstance(value, bool) and np.isfinite(value) and value >= 0., \
                 f"{name} must be a finite nonnegative number.")
+
+        if local_vars["noise_distil_coef"] > 0.:
+            require(
+                local_vars["teacher_network"] is not None
+                or local_vars["defer_teacher"],
+                "teacher_network is required when noise_distil_coef is "
+                "positive unless defer_teacher=True.",
+            )
+            require(
+                not local_vars["swap_noise_image"],
+                "noise distillation requires epsilon prediction, not "
+                "swap_noise_image mode.",
+            )
+
+        if local_vars["swap_noise_image"]:
+            require(
+                local_vars["image_loss_coef"] == 0.,
+                "swap_noise_image already optimizes clean-image prediction; "
+                "image_loss_coef must be zero to avoid double weighting it.",
+            )
 
         require(local_vars["kl_train_type"] in get_args(TrainType), \
             f"kl_train_type can be one of {TrainType}.")
@@ -518,9 +605,14 @@ class DiffusionModel(ArgumentSaverModel):
         newly appended layer may enable either loss.
 
         Returns:
-            ``None``. ``use_kl_loss`` and ``use_ctr_loss`` are updated in place.
+            ``None``. ``use_noise_distil_loss``, ``use_kl_loss`` and ``use_ctr_loss`` 
+            are updated in place.
         """
 
+        self.use_noise_distil_loss = bool(
+            self.noise_distil_coef > 0. and 
+            self.teacher_network is not None
+        )
         self.use_kl_loss = bool(
             self.kl_loss_coef > 0. and
             self.network.reshaper_kwargs.get("add_kl", False)
@@ -622,11 +714,15 @@ class DiffusionModel(ArgumentSaverModel):
             return
 
         data = y if y is not None else x
-        # Materialize the finite label stream from a Keras dataset.
+        # Scan only labels, and refuse a dataset known to repeat forever.
         if isinstance(data, tf.data.Dataset):
-            data = np.concatenate([
-                batch[1].numpy() for batch in data
-            ], axis=0)
+            labels = set()
+            for batch in data:
+                labels.update(
+                    np.unique(batch[1].numpy()).tolist()
+                )
+
+            data = list(labels)
         # Leave Keras to report missing inputs when no labels were supplied.
         elif y is None:
             return
@@ -803,6 +899,26 @@ class DiffusionModel(ArgumentSaverModel):
         ]):
             return tf.cast(tf.identity(labels), tf.int32)
 
+    def _mask_unknown_teacher_labels(
+        self, 
+        labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Replace condition IDs outside a past teacher vocabulary with null."""
+
+        teacher_num_labels = getattr(
+            self.teacher_network, 
+            "num_labels", 
+            None
+        )
+
+        if teacher_num_labels is None:
+            return labels
+        return tf.where(
+            labels < tf.cast(teacher_num_labels, labels.dtype), 
+            labels, 
+            tf.zeros_like(labels)
+        )
+
     @staticmethod
     def _normalize_seed(
         seed: int | None, 
@@ -864,29 +980,22 @@ class DiffusionModel(ArgumentSaverModel):
         """Return Keras metric trackers reset between fit/evaluate epochs.
 
         Returns:
-            list[tf.keras.metrics.Metric]: Total, noise, optional split-noise,
-            image, KL, class-token regularizer loss trackers and regularizer
+            list[tf.keras.metrics.Metric]: Total, noise, split-noise, image, 
+            KL, class-token regularizer loss trackers and regularizer
             accuracy tracker. They exist after :meth:`compile`.
         """
 
-        metric_trackers = [
+        return [
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
-        ]
-        # Expose split trackers only when split-noise reporting is enabled.
-        if self.show_separate_noise_losses:
-            metric_trackers.extend([
-                self.cond_noise_loss_tracker,
-                self.uncond_noise_loss_tracker,
-            ])
-        metric_trackers.extend([
+            self.noise_distil_loss_tracker, 
+            self.cond_noise_loss_tracker, 
+            self.uncond_noise_loss_tracker, 
             self.image_loss_tracker, 
             self.kl_loss_tracker, 
             self.ctr_loss_tracker, 
             self.ctr_accuracy_tracker
-        ])
-
-        return metric_trackers
+        ]
 
     def compile(
         self, 
@@ -915,37 +1024,41 @@ class DiffusionModel(ArgumentSaverModel):
 
         stable_dtype = self.dtype_policy.variable_dtype
         self.total_loss_tracker = metrics.Mean(
-            name="loss",
-            dtype=stable_dtype,
+            name="loss", 
+            dtype=stable_dtype
         )
         self.noise_loss_tracker = metrics.Mean(
             name="total_noise_loss" if self.show_separate_noise_losses \
-                else "noise_loss",
-            dtype=stable_dtype,
+                else "noise_loss", 
+            dtype=stable_dtype
+        )
+        self.noise_distil_loss_tracker = metrics.Mean(
+            name="noise_distil_loss", 
+            dtype=stable_dtype
         )
         self.cond_noise_loss_tracker = metrics.Mean(
-            name="cond_noise_loss",
-            dtype=stable_dtype,
+            name="cond_noise_loss", 
+            dtype=stable_dtype
         )
         self.uncond_noise_loss_tracker = metrics.Mean(
-            name="uncond_noise_loss",
-            dtype=stable_dtype,
+            name="uncond_noise_loss", 
+            dtype=stable_dtype
         )
         self.image_loss_tracker = metrics.Mean(
-            name="image_loss",
-            dtype=stable_dtype,
+            name="image_loss", 
+            dtype=stable_dtype
         )
         self.kl_loss_tracker = metrics.Mean(
-            name="kl_loss",
-            dtype=stable_dtype,
+            name="kl_loss", 
+            dtype=stable_dtype
         )
         self.ctr_loss_tracker = metrics.Mean(
-            name="ctr_loss",
-            dtype=stable_dtype,
+            name="ctr_loss", 
+            dtype=stable_dtype
         )
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            name="ctr_accuracy",
-            dtype=stable_dtype,
+            name="ctr_accuracy", 
+            dtype=stable_dtype
         )
 
     def fit(
@@ -1152,6 +1265,13 @@ class DiffusionModel(ArgumentSaverModel):
         prepared_inputs = self.prep_inputs(
             inputs
         ) if not self.map_preprocess else inputs
+        if self.use_noise_distil_loss:
+            prepared_inputs = prepared_inputs[:-3]
+            teacher_noises_pred = prepared_inputs[-2]
+            teacher_noise_mask = prepared_inputs[-1]
+        else:
+            teacher_noises_pred = None
+            teacher_noise_mask = None
         (x0, noises, t, x_t, cfg_labels, 
         uncond_labels, classes) = prepared_inputs
 
@@ -1162,11 +1282,14 @@ class DiffusionModel(ArgumentSaverModel):
                 uncond_labels=uncond_labels, 
                 classes=classes, 
                 cfg_scale=self.train_cfg_scale, 
+                teacher_noises_pred=teacher_noises_pred, 
+                teacher_noise_mask=teacher_noise_mask, 
                 training=True
             )
             (loss, noise_loss, cond_noise_loss, 
-            uncond_noise_loss, image_loss, kl_loss, 
-            ctr_loss, ctr_preds) = outputs
+            uncond_noise_loss, noise_distil_loss, 
+            image_loss, kl_loss, ctr_loss, 
+            ctr_preds) = outputs
 
         self.apply_grads(tape, loss)
         self.update_ema()
@@ -1174,13 +1297,14 @@ class DiffusionModel(ArgumentSaverModel):
             noise_loss, 
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
+            noise_distil_loss=noise_distil_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
-            classes=classes,
-            cond_labels=cfg_labels,
+            classes=classes, 
+            cond_labels=cfg_labels
         )
 
         return results
@@ -1203,6 +1327,13 @@ class DiffusionModel(ArgumentSaverModel):
         prepared_inputs = self.prep_inputs(
             inputs, use_label_dropout=False
         ) if not self.map_preprocess else inputs
+        if self.use_noise_distil_loss:
+            prepared_inputs = prepared_inputs[:-3]
+            teacher_noises_pred = prepared_inputs[-2]
+            teacher_noise_mask = prepared_inputs[-1]
+        else:
+            teacher_noises_pred = None
+            teacher_noise_mask = None
         (x0, noises, t, x_t, cond_labels, 
         uncond_labels, classes) = prepared_inputs
 
@@ -1213,24 +1344,28 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_labels=uncond_labels, 
             classes=classes, 
             cfg_scale=self.test_cfg_scale, 
+            teacher_noises_pred=teacher_noises_pred, 
+            teacher_noise_mask=teacher_noise_mask, 
             use_image_loss=True, 
             training=False
         )
         (loss, noise_loss, cond_noise_loss, 
-        uncond_noise_loss, image_loss, kl_loss, 
-        ctr_loss, ctr_preds) = outputs
+        uncond_noise_loss, noise_distil_loss, 
+        image_loss, kl_loss, ctr_loss, 
+        ctr_preds) = outputs
 
         results = self.get_results_dict(
             noise_loss, 
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
+            noise_distil_loss=noise_distil_loss, 
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
             ctr_loss=ctr_loss, 
             ctr_preds=ctr_preds, 
             classes=classes, 
-            cond_labels=cond_labels,
+            cond_labels=cond_labels, 
             use_image_loss=True
         )
 
@@ -1788,15 +1923,15 @@ class DiffusionModel(ArgumentSaverModel):
 
     def set_timestep_bounds(
         self, 
-        min_timesteps: int = 0, 
+        min_timesteps: int | None = 0, 
         max_timesteps: int | None = -1
     ) -> None:
         """Set the active half-open timestep interval for forward noising.
 
         Args:
-            min_timesteps (int): Inclusive lower bound.
-            max_timesteps (int | None): Exclusive upper bound; ``None`` means
-                0 and -1 means the current full schedule length.
+            min_timesteps (int | None): Inclusive lower bound; ``None`` uses 0.
+            max_timesteps (int | None): Exclusive upper bound; ``None`` uses 0
+                and -1 means the current full schedule length.
 
         Returns:
             None: Changed bounds invalidate cached Keras train/test/predict
@@ -1805,9 +1940,9 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             AssertionError: Unless ``0 <= min < max <= timesteps``.
         """
+
         max_timesteps = 0 if max_timesteps is None else max_timesteps
         max_timesteps = self.timesteps if max_timesteps == -1 else max_timesteps
-
 
         require(
             isinstance(min_timesteps, Integral) and 
@@ -1826,7 +1961,6 @@ class DiffusionModel(ArgumentSaverModel):
             "Expected 0 <= min_timesteps < max_timesteps <= timesteps, "
             f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
         )
-
 
         # Retrace train/test steps only when the active timestep range changes.
         if getattr(self, "_active_min_timestep", None) != min_timesteps or \
@@ -1861,6 +1995,10 @@ class DiffusionModel(ArgumentSaverModel):
         self.ema_network.set_current_resolution(
             resolution
         ) if self.ema_network is not None else None
+        if self.teacher_network is not None and hasattr(
+            self.teacher_network, "set_current_resolution"
+        ):
+            self.teacher_network.set_current_resolution(resolution)
 
         resolution = int(resolution)
         # Propagate a changed resolution to the raw and EMA networks.
@@ -1870,6 +2008,159 @@ class DiffusionModel(ArgumentSaverModel):
             self.train_function = None
             self.test_function = None
             self.predict_function = None
+
+    def set_teacher_network(
+        self, 
+        teacher_network: tf.keras.Model | None
+    ) -> None:
+        """Attach or clear the independent frozen runtime teacher.
+
+        Noise teachers created by :meth:`snapshot_teacher_network` retain the
+        student's schedule metadata. When a wrapper is supplied directly, its
+        schedule and timestep-zero convention must also match. A bare external
+        raw network has no schedule metadata, so its caller remains responsible
+        for ensuring that it was trained with the same forward process.
+        """
+
+        if teacher_network is not None and self.noise_distil_coef > 0. \
+        and getattr(
+            teacher_network, 
+            "swap_noise_image", 
+            getattr(teacher_network, "_diffusion_swap_noise_image", False)
+        ):
+            raise ValueError(
+                "An x0-prediction wrapper cannot teach epsilon distillation."
+            )
+
+        teacher_schedule = None
+        teacher_modify_first = None
+        if teacher_network is not None:
+            teacher_schedule = getattr(
+                teacher_network, 
+                "scheduler_name", 
+                getattr(teacher_network, "_diffusion_scheduler_name", None)
+            )
+            teacher_modify_first = getattr(
+                teacher_network, 
+                "modify_first_t", 
+                getattr(teacher_network, "_diffusion_modify_first_t", None)
+            )
+
+        if teacher_network is not None and getattr(
+            teacher_network, "network", None
+        ) is not None:
+            teacher_network = teacher_network.network
+
+        if teacher_network is not None:
+            validate_model_dtype_policy(
+                teacher_network, 
+                self.dtype_policy, 
+                role="teacher_network"
+            )
+        if teacher_network is not None and (
+            teacher_network is self.network
+            or teacher_network is self.ema_network
+        ):
+            raise ValueError(
+                "teacher_network must be an independent frozen snapshot."
+            )
+
+        regularizer_kwargs = getattr(
+            self.network, 
+            "clf_cls_token_regularizer_kwargs", 
+            None
+        )
+        if regularizer_kwargs is None:
+            regularizer_kwargs = getattr(
+                self.network, 
+                "cls_token_regularizer_kwargs", 
+                {}
+            )
+
+        supports_class_teacher = hasattr(self, "distil_loss_coef")
+        needs_class_teacher = supports_class_teacher and bool(
+            getattr(self, "distil_loss_coef", 0.) > 0.
+            and getattr(self.network, "distil_token", None) is not None
+        ) or supports_class_teacher and bool(
+            self.ctr_loss_coef > 0.
+            and regularizer_kwargs.get("train_type", "normal") in (
+                "distil", "both"
+            )
+        )
+        needs_noise_teacher = bool(self.noise_distil_coef > 0.)
+        if teacher_network is None and (
+            needs_class_teacher or needs_noise_teacher
+        ) and not self.defer_teacher:
+            raise ValueError(
+                "A configured distillation objective requires teacher_network; "
+                "set defer_teacher=True only when it will be attached later."
+            )
+
+        if teacher_network is not None and (
+            needs_noise_teacher or needs_class_teacher
+        ):
+            if teacher_schedule is not None \
+            and teacher_schedule != self.scheduler_name:
+                raise ValueError(
+                    "teacher_network scheduler_name must match the student."
+                )
+            if teacher_modify_first is not None \
+            and teacher_modify_first != self.modify_first_t:
+                raise ValueError(
+                    "teacher_network modify_first_t must match the student."
+                )
+            for name in ("timesteps", "channels", "use_cfg"):
+                if getattr(teacher_network, name, None) != getattr(
+                    self.network, name, None
+                ):
+                    raise ValueError(
+                        f"teacher_network {name} must match the student."
+                    )
+
+        object.__setattr__(self, "teacher_network", teacher_network)
+        if self.teacher_network is not None:
+            self.teacher_network.trainable = False
+            if hasattr(self.teacher_network, "set_current_resolution"):
+                self.teacher_network.set_current_resolution(
+                    self._current_resolution
+                )
+
+        if hasattr(self, "distil_loss_coef"):
+            self._refresh_loss_flags()
+        else:
+            DiffusionModel._refresh_loss_flags(self)
+
+        self.map_preprocess = True if getattr(self, "use_teacher", False) \
+                            else self._map_preprocess_without_teacher
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
+
+    def snapshot_teacher_network(
+        self, 
+        network_name: NetworkName = "raw"
+    ) -> tf.keras.Model:
+        """Clone a raw or EMA branch as an independent frozen teacher."""
+
+        source_network = self.get_network(network_name)
+        teacher_network = source_network.__class__.from_config(
+            source_network.get_config()
+        )
+        teacher_network.build()
+
+        if hasattr(teacher_network, "set_current_resolution"):
+            teacher_network.set_current_resolution(
+                self._current_resolution
+            )
+
+        copy_network_weights_by_layer(source_network, teacher_network)
+
+        teacher_network._diffusion_scheduler_name = self.scheduler_name
+        teacher_network._diffusion_modify_first_t = self.modify_first_t
+        teacher_network._diffusion_swap_noise_image = self.swap_noise_image
+        teacher_network.trainable = False
+
+        return teacher_network
 
     def load_schedules(
         self, 
@@ -2126,15 +2417,24 @@ class DiffusionModel(ArgumentSaverModel):
 
         return x
 
-    def get_network(self, network_name: NetworkName) -> ArgumentSaverModel:
-        """Resolve the raw or EMA prediction network by name.
+    def get_network(
+        self, 
+        network_name: NetworkName | Literal["teacher"]
+    ) -> ArgumentSaverModel:
+        """Resolve the raw, EMA, or internal teacher prediction network.
 
         Args:
-            network_name (NetworkName): Exactly ``"raw"`` or ``"ema"``.
+            network_name (NetworkName | Literal["teacher"]): Selected branch.
 
         Returns:
             DiffusionTransformer: Selected network instance.
         """
+
+        if network_name == "teacher":
+            if self.teacher_network is None:
+                raise ValueError("No teacher_network is attached.")
+
+            return self.teacher_network
 
         # Fall back to raw weights when no EMA network exists.
         if not self.use_ema and network_name == "ema":
@@ -2149,14 +2449,21 @@ class DiffusionModel(ArgumentSaverModel):
         # Reject unknown network selectors.
         else:
             raise ValueError(
-                "network_name needs to be one of {NetworkName}, "
+                f"network_name needs to be one of {NetworkName}, "
                 f"but not: {network_name}"
             )
 
         return network
 
-    def update_ema(self) -> bool:
-        """Update every EMA weight from its aligned raw-network weight.
+    def update_ema(
+        self, 
+        variables: Sequence[tf.Variable] | None = None
+    ) -> bool:
+        """Update all or a selected aligned subset of EMA weights.
+
+        ``variables=None`` preserves the ordinary single-optimizer behavior.
+        Split optimizers pass their active raw trainable variables so batches
+        from one phase cannot decay untouched weights owned by the other.
 
         Returns:
             bool: False when EMA is disabled; true after a successful update.
@@ -2175,8 +2482,23 @@ class DiffusionModel(ArgumentSaverModel):
             "Raw and EMA networks must have the same topology."
         )
 
+        selected_ids = None if variables is None else {
+            id(variable) for variable in variables
+        }
+        selected_scopes = set() if variables is None else {
+            variable.name.rsplit("/", 1)[0] for variable in variables
+        }
+
         for w, ew in zip(self.network.weights, self.ema_network.weights):
-            ew.assign(self.ema_decay * ew + (1 - self.ema_decay) * w)
+            selected = selected_ids is None or \
+                id(w) in selected_ids or (
+                    not w.trainable and 
+                    w.name.rsplit("/", 1)[0] in selected_scopes
+                )
+            if selected:
+                ew.assign(
+                    ew * self.ema_decay + w * (1 - self.ema_decay)
+                )
 
         return True
 
@@ -2262,7 +2584,7 @@ class DiffusionModel(ArgumentSaverModel):
             Images are resized to the active resolution when necessary;
             ``cfg_labels`` are real labels shifted by one under CFG and possibly
             replaced by 0; ``uncond_labels`` are all 0.  With
-            ``swap_noise_image=True``, the returned ``noises`` target is ``x_t``.
+            ``swap_noise_image=True``, the prediction target is clean ``x0``.
         """
 
         x0, labels = inputs
@@ -2309,10 +2631,48 @@ class DiffusionModel(ArgumentSaverModel):
             :meth:`prep_inputs`.
         """
 
-        return self.prep_inputs(
-            (x0, labels),
+        outputs = self.prep_inputs(
+            (x0, labels), 
             use_label_dropout=self._preprocess_training is not False
         )
+
+        if not self.use_noise_distil_loss:
+            return outputs
+
+        x_t = outputs[3]
+        t = outputs[2]
+        cond_labels = outputs[4]
+        uncond_labels = outputs[5]
+        cfg_scale = self.train_cfg_scale if self._preprocess_training \
+                    else self.test_cfg_scale
+
+        teacher_num_labels = getattr(
+            self.teacher_network, 
+            "num_labels", 
+            None
+        )
+        if teacher_num_labels is not None:
+            teacher_noise_mask = cond_labels < tf.cast(
+                teacher_num_labels, 
+                cond_labels.dtype
+            )
+
+        teacher_cond_labels = self._mask_unknown_teacher_labels(
+            cond_labels
+        )
+
+        _, teacher_noises_pred, *_ = self.forward(
+            "teacher", x_t, t, t, 
+            cond_labels=teacher_cond_labels, 
+            uncond_labels=uncond_labels, 
+            scale=cfg_scale, 
+            training=False
+        )
+        teacher_noises_pred = tf.stop_gradient(
+            teacher_noises_pred
+        )
+
+        return *outputs, teacher_noises_pred, teacher_noise_mask
 
     def compute_separate_noise_losses(
         self, 
@@ -2380,6 +2740,46 @@ class DiffusionModel(ArgumentSaverModel):
 
         return cond_noise_loss, uncond_noise_loss
 
+    def compute_distil_noise_loss(
+        self, 
+        teacher_noises_pred: tf.Tensor, 
+        noises_pred: tf.Tensor, 
+        teacher_noise_mask: tf.Tensor | None = None
+    ):
+        """
+        
+        """
+
+        noise_distil_sample_weight = None
+
+        if teacher_noise_mask is not None:
+            noise_distil_sample_weight = tf.cast(
+                teacher_noise_mask, 
+                noises_pred.dtype
+            )
+            noise_distil_sample_weight *= tf.math.divide_no_nan(
+                tf.cast(tf.shape(noises_pred)[0], noises_pred.dtype), 
+                tf.reduce_sum(noise_distil_sample_weight)
+            )
+            noise_distil_sample_weight = tf.reshape(
+                noise_distil_sample_weight,
+                tf.concat([
+                    tf.shape(noise_distil_sample_weight)[:1], 
+                    tf.ones(
+                        (tf.rank(noises_pred) - 2,), 
+                        dtype=tf.int32
+                    )
+                ], axis=0)
+            )
+
+        noise_distil_loss = self.compiled_loss(
+            tf.stop_gradient(teacher_noises_pred), 
+            noises_pred, 
+            sample_weight=noise_distil_sample_weight
+        ) if self.use_noise_distil_loss else 0.
+
+        return noise_distil_loss
+
     def compute_ctr_loss(
         self, 
         classes: tf.Tensor, 
@@ -2397,6 +2797,7 @@ class DiffusionModel(ArgumentSaverModel):
             (0.0 when no predictions exist) and averaged class probabilities.
             The latter is zeros ``[B,num_classes]`` when the list has no tensor.
         """
+
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         ctr_num = 0
         ctr_loss = tf.constant(0., dtype=stable_dtype)
@@ -2421,7 +2822,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         return ctr_loss, ctr_preds
 
-    def compute_noise_image_kl_ctr_loss(
+    def compute_noise_distil_image_kl_ctr_loss(
         self, 
         x0: tf.Tensor, 
         noises: tf.Tensor, 
@@ -2430,15 +2831,18 @@ class DiffusionModel(ArgumentSaverModel):
         noises_pred: tf.Tensor, 
         z_vals_c: tuple[tf.Tensor, tf.Tensor], 
         regs_list_c: list[tf.Tensor], 
+        teacher_noises_pred: tf.Tensor | None = None, 
         z_vals_u: tuple[tf.Tensor, tf.Tensor] | None = None, 
         regs_list_u: list[tf.Tensor] | None = None,
         kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
-        cond_labels: tf.Tensor | None = None
+        cond_labels: tf.Tensor | None = None, 
+        teacher_noise_mask: tf.Tensor | None = None
     ) -> tuple[
         tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
-        tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor
+        tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, 
+        tf.Tensor, tf.Tensor | float
     ]:
         """Compute and weight diffusion, reconstruction, KL, and token losses.
 
@@ -2452,6 +2856,8 @@ class DiffusionModel(ArgumentSaverModel):
                 latent mean/log variance.
             regs_list_c (list[tf.Tensor | None]): Conditional auxiliary class
                 probabilities by depth.
+            teacher_noises_pred (tf.Tensor | None): Frozen teacher prediction
+                on the same noisy inputs, timestep, labels, and CFG scale.
             z_vals_u (tuple[tf.Tensor | None, tf.Tensor | None] | None):
                 Unconditional latent statistics, required when KL trains uncond.
             regs_list_u (list[tf.Tensor] | None): Unconditional
@@ -2464,13 +2870,15 @@ class DiffusionModel(ArgumentSaverModel):
                 ``self.use_image_loss``.
             cond_labels (tf.Tensor | None): Conditional/possibly dropped label
                 IDs ``[B]`` used only for optional split-noise reporting.
+            teacher_noise_mask (tf.Tensor | None): Rows whose condition exists
+                in the teacher vocabulary.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
             tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor]:
-            Weighted total, raw noise loss, optional conditional/unconditional
-            noise losses, image loss, KL loss, class-token loss, and averaged
-            token predictions.
+            Weighted total, raw noise loss, optional conditional/unconditional 
+            noise losses, teacher-student noise loss, image loss, KL loss, 
+            class-token loss, and averaged token predictions.
         """
 
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
@@ -2485,6 +2893,11 @@ class DiffusionModel(ArgumentSaverModel):
             noises, 
             noises_pred, 
             cond_labels
+        )
+        noise_distil_loss = self.compute_distil_noise_loss(
+            teacher_noises_pred, 
+            noises_pred, 
+            teacher_noise_mask
         )
         image_loss = self.compiled_loss(
             x0, 
@@ -2503,14 +2916,16 @@ class DiffusionModel(ArgumentSaverModel):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         noise_loss = tf.cast(noise_loss, stable_dtype)
         cond_noise_loss = tf.cast(cond_noise_loss, stable_dtype) \
-            if cond_noise_loss is not None else None
+                        if cond_noise_loss is not None else None
         uncond_noise_loss = tf.cast(uncond_noise_loss, stable_dtype) \
-            if uncond_noise_loss is not None else None
+                        if uncond_noise_loss is not None else None
+        noise_distil_loss = tf.cast(noise_distil_loss, stable_dtype)
         image_loss = tf.cast(image_loss, stable_dtype)
         kl_loss = tf.cast(kl_loss, stable_dtype)
         ctr_loss = tf.cast(ctr_loss, stable_dtype)
         loss = (
             noise_loss * self.noise_loss_coef + 
+            noise_distil_loss * self.noise_distil_coef + 
             image_loss * self.image_loss_coef + 
             kl_loss * self.kl_loss_coef + 
             ctr_loss * self.ctr_loss_coef
@@ -2518,8 +2933,9 @@ class DiffusionModel(ArgumentSaverModel):
 
         outputs = (
             loss, noise_loss, cond_noise_loss, 
-            uncond_noise_loss, image_loss, kl_loss, 
-            ctr_loss, ctr_preds
+            uncond_noise_loss, noise_distil_loss, 
+            image_loss, kl_loss, ctr_loss, 
+            ctr_preds
         )
 
         return outputs
@@ -2590,11 +3006,20 @@ class DiffusionModel(ArgumentSaverModel):
                     outputs["z_vals"]
                 )
 
-            eps, *_, regs_list, z_vals = network(
+            outputs = network(
                 (x_t, t_batch, labels), 
                 full_return=True, 
                 training=training
             )
+
+            if isinstance(outputs, Mapping):
+                return (
+                    outputs["noises"], 
+                    outputs.get("regs_list", []), 
+                    outputs.get("z_vals", (None, None))
+                )
+
+            eps, *_, regs_list, z_vals = outputs
 
             return eps, regs_list, z_vals
 
@@ -2670,8 +3095,14 @@ class DiffusionModel(ArgumentSaverModel):
         sqrt_a_t, sqrt_one_minus_a_t = self.get_noise_and_signal_rates(t)
         # Broadcast scalar schedule rates across image dimensions when requested.
         if reshape_coefs:
-            sqrt_a_t = tf.reshape(sqrt_a_t, (-1, 1, 1, 1))
-            sqrt_one_minus_a_t = tf.reshape(sqrt_one_minus_a_t, (-1, 1, 1, 1))
+            sqrt_a_t = tf.reshape(
+                sqrt_a_t, 
+                (-1, 1, 1, 1)
+            )
+            sqrt_one_minus_a_t = tf.reshape(
+                sqrt_one_minus_a_t, 
+                (-1, 1, 1, 1)
+            )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         stable_x_t = tf.cast(x_t, stable_dtype)
@@ -2724,6 +3155,11 @@ class DiffusionModel(ArgumentSaverModel):
             network_name, 
             training
         )
+
+        # if self.swap_noise_image:
+        #     x0 = self.compute_eps(eps_c, eps_u, scale)
+        #     eps = x0
+        # else:
         x0, eps = self.denoise(
             x_t, 
             t, 
@@ -2732,7 +3168,7 @@ class DiffusionModel(ArgumentSaverModel):
             scale, 
             reshape_coefs=(t.shape == t_batch.shape)
         )
-    
+
         return x0, eps, *others
 
     def forward_and_compute_loss(
@@ -2745,14 +3181,18 @@ class DiffusionModel(ArgumentSaverModel):
         cond_labels: tf.Tensor, 
         uncond_labels: tf.Tensor, 
         classes: tf.Tensor, 
-        cfg_scale: float, 
+        cfg_scale: float | None, 
+        teacher_noises_pred: tf.Tensor | None = None, 
+        teacher_noise_mask: tf.Tensor | None = None, 
         kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         training: bool | None = None
     ) -> tuple[
-        tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
-        tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, tf.Tensor
+        tf.Tensor, tf.Tensor, tf.Tensor | None, 
+        tf.Tensor | None, tf.Tensor | float, 
+        tf.Tensor | float, tf.Tensor | float, 
+        tf.Tensor, tf.Tensor | float
     ]:
         """Run the diffusion forward prediction and compute all enabled losses.
 
@@ -2778,24 +3218,25 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         x0_pred, noises_pred, *others = self.forward(
-            network_name, 
-            x_t, t, t, 
+            network_name, x_t, t, t, 
             cond_labels=cond_labels, 
             uncond_labels=uncond_labels, 
             scale=cfg_scale, 
             training=training
         )
-        outputs = self.compute_noise_image_kl_ctr_loss(
+        outputs = self.compute_noise_distil_image_kl_ctr_loss(
             x0, noises, classes, 
             x0_pred, noises_pred, 
             z_vals_c=others[1][0], 
             regs_list_c=others[0][0], 
+            teacher_noises_pred=teacher_noises_pred, 
             z_vals_u=others[1][1], 
             regs_list_u=others[0][1], 
             kl_train_type=kl_train_type, 
             ctr_train_type=ctr_train_type, 
             use_image_loss=use_image_loss, 
-            cond_labels=cond_labels
+            cond_labels=cond_labels, 
+            teacher_noise_mask=teacher_noise_mask
         )
 
         return outputs
@@ -2805,14 +3246,16 @@ class DiffusionModel(ArgumentSaverModel):
         noise_loss: tf.Tensor, 
         cond_noise_loss: tf.Tensor | None = None, 
         uncond_noise_loss: tf.Tensor | None = None, 
+        noise_distil_loss: tf.Tensor | None = None, 
         total_loss: tf.Tensor | None = None, 
         image_loss: tf.Tensor | None = None, 
         kl_loss: tf.Tensor | None = None, 
         ctr_loss: tf.Tensor | None = None, 
         ctr_preds: tf.Tensor | None = None, 
         classes: tf.Tensor | None = None, 
-        cond_labels: tf.Tensor | None = None,
+        cond_labels: tf.Tensor | None = None, 
         use_total_loss: bool | None = None, 
+        use_noise_distil_loss: bool | None = None, 
         use_image_loss: bool | None = None, 
         use_kl_loss: bool | None = None, 
         use_ctr_loss: bool | None = None
@@ -2821,6 +3264,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             noise_loss (tf.Tensor): Required scalar noise loss.
+            noise_distil_loss (tf.Tensor | None): Teacher-student noise loss.
             cond_noise_loss (tf.Tensor | None): Conditional-row noise loss for
                 optional split reporting.
             uncond_noise_loss (tf.Tensor | None): Null-row noise loss for
@@ -2836,6 +3280,8 @@ class DiffusionModel(ArgumentSaverModel):
                 omitted, each supplied split loss receives unit weight.
             use_total_loss (bool | None): Explicit total tracker switch; None
                 enables it when any auxiliary loss is enabled.
+            use_noise_distil_loss (bool | None): Noise-distillation tracker
+                override.
             use_image_loss (bool | None): Explicit image tracker switch.
             use_kl_loss (bool | None): Explicit KL tracker switch.
             use_ctr_loss (bool | None): Explicit token loss/accuracy switch.
@@ -2848,10 +3294,12 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: If an enabled metric's required value is missing.
         """
 
+        use_noise_distil_loss = self.use_noise_distil_loss if use_noise_distil_loss is None \
+                                else use_noise_distil_loss
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
         use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
-        use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss \
+        use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss or use_noise_distil_loss \
                         if use_total_loss is None else use_total_loss
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -2871,7 +3319,7 @@ class DiffusionModel(ArgumentSaverModel):
                 sample_weight=batch_weight
             )
             results.update({
-                self.total_loss_tracker.name:
+                self.total_loss_tracker.name: 
                 self.total_loss_tracker.result()
             })
 
@@ -2914,6 +3362,21 @@ class DiffusionModel(ArgumentSaverModel):
                 self.cond_noise_loss_tracker.result(), 
                 self.uncond_noise_loss_tracker.name:
                 self.uncond_noise_loss_tracker.result()
+            })
+
+        if use_noise_distil_loss:
+            require(
+                noise_distil_loss is not None, 
+                "noise_distil_loss is required when noise distillation is active."
+            )
+
+            self.noise_distil_loss_tracker.update_state(
+                noise_distil_loss, 
+                sample_weight=batch_weight
+            )
+            results.update({
+                self.noise_distil_loss_tracker.name: 
+                self.noise_distil_loss_tracker.result()
             })
 
         # Update image reconstruction metrics only when image loss is active.
@@ -3009,17 +3472,22 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         network = self.get_network(network_name)
-        z_id = None
-        for id_, type_ in network.reshaper_ids_dict.items():
-            # Locate the first flattening reshaper that defines the latent boundary.
-            if type_ == "flatten":
-                z_id = int(id_)
-                break
+        flatten_ids = [
+            int(id_) for id_, type_ in network.reshaper_ids_dict.items()
+            if type_ == "flatten"
+        ]
+        z_id = flatten_ids[0] if flatten_ids else None
 
         # Require a flattening boundary before attempting latent decoding.
         if z_id is None:
             raise ValueError(
                 "sample_vae requires a flatten reshaper."
+            )
+        if len(flatten_ids) != 1:
+            raise ValueError(
+                "sample_vae supports exactly one variational boundary; "
+                "multiple posterior flatten sites require an explicit "
+                "ancestral prior model."
             )
 
         # Require the flattening reshaper to expose a variational latent.
@@ -3119,15 +3587,13 @@ class DiffusionModel(ArgumentSaverModel):
             z, 
             training=False
         ) if z_projector is not None else z
-
         images = network(
             (z, ts, labels), 
             min_depth=z_id, 
             training=False
         )
-        images = self.postprocess(images)
 
-        return images
+        return self.postprocess(images)
 
     def sample(
         self, 
@@ -3399,6 +3865,37 @@ class DiffusionModel(ArgumentSaverModel):
 
         return outputs
 
+    @classmethod
+    def from_config(
+        cls, 
+        config: Mapping[str, object]
+    ) -> "DiffusionModel":
+        """Reconstruct an independent wrapper and nested raw network."""
+
+        config = dict(config)
+        network = config["network"]
+
+        if isinstance(network, Mapping):
+            network_config = dict(network)
+            module_name = network_config.pop("module", None)
+
+            if module_name is None:
+                network = tf.keras.utils.deserialize_keras_object(
+                    network_config
+                )
+            else:
+                network_type = getattr(
+                    import_module(module_name), 
+                    network_config["class_name"]
+                )
+                network = network_type.from_config(network_config["config"])
+        elif isinstance(network, tf.keras.Model):
+            network = network.__class__.from_config(network.get_config())
+
+        config["network"] = network
+
+        return cls(**config)
+
 
 def run_self_tests() -> dict[str, str]:
     """Run deterministic end-to-end tests for DiffusionModel.
@@ -3503,16 +4000,16 @@ def run_self_tests() -> dict[str, str]:
     ):
         tf.debugging.assert_near(raw_weight, ema_weight)
     assert [metric.name for metric in wrapper.metrics] == [
-        "loss", "noise_loss", "image_loss", "kl_loss", "ctr_loss",
-        "ctr_accuracy",
+        "loss", "noise_loss", "noise_distil_loss", "image_loss", "kl_loss",
+        "ctr_loss", "ctr_accuracy",
     ]
     separate_noise_wrapper = make_wrapper(
         show_separate_noise_losses=True
     )
     assert [metric.name for metric in separate_noise_wrapper.metrics] == [
         "loss", "total_noise_loss", "cond_noise_loss",
-        "uncond_noise_loss", "image_loss", "kl_loss", "ctr_loss",
-        "ctr_accuracy",
+        "uncond_noise_loss", "noise_distil_loss", "image_loss", "kl_loss",
+        "ctr_loss", "ctr_accuracy",
     ]
     assert separate_noise_wrapper.get_config()[
         "show_separate_noise_losses"
@@ -3676,7 +4173,7 @@ def run_self_tests() -> dict[str, str]:
         tf.ones_like(images[:1]) * 2.,
         tf.ones_like(images[1:]) * 4.,
     ], axis=0)
-    split_losses = separate_noise_wrapper.compute_noise_image_kl_ctr_loss(
+    split_losses = separate_noise_wrapper.compute_noise_distil_image_kl_ctr_loss(
         tf.zeros_like(images),
         split_targets,
         classes,
@@ -3713,7 +4210,7 @@ def run_self_tests() -> dict[str, str]:
         show_separate_noise_losses=True,
     )
     no_cfg_split_losses = (
-        no_cfg_separate_noise_wrapper.compute_noise_image_kl_ctr_loss(
+        no_cfg_separate_noise_wrapper.compute_noise_distil_image_kl_ctr_loss(
             tf.zeros_like(images),
             split_targets,
             classes,
@@ -3842,10 +4339,10 @@ def run_self_tests() -> dict[str, str]:
         "raw", images, noises, fixed_t, x_t, cfg_labels, nulls, classes,
         cfg_scale=None, use_image_loss=True, training=False,
     )
-    assert len(losses_tuple) == 8
+    assert len(losses_tuple) == 9
     assert all(
         value is None or bool(tf.reduce_all(tf.math.is_finite(value)))
-        for value in losses_tuple[:7]
+        for value in losses_tuple[:7] + losses_tuple[8:]
     )
 
     weighted = make_wrapper(
@@ -4500,15 +4997,12 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2,
     )
     wrapper_config = serialization_wrapper.get_config()
-    assert wrapper_config["network"] is serialization_wrapper.network
-    try:
-        DiffusionModel.from_config(wrapper_config)
-    except ValueError as error:
-        assert "cannot be saved" in str(error)
-    else:
-        raise AssertionError(
-            "Wrapper reconstruction with an embedded network currently must fail"
-        )
+    assert isinstance(wrapper_config["network"], dict)
+    serialization_clone = DiffusionModel.from_config(wrapper_config)
+    assert serialization_clone is not serialization_wrapper
+    assert serialization_clone.network is not serialization_wrapper.network
+    assert serialization_clone.network.get_config() \
+        == serialization_wrapper.network.get_config()
 
     policy_wrapper = make_wrapper(
         use_ema=False, 
@@ -4636,7 +5130,7 @@ def run_self_tests() -> dict[str, str]:
 
     swap = make_wrapper(swap_noise_image=True)
     swap_prepared = swap.prep_inputs((images, classes), seed=31)
-    tf.debugging.assert_near(swap_prepared[1], swap_prepared[3])
+    tf.debugging.assert_near(swap_prepared[1], swap_prepared[0])
     try:
         swap.sample(network_name="raw", labels=[1])
     except ValueError as error:

@@ -6,8 +6,8 @@ spatial resolution while retaining the `[batch, tokens, channels]` interface.
 
 Every call takes `(x, cond)`. `x` is floating `[B,T,D]`; `cond` is floating
 `[B,C]` when adaptive normalization is enabled. Without a class token, `T` must
-be a perfect square. With `circumvent_cls_token=True`, token 0 is preserved
-outside the spatial operation and `T - 1` must be square.
+be a perfect square. With `circumvent_tokens=1`, token 0 is preserved outside
+the spatial operation and `T - 1` must be square.
 
 ## `Downsample`
 
@@ -97,7 +97,7 @@ zero.
 
 ## Class-token and output-width behavior
 
-When `circumvent_cls_token=True`, the leading token bypasses the spatial
+When `circumvent_tokens=1`, the leading token bypasses the spatial
 reshape and is projected only when required to match the output. For example,
 downsampling `[B,65,64]` from an 8x8 grid produces `[B,17,64]`.
 

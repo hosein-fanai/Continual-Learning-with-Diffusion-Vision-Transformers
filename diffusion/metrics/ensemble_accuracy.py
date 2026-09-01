@@ -43,8 +43,7 @@ class EnsembleAccuracy(metrics.Metric):
     Args:
         diffusion_clf: A ``DiffusionClassifier``-compatible wrapper exposing
             callable ``noisify``, ``q_sample``, and ``get_network`` methods.
-        network_name: Correctly spelled ``"ema"``/``"raw"`` selector. When
-            both aliases are omitted, ``"ema"`` is used.
+        network_name: ``"ema"`` or ``"raw"`` network selector.
         compute_type: ``"chunked"`` for bounded memory or ``"batched"`` for
             one larger network call.
         weighted: If true, use normalized signal-to-noise-ratio weights so
@@ -62,6 +61,9 @@ class EnsembleAccuracy(metrics.Metric):
             classifier-regularizer predictions. A positive value requires at
             least one such output.
         name: Keras metric name.
+        separate_probas: If true, predict once per CFG label. The null-label
+            scores contribute to every class and each real label contributes
+            only to its corresponding class before a final softmax.
         **kwargs: Standard ``tf.keras.metrics.Metric`` options, notably
             ``dtype``.
 
@@ -78,15 +80,16 @@ class EnsembleAccuracy(metrics.Metric):
     def __init__(
         self, 
         diffusion_clf: Any, 
-        network_name: NetworkName | None = None, 
+        network_name: NetworkName = "ema", 
         compute_type: ComputeType = "chunked", 
         weighted: bool = False, 
         max_t: int = 128, 
         t_chunk_size: int = 16, 
-        seed: int | None = None, 
         clf_acc_coef: float = 1., 
         distil_acc_coef: float = 0., 
         ctr_acc_coef: float = 0., 
+        separate_probas: bool = False, 
+        seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
         **kwargs: Any
     ) -> None:
@@ -96,18 +99,19 @@ class EnsembleAccuracy(metrics.Metric):
             diffusion_clf (Any): Diffusion-classifier wrapper exposing
                 ``timesteps``, callable ``noisify``/``q_sample``, raw/EMA
                 members, and ``get_network``.
-            network_name (NetworkName | None): Preferred ``"ema"`` or
-                ``"raw"`` selector; both omitted defaults to ``"ema"``.
+            network_name (NetworkName): ``"ema"`` or ``"raw"`` selector.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
             weighted (bool): Whether timesteps use normalized SNR weights.
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
-            seed (int | None): Optional master noising seed.
             clf_acc_coef (float): Coefficient for primary class predictions.
             distil_acc_coef (float): Coefficient for distillation-head
                 predictions.
             ctr_acc_coef (float): Coefficient for averaged classifier
                 regularizer predictions.
+            separate_probas (bool): Whether to combine separate null and
+                class-conditioned CFG predictions.
+            seed (int | None): Optional master noising seed.
             name (str | None): Keras metric name.
             **kwargs (Any): Standard Keras metric options.
 
@@ -115,7 +119,6 @@ class EnsembleAccuracy(metrics.Metric):
             ``None``.
         """
 
-        kwargs = dict(kwargs)
         wrapper_policy = getattr(diffusion_clf, "dtype_policy", None)
         kwargs.setdefault(
             "dtype", 
@@ -130,6 +133,8 @@ class EnsembleAccuracy(metrics.Metric):
             **kwargs
         )
 
+        if network_name not in ("ema", "raw"):
+            raise ValueError("network_name must be 'ema' or 'raw'.")
         required = (
             "timesteps", "noisify", "q_sample", 
             "network", "ema_network", "get_network"
@@ -157,78 +162,66 @@ class EnsembleAccuracy(metrics.Metric):
                 "Weighted evaluation requires callable "
                 "diffusion_clf.get_noise_and_signal_rates."
             )
-        # Require a positive integer diffusion horizon from the wrapper.
-        if not isinstance(diffusion_clf.timesteps, int) \
-        or isinstance(diffusion_clf.timesteps, bool) \
-        or diffusion_clf.timesteps < 1:
-            raise ValueError("diffusion_clf.timesteps must be a positive integer.")
-        # Require a positive integer ensemble horizon.
-        if not isinstance(max_t, int) or isinstance(max_t, bool) or max_t < 1:
-            raise ValueError("max_t must be a positive integer.")
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
-        # Require a positive integer timestep chunk size.
-        if not isinstance(t_chunk_size, int) or isinstance(t_chunk_size, bool) \
-        or t_chunk_size < 1:
-            raise ValueError("t_chunk_size must be a positive integer.")
-
-        for coef_name, coef in (
-            ("clf_acc_coef", clf_acc_coef), 
-            ("distil_acc_coef", distil_acc_coef), 
-            ("ctr_acc_coef", ctr_acc_coef)
-        ):
-            # Require every prediction-head coefficient to be finite and nonnegative.
-            if not isinstance(coef, (int, float)) or isinstance(coef, bool) \
-            or not np.isfinite(coef) or coef < 0.:
-                raise ValueError(f"{coef_name} must be a nonnegative number.")
         # Require at least one prediction head to contribute to the ensemble.
         if clf_acc_coef + distil_acc_coef + ctr_acc_coef <= 0.:
             raise ValueError("At least one accuracy coefficient must be positive.")
 
-        # Use bounded-memory prediction when timesteps should be chunked.
-        if compute_type == "chunked":
-            self.ensemble_predict = self.ensemble_predict_chunked
-        # Use one vectorized prediction when all timesteps fit in one batch.
-        elif compute_type == "batched":
-            self.ensemble_predict = self.ensemble_predict_batched
-        # Reject unknown ensemble-computation strategies.
-        else:
-            raise ValueError("compute_type can either be chunked or batched.")
-
         self.diffusion_clf = diffusion_clf
         self.network_name = network_name
         self.network = self.diffusion_clf.get_network(self.network_name)
-        minimum_classes = 0 if getattr(
-            self.network, "dynamic_num_classes", False
-        ) else 1
-
-        # Require the selected network's class-prediction interface.
-        if self.network is None or not callable(
-            getattr(self.network, "predict_class", None)
-        ) or not isinstance(getattr(self.network, "num_classes", None), int) \
-        or isinstance(getattr(self.network, "num_classes", None), bool) \
-        or self.network.num_classes < minimum_classes:
-            raise TypeError(
-                "The selected network must expose a valid integer "
-                "num_classes and callable predict_class."
-            )
-
+        self.compute_type = compute_type
+        self.separate_probas = bool(separate_probas)
         self.weighted = weighted
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
+        self.clf_acc_coef = float(clf_acc_coef)
+        self.distil_acc_coef = float(distil_acc_coef)
+        self.ctr_acc_coef = float(ctr_acc_coef)
         self.seed = effective_seed(seed=(
             getattr(diffusion_clf, "seed", None) 
             if seed is None else seed
         ))
-        self.clf_acc_coef = float(clf_acc_coef)
-        self.distil_acc_coef = float(distil_acc_coef)
-        self.ctr_acc_coef = float(ctr_acc_coef)
 
         self.tracker = metrics.SparseCategoricalAccuracy(
             name="tracker", 
             dtype=self.dtype
         )
+
+        # Use bounded-memory prediction when timesteps should be chunked.
+        if self.compute_type == "chunked":
+            self.ensemble_predict = self.ensemble_predict_chunked
+        # Use one vectorized prediction when all timesteps fit in one batch.
+        elif self.compute_type == "batched":
+            self.ensemble_predict = self.ensemble_predict_batched
+        # Reject unknown ensemble-computation strategies.
+        else:
+            raise ValueError(
+                "compute_type can either be chunked or batched."
+            )
+
+        minimum_classes = 0 if getattr(
+            self.network, "dynamic_num_classes", False
+        ) else 1
+        # Require the selected network's class-prediction interface.
+        if self.network is None or not callable(
+            getattr(self.network, "predict_class", None)
+        ) or self.network.num_classes < minimum_classes:
+            raise TypeError(
+                "The selected network must expose a valid "
+                "num_classes and callable predict_class."
+            )
+        if self.separate_probas and (
+            not getattr(self.network, "use_cfg", False)
+            or getattr(self.network, "num_labels", None)
+                != self.network.num_classes + 1
+        ):
+            raise ValueError(
+                "separate_probas requires one CFG null label "
+                "in addition to the classifier classes."
+            )
 
     def _predict_classes(
         self, 
@@ -252,6 +245,19 @@ class EnsembleAccuracy(metrics.Metric):
                 classifier full-return tuple.
             ValueError: If a positively weighted optional head is unavailable.
         """
+
+        batch_size = tf.shape(inputs[0])[0]
+        num_labels = self.network.num_classes + 1
+        if self.separate_probas:
+            # Evaluate every noised row under the null and each real CFG label.
+            inputs = (
+                tf.repeat(inputs[0], num_labels, axis=0), 
+                tf.repeat(inputs[1], num_labels, axis=0), 
+                tf.tile(
+                    tf.cast(tf.range(num_labels), inputs[2].dtype), 
+                    [batch_size]
+                )
+            )
 
         outputs = self.network.predict_class(
             inputs, 
@@ -309,6 +315,18 @@ class EnsembleAccuracy(metrics.Metric):
                 outputs[5], 
                 self.dtype
             ) * self.distil_acc_coef
+
+        if self.separate_probas:
+            total_pred = tf.reshape(total_pred, (
+                    batch_size, 
+                    num_labels, 
+                    self.network.num_classes
+            ))
+            # The null row scores every class; real label j scores class j - 1.
+            total_pred = (
+                total_pred[:, 0, :]
+                + tf.linalg.diag_part(total_pred[:, 1:, :])
+            )
 
         return total_pred
 
@@ -503,7 +521,12 @@ class EnsembleAccuracy(metrics.Metric):
         denominator = tf.reduce_sum(weights)
         cls_pred = cls_pred * tf.reshape(weights, (1, self.max_t, 1))
 
-        return tf.reduce_sum(cls_pred, axis=1) / denominator
+        total_pred = tf.reduce_sum(cls_pred, axis=1) / denominator
+
+        return tf.nn.softmax(
+            total_pred, 
+            axis=-1
+        ) if self.separate_probas else total_pred
 
     def ensemble_predict_chunked(
         self, 
@@ -569,7 +592,12 @@ class EnsembleAccuracy(metrics.Metric):
 
         denominator = tf.reduce_sum(weights)
 
-        return pred_sum / denominator
+        total_pred = pred_sum / denominator
+
+        return tf.nn.softmax(
+            total_pred, 
+            axis=-1
+        ) if self.separate_probas else total_pred
 
     def test_step(
         self, 
@@ -862,7 +890,7 @@ def run_self_tests() -> dict[str, str]:
         q_sample_calls.clear()
         batched = EnsembleAccuracy(
             wrapper, 
-            netwrok_name="ema", 
+            network_name="ema",
             compute_type="batched", 
             weighted=weighted, 
             max_t=5, 
@@ -916,7 +944,7 @@ def run_self_tests() -> dict[str, str]:
         q_sample_calls.clear()
         chunked = EnsembleAccuracy(
             wrapper, 
-            netwrok_name="raw", 
+            network_name="raw",
             compute_type="chunked", 
             weighted=weighted, 
             max_t=5, 
@@ -981,6 +1009,122 @@ def run_self_tests() -> dict[str, str]:
         combined_chunked.numpy(), combined_batched.numpy(), atol=1e-6
     )
 
+    conditioned_calls = []
+    conditioned_scores = tf.reshape(
+        tf.range(110, dtype=tf.float32) / 100.,
+        (11, 10)
+    )
+
+
+    def predict_conditioned_class(
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        full_return: bool = False,
+        training: bool | None = None
+    ) -> tf.Tensor | tuple:
+        """Return label-dependent scores for the separate-probability test.
+
+        Args:
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images, timesteps,
+                and CFG label IDs.
+            full_return (bool): Return the common classifier output tuple.
+            training (bool | None): Unused prediction-mode flag.
+
+        Returns:
+            tf.Tensor | tuple: Scores selected by CFG label, optionally wrapped
+            in the classifier full-return structure.
+        """
+
+        del training
+        timesteps = tf.cast(inputs[1], tf.int32)
+        labels = tf.cast(inputs[2], tf.int32)
+        conditioned_calls.append(labels.numpy())
+        classes = (
+            tf.gather(conditioned_scores, labels)
+            + tf.one_hot(
+                tf.math.floormod(timesteps, 10),
+                10,
+                dtype=tf.float32
+            ) * 0.5
+        )
+
+        return (
+            classes, None, [], [None], (None, None)
+        ) if full_return else classes
+
+
+    conditioned_network = SimpleNamespace(
+        num_classes=10,
+        num_labels=11,
+        use_cfg=True,
+        dynamic_num_classes=False,
+        predict_class=predict_conditioned_class,
+    )
+    conditioned_networks = {
+        "raw": conditioned_network,
+        "ema": conditioned_network,
+    }
+    conditioned_wrapper = SimpleNamespace(
+        timesteps=8,
+        network=conditioned_network,
+        ema_network=conditioned_network,
+        noisify=noisify,
+        q_sample=q_sample,
+        get_network=conditioned_networks.__getitem__,
+    )
+    separate_kwargs = {
+        "separate_probas": True,
+        "max_t": 2,
+        "seed": 23,
+    }
+    separate_batched = EnsembleAccuracy(
+        conditioned_wrapper,
+        compute_type="batched",
+        **separate_kwargs
+    ).ensemble_predict(images)
+    np.testing.assert_array_equal(
+        conditioned_calls.pop(),
+        np.tile(np.arange(11, dtype=np.uint8), 4)
+    )
+    separate_chunked = EnsembleAccuracy(
+        conditioned_wrapper,
+        compute_type="chunked",
+        t_chunk_size=1,
+        **separate_kwargs
+    ).ensemble_predict(images)
+    assert len(conditioned_calls) == 2
+    for labels in conditioned_calls:
+        np.testing.assert_array_equal(
+            labels,
+            np.tile(np.arange(11, dtype=np.uint8), 2)
+        )
+    total_scores = (
+        conditioned_scores[0]
+        + tf.linalg.diag_part(conditioned_scores[1:])
+        + tf.one_hot([0, 1], 10, dtype=tf.float32)[0] * 0.5
+        + tf.one_hot([0, 1], 10, dtype=tf.float32)[1] * 0.5
+    )
+    expected_separate = tf.nn.softmax(total_scores).numpy()
+    np.testing.assert_allclose(
+        separate_batched.numpy(),
+        np.repeat(expected_separate[None, :], 2, axis=0),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        separate_chunked.numpy(), separate_batched.numpy(), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        tf.reduce_sum(separate_batched, axis=-1).numpy(),
+        np.ones((2,), dtype=np.float32),
+        atol=1e-6,
+    )
+
+    try:
+        EnsembleAccuracy(wrapper, separate_probas=True, max_t=1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("separate_probas must require CFG labels.")
+
     oversized_chunk = EnsembleAccuracy(
         wrapper, 
         compute_type="chunked", 
@@ -1001,18 +1145,6 @@ def run_self_tests() -> dict[str, str]:
     assert corrected_selector.network_name == "raw"
     assert default_selector.network is ema_network
     assert default_selector.network_name == "ema"
-    try:
-        EnsembleAccuracy(
-            wrapper,
-            netwrok_name="raw",
-            network_name="ema",
-            max_t=1,
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Both network selector aliases must fail.")
-
     try:
         EnsembleAccuracy(
             wrapper,

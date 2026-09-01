@@ -1405,10 +1405,14 @@ class DiTClassifier(DiffusionTransformer):
 
             clf_features_list.append(x)
             clf_regs_list.append(z)
-            clf_z_vals = (
-                x_mean, x_log_var
-            ) if x_mean is not None and \
-            self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else clf_z_vals
+            if x_mean is not None and \
+            self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten":
+                clf_z_vals = (
+                    (x_mean, x_log_var) if clf_z_vals[0] is None else (
+                        tf.concat((clf_z_vals[0], x_mean), axis=-1),
+                        tf.concat((clf_z_vals[1], x_log_var), axis=-1),
+                    )
+                )
 
         classes = self.classifier_feature_extractor(
             x, 
@@ -1843,7 +1847,10 @@ class DiTClassifier(DiffusionTransformer):
         layer_config = old_layer.get_config()
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
-        new_layer.build((None, old_kernel.shape[0]))
+        new_layer(
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
+            training=False,
+        )
         new_kernel, new_bias = new_layer.get_weights()
         new_kernel[..., :-1] = old_kernel
         new_bias[:-1] = old_bias
@@ -1869,7 +1876,13 @@ class DiTClassifier(DiffusionTransformer):
             new_distil_layer = old_distil_layer.__class__.from_config(
                 distil_layer_config
             )
-            new_distil_layer.build((None, old_distil_kernel.shape[0]))
+            new_distil_layer(
+                tf.zeros(
+                    (1, old_distil_kernel.shape[0]),
+                    dtype=old_distil_kernel.dtype,
+                ),
+                training=False,
+            )
             new_distil_kernel, new_distil_bias = new_distil_layer.get_weights()
             new_distil_kernel[..., :-1] = old_distil_kernel
             new_distil_bias[:-1] = old_distil_bias

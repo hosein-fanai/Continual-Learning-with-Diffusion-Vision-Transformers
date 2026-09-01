@@ -22,7 +22,12 @@ from common.recovery import (
     save_task_checkpoint,
 )
 from common.replay_buffer import ReplayBuffer
-from diffusion import DiTClassifier, DiffusionClassifier
+from diffusion import (
+    DiTClassifier,
+    DiffusionClassifier,
+    DiffusionClassifierV2,
+    UNetClassifier,
+)
 
 
 def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
@@ -279,6 +284,134 @@ class RecoveryTests(unittest.TestCase):
                     expected.numpy(),
                     actual.numpy(),
                 )
+
+    def test_skip_connected_unet_teacher_is_checkpoint_safe(self) -> None:
+        """Integer-keyed U-Net routes stay outside TensorFlow checkpoints."""
+
+        tf.keras.backend.clear_session()
+        network = UNetClassifier(
+            num_classes=2,
+            use_cfg=True,
+            timesteps=4,
+            image_size=4,
+            channels=1,
+            widths=(2,),
+            block_depth=1,
+            bottleneck_width=3,
+            bottleneck_depth=1,
+            image_embedding_dim=2,
+            time_embedding_dim=3,
+            label_embedding_dim=2,
+            feature_aggregation_ids_dict={1: (-1,)},
+            build=True,
+        )
+        wrapper = DiffusionClassifierV2(
+            network=network,
+            use_ema=True,
+            test_network_name="ema",
+            test_steps=2,
+            defer_teacher=True,
+            distil_loss_coef=1.0,
+            seed=47,
+        )
+        teacher = wrapper.snapshot_teacher_network("ema")
+        wrapper.set_teacher_network(teacher)
+
+        for routed_network in (
+            wrapper.network,
+            wrapper.ema_network,
+            teacher,
+        ):
+            self.assertTrue(routed_network.connection_ids_dict)
+            self.assertTrue(all(
+                isinstance(key, int)
+                for key in routed_network.connection_ids_dict
+            ))
+            self.assertIs(type(routed_network.connection_ids_dict), dict)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint_path = tf.train.Checkpoint(
+                replay_model=wrapper,
+                teacher=teacher,
+            ).write(str(Path(temporary) / "ckpt"))
+            self.assertTrue(Path(checkpoint_path + ".index").is_file())
+
+    def test_dynamic_dual_heads_save_with_unique_hdf5_weight_names(self) -> None:
+        """Expanded classifier and distillation heads remain HDF5-safe."""
+
+        dit_wrapper = _make_dynamic_diffusion_classifier(43)
+        dit_wrapper._check_new_labels(
+            y=tf.constant([0, 1], dtype=tf.uint8),
+            verbose=False,
+        )
+        dit_network = dit_wrapper.network
+
+        unet_network = UNetClassifier(
+            num_classes=None,
+            use_cfg=True,
+            timesteps=4,
+            image_size=4,
+            channels=1,
+            widths=(2,),
+            block_depth=1,
+            bottleneck_width=3,
+            bottleneck_depth=1,
+            image_embedding_dim=2,
+            time_embedding_dim=3,
+            label_embedding_dim=2,
+            feature_aggregation_ids_dict={1: (-1,)},
+            classifier_only_distil_token=True,
+            build=True,
+        )
+        unet_network.add_class()
+        unet_network.add_class()
+
+        inputs = (
+            tf.zeros((2, 4, 4, 1), dtype=tf.float32),
+            tf.zeros((2,), dtype=tf.int32),
+            tf.constant([1, 2], dtype=tf.int32),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            for network in (dit_network, unet_network):
+                with self.subTest(network=type(network).__name__):
+                    outputs = network(
+                        inputs,
+                        full_return=True,
+                        training=False,
+                    )
+                    self.assertEqual(outputs["classes"].shape, (2, 2))
+                    self.assertEqual(outputs["distil_classes"].shape, (2, 2))
+
+                    classifier_names = {
+                        weight.name for weight in network.classifier.weights
+                    }
+                    distillation_names = {
+                        weight.name
+                        for weight in network.distil_classifier.weights
+                    }
+                    all_names = classifier_names | distillation_names
+                    self.assertEqual(
+                        len(all_names),
+                        len(network.classifier.weights)
+                        + len(network.distil_classifier.weights),
+                    )
+                    self.assertTrue(classifier_names.isdisjoint(
+                        distillation_names
+                    ))
+                    self.assertTrue(all(
+                        "/" in name and "distil" not in name
+                        for name in classifier_names
+                    ))
+                    self.assertTrue(all(
+                        "/" in name and "distil" in name
+                        for name in distillation_names
+                    ))
+
+                    weights_path = Path(temporary) / (
+                        type(network).__name__ + ".weights.h5"
+                    )
+                    network.save_weights(weights_path)
+                    self.assertGreater(weights_path.stat().st_size, 0)
 
     def test_replay_and_local_rng_round_trip(self) -> None:
         """Replay order/private RNG and local Python/NumPy RNGs continue exactly.

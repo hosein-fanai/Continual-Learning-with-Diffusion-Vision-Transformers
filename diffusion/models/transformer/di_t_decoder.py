@@ -1314,7 +1314,10 @@ class DiTDecoder(DiffusionTransformer):
             # Preserve latent statistics emitted by a flattening reshaper.
             if x_mean is not None and \
             self.reshaper_ids_dict.get(i + 1, "unflatten") == "flatten":
-                z_vals = (x_mean, x_log_var)
+                z_vals = (x_mean, x_log_var) if z_vals[0] is None else (
+                    tf.concat((z_vals[0], x_mean), axis=-1),
+                    tf.concat((z_vals[1], x_log_var), axis=-1),
+                )
 
         # Remove both prefix tokens only from the returned decoder patch stream.
         prefix_tokens_num = int(self.cls_token_type is not None) + \

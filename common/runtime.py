@@ -226,8 +226,23 @@ def validate_model_dtype_policy(
     )
 
     incompatible: list[str] = []
-    layers = {id(layer): layer for layer in (model, *model.submodules)}.values()
-    for layer in layers:
+    layers: dict[int, tf.keras.layers.Layer] = {}
+    pending = [model]
+    while pending:
+        layer = pending.pop()
+        if id(layer) in layers:
+            continue
+        layers[id(layer)] = layer
+        children = list(getattr(layer, "layers", ()))
+        children.extend(
+            child for child in getattr(
+                layer, "_self_tracked_trackables", ()
+            )
+            if isinstance(child, tf.keras.layers.Layer)
+        )
+        pending.extend(children)
+
+    for layer in layers.values():
         policy_name = getattr(
             getattr(layer, "dtype_policy", None), "name", None
         )

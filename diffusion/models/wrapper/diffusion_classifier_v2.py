@@ -75,6 +75,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             are initialized in place.
         """
 
+        # V2 supplies unconditional labels explicitly, so CFG-null selection
+        # would be an inert classifier mask.
+        kwargs["mask_by_nulls"] = False
         super().__init__(
             clf_loss_coef=clf_loss_coef, 
             **kwargs
@@ -513,6 +516,19 @@ class DiffusionClassifierV2(DiffusionClassifier):
             loss, 
             variables
         )
+
+    def update_ema(
+        self, 
+        variables: list[tf.Variable] | None = None
+    ) -> bool:
+        """Decay only the raw variables owned by the active V2 phase."""
+
+        if variables is None:
+            variables = self.clf_trainable_variables \
+                        if self._train_part == "discriminator" \
+                        else self.gen_trainable_variables
+
+        return super().update_ema(variables)
 
     def prep_clfv2_inputs(
         self, 
@@ -1035,6 +1051,15 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
+        clf_loss_mask = tf.cast(
+            t <= self.filter_t_threshold, 
+            self.dtype_policy.variable_dtype
+        ) if self.mask_by_t_threshold else None
+        clf_acc_mask = tf.cast(
+            clf_loss_mask, 
+            tf.bool
+        ) if clf_loss_mask is not None else None
+
         with tf.GradientTape() as tape:
             class_outputs = self.network.predict_class(
                 (x_t, t, uncond_labels), 
@@ -1046,13 +1071,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_z_vals = class_outputs[4]
             distil_preds = None
             # Read the independent distillation head when it is active.
-            if self.use_distil_loss:
+            if self.use_clf_distil_loss:
                 distil_preds = class_outputs[5]
 
             outputs = self.compute_clf_kl_ctr_distil_loss(
                 classes, None, None, None, None, 
                 classes_pred, clf_z_vals, 
                 clf_regs_list, distil_preds, 
+                clf_loss_mask=clf_loss_mask, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
                 ctr_train_type="uncond",
@@ -1067,22 +1093,30 @@ class DiffusionClassifierV2(DiffusionClassifier):
             distil_preds) = outputs
 
         self.apply_grads(tape, loss, self.clf_trainable_variables)
-        self.update_ema()
+        self.update_ema(self.clf_trainable_variables)
         results = self.get_clf_results_dict(
             clf_loss, 
             classes, 
             classes_pred, 
+            clf_acc_mask=clf_acc_mask, 
             total_loss=loss, 
             clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
             clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds, 
             clf_distil_preds=distil_preds, 
+            clf_ctr_mask=self._classifier_ctr_metric_mask(
+                classes, 
+                teacher_labels, 
+                replay_mask, 
+                clf_acc_mask
+            ) if self.use_clf_ctr_loss else None, 
             distil_acc_mask=self._distillation_metric_mask(
                 classes, 
                 teacher_labels, 
-                replay_mask
-            ) if self.use_distil_loss else None,
+                replay_mask, 
+                clf_acc_mask
+            ) if self.use_clf_distil_loss else None
         )
 
         return results
@@ -1109,6 +1143,15 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs
 
+        clf_loss_mask = tf.cast(
+            t <= self.filter_t_threshold, 
+            self.dtype_policy.variable_dtype
+        ) if self.mask_by_t_threshold else None
+        clf_acc_mask = tf.cast(
+            clf_loss_mask, 
+            tf.bool
+        ) if clf_loss_mask is not None else None
+
         class_outputs = self.get_network(self.test_network_name).predict_class(
             (x_t, t, uncond_labels), 
             full_return=True, 
@@ -1119,13 +1162,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
         clf_z_vals = class_outputs[4]
         distil_preds = None
         # Read the independent distillation head when it is active.
-        if self.use_distil_loss:
+        if self.use_clf_distil_loss:
             distil_preds = class_outputs[5]
 
         outputs = self.compute_clf_kl_ctr_distil_loss(
             classes, None, None, None, None, 
             classes_pred, clf_z_vals, 
             clf_regs_list, distil_preds, 
+            clf_loss_mask=clf_loss_mask, 
             clf_train_type="uncond", 
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
@@ -1143,17 +1187,25 @@ class DiffusionClassifierV2(DiffusionClassifier):
             clf_loss, 
             classes, 
             classes_pred, 
+            clf_acc_mask=clf_acc_mask, 
             total_loss=loss, 
             clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
             clf_distil_loss=distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds,
+            clf_distil_preds=distil_preds, 
+            clf_ctr_mask=self._classifier_ctr_metric_mask(
+                classes, 
+                teacher_labels, 
+                replay_mask, 
+                clf_acc_mask
+            ) if self.use_clf_ctr_loss else None, 
             distil_acc_mask=self._distillation_metric_mask(
                 classes, 
                 teacher_labels, 
-                replay_mask
-            ) if self.use_distil_loss else None,
+                replay_mask, 
+                clf_acc_mask
+            ) if self.use_clf_distil_loss else None
         )
 
         return results
@@ -1487,8 +1539,17 @@ def run_self_tests() -> dict[str, str]:
     assert "noise_loss" not in separate_generator_train
     wrapper._switch_train_part("discriminator")
     wrapper._switch_test_part("discriminator")
+    untouched_raw = wrapper.gen_trainable_variables[0]
+    untouched_index = next(
+        index for index, variable in enumerate(wrapper.network.weights)
+        if variable is untouched_raw
+    )
+    untouched_ema = wrapper.ema_network.weights[untouched_index]
+    untouched_raw.assign_add(tf.ones_like(untouched_raw) * .25)
+    untouched_ema_before = tf.identity(untouched_ema)
     discriminator_train = wrapper.train_step((images, classes))
     discriminator_test = wrapper.test_step((images, classes))
+    tf.debugging.assert_near(untouched_ema, untouched_ema_before)
     assert "classifier_loss" in discriminator_train
     assert "classifier_accuracy" in discriminator_test
     wrapper._train_part = None
@@ -1517,7 +1578,7 @@ def run_self_tests() -> dict[str, str]:
         distil_scope="replay_only",
     )
     assert continual_v2.teacher_network is None
-    assert continual_v2.use_distil_loss is False
+    assert continual_v2.use_clf_distil_loss is False
     continual_v2._check_new_labels(y=classes, verbose=False)
     v2_teacher = continual_v2.snapshot_teacher_network("raw")
     continual_v2._check_new_labels(
@@ -1525,7 +1586,7 @@ def run_self_tests() -> dict[str, str]:
         verbose=False,
     )
     continual_v2.set_teacher_network(v2_teacher)
-    assert continual_v2.use_distil_loss
+    assert continual_v2.use_clf_distil_loss
     assert continual_v2.map_preprocess
     assert v2_teacher.num_classes == 2
     assert continual_v2.network.num_classes == 3
@@ -1666,14 +1727,10 @@ def run_self_tests() -> dict[str, str]:
     assert policy_config["name"] == "policy_classifier_v2"
     assert policy_config["trainable"] is False
     assert policy_config["dtype"] == "float64"
-    try:
-        DiffusionClassifierV2.from_config(policy_config)
-    except (TypeError, ValueError):
-        pass
-    else:
-        raise AssertionError(
-            "V2 config cloning must expose nested-model serialization limits."
-        )
+    policy_clone = DiffusionClassifierV2.from_config(policy_config)
+    assert policy_clone.network is not policy.network
+    assert policy_clone.name == policy.name
+    assert policy_clone.dtype_policy.name == "float64"
 
     for invalid_embeddings in ([-1], [5]):
         try:

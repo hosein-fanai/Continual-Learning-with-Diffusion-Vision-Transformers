@@ -2461,13 +2461,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None: Variables are created and the Keras built flag is set.
         """
 
-        input_shape = self._build_model(
-            call_model=True
-        ) if input_shape is None else input_shape
+        del input_shape
+        configured_shapes = self._build_model(call_model=True)
 
         # Mark the Keras model built only after its symbolic graph exists.
         if not self.built:
-            super().build(input_shape)
+            super().build(configured_shapes)
 
     def call(
         self, 
@@ -2847,8 +2846,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         max_depth: int = -1, 
-        training: bool | None = None,
-        min_depth: int = 0
+        min_depth: int = 0, 
+        training: bool | None = None
     ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
         list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
         """Encode inputs through a selectable contiguous range of depths.
@@ -2861,20 +2860,19 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             max_depth (int): Exclusive zero-based loop stop.  ``-1`` (default)
                 does not stop early; ``0`` executes no stage, and ``k>0``
                 executes stages with zero-based indices below k.
-            training (bool | None): Keras training mode.
             min_depth (int): Number of initial stages to skip, in ``0..depth``.
                 Skipped feature slots are filled with ``None``.  ``0`` performs
                 depth-0 embedding; values 1..N are intended for resuming from a
                 matching flattened/unflattened bottleneck representation.
+            training (bool | None): Keras training mode.
 
         Returns:
             tuple: ``(tokens, cond, features_list, regs_list, z_vals)``. Tokens
             exclude optional class and distillation tokens at return, while
             ``features_list`` retains them in class, distillation, patch order.
             ``features_list[k]`` is depth k, ``regs_list[k]`` is its auxiliary
-            class distribution or ``None``, and ``z_vals`` is the most recent
-            KL flatten reshaper's ``(mean, log_variance)`` pair or
-            ``(None, None)``.
+            class distribution or ``None``. ``z_vals`` concatenates every KL
+            flatten reshaper's mean/log-variance pair in execution order.
 
         Raises:
             AssertionError: If ``min_depth`` is outside ``0..depth``.
@@ -2988,10 +2986,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
-            z_vals = (
-                x_mean, x_log_var
-            ) if x_mean is not None and \
-            self.reshaper_ids_dict.get(i+1, "unflatten") == "flatten" else z_vals
+            if x_mean is not None and \
+            self.reshaper_ids_dict.get(i+1, "unflatten") == "flatten":
+                z_vals = (x_mean, x_log_var) if z_vals[0] is None else (
+                    tf.concat((z_vals[0], x_mean), axis=-1), 
+                    tf.concat((z_vals[1], x_log_var), axis=-1)
+                )
 
         prefix_tokens_num = int(self.cls_token_type is not None) + \
                             int(self.distil_token_type is not None)

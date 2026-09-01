@@ -198,10 +198,9 @@ save_schedule_plots(
 
 `EnsembleAccuracy` averages unconditional classifier predictions across
 timesteps in either bounded-memory `"chunked"` or single-call `"batched"` mode.
-Use the preferred `network_name="raw"|"ema"`; the historical misspelling
-`netwrok_name` remains a compatibility alias, and supplying both is rejected.
-Omitting both defaults to `"ema"`, which the wrapper resolves to raw when EMA
-is disabled. With a seed, stateless noise is derived per logical timestep, so
+Use `network_name="raw"|"ema"`; omitting it defaults to `"ema"`, which the
+wrapper resolves to raw when EMA is disabled. With a seed, stateless noise is
+derived per logical timestep, so
 batched and chunked results are invariant to chunk size and prior RNG use.
 
 ## Package map

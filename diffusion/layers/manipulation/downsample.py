@@ -43,8 +43,7 @@ class Downsample(BaseEmbedding):
             ``"linear"`` leaves it unbounded.
         circumvent_tokens: Number of leading non-spatial tokens excluded from
             downsampling and projected when widths change. ``True`` preserves
-            one token. The legacy ``circumvent_cls_token`` keyword is accepted
-            as a one-token alias.
+            one token.
         **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size`` (at least 2). Positional keys include
             ``pos_embed_type``, ``pos_merger_type``, and
@@ -277,8 +276,8 @@ def run_self_tests() -> dict[str, str]:
     modes = ("avg_pooling", "max_pooling", "cnn_stride")
     for mode in modes:
         for use_layer_norm in (False, True):
-            for circumvent_cls_token in (False, True):
-                token_count = 17 if circumvent_cls_token else 16
+            for circumvent_tokens in (False, True):
+                token_count = 17 if circumvent_tokens else 16
                 layer = Downsample(
                     dim=2, 
                     grid_size=4, 
@@ -288,7 +287,7 @@ def run_self_tests() -> dict[str, str]:
                     cnn_dim_ratio=2, 
                     cnn_kernel_size=3, 
                     cnn_activation_func="relu", 
-                    circumvent_tokens=circumvent_cls_token, 
+                    circumvent_tokens=circumvent_tokens,
                     use_layer_norm=use_layer_norm, 
                     pos_embed_type=None
                 )
@@ -297,7 +296,7 @@ def run_self_tests() -> dict[str, str]:
                     training=True
                 )
                 expected_channels = 4 if mode == "cnn_stride" else 2
-                expected_tokens = 5 if circumvent_cls_token else 4
+                expected_tokens = 5 if circumvent_tokens else 4
                 assert output.shape == (2, expected_tokens, expected_channels)
                 assert (layer.layer_norm is not None) is use_layer_norm
                 assert layer.output_grid_size == 2
