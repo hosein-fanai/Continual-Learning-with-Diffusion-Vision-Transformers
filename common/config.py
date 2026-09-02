@@ -699,7 +699,7 @@ class DiffusionModelConfig(KwargsMixin):
     test_steps: int | None = None
     test_eta: float = 0.0
     noise_loss_coef: float = 1.0
-    noise_distil_coef: float = 0.0
+    noise_distil_loss_coef: float = 0.0
     show_separate_noise_losses: bool = False
     image_loss_coef: float = 0.0
     kl_loss_coef: float = 0.0
@@ -707,9 +707,9 @@ class DiffusionModelConfig(KwargsMixin):
     kl_train_type: str = "cond"
     ctr_train_type: str = "cond"
     train_noisified_min_timesteps: int = 0
-    train_noisified_max_timesteps: int | None = None
+    train_noisified_max_timesteps: int | None = -1
     test_noisified_min_timesteps: int = 0
-    test_noisified_max_timesteps: int | None = None
+    test_noisified_max_timesteps: int | None = -1
     resize_method: str = "area"
     resize_antialias: bool = True
     swap_noise_image: bool = False
@@ -727,22 +727,23 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     ``mask_by_nulls=None`` lets the model factory match the raw network's CFG
     setting. An explicit boolean is forwarded unchanged. Knowledge
     distillation keeps the historical hard/T=1/all-sample defaults;
-    ``distil_temperature`` controls soft-target smoothing and ``distil_scope``
+    ``clf_distil_temperature`` controls soft-target smoothing and
+    ``clf_distil_scope``
     selects old classes, replay rows, or all current/replay rows.
     """
 
-    distil_type: str = "hard"
-    distil_temperature: float = 1.0
-    distil_scope: str = "current_and_replay"
+    clf_distil_type: str = "hard"
+    clf_distil_temperature: float = 1.0
+    clf_distil_scope: str = "current_and_replay"
     mask_by_nulls: bool | None = None
     mask_by_t_threshold: bool = False
     mask_t_percentage: int = 70
     use_ensemble_loss_instead: bool = False
     clf_train_type: str = "cond"
     clf_loss_coef: float = 8.6e-3
-    distil_loss_coef: float = 0.0
+    clf_distil_loss_coef: float = 0.0
     clf_acc_coef: float = 0.5
-    distil_acc_coef: float = 0.5
+    clf_distil_acc_coef: float = 0.5
     ctr_acc_coef: float = 0.0
 
 
@@ -1076,10 +1077,10 @@ class ContinuallyLearnConfig(KwargsMixin):
             replay consistency/coverage/diversity/drift outcomes per task.
         mechanistic_max_samples (int): Positive cap on quadratic diversity work.
         use_generative_model_classifier (bool): Use the classifier attached to
-            a VAE or diffusion replay model instead of the standalone model.
+            a diffusion replay model instead of the standalone model.
         train_classifier_separately (bool): Add the separate classifier phase
-            required by ``DiffusionClassifierV2`` and optionally used by a
-            ``VAEClassifier``.
+            required by ``DiffusionClassifierV2``. Standard diffusion
+            classifiers train both parts jointly.
         use_distillation (bool): Use each completed diffusion-classifier raw
             student as the next continual task's frozen teacher. The model must
             provide a distillation token and a positive teacher objective. An
@@ -1578,97 +1579,3 @@ def save_config(
             file,
             sort_keys=True,
         )
-
-
-def run_self_tests() -> dict[str, str]:
-    """Smoke-test construction, passive values, schedules, and YAML safety.
-
-    Returns:
-        dict[str, str]: One passing result for each configuration class.
-    """
-
-    from io import StringIO
-    from pathlib import Path
-    from tempfile import TemporaryDirectory
-
-    config = Config(
-        dataset={"batch_size": 4},
-        model={
-            "diffusion_transformer": {"dim": 16},
-            "diffusion_classifier": {
-                "distil_temperature": 0.0,
-                "distil_scope": "EXPERIMENTAL",
-            },
-        },
-        optimizer={"clipnorm": 0.0},
-        continually_learn={
-            "baseline": "experimental",
-            "buffer_kwargs": {"strategy": "experimental"},
-        },
-        training={"task": "EXPERIMENTAL", "results_path": Path("artifacts")},
-    )
-    assert config.dataset.batch_size == 4
-    assert config.model.diffusion_transformer.dim == 16
-    assert config.model.diffusion_classifier.distil_temperature == 0.0
-    assert config.model.diffusion_classifier.distil_scope == "EXPERIMENTAL"
-    assert config.optimizer.clipnorm == 0.0
-    assert config.continually_learn.baseline == "experimental"
-    assert config.continually_learn.buffer_kwargs == {
-        "strategy": "experimental"
-    }
-    assert config.training.task == "EXPERIMENTAL"
-    assert config.training.results_path == "artifacts"
-
-    kwargs_copy = config.model.diffusion_transformer.kwargs()
-    kwargs_copy["dim"] = 99
-    assert config.model.diffusion_transformer.dim == 16
-
-    order, groups = resolve_continual_schedule(
-        3,
-        class_order=[2, 0, 1],
-        task_groups=[[2], [0, 1]],
-        available_class_num=3,
-    )
-    assert order == [2, 0, 1] and groups == [[2], [0, 1]]
-    assert normalize_training_task("Joint") == "joint"
-
-    merged = _safe_load_unique_yaml(StringIO(
-        "base: &base\n  task: classification\n"
-        "training:\n  <<: *base\n  task: continual\n"
-    ))
-    assert merged["training"]["task"] == "continual"
-    try:
-        _safe_load_unique_yaml(StringIO("training:\n  task: joint\n  task: continual\n"))
-    except yaml.constructor.ConstructorError:
-        pass
-    else:
-        raise AssertionError("Duplicate YAML keys must be rejected.")
-
-    with TemporaryDirectory() as directory:
-        path = Path(directory) / "config.yaml"
-        save_config(config, path)
-        assert load_config(path) == config
-
-    expected_classes = (
-        "KwargsMixin",
-        "DiffusionTransformerConfig",
-        "DiTDecoderConfig",
-        "DiTEncoderDecoderConfig",
-        "DiTClassifierConfig",
-        "DiTEncoderDecoderClassifierConfig",
-        "UNetConfig",
-        "UNetClassifierConfig",
-        "DiffusionModelConfig",
-        "DiffusionClassifierConfig",
-        "DiffusionClassifierV2Config",
-        "VariationalAutoencoderConfig",
-        "VAEClassifierConfig",
-        "DatasetConfig",
-        "ModelConfig",
-        "OptimizerConfig",
-        "ContinuallyLearnConfig",
-        "TrainingConfig",
-        "ReportingConfig",
-        "Config",
-    )
-    return {name: "passed" for name in expected_classes}

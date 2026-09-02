@@ -20,10 +20,15 @@ matplotlib.use("Agg")
 from pathlib import Path
 
 import gc
+
 import hashlib
+
 import json
+
 import math
+
 import os
+
 import uuid
 
 import re
@@ -167,7 +172,7 @@ _JOINT_NOTE = {
     ), 
     "distillation": (
         "with a runtime or previous-task teacher: hard or soft targets and "
-        "log-uniform distil_loss_coef; soft temperature and example scope"
+        "log-uniform clf_distil_loss_coef; soft temperature and example scope"
     ), 
     "objective": "Pareto minimize generative loss / maximize selected accuracy"
 }
@@ -182,7 +187,7 @@ _DIT_CLASSIFIER_NOTE = {
     "classifier_cls_token_type": (
         "new weight, time-label, or label when a separate token is used"
     ), 
-    "classifier_depth": "1 through 9, depending on the selected template",
+    "classifier_depth": "1 through 12, depending on the selected template",
     "classifier_layer_norm_adaptation": "enabled or disabled", 
     "classifier_block_dropout": "0, 0.1, 0.2, or 0.25", 
     "classifier_mlp_ratio": "None, 1, or 2", 
@@ -815,12 +820,6 @@ def _validate_swap_noise_hpo(
     if not swap_noise_image:
         return False, None
 
-    if model_name in ("dit_classifier", "dit_decoder"):
-        raise ValueError(
-            f"swap_noise_image HPO is unsupported for {model_name}; its raw "
-            "network cannot resume main-latent decoding."
-        )
-
     overrides = dict(model_overrides or {})
     reshaper_kwargs = overrides.get("reshaper_kwargs")
     if not isinstance(reshaper_kwargs, Mapping) \
@@ -836,35 +835,34 @@ def _validate_swap_noise_hpo(
                 "U-Net x0 HPO must leave reshaper_ids_dict empty so each "
                 "sampled width template creates its own bottleneck pair."
             )
-        if overrides.get("use_skip_connections") is True:
-            raise ValueError(
-                "U-Net x0 HPO cannot enable skip connections across its "
-                "variational bottleneck."
-            )
     elif model_name in (
-        "diffusion_transformer",
+        "diffusion_transformer", "dit_classifier", "dit_decoder",
         "dit_encoder_decoder",
         "dit_encoder_decoder_classifier",
     ):
-        if dict(overrides.get("reshaper_ids_dict") or {}) != {
-            1: "flatten", 2: "unflatten",
-        }:
+        reshapers = dict(overrides.get("reshaper_ids_dict") or {})
+        flatten_ids = sorted(
+            depth for depth, reshape_type in reshapers.items()
+            if reshape_type == "flatten"
+        )
+        if not flatten_ids or any(
+            reshapers.get(depth + 1) != "unflatten"
+            for depth in flatten_ids
+        ):
             raise ValueError(
-                "DiT x0 HPO requires the immutable main bottleneck "
-                "reshaper_ids_dict={1: 'flatten', 2: 'unflatten'}."
+                "DiT x0 HPO requires at least one consecutive "
+                "flatten/unflatten pair."
             )
-        if overrides.get("vit_block_ids") not in ([], [1], (), (1,)):
-            raise ValueError(
-                "DiT x0 HPO requires explicit vit_block_ids=[] or [1] so no "
-                "spatial block consumes the flattened latent."
-            )
+        first_flatten = flatten_ids[0]
         for route_name in (
             "connection_ids_dict",
             "cross_attention_ids_dict",
         ):
             routes = overrides.get(route_name, {})
             if isinstance(routes, Mapping) and any(
-                depth > 1 and any(source < 1 for source in sources)
+                depth > first_flatten and any(
+                    source < first_flatten for source in sources
+                )
                 for depth, sources in routes.items()
             ):
                 raise ValueError(
@@ -1101,7 +1099,7 @@ def _suggest_joint(
     tune_masking: bool = True, 
     use_distillation: bool = False,
     image_size: int | None = None,
-    distil_scope: str = "current_and_replay",
+    clf_distil_scope: str = "current_and_replay",
 ) -> None:
     """Add joint-classification suggestions to mutable model settings.
 
@@ -1115,7 +1113,7 @@ def _suggest_joint(
             teacher-loss settings for a runtime or continual snapshot teacher.
         image_size (int | None): Input width used to filter multiscale
             architectures whose down/up grids would not align.
-        distil_scope (str): Trial-selected continual teacher example scope.
+        clf_distil_scope (str): Trial-selected continual teacher example scope.
 
     Returns:
         None.
@@ -1168,12 +1166,12 @@ def _suggest_joint(
         # Use a down/bottleneck/up classifier for the U-shaped template.
         elif classifier_architecture == "u_shape":
             clf_depth = 4
-        # Reserve two middle stages for the variational bottleneck.
+        # Use stochastic skip and bottleneck latents in the compact U-VAE.
         elif classifier_architecture == "u_vae":
-            clf_depth = 5
-        # Use two nested scales and two variational bottlenecks.
+            clf_depth = 8
+        # Use three stochastic latent levels in the nested U-VAE.
         else:
-            clf_depth = 9
+            clf_depth = 12
 
         kwargs.update({
             "feature_aggregation_ids_dict": {
@@ -1250,33 +1248,37 @@ def _suggest_joint(
         # Insert a KL-enabled flatten/unflatten bottleneck into the U-shape.
         elif classifier_architecture == "u_vae":
             kwargs.update({
-                "clf_vit_block_ids": [1, 4, 5], 
-                "clf_downsample_ids": [1], 
+                "clf_vit_block_ids": [1, 4, 7, 8],
+                "clf_downsample_ids": [4],
                 "clf_downsample_kwargs": {"scaling_method": "avg_pooling"}, 
-                "clf_reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, 
+                "clf_reshaper_ids_dict": {
+                    2: "flatten", 3: "unflatten",
+                    5: "flatten", 6: "unflatten",
+                },
                 "clf_reshaper_kwargs": {
                     "add_kl": True, 
                     "latent_dim_ratio": trial.suggest_categorical(
                         "clf_latent_dim_ratio", [0.125, 0.25, 0.5]
                     )
                 }, 
-                "clf_upsample_ids": [4], 
-                "clf_connection_ids_dict": {5: [0, 4], -1: [-1]},
+                "clf_upsample_ids": [7],
+                "clf_connection_ids_dict": {8: [3, 7], -1: [-1]},
                 "clf_connection_kwargs": {"connect_type": "add"},
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate", 
                     "scaling_interpolation_method": "bilinear"
                 }
             })
-        # Stack two KL bottlenecks and restore both same-grid U skips.
+        # Stack three KL bottlenecks and restore both same-grid U skips.
         elif classifier_architecture == "u_multilevel_vae":
             kwargs.update({
-                "clf_vit_block_ids": [1, 4, 7, 8, 9],
-                "clf_downsample_ids": [1, 4],
+                "clf_vit_block_ids": [1, 4, 7, 10, 11, 12],
+                "clf_downsample_ids": [4, 7],
                 "clf_downsample_kwargs": {"scaling_method": "avg_pooling"},
                 "clf_reshaper_ids_dict": {
                     2: "flatten", 3: "unflatten",
                     5: "flatten", 6: "unflatten",
+                    8: "flatten", 9: "unflatten",
                 },
                 "clf_reshaper_kwargs": {
                     "add_kl": True,
@@ -1284,13 +1286,13 @@ def _suggest_joint(
                         "clf_latent_dim_ratio", [0.125, 0.25, 0.5]
                     ),
                 },
-                "clf_upsample_ids": [7, 8],
+                "clf_upsample_ids": [10, 11],
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate",
                     "scaling_interpolation_method": "bilinear",
                 },
                 "clf_connection_ids_dict": {
-                    8: [3, 7], 9: [0, 8], -1: [-1]
+                    11: [6, 10], 12: [3, 11], -1: [-1]
                 },
                 "clf_connection_kwargs": {"connect_type": "add"},
             })
@@ -1327,17 +1329,17 @@ def _suggest_joint(
         elif model_name == "unet_classifier":
             kwargs["classifier_only_distil_token"] = True
 
-        distil_type = trial.suggest_categorical(
-            "distil_type", ["hard", "soft"]
+        clf_distil_type = trial.suggest_categorical(
+            "clf_distil_type", ["hard", "soft"]
         )
         wrapper_kwargs.update({
-            "distil_type": distil_type,
-            "distil_temperature": trial.suggest_float(
-                "distil_temperature", 0.5, 8., log=True
-            ) if distil_type == "soft" else 1.,
-            "distil_scope": distil_scope,
-            "distil_loss_coef": trial.suggest_float(
-                "distil_loss_coef", 1e-4, 1e-1, log=True
+            "clf_distil_type": clf_distil_type,
+            "clf_distil_temperature": trial.suggest_float(
+                "clf_distil_temperature", 0.5, 8., log=True
+            ) if clf_distil_type == "soft" else 1.,
+            "clf_distil_scope": clf_distil_scope,
+            "clf_distil_loss_coef": trial.suggest_float(
+                "clf_distil_loss_coef", 1e-4, 1e-1, log=True
             )
         })
 
@@ -1386,7 +1388,7 @@ def _suggest_joint(
     accuracy_coef = 1. / active_accuracy_heads
     wrapper_kwargs.update({
         "clf_acc_coef": accuracy_coef, 
-        "distil_acc_coef": accuracy_coef if use_distillation else 0., 
+        "clf_distil_acc_coef": accuracy_coef if use_distillation else 0., 
         "ctr_acc_coef": accuracy_coef if ctr_loss_coef > 0. else 0.
     })
 
@@ -2454,15 +2456,6 @@ def _build_trial_config(
             task_order_mode=task_order_mode,
             seed=seed,
         )
-        if len(resolved_task_groups[0]) == 1 and set(normalized_metrics) & {
-            "average_forgetting",
-            "backward_transfer",
-        }:
-            raise ValueError(
-                "Forgetting and backward-transfer objectives require a "
-                "multiclass first task; a one-class acquisition row is "
-                "mathematically undefined."
-            )
     _validate_fit_request(model_name, fit_method, fit_kwargs)
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
     if model_name == "pretrained" and dataset_name not in ("cifar10", "cifar100"):
@@ -2599,7 +2592,7 @@ def _build_trial_config(
     continual_strategy = "generative_replay"
     use_generative_replay = True
     remove_prev_classes = True
-    distil_scope = "current_and_replay"
+    clf_distil_scope = "current_and_replay"
     if task == "continual" and model_name in _DIFFUSION_CLASSIFIER_MODELS:
         singleton_first = len(resolved_task_groups[0]) == 1
         strategy_parameter = "continual_strategy_singleton" \
@@ -2620,23 +2613,23 @@ def _build_trial_config(
                 "cumulative": ["old_classes", "current_and_replay"],
                 "new_only": ["current_and_replay"],
             }[continual_strategy]
-            distil_scope = trial.suggest_categorical(
-                "distil_scope_" + continual_strategy,
+            clf_distil_scope = trial.suggest_categorical(
+                "clf_distil_scope_" + continual_strategy,
                 scope_choices,
             )
         set_user_attr = getattr(trial, "set_user_attr", None)
         if callable(set_user_attr):
             set_user_attr("continual_strategy", continual_strategy)
             if use_distillation:
-                set_user_attr("distil_scope", distil_scope)
+                set_user_attr("clf_distil_scope", clf_distil_scope)
 
     if use_distillation and model_name in _DIFFUSION_MODELS:
         use_noise_distillation = model_name not in _DIFFUSION_CLASSIFIER_MODELS \
             or trial.suggest_categorical(
                 "use_noise_distillation", [False, True]
             )
-        wrapper_kwargs["noise_distil_coef"] = (
-            trial.suggest_float("noise_distil_coef", 1e-4, 1., log=True)
+        wrapper_kwargs["noise_distil_loss_coef"] = (
+            trial.suggest_float("noise_distil_loss_coef", 1e-4, 1., log=True)
             if use_noise_distillation else 0.
         )
 
@@ -2659,7 +2652,7 @@ def _build_trial_config(
             tune_masking=wrapper_name == "diffusion_classifier",
             use_distillation=use_distillation,
             image_size=image_size,
-            distil_scope=distil_scope,
+            clf_distil_scope=clf_distil_scope,
         )
         # Tune classifier-input noising and shared-variable recipes for V2.
         if wrapper_name == "diffusion_classifier_v2":
@@ -3038,7 +3031,8 @@ def _build_trial_config(
             "snapshot_network_name": snapshot_network_name,
             "continual_strategy": continual_strategy if task == "continual"
             and model_name in _DIFFUSION_CLASSIFIER_MODELS else None,
-            "distil_scope": distil_scope if use_distillation else None,
+            "clf_distil_scope": clf_distil_scope \
+                if use_distillation else None,
             "continual_schedule": {
                 "class_num": class_num,
                 "class_order": class_order,
@@ -3708,17 +3702,6 @@ def run_hpo(
         objective_directions,
         use_ensemble_accuracy,
     )
-    if resolved_task_groups is not None \
-    and len(resolved_task_groups[0]) == 1 \
-    and set(normalized_metrics) & {
-        "average_forgetting",
-        "backward_transfer",
-    }:
-        raise ValueError(
-            "Forgetting and backward-transfer objectives require a multiclass "
-            "first task; a one-class acquisition row is mathematically "
-            "undefined."
-        )
 
     root = Path(results_path)
     # Reuse the explicitly selected persistent study directory when resuming.

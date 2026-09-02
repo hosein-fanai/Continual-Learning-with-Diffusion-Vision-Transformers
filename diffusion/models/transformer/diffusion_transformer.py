@@ -2251,12 +2251,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             token_inputs = layers.Input(
                 shape=(None, dim), # (grid_size * grid_size, dim)
-                dtype=self.compute_dtype,
+                dtype=self.compute_dtype, 
                 name=name+"token_inputs"
             )
             cond_inputs = layers.Input(
-                shape=(self.cond_dim,),
-                dtype=self.compute_dtype,
+                shape=(self.cond_dim,), 
+                dtype=self.compute_dtype, 
                 name=name+"cond_inputs"
             )
 
@@ -2472,10 +2472,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
-        training: bool | None = None,
-        min_depth: int = 0
+        min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
-        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        list[tf.Tensor], list[tuple[tf.Tensor, tf.Tensor]]]:
         """Run embedding, configured depths, and the optional output head.
 
         Args:
@@ -2486,30 +2486,25 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 the already encoded representation required at that depth.
             full_return (bool): Return intermediate conditioning, features,
                 regularizer predictions, and VAE statistics when true.
-            training (bool | None): Keras training mode passed to every layer.
             min_depth (int): First depth to execute.  ``0`` performs patch/input
                 embedding; ``k`` in ``1..depth`` treats ``inputs[0]`` as depth-k
                 input and skips stages before k.  This is used by VAE decoding.
+            training (bool | None): Keras training mode passed to every layer.
 
         Returns:
             tf.Tensor | tuple: Normally an image/noise tensor ``[B, H, W, C]``
             (or final rank-3 tokens when ``use_unpatchify=False``).  With
             ``full_return=True``, returns ``(output, cond, features_list,
-            regs_list, (z_mean, z_log_var))``.  Feature index 0 is depth 0 and
-            index k is depth k; absent regularizers/statistics are ``None``.
+            regs_list, z_vals_list)``. Each ``z_vals_list`` item is one
+            ``(mean, log_variance)`` pair. Feature index 0 is depth 0 and
+            index k is depth k; absent regularizers are ``None``.
         """
 
-        x, cond, features_list, regs_list, z_vals = self.encode(
+        x, cond, features_list, regs_list, z_vals_list = self.encode(
             inputs, 
-            min_depth=min_depth,
+            min_depth=min_depth, 
             training=training
         )
-        # Supply neutral conditioning to the adaptive image head when conditions are disabled.
-        if self.use_unpatchify and cond is None:
-            cond = tf.zeros(
-                (tf.shape(x)[0], self.cond_dim),
-                dtype=x.dtype,
-            )
         noises = self.unpatchifier(
             (x, cond), 
             training=training
@@ -2517,7 +2512,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Include condition, features, regularizers, and latent values only on request.
         if full_return:
-            return noises, cond, features_list, regs_list, z_vals 
+            return noises, cond, features_list, regs_list, z_vals_list 
         return noises
 
     def set_current_resolution(self, resolution: int | None = None) -> None:
@@ -2558,7 +2553,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
-        cond_type: CondType | None,
+        cond_type: CondType | None, 
         full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | None | tuple[
@@ -2606,7 +2601,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Derive the combined condition from the configured condition type.
         if conds is None:
             conds = time_embeds if "time" in cond_type else (
-                label_embeds if "label" in cond_type else None
+                    label_embeds if "label" in cond_type else None
             )
 
         # Expose component embeddings only for callers requesting full metadata.
@@ -2849,7 +2844,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         min_depth: int = 0, 
         training: bool | None = None
     ) -> tuple[tf.Tensor, tf.Tensor, list[tf.Tensor], 
-        list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        list[tf.Tensor], list[tuple[tf.Tensor, tf.Tensor]]]:
         """Encode inputs through a selectable contiguous range of depths.
 
         Args:
@@ -2867,11 +2862,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             training (bool | None): Keras training mode.
 
         Returns:
-            tuple: ``(tokens, cond, features_list, regs_list, z_vals)``. Tokens
+            tuple: ``(tokens, cond, features_list, regs_list, z_vals_list)``. Tokens
             exclude optional class and distillation tokens at return, while
             ``features_list`` retains them in class, distillation, patch order.
             ``features_list[k]`` is depth k, ``regs_list[k]`` is its auxiliary
-            class distribution or ``None``. ``z_vals`` concatenates every KL
+            class distribution or ``None``. ``z_vals_list`` keeps each KL
             flatten reshaper's mean/log-variance pair in execution order.
 
         Raises:
@@ -2883,17 +2878,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "min_depth must be in the range of [0, depth]."
         )
 
-
         # Embed raw inputs when execution starts at the network entrance.
         if min_depth == 0:
             x, (cond, time_embeds, label_embeds) = self.embed_inputs(
-                inputs,
-                self.cond_type,
-                full_return=True,
+                inputs, 
+                self.cond_type, 
+                full_return=True, 
                 training=training
             )
             x = self.prepend_distil_token(
-                x,
+                x, 
                 self.distil_token_type, 
                 time_embeds=time_embeds, 
                 label_embeds=label_embeds, 
@@ -2902,7 +2896,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             )
             x = self.prepend_cls_token(
-                x,
+                x, 
                 self.cls_token_type, 
                 time_embeds=time_embeds, 
                 label_embeds=label_embeds, 
@@ -2912,7 +2906,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
         # Resume from a precomputed feature while rebuilding its conditions.
         else:
-            x = inputs[0]
+            latent_inputs = list(inputs[0]) if isinstance(
+                inputs[0], (list, tuple)
+            ) else [inputs[0]]
+            x = latent_inputs[0]
             cond, time_embeds, label_embeds = self.embed_conditions(
                 inputs[1], inputs[2], 
                 self.cond_type, 
@@ -2927,7 +2924,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         features_list = [None] * min_depth + [x]
         regs_list = [z] + [None] * min_depth
-        z_vals = (None, None)
+        z_vals_list = []
+        latent_index = 1
         for i, layers_dict in enumerate(self.layers_dicts):
             # Stop before the exclusive maximum depth.
             if i == max_depth:
@@ -2970,10 +2968,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             ) if self.US in layers_dict else x
 
-            x, x_mean, x_log_var = layers_dict[self.R](
-                x, 
-                training=training
-            ) if self.R in layers_dict else (x, None, None)
+            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
+            if self.R in layers_dict and min_depth > 0 and is_flatten:
+                x = latent_inputs[latent_index]
+                latent_index += 1
+                x_mean, x_log_var = None, None
+            else:
+                x, x_mean, x_log_var = layers_dict[self.R](
+                    x, 
+                    training=training
+                ) if self.R in layers_dict else (x, None, None)
 
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
@@ -2986,18 +2990,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
-            if x_mean is not None and \
-            self.reshaper_ids_dict.get(i+1, "unflatten") == "flatten":
-                z_vals = (x_mean, x_log_var) if z_vals[0] is None else (
-                    tf.concat((z_vals[0], x_mean), axis=-1), 
-                    tf.concat((z_vals[1], x_log_var), axis=-1)
-                )
+            if x_mean is not None and is_flatten and bool(
+                self.reshaper_kwargs.get("add_kl", False)
+            ):
+                z_vals_list.append((x_mean, x_log_var))
 
         prefix_tokens_num = int(self.cls_token_type is not None) + \
                             int(self.distil_token_type is not None)
         x = x[:, prefix_tokens_num:] if prefix_tokens_num else x
 
-        return x, cond, features_list, regs_list, z_vals
+        return x, cond, features_list, regs_list, z_vals_list
 
     def get_variables_names(
         self, 
@@ -3338,7 +3340,7 @@ def run_self_tests() -> dict[str, str]:
     assert cond.shape == (2, 4)
     assert len(depth_zero.layers_dicts) == 0
     assert len(features) == len(regs) == 1
-    assert z_values == (None, None)
+    assert z_values == []
     assert depth_zero.current_resolution == 4
     assert depth_zero._build_model(call_model=False) == [
         tf.TensorShape([None, 4, 4, 1]),
@@ -3569,11 +3571,11 @@ def run_self_tests() -> dict[str, str]:
         assert value.shape == (2, 4, 4, 1)
         # Validate tensor latent statistics for a KL-enabled reshaper.
         if add_kl:
-            assert latent[0].shape == latent[1].shape == (2, 16)
-        # Validate scalar placeholders when KL statistics are disabled.
+            assert len(latent) == 1
+            assert latent[0][0].shape == latent[0][1].shape == (2, 16)
+        # Keep disabled KL metadata empty.
         else:
-            assert latent[0].shape == latent[1].shape == tf.TensorShape([])
-            assert int(latent[0]) == int(latent[1]) == 2
+            assert latent == []
 
     regularized = DiffusionTransformer(
         depth=1, 

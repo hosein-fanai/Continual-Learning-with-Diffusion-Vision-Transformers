@@ -38,6 +38,23 @@ class ReplayStrategyTests(unittest.TestCase):
             expected_rng.sample([3, 4, 5], 2),
         )
 
+    def test_sampled_sparse_labels_keep_their_dtype(self) -> None:
+        """Sparse class IDs above 255 must not wrap during replay sampling."""
+
+        replay = ReplayBuffer(maxlen=2, seed=23)
+        labels = np.asarray([256, 511], dtype=np.int32)
+        replay.extend([
+            (np.asarray([1.], dtype=np.float32), labels[0]),
+            (np.asarray([2.], dtype=np.float32), labels[1]),
+        ])
+
+        sampled_x, sampled_labels = replay.sample_buffer_and_prepare_dataset(3)
+
+        self.assertEqual(sampled_x.dtype, np.float32)
+        np.testing.assert_array_equal(sampled_x, [[1.], [2.]])
+        self.assertEqual(sampled_labels.dtype, labels.dtype)
+        np.testing.assert_array_equal(sampled_labels, labels)
+
     def test_reservoir_matches_algorithm_r(self) -> None:
         """Reservoir insertion exactly matches the Algorithm R recurrence.
 
@@ -69,6 +86,18 @@ class ReplayStrategyTests(unittest.TestCase):
         replay.extend(stream)
         self.assertEqual(list(replay.buffer), expected)
         self.assertEqual(replay.state_dict()["items_seen"], len(stream))
+
+    def test_reservoir_state_continues_deterministically(self) -> None:
+        """Direct state restoration must reproduce subsequent replacements."""
+
+        source = ReplayBuffer(3, seed=11, strategy="reservoir")
+        source.extend(range(20))
+        restored = ReplayBuffer(3, strategy="reservoir")
+        restored.load_state_dict(source.state_dict())
+
+        source.extend(range(20, 25))
+        restored.extend(range(20, 25))
+        self.assertEqual(restored.state_dict(), source.state_dict())
 
     def test_reservoir_has_uniform_long_run_inclusion(self) -> None:
         """Each stream position approaches the common ``capacity / n`` rate.

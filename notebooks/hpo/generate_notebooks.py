@@ -90,6 +90,21 @@ NOTEBOOKS = {
         )
     },
     "continual": {
+        "cnn": (
+            20,
+            "Tune the convolutional classifier under sequential, cumulative, "
+            "or reservoir-replay continual protocols without a generator."
+        ),
+        "dnn": (
+            20,
+            "Tune the dense classifier under sequential, cumulative, or "
+            "reservoir-replay continual protocols on flattened inputs."
+        ),
+        "pretrained": (
+            20,
+            "Tune Xception transfer learning under sequential, cumulative, or "
+            "reservoir-replay continual protocols for CIFAR images."
+        ),
         "diffusion_transformer": (
             20, 
             "Tune a conditional DiffusionTransformer replay buffer for continual "
@@ -137,12 +152,6 @@ NOTEBOOKS = {
             "Tune a U-Net classifier replay buffer for continual learning. The space "
             "balances conditional synthesis, classifier depth, and retention while replay "
             "budgets use the shared candidate set."
-        ), 
-        "vae_classifier": (
-            20, 
-            "Tune a conditional VAEClassifier replay buffer over feature vectors. The "
-            "space balances reconstruction, KL regularization, and auxiliary classification "
-            "for stable replay across experiences."
         )
     }
 }
@@ -237,7 +246,7 @@ SEARCH_SPACES[TASK][MODEL]
     results = '''trials = study.trials_dataframe()
 best = (
     study.best_trials
-    if TASK == "joint"
+    if len(study.directions) > 1
     else {"value": study.best_value, "params": study.best_params}
 )
 trials, best, RESULTS_PATH
@@ -277,6 +286,24 @@ def main() -> None:
         None: Notebook files are written in place.
     """
 
+    from common.hpo import SEARCH_SPACES
+
+    declared = {
+        (task, model)
+        for task, models in NOTEBOOKS.items()
+        for model in models
+    }
+    supported = {
+        (task, model)
+        for task, models in SEARCH_SPACES.items()
+        for model in models
+    }
+    if declared != supported:
+        raise RuntimeError(
+            "Notebook/search-space mismatch: missing="
+            f"{sorted(supported - declared)}, extra={sorted(declared - supported)}"
+        )
+
     count = 0
     for task, models in NOTEBOOKS.items():
         task_dir = ROOT / task
@@ -290,9 +317,10 @@ def main() -> None:
             )
             count += 1
 
-    # Detect missing or duplicate experiment combinations in the generated matrix.
-    if count != 21:
-        raise RuntimeError(f"Expected 21 notebooks, generated {count}.")
+    if count != len(supported):
+        raise RuntimeError(
+            f"Expected {len(supported)} notebooks, generated {count}."
+        )
 
 
 # Generate the notebook matrix when this helper is invoked directly.

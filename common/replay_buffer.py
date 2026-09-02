@@ -6,15 +6,24 @@ import tensorflow as tf
 
 import numpy as np
 
-from collections import deque
+import json
+
+import os
 
 import random
+
+import uuid
+
+from pathlib import Path
 
 from operator import index
 
 from collections.abc import Iterable, Mapping, Sequence
+from collections import deque
 from numbers import Integral, Real
 from typing import Literal
+
+from common.recovery import _array_recovery_descriptor, fingerprint_state
 
 
 ReplayStrategy = Literal[
@@ -29,6 +38,262 @@ _STRATEGY_ALIASES = {
     "class_balanced": "class_balanced", 
     "class-balanced": "class_balanced"
 }
+
+
+def _sample_exact_rows(
+    x: np.ndarray, 
+    y: np.ndarray, 
+    count: int | None, 
+    rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select an exact seeded exposure count from aligned arrays."""
+
+    x = np.asarray(x)
+    y = np.asarray(y)
+    if len(x) != len(y):
+        raise ValueError("x and y must contain the same number of rows.")
+
+    if count is None:
+        return x, y
+
+    if count > 0 and len(x) == 0:
+        raise ValueError("cannot sample positive exposure from an empty task.")
+
+    if count == 0:
+        return x[:0], y[:0]
+
+    indices = rng.choice(len(x), size=count, replace=count > len(x))
+
+    return x[indices], y[indices]
+
+
+def _restore_replay_label_shape(
+    label_ids: np.ndarray,
+    reference_labels: np.ndarray
+) -> np.ndarray:
+    """Represent selected integer IDs like the loader's original labels."""
+
+    ids = np.asarray(label_ids, dtype="int64").reshape(-1)
+    reference = np.asarray(reference_labels)
+    if reference.ndim == 2 and reference.shape[1] > 1:
+        return np.eye(reference.shape[1], dtype=reference.dtype)[ids]
+
+    if reference.ndim > 1:
+        return ids[:, None].astype(reference.dtype, copy=False)
+
+    return ids.astype(reference.dtype, copy=False)
+
+
+def _balanced_generation_labels(
+    classes: Sequence[int],
+    count: int,
+    rng: np.random.Generator
+) -> np.ndarray:
+    """Allocate an exact generated-replay count nearly equally by class."""
+
+    classes = [int(class_id) for class_id in classes]
+
+    if count == 0:
+        return np.empty((0,), dtype="int64")
+
+    base, remainder = divmod(count, len(classes))
+    shuffled = list(np.asarray(classes)[rng.permutation(len(classes))])
+    labels = np.concatenate([
+        np.repeat(class_id, base + int(index < remainder))
+        for index, class_id in enumerate(shuffled)
+    ]).astype("int64", copy=False)
+    rng.shuffle(labels)
+
+    return labels
+
+
+def _cache_digest(value: np.ndarray) -> str:
+    """Hash one non-object array with dtype and shape metadata."""
+
+    return _array_recovery_descriptor(value)["sha256"]
+
+
+def _cached_replay_candidates(
+    x: np.ndarray, 
+    y: np.ndarray, 
+    cache_dir: str | None, 
+    cache_mode: str, 
+    task_index: int, 
+    old_classes: Sequence[int], 
+    seed: int | None, 
+    context_fingerprint: str | None = None
+) -> tuple[np.ndarray, np.ndarray, str | None]:
+    """Read or atomically write one matched replay candidate pool."""
+
+    cache_mode = str(cache_mode).lower()
+    if cache_mode not in ("off", "write", "read", "read_write"):
+        raise ValueError("replay_cache_mode must be off, write, read, or read_write.")
+    # Preserve the legacy no-I/O path exactly.
+    if cache_mode == "off":
+        return np.asarray(x), np.asarray(y), None
+    if cache_dir is None or not str(cache_dir).strip():
+        raise ValueError("replay_cache_dir is required when cache mode is enabled.")
+
+    path = _replay_cache_path(
+        cache_dir,
+        task_index,
+        old_classes,
+        len(y),
+        context_fingerprint=context_fingerprint,
+        create_root=True
+    )
+
+    should_read = cache_mode == "read" or (
+        cache_mode == "read_write" and path.exists()
+    )
+    if should_read:
+        if not path.is_file():
+            raise FileNotFoundError(f"Replay cache does not exist: {path}")
+
+        with np.load(path, allow_pickle=False) as archive:
+            cached_x = archive["x"]
+            cached_y = archive["y"]
+            metadata = json.loads(str(archive["metadata"].item()))
+        expected = {
+            "schema_version": 1,
+            "task_index": int(task_index),
+            "old_classes": [int(class_id) for class_id in old_classes],
+            "candidate_count": int(len(y)),
+            "seed": seed,
+            "context_fingerprint": context_fingerprint,
+        }
+
+        # Refuse a cache created for another stochastic stream or replay budget.
+        if any(metadata.get(key) != value for key, value in expected.items()):
+            raise ValueError("Replay cache metadata differs from this experiment.")
+        if metadata.get("x_sha256") != _cache_digest(cached_x) \
+        or metadata.get("y_sha256") != _cache_digest(cached_y):
+            raise ValueError("Replay cache checksum validation failed.")
+
+        return cached_x, cached_y, str(path)
+
+    x = np.asarray(x)
+    y = np.asarray(y)
+    # A retried write may reuse the exact authenticated pool left by an
+    # interrupted task, but it must never replace different candidate bytes.
+    if cache_mode == "write" and path.exists():
+        if not path.is_file():
+            raise FileExistsError(f"Replay cache path is not a file: {path}")
+
+        with np.load(path, allow_pickle=False) as archive:
+            cached_x = archive["x"]
+            cached_y = archive["y"]
+            metadata = json.loads(str(archive["metadata"].item()))
+
+        expected = {
+            "schema_version": 1,
+            "task_index": int(task_index),
+            "old_classes": [int(class_id) for class_id in old_classes],
+            "candidate_count": int(len(y)),
+            "seed": seed,
+            "context_fingerprint": context_fingerprint
+        }
+        # Authenticate metadata, stored checksums, and the regenerated pool.
+        valid_metadata = all(
+            metadata.get(key) == value
+            for key, value in expected.items()
+        )
+        valid_archive = (
+            metadata.get("x_sha256") == _cache_digest(cached_x)
+            and metadata.get("y_sha256") == _cache_digest(cached_y)
+        )
+        same_candidates = (
+            _cache_digest(cached_x) == _cache_digest(x)
+            and _cache_digest(cached_y) == _cache_digest(y)
+        )
+
+        if not (valid_metadata and valid_archive and same_candidates):
+            raise FileExistsError(
+                "Replay cache already exists with incompatible candidates: "
+                f"{path}"
+            )
+
+        return cached_x, cached_y, str(path)
+
+    metadata = {
+        "schema_version": 1,
+        "task_index": int(task_index),
+        "old_classes": [int(class_id) for class_id in old_classes],
+        "candidate_count": int(len(y)),
+        "seed": seed,
+        "context_fingerprint": context_fingerprint,
+        "x_sha256": _cache_digest(x),
+        "y_sha256": _cache_digest(y)
+    }
+    temporary = path.with_name(
+        "." + path.name + ".tmp-" + uuid.uuid4().hex
+    )
+
+    try:
+        with open(temporary, "xb") as stream:
+            np.savez_compressed(
+                stream,
+                x=x,
+                y=y,
+                metadata=np.asarray(json.dumps(metadata, sort_keys=True))
+            )
+        try:
+            # Publish by atomic no-replace hard link so concurrent treatments
+            # cannot overwrite the first complete authenticated candidate pool.
+            os.link(temporary, path)
+        except FileExistsError:
+            if not path.is_file():
+                raise FileExistsError(
+                    f"Replay cache path is not a file: {path}"
+                )
+            return _cached_replay_candidates(
+                x,
+                y,
+                cache_dir,
+                cache_mode,
+                task_index,
+                old_classes,
+                seed,
+                context_fingerprint,
+            )
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+    return x, y, str(path)
+
+
+def _replay_cache_path(
+    cache_dir: str, 
+    task_index: int, 
+    old_classes: Sequence[int], 
+    candidate_count: int, 
+    context_fingerprint: str | None = None, 
+    create_root: bool = False
+) -> Path:
+    """Return the condition-independent path for one replay candidate pool."""
+
+    root = Path(cache_dir)
+    if create_root:
+        root.mkdir(parents=True, exist_ok=True)
+    class_text = fingerprint_state([
+        int(class_id) for class_id in old_classes
+    ])[:16]
+    context_text = "legacy" if context_fingerprint is None else str(
+        context_fingerprint
+    )[:16]
+    path = root / (
+        f"context-{context_text}_task-{task_index + 1:04d}_"
+        f"classes-{class_text}_"
+        f"candidates-{int(candidate_count)}.npz"
+    )
+    legacy_classes = "-".join(str(int(value)) for value in old_classes)
+    legacy_path = root / (
+        f"context-{context_text}_task-{task_index + 1:04d}_"
+        f"classes-{legacy_classes}_"
+        f"candidates-{int(candidate_count)}.npz"
+    )
+    return legacy_path if legacy_path.exists() and not path.exists() else path
 
 
 class ReplayBuffer(object):
@@ -51,21 +316,21 @@ class ReplayBuffer(object):
     def __init__(
         self: ReplayBuffer, 
         maxlen: int | None, 
-        seed: int | float | str | bytes | bytearray | None = None, 
-        strategy: ReplayStrategy | str = "fifo"
+        strategy: ReplayStrategy | str = "fifo", 
+        seed: int | float | str | bytes | bytearray | None = None
     ) -> None:
         """Create an empty replay buffer with a local random generator.
 
         Args:
             maxlen (int | None): Capacity passed to ``deque``. Once full,
                 appending removes the oldest element; ``None`` is unbounded.
-            seed (int | float | str | bytes | bytearray | None): Seed for this
-                buffer's private generator. ``None`` uses system entropy and
-                no module-level random state is changed.
             strategy (ReplayStrategy | str): ``"fifo"`` (the exact historical
                 behavior), ``"reservoir"`` (uniform Algorithm R), or
                 ``"class_balanced"`` (balanced per-class reservoirs). The
                 alias ``"class-balanced"`` is accepted.
+            seed (int | float | str | bytes | bytearray | None): Seed for this
+                buffer's private generator. ``None`` uses system entropy and
+                no module-level random state is changed.
 
         Returns:
             None.
@@ -87,6 +352,7 @@ class ReplayBuffer(object):
         variable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
         self.sample_dtype = np.dtype(tf.as_dtype(variable_dtype).as_numpy_dtype)
         self._rng = random.Random(seed)
+
         self.clear()
 
     def __len__(self: ReplayBuffer) -> int:
@@ -166,7 +432,7 @@ class ReplayBuffer(object):
         # Unbounded buffers can retain every observation from each class.
         if self.maxlen is None:
             return {
-                label: self._class_seen[label] 
+                label: self._class_seen[label]
                 for label in self._class_order
             }
 
@@ -218,7 +484,7 @@ class ReplayBuffer(object):
                 kept_indices.update(self._rng.sample(indices, quota))
 
         self.buffer = deque(
-            (item for index, item in enumerate(items) if index in kept_indices), 
+            (item for index, item in enumerate(items) if index in kept_indices),
             maxlen=self.maxlen,
         )
 
@@ -308,18 +574,18 @@ class ReplayBuffer(object):
         """
 
         return {
-            "schema_version": 1, 
-            "maxlen": self.maxlen, 
-            "strategy": self.strategy, 
-            "items": list(self.buffer), 
-            "rng_state": self._rng.getstate(), 
+            "schema_version": 1,
+            "maxlen": self.maxlen,
+            "strategy": self.strategy,
+            "items": list(self.buffer),
+            "rng_state": self._rng.getstate(),
             # FIFO does not need a historical stream cursor; report its current
             # retained count so the common serialized invariant remains valid.
             "items_seen": len(self.buffer) if self.strategy == "fifo" \
-                        else self._items_seen, 
+                        else self._items_seen,
             "classes": [{
-                "label": label, 
-                "seen": self._class_seen[label], 
+                "label": label,
+                "seen": self._class_seen[label],
                 "priority": self._class_priorities[label]
             } for label in self._class_order]
         }
@@ -422,11 +688,11 @@ class ReplayBuffer(object):
             raise ValueError("Replay checkpoint contains an invalid class priority.")
 
         class_seen = {
-            record["label"]: int(record["seen"]) 
+            record["label"]: int(record["seen"])
             for record in classes
         }
         class_priorities = {
-            record["label"]: float(record["priority"]) 
+            record["label"]: float(record["priority"])
             for record in classes
         }
 
@@ -523,7 +789,7 @@ class ReplayBuffer(object):
         # Preserve the empty population without invoking random sampling.
         if len(list_) == 0:
             return []
-        
+
         # Return every item when the request exceeds the population.
         if len(list_) < num:
             return list(list_)
@@ -596,8 +862,9 @@ class ReplayBuffer(object):
         Returns:
             tuple[numpy.ndarray, numpy.ndarray]: ``(x_buffer, y_buffer)``.
             Samples are cast to the active policy's stable variable dtype and
-            labels to ``uint8``. Their leading dimension is the number sampled;
-            an empty buffer produces two arrays with shape ``(0,)``.
+            labels retain their stored dtype. Their leading dimension is the
+            number sampled; an empty buffer produces two arrays with shape
+            ``(0,)``.
         """
 
         x_buffer, y_buffer = [], []
@@ -606,7 +873,7 @@ class ReplayBuffer(object):
             y_buffer.append(y)
 
         x_buffer = np.array(x_buffer, dtype=self.sample_dtype)
-        y_buffer = np.array(y_buffer, dtype="uint8")
+        y_buffer = np.array(y_buffer)
 
         return x_buffer, y_buffer
 
@@ -630,42 +897,3 @@ class ReplayBuffer(object):
 
         items = self.sample(list(zip(*dataset)), num)
         self.extend(items)
-
-
-def run_self_tests() -> dict[str, str]:
-    """Smoke-test FIFO, deterministic sampling, and replay strategies.
-
-    Returns:
-        dict[str, str]: Passing marker for :class:`ReplayBuffer`.
-    """
-
-    bounded = ReplayBuffer(maxlen=3, seed=7)
-    bounded.extend([1, 2, 3, 4])
-    assert list(bounded.buffer) == [2, 3, 4]
-    duplicate = ReplayBuffer(maxlen=3, seed=7)
-    duplicate.extend([1, 2, 3, 4])
-    assert bounded.sample_buffer(2) == duplicate.sample_buffer(2)
-
-    pairs = ReplayBuffer(maxlen=4, seed=5)
-    pairs.extend([
-        (np.array([1, 2]), 3), 
-        (np.array([4, 5]), 6), 
-    ])
-    x_pairs, y_pairs = pairs.sample_buffer_and_prepare_dataset(99)
-    np.testing.assert_array_equal(x_pairs, np.array([[1, 2], [4, 5]], np.float32))
-    np.testing.assert_array_equal(y_pairs, np.array([3, 6], np.uint8))
-
-    reservoir = ReplayBuffer(3, seed=11, strategy="reservoir")
-    reservoir.extend(range(20))
-    restored = ReplayBuffer(3, strategy="reservoir")
-    restored.load_state_dict(reservoir.state_dict())
-    reservoir.extend(range(20, 25))
-    restored.extend(range(20, 25))
-    assert restored.state_dict() == reservoir.state_dict()
-
-    balanced = ReplayBuffer(4, seed=13, strategy="class_balanced")
-    balanced.extend(((index,), index % 2) for index in range(20))
-    labels = [item[1] for item in balanced.buffer]
-    assert labels.count(0) == labels.count(1) == 2
-
-    return {"ReplayBuffer": "passed"}

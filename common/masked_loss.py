@@ -133,31 +133,3 @@ class MaskedLoss(losses.Loss):
         """
 
         return {**super().get_config(), "loss_type": self.loss_type}
-
-
-def run_self_tests() -> dict[str, str]:
-    """Smoke-test prefix masking, both modes, and serialization.
-
-    Returns:
-        dict[str, str]: Passing marker for :class:`MaskedLoss`.
-    """
-
-    y_true = tf.constant([
-        [1.0, 3.0, 99.0], 
-        [2.0, 4.0, -99.0]
-    ], dtype=tf.float32)
-    y_pred = tf.constant([
-        [0.0, 1.0], 
-        [2.0, 2.0]
-    ], dtype=tf.float32)
-
-    mae = MaskedLoss()
-    tf.debugging.assert_near(mae(y_true, y_pred), tf.constant(1.25))
-    mse = MaskedLoss(loss_type="mse")
-    tf.debugging.assert_near(mse(y_true, y_pred), tf.constant(2.25))
-
-    serialized = tf.keras.losses.serialize(mae)
-    clone = tf.keras.losses.deserialize(serialized)
-    assert isinstance(clone, MaskedLoss) and clone.loss_type == "mae"
-
-    return {"MaskedLoss": "passed"}

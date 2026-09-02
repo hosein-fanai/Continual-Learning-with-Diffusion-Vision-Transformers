@@ -17,7 +17,7 @@ from diffusion.models.transformer.diffusion_transformer import (
 class _DistillationHarness:
     """Provide only the state used by the wrapper's KD loss helper."""
 
-    compute_distil_loss = DiffusionClassifier.compute_clf_distil_loss
+    compute_clf_distil_loss = DiffusionClassifier.compute_clf_distil_loss
     get_clf_results_dict = DiffusionClassifier.get_clf_results_dict
     _distillation_metric_mask = DiffusionClassifier._distillation_metric_mask
 
@@ -32,22 +32,24 @@ class _DistillationHarness:
         """
 
         self.dtype_policy = tf.keras.mixed_precision.Policy("float32")
-        self.distil_type = "soft"
-        self.distil_temperature = 1.
-        self.distil_scope = "current_and_replay"
+        self.clf_distil_type = "soft"
+        self.clf_distil_temperature = 1.
+        self.clf_distil_scope = "current_and_replay"
         self.scce_loss_fn = tf.keras.losses.sparse_categorical_crossentropy
         self.kld_loss_fn = tf.keras.losses.kullback_leibler_divergence
         self.network = SimpleNamespace(dynamic_num_classes=False)
         self.use_clf_kl_loss = False
         self.use_clf_ctr_loss = False
-        self.use_distil_loss = True
+        self.use_clf_distil_loss = True
         self.clf_acc_coef = 1.
         self.ctr_acc_coef = 0.
-        self.distil_acc_coef = 0.
+        self.clf_distil_acc_coef = 0.
         self.clf_loss_tracker = tf.keras.metrics.Mean(name="classifier_loss")
         self.clf_kl_loss_tracker = tf.keras.metrics.Mean(name="clf_kl_loss")
         self.clf_ctr_loss_tracker = tf.keras.metrics.Mean(name="clf_ctr_loss")
-        self.distil_loss_tracker = tf.keras.metrics.Mean(name="distil_loss")
+        self.clf_distil_loss_tracker = tf.keras.metrics.Mean(
+            name="clf_distil_loss"
+        )
         self.total_accuracy_tracker = tf.keras.metrics.SparseCategoricalAccuracy(
             name="total_accuracy"
         )
@@ -59,9 +61,9 @@ class _DistillationHarness:
                 name="clf_ctr_accuracy"
             )
         )
-        self.distil_accuracy_tracker = (
+        self.clf_distil_acc_tracker = (
             tf.keras.metrics.SparseCategoricalAccuracy(
-                name="distil_token_accuracy"
+                name="clf_distil_acc"
             )
         )
 
@@ -102,7 +104,7 @@ class DistillationControlTests(tf.test.TestCase):
             None: TensorFlow assertions establish exact compatibility.
         """
 
-        actual, returned_predictions = self.wrapper.compute_distil_loss(
+        actual, returned_predictions = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
         )
@@ -126,10 +128,10 @@ class DistillationControlTests(tf.test.TestCase):
         """
 
         temperature = 2.
-        actual, _ = self.wrapper.compute_distil_loss(
+        actual, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
-            distil_temperature=temperature,
+            clf_distil_temperature=temperature,
         )
         teacher_soft = tf.nn.softmax(
             tf.math.log(self.teacher) / temperature,
@@ -165,10 +167,10 @@ class DistillationControlTests(tf.test.TestCase):
             [.2, .6, .2],
             [.2, .3, .5],
         ])
-        actual, _ = self.wrapper.compute_distil_loss(
+        actual, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             expanded_student,
-            distil_temperature=temperature,
+            clf_distil_temperature=temperature,
         )
         teacher_soft = tf.nn.softmax(
             tf.math.log(self.teacher) / temperature,
@@ -197,11 +199,11 @@ class DistillationControlTests(tf.test.TestCase):
             None: Hard targets match teacher argmax cross-entropy.
         """
 
-        actual, _ = self.wrapper.compute_distil_loss(
+        actual, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
-            distil_type="hard",
-            distil_temperature=5.,
+            clf_distil_type="hard",
+            clf_distil_temperature=5.,
         )
         expected = tf.reduce_mean(
             tf.keras.losses.sparse_categorical_crossentropy(
@@ -228,22 +230,22 @@ class DistillationControlTests(tf.test.TestCase):
         classes = tf.constant([0, 2, 1])
         replay_mask = tf.constant([False, True, True])
 
-        old_classes, _ = self.wrapper.compute_distil_loss(
+        old_classes, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
             classes=classes,
-            distil_scope="old_classes",
+            clf_distil_scope="old_classes",
         )
-        replay_only, _ = self.wrapper.compute_distil_loss(
+        replay_only, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
             replay_mask=replay_mask,
-            distil_scope="replay_only",
+            clf_distil_scope="replay_only",
         )
-        all_examples, _ = self.wrapper.compute_distil_loss(
+        all_examples, _ = self.wrapper.compute_clf_distil_loss(
             self.teacher,
             self.student,
-            distil_scope="current_and_replay",
+            clf_distil_scope="current_and_replay",
         )
 
         self.assertAllClose(
@@ -267,10 +269,10 @@ class DistillationControlTests(tf.test.TestCase):
         """
 
         with self.assertRaisesRegex(ValueError, "replay_mask is required"):
-            self.wrapper.compute_distil_loss(
+            self.wrapper.compute_clf_distil_loss(
                 self.teacher,
                 self.student,
-                distil_scope="replay_only",
+                clf_distil_scope="replay_only",
             )
 
     def test_scoped_metrics_use_selected_example_counts(self) -> None:
@@ -291,25 +293,25 @@ class DistillationControlTests(tf.test.TestCase):
             "clf_loss": tf.constant(0.),
             "classes": classes,
             "classes_pred": predictions,
-            "clf_distil_preds": predictions,
+            "distil_classes": predictions,
             "use_total_loss": False,
             "use_kl_loss": False,
             "use_ctr_loss": False,
-            "use_distil_loss": True,
+            "use_clf_distil_loss": True,
         }
         self.wrapper.get_clf_results_dict(
             **common,
             clf_distil_loss=tf.constant(1.),
-            distil_acc_mask=first_mask,
+            clf_distil_acc_mask=first_mask,
         )
         results = self.wrapper.get_clf_results_dict(
             **common,
             clf_distil_loss=tf.constant(3.),
-            distil_acc_mask=second_mask,
+            clf_distil_acc_mask=second_mask,
         )
 
-        self.assertAllClose(results["distil_loss"], 2.5)
-        self.assertAllClose(results["distil_token_accuracy"], 1.)
+        self.assertAllClose(results["clf_distil_loss"], 2.5)
+        self.assertAllClose(results["clf_distil_acc"], 1.)
 
     def test_noise_distillation_uses_a_frozen_base_teacher(self) -> None:
         """Train a generator against an independent denoising snapshot.
@@ -338,7 +340,7 @@ class DistillationControlTests(tf.test.TestCase):
             test_network_name="raw",
             scheduler_name="linear",
             test_steps=2,
-            noise_distil_coef=1.,
+            noise_distil_loss_coef=1.,
             defer_teacher=True,
             seed=7,
         )
@@ -404,7 +406,7 @@ class DistillationControlTests(tf.test.TestCase):
             test_network_name="raw",
             scheduler_name="linear",
             test_steps=2,
-            noise_distil_coef=1.,
+            noise_distil_loss_coef=1.,
             teacher_network=teacher,
         )
         self.assertTrue(direct_student.defer_teacher)

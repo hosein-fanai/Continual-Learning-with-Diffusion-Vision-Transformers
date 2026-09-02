@@ -635,9 +635,9 @@ class UNetClassifier(UNet):
 
         Returns:
             tuple[tf.Tensor, tf.Tensor | None, list[tf.Tensor],
-            list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]]:
+            list[tf.Tensor | None], list[tuple[tf.Tensor, tf.Tensor]]]:
             Probabilities, condition, classifier features, auxiliary predictions,
-            and classifier latent mean/log variance. When distillation is
+            and classifier latent pairs. When distillation is
             enabled, the independent distillation probabilities are appended.
         """
 
@@ -691,12 +691,13 @@ class UNetClassifier(UNet):
             x, 
             training=training
         )
-        clf_z_vals = (None, None)
+        clf_z_vals_list = []
 
         # Produce classifier latent statistics at a variational terminal.
         if self.RESHAPER in terminal:
             x, z_mean, z_log_var = terminal[self.RESHAPER](x, training=training)
-            clf_z_vals = (z_mean, z_log_var)
+            if bool(self.clf_reshaper_kwargs.get("add_kl", False)):
+                clf_z_vals_list.append((z_mean, z_log_var))
 
         clf_features_list.append(x)
         clf_regs_list.append(None)
@@ -721,10 +722,10 @@ class UNetClassifier(UNet):
 
             return (
                 classes, cond, clf_features_list, clf_regs_list,
-                clf_z_vals, distil_classes
+                clf_z_vals_list, distil_classes
             )
 
-        return classes, cond, clf_features_list, clf_regs_list, clf_z_vals
+        return classes, cond, clf_features_list, clf_regs_list, clf_z_vals_list
 
     def call(
         self, 
@@ -763,7 +764,7 @@ class UNetClassifier(UNet):
                 min_depth=min_depth, 
             )
 
-        noises, cond, features_list, regs_list, z_vals = super().call(
+        noises, cond, features_list, regs_list, z_vals_list = super().call(
             inputs, 
             full_return=True, 
             training=training, 
@@ -787,11 +788,11 @@ class UNetClassifier(UNet):
                 "cond": cond, 
                 "features_list": features_list, 
                 "regs_list": regs_list, 
-                "z_vals": z_vals, 
+                "z_vals_list": z_vals_list, 
                 "clf_cond": class_outputs[1],
                 "clf_features_list": class_outputs[2],
                 "clf_regs_list": class_outputs[3],
-                "clf_z_vals": class_outputs[4],
+                "clf_z_vals_list": class_outputs[4],
             })
         # Expose the independent distillation distribution in every mode.
         if len(class_outputs) > 5:
@@ -1074,9 +1075,9 @@ def run_self_tests() -> dict[str, str]:
     )
     outputs = model(inputs, full_return=True, training=False)
     assert set(outputs) == {
-        "noises", "cond", "features_list", "regs_list", "z_vals", 
+        "noises", "cond", "features_list", "regs_list", "z_vals_list", 
         "classes", "clf_cond", "clf_features_list", "clf_regs_list", 
-        "clf_z_vals", 
+        "clf_z_vals_list", 
     }
     assert outputs["noises"].shape == inputs[0].shape
     assert outputs["classes"].shape == (2, 2)
@@ -1154,8 +1155,8 @@ def run_self_tests() -> dict[str, str]:
         clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5},
     )
     variational_output = variational(inputs, full_return=True, training=False)
-    assert variational_output["clf_z_vals"][0].shape == (2, 1)
-    assert variational_output["clf_z_vals"][1].shape == (2, 1)
+    assert variational_output["clf_z_vals_list"][0][0].shape == (2, 1)
+    assert variational_output["clf_z_vals_list"][0][1].shape == (2, 1)
 
     restored = UNetClassifier.from_config(model.get_config())
     assert restored(inputs)["classes"].shape == (2, 2)

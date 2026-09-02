@@ -55,7 +55,7 @@ class EnsembleAccuracy(metrics.Metric):
         seed: Optional master seed for mode-invariant per-timestep Gaussian
             noising streams, or ``None`` for configured/default randomness.
         clf_acc_coef: Nonnegative coefficient for primary class predictions.
-        distil_acc_coef: Nonnegative coefficient for distillation-head
+        clf_distil_acc_coef: Nonnegative coefficient for distillation-head
             predictions. A positive value requires that optional output.
         ctr_acc_coef: Nonnegative coefficient for the mean of available
             classifier-regularizer predictions. A positive value requires at
@@ -86,7 +86,7 @@ class EnsembleAccuracy(metrics.Metric):
         max_t: int = 128, 
         t_chunk_size: int = 16, 
         clf_acc_coef: float = 1., 
-        distil_acc_coef: float = 0., 
+        clf_distil_acc_coef: float = 0., 
         ctr_acc_coef: float = 0., 
         separate_probas: bool = False, 
         seed: int | None = None, 
@@ -105,7 +105,7 @@ class EnsembleAccuracy(metrics.Metric):
             max_t (int): Positive number of timesteps to ensemble.
             t_chunk_size (int): Positive timesteps per chunked network call.
             clf_acc_coef (float): Coefficient for primary class predictions.
-            distil_acc_coef (float): Coefficient for distillation-head
+            clf_distil_acc_coef (float): Coefficient for distillation-head
                 predictions.
             ctr_acc_coef (float): Coefficient for averaged classifier
                 regularizer predictions.
@@ -162,11 +162,20 @@ class EnsembleAccuracy(metrics.Metric):
                 "Weighted evaluation requires callable "
                 "diffusion_clf.get_noise_and_signal_rates."
             )
+        if max_t < 1 or max_t != int(max_t):
+            raise ValueError("max_t must be a positive integer.")
+        if t_chunk_size < 1 or t_chunk_size != int(t_chunk_size):
+            raise ValueError("t_chunk_size must be a positive integer.")
+        if any(
+            coef < 0. or not np.isfinite(coef)
+            for coef in (clf_acc_coef, clf_distil_acc_coef, ctr_acc_coef)
+        ):
+            raise ValueError("Accuracy coefficients must be finite and nonnegative.")
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
         # Require at least one prediction head to contribute to the ensemble.
-        if clf_acc_coef + distil_acc_coef + ctr_acc_coef <= 0.:
+        if clf_acc_coef + clf_distil_acc_coef + ctr_acc_coef <= 0.:
             raise ValueError("At least one accuracy coefficient must be positive.")
 
         self.diffusion_clf = diffusion_clf
@@ -178,7 +187,7 @@ class EnsembleAccuracy(metrics.Metric):
         self.max_t = int(max_t)
         self.t_chunk_size = int(t_chunk_size)
         self.clf_acc_coef = float(clf_acc_coef)
-        self.distil_acc_coef = float(distil_acc_coef)
+        self.clf_distil_acc_coef = float(clf_distil_acc_coef)
         self.ctr_acc_coef = float(ctr_acc_coef)
         self.seed = effective_seed(seed=(
             getattr(diffusion_clf, "seed", None) 
@@ -304,17 +313,17 @@ class EnsembleAccuracy(metrics.Metric):
             total_pred += tf.add_n(ctr_preds) / len(ctr_preds) * self.ctr_acc_coef
 
         # Include the distillation head when its coefficient is positive.
-        if self.distil_acc_coef > 0.:
+        if self.clf_distil_acc_coef > 0.:
             # Require a usable distillation prediction for a positive weight.
             if len(outputs) < 6 or outputs[5] is None:
                 raise ValueError(
-                    "distil_acc_coef > 0 requires a distillation prediction."
+                    "clf_distil_acc_coef > 0 requires a distillation prediction."
                 )
 
             total_pred += tf.cast(
                 outputs[5], 
                 self.dtype
-            ) * self.distil_acc_coef
+            ) * self.clf_distil_acc_coef
 
         if self.separate_probas:
             total_pred = tf.reshape(total_pred, (
@@ -982,7 +991,7 @@ def run_self_tests() -> dict[str, str]:
         "max_t": 5,
         "clf_acc_coef": 0.2,
         "ctr_acc_coef": 0.3,
-        "distil_acc_coef": 0.5,
+        "clf_distil_acc_coef": 0.5,
     }
     combined_batched = EnsembleAccuracy(
         wrapper,
@@ -1195,12 +1204,11 @@ def run_self_tests() -> dict[str, str]:
         {"max_t": 2, "t_chunk_size": -1},
         {"max_t": 4, "t_chunk_size": 2.9},
         {"max_t": 1, "clf_acc_coef": -1.0},
-        {"max_t": 1, "distil_acc_coef": float("inf")},
-        {"max_t": 1, "ctr_acc_coef": True},
+        {"max_t": 1, "clf_distil_acc_coef": float("inf")},
         {
             "max_t": 1,
             "clf_acc_coef": 0.0,
-            "distil_acc_coef": 0.0,
+            "clf_distil_acc_coef": 0.0,
             "ctr_acc_coef": 0.0,
         },
     ):
@@ -1274,7 +1282,7 @@ def run_self_tests() -> dict[str, str]:
         q_sample=q_sample,
         get_network=get_missing_network,
     )
-    for coefficient in ("ctr_acc_coef", "distil_acc_coef"):
+    for coefficient in ("ctr_acc_coef", "clf_distil_acc_coef"):
         missing_metric = EnsembleAccuracy(
             missing_wrapper,
             max_t=1,

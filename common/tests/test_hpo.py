@@ -28,6 +28,7 @@ from common.hpo import (
     _write_study_spec,
     run_hpo,
 )
+from common.learner import _continual_metrics
 from common.recovery import fingerprint_state
 from common.recovery import save_task_checkpoint
 from common.utils import save_feature_split_metadata, save_samples
@@ -788,8 +789,8 @@ class HpoConfigTests(unittest.TestCase):
         )
         self.assertEqual(partial.continually_learn.baseline, "sequential")
         self.assertIn("continual_protocol_multiclass", partial_trial.params)
-        with self.assertRaisesRegex(ValueError, "mathematically undefined"):
-            _build_trial_config(
+        for metric in ("average_forgetting", "backward_transfer"):
+            singleton_metric = _build_trial_config(
                 _SuggestionTrial(),
                 "continual",
                 "cnn",
@@ -797,10 +798,11 @@ class HpoConfigTests(unittest.TestCase):
                 epochs=1,
                 seed=3,
                 results_path="results/hpo",
-                class_num=4,
+                class_num=3,
                 task_size=1,
-                objective_metrics="average_forgetting",
+                objective_metrics=metric,
             )
+            self.assertEqual(singleton_metric.hpo["objective_metrics"], [metric])
 
     def test_reverse_sampling_is_tuned_only_when_it_affects_replay(self) -> None:
         """Exclude unused reverse-process dimensions from loss objectives."""
@@ -931,23 +933,26 @@ class HpoConfigTests(unittest.TestCase):
             epochs=1,
             seed=3,
             results_path="results/hpo",
-            model_overrides={"reshaper_kwargs": {"add_kl": True}},
+            model_overrides={
+                "reshaper_kwargs": {"add_kl": True},
+                "use_skip_connections": True,
+            },
             wrapper_overrides={"swap_noise_image": True},
         )
         self.assertTrue(unet.model.wrapper_kwargs["swap_noise_image"])
 
-        with self.assertRaisesRegex(ValueError, "unsupported"):
-            _build_trial_config(
-                _SuggestionTrial(),
-                "joint",
-                "dit_classifier",
-                "mnist",
-                epochs=1,
-                seed=3,
-                results_path="results/hpo",
-                model_overrides=dit_vae_overrides,
-                wrapper_overrides={"swap_noise_image": True},
-            )
+        classifier = _build_trial_config(
+            _SuggestionTrial(),
+            "joint",
+            "dit_classifier",
+            "mnist",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            model_overrides=dit_vae_overrides,
+            wrapper_overrides={"swap_noise_image": True},
+        )
+        self.assertTrue(classifier.model.wrapper_kwargs["swap_noise_image"])
 
         with self.assertRaisesRegex(ValueError, "noise_loss_coef"):
             _build_trial_config(
@@ -1011,24 +1016,143 @@ class HpoConfigTests(unittest.TestCase):
                 )
             self.assertFalse(results_path.exists())
 
-    def test_run_hpo_rejects_undefined_objective_before_writing(self) -> None:
-        """Preflight singleton forgetting objectives before study creation."""
+    def test_stochastic_u_vae_hpo_templates_construct(self) -> None:
+        """Keep every U-VAE classifier skip behind a sampled latent."""
+
+        import tensorflow as tf
+        from diffusion.models.transformer.di_t_classifier import DiTClassifier
+
+        class ArchitectureTrial(_SuggestionTrial):
+            """Force one classifier architecture while accepting other choices."""
+
+            def __init__(self, architecture: str) -> None:
+                super().__init__()
+                self.architecture = architecture
+
+            def suggest_categorical(
+                self, name: str, choices: list[object]
+            ) -> object:
+                """Return the requested architecture or a valid default choice."""
+
+                if name.startswith("classifier_architecture"):
+                    value = self.architecture
+                elif name == "feature_aggregation":
+                    value = "last"
+                elif name == "classifier_only_cls_token":
+                    value = False
+                elif name == "clf_latent_dim_ratio":
+                    value = 0.125
+                else:
+                    value = choices[0]
+                self.params[name] = value
+                return value
+
+        inputs = (
+            tf.zeros((2, 8, 8, 1)),
+            tf.zeros((2,), tf.int32),
+            tf.constant([1, 2], tf.uint8),
+        )
+        for architecture, latent_count in (
+            ("u_vae", 2),
+            ("u_multilevel_vae", 3),
+        ):
+            network_kwargs = {
+                "num_classes": 2,
+                "use_cfg": True,
+                "timesteps": 4,
+                "image_size": 8,
+                "channels": 1,
+                "patch_size": 2,
+                "dim": 8,
+                "depth": 1,
+                "mha_num_heads": 1,
+                "vit_block_mlp_ratio": 1.,
+            }
+            _suggest_joint(
+                ArchitectureTrial(architecture),
+                "dit_classifier",
+                network_kwargs,
+                {},
+                image_size=8,
+            )
+            network = DiTClassifier(**network_kwargs)
+            outputs = network(inputs, full_return=True, training=False)
+            self.assertEqual(len(outputs["clf_z_vals_list"]), latent_count)
+            unflatten_ids = {
+                depth for depth, reshape_type in
+                network.clf_reshaper_ids_dict.items()
+                if reshape_type == "unflatten"
+            }
+            for depth, sources in network.clf_connection_ids_dict.items():
+                if depth <= network.clf_depth:
+                    self.assertTrue(set(sources) & unflatten_ids)
+
+    def test_run_hpo_accepts_singleton_transfer_objectives(self) -> None:
+        """Later task cells make singleton-first CL objectives computable."""
+
+        accuracy_matrix = [
+            [np.nan, np.nan, np.nan],
+            [0.80, 0.75, np.nan],
+            [0.65, 0.70, 0.85],
+        ]
+        metrics = _continual_metrics(accuracy_matrix)
+        self.assertAlmostEqual(metrics["average_forgetting"], 0.10)
+        self.assertAlmostEqual(metrics["backward_transfer"], -0.05)
 
         with tempfile.TemporaryDirectory() as temporary:
             results_path = Path(temporary) / "hpo"
-            with self.assertRaisesRegex(ValueError, "mathematically undefined"):
-                run_hpo(
+            trial_results = Path(temporary) / "trial-results"
+            study = _Study(_RuntimeTrial(number=0))
+            builder_kwargs: dict[str, object] = {}
+
+            def fake_builder(*args: object, **kwargs: object) -> Config:
+                """Return the minimal configured trial used by this regression."""
+
+                del args
+                builder_kwargs.update(kwargs)
+                return Config(
+                    model={"name": "cnn"},
+                    training={"task": "continual"},
+                    hpo={"use_ensemble_accuracy": False},
+                )
+
+            def fake_main(*args: object, **kwargs: object) -> dict[str, object]:
+                """Return staged continual metrics without running training."""
+
+                del args, kwargs
+                trial_results.mkdir(parents=True, exist_ok=True)
+                return {
+                    "history": {},
+                    "evaluations": {
+                        "validation_continual_metrics": metrics,
+                    },
+                    "results_path": str(trial_results),
+                }
+
+            with patch("optuna.create_study", return_value=study), \
+                    patch("common.hpo._build_trial_config", side_effect=fake_builder), \
+                    patch("common.hpo.main", side_effect=fake_main), \
+                    patch("common.hpo.tf.keras.backend.clear_session"), \
+                    patch("common.hpo.gc.collect"):
+                returned = run_hpo(
                     "continual",
                     "cnn",
                     dataset_name="mnist",
                     n_trials=1,
                     epochs=1,
                     results_path=str(results_path),
-                    class_num=4,
+                    class_num=3,
                     task_size=1,
-                    objective_metrics="average_forgetting",
+                    objective_metrics=(
+                        "average_forgetting",
+                        "backward_transfer",
+                    ),
                 )
-            self.assertFalse(results_path.exists())
+
+            self.assertIs(returned, study)
+            self.assertEqual(builder_kwargs["class_num"], 3)
+            self.assertEqual(builder_kwargs["task_size"], 1)
+            np.testing.assert_allclose(study.value, [0.10, -0.05])
 
     def test_builder_sets_runtime_continual_and_objective_metadata(self) -> None:
         """Exercise the test helper named test_builder_sets_runtime_continual_and_objective_metadata.
@@ -1540,16 +1664,16 @@ class HpoConfigTests(unittest.TestCase):
             "test_steps": [10],
             "snapshot_network_name": ["ema"],
             "continual_strategy_multiclass": ["generative_replay"],
-            "distil_scope_generative_replay": ["replay_only"],
+            "clf_distil_scope_generative_replay": ["replay_only"],
             "use_noise_distillation": [True],
-            "noise_distil_coef": {
+            "noise_distil_loss_coef": {
                 "low": 0.1,
                 "high": 0.2,
                 "log": True,
             },
             "wrapper_name": ["diffusion_classifier"],
-            "distil_type": ["soft"],
-            "distil_temperature": {
+            "clf_distil_type": ["soft"],
+            "clf_distil_temperature": {
                 "low": 2.,
                 "high": 2.1,
                 "log": True,
@@ -1595,18 +1719,18 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(config.continually_learn.replay_budget_mode,
                          "fixed_total")
         self.assertEqual(config.continually_learn.snapshot_network_name, "ema")
-        self.assertEqual(config.model.wrapper_kwargs["distil_type"], "soft")
+        self.assertEqual(config.model.wrapper_kwargs["clf_distil_type"], "soft")
         self.assertGreaterEqual(
-            config.model.wrapper_kwargs["distil_temperature"], 2.
+            config.model.wrapper_kwargs["clf_distil_temperature"], 2.
         )
         self.assertLessEqual(
-            config.model.wrapper_kwargs["distil_temperature"], 2.1
+            config.model.wrapper_kwargs["clf_distil_temperature"], 2.1
         )
         self.assertEqual(
-            config.model.wrapper_kwargs["distil_scope"], "replay_only"
+            config.model.wrapper_kwargs["clf_distil_scope"], "replay_only"
         )
         self.assertGreater(
-            config.model.wrapper_kwargs["noise_distil_coef"], 0.
+            config.model.wrapper_kwargs["noise_distil_loss_coef"], 0.
         )
         self.assertEqual(trial.params["model_family"], "unet_classifier")
         self.assertIn(
@@ -1614,11 +1738,11 @@ class HpoConfigTests(unittest.TestCase):
             trial.params,
         )
         self.assertIn(
-            "unet_classifier.distil_temperature",
+            "unet_classifier.clf_distil_temperature",
             trial.params,
         )
         self.assertIn(
-            "unet_classifier.distil_scope_generative_replay",
+            "unet_classifier.clf_distil_scope_generative_replay",
             trial.params,
         )
         self.assertTrue(all(

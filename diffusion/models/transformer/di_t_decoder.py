@@ -991,7 +991,7 @@ class DiTDecoder(DiffusionTransformer):
             self._split_context_inputs(
                 inputs, encoder_cond, encoder_features_list
             )
-        x, cond, features, regs, z_vals = self.decode(
+        x, cond, features, regs, z_vals_list = self.decode(
             decoder_inputs, 
             encoder_cond, 
             encoder_features, 
@@ -1009,7 +1009,7 @@ class DiTDecoder(DiffusionTransformer):
                 "cond": cond, 
                 "features_list": features, 
                 "regs_list": regs, 
-                "z_vals": z_vals, 
+                "z_vals_list": z_vals_list, 
                 "decoder_cond": cond, 
                 "decoder_features_list": features, 
                 "encoder_cond": encoder_cond, 
@@ -1122,7 +1122,8 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             tuple: Normally ``(tokens, decoder_cond, features_list)``. With
             ``full_return=True``, returns ``(tokens, decoder_cond,
-            features_list, regs_list, (z_mean, z_log_var))``. Returned tokens
+            features_list, regs_list, z_vals_list)``. Each ``z_vals_list`` item is one
+            mean/log-variance pair. Returned tokens
             exclude optional class and distillation tokens, while retained
             features keep them in class, distillation, patch order.
 
@@ -1136,6 +1137,10 @@ class DiTDecoder(DiffusionTransformer):
 
 
         decoder_input, times, labels = inputs
+        latent_inputs = list(decoder_input) if min_depth > 0 and isinstance(
+            decoder_input, (list, tuple)
+        ) else [decoder_input]
+        batch_input = latent_inputs[0]
         # Build decoder-owned conditions when separate conditioning is enabled.
         if self.decoder_separate_cond:
             cond, time_embeds, label_embeds = self.embed_conditions(
@@ -1154,7 +1159,7 @@ class DiTDecoder(DiffusionTransformer):
         # Supply neutral conditioning when both encoder and decoder omit conditions.
         if cond is None:
             cond = tf.zeros(
-                (tf.shape(decoder_input)[0], self.cond_dim), 
+                (tf.shape(batch_input)[0], self.cond_dim),
                 dtype=self.compute_dtype, 
             )
 
@@ -1202,7 +1207,7 @@ class DiTDecoder(DiffusionTransformer):
                 )
         # Resume from an already embedded decoder feature.
         else:
-            x = decoder_input
+            x = batch_input
 
         # Compute labels solely for a depth-zero label regularizer when needed.
         if label_embeds is None and self.label_embedder is not None and \
@@ -1215,7 +1220,8 @@ class DiTDecoder(DiffusionTransformer):
 
         features_list = [None] * min_depth + [x]
         regs_list = [depth_zero_reg] + [None] * min_depth
-        z_vals = (None, None)
+        z_vals_list = []
+        latent_index = 1
         for i, layers_dict in enumerate(self.layers_dicts):
             # Stop before the exclusive maximum decoder depth.
             if i == max_depth:
@@ -1297,9 +1303,15 @@ class DiTDecoder(DiffusionTransformer):
                 (x, cond), training=training
             ) if self.US in layers_dict else x
 
-            x, x_mean, x_log_var = layers_dict[self.R](
-                x, training=training
-            ) if self.R in layers_dict else (x, None, None)
+            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
+            if self.R in layers_dict and min_depth > 0 and is_flatten:
+                x = latent_inputs[latent_index]
+                latent_index += 1
+                x_mean, x_log_var = None, None
+            else:
+                x, x_mean, x_log_var = layers_dict[self.R](
+                    x, training=training
+                ) if self.R in layers_dict else (x, None, None)
             reg = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
                     x, 
@@ -1312,12 +1324,10 @@ class DiTDecoder(DiffusionTransformer):
             features_list.append(x)
             regs_list.append(reg)
             # Preserve latent statistics emitted by a flattening reshaper.
-            if x_mean is not None and \
-            self.reshaper_ids_dict.get(i + 1, "unflatten") == "flatten":
-                z_vals = (x_mean, x_log_var) if z_vals[0] is None else (
-                    tf.concat((z_vals[0], x_mean), axis=-1),
-                    tf.concat((z_vals[1], x_log_var), axis=-1),
-                )
+            if x_mean is not None and is_flatten and bool(
+                self.reshaper_kwargs.get("add_kl", False)
+            ):
+                z_vals_list.append((x_mean, x_log_var))
 
         # Remove both prefix tokens only from the returned decoder patch stream.
         prefix_tokens_num = int(self.cls_token_type is not None) + \
@@ -1328,7 +1338,7 @@ class DiTDecoder(DiffusionTransformer):
 
         # Return decoder regularizers and latent values only on request.
         if full_return:
-            return x, cond, features_list, regs_list, z_vals
+            return x, cond, features_list, regs_list, z_vals_list
         return x, cond, features_list
 
     def encode(
@@ -1346,7 +1356,7 @@ class DiTDecoder(DiffusionTransformer):
         tf.Tensor, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Return the standard five-part decoder representation.
 
@@ -1362,7 +1372,7 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             tuple: ``(tokens, decoder_cond, decoder_features, regs_list,
-            (z_mean, z_log_var))``.
+            z_vals_list)``.
         """
 
         decoder_inputs, encoder_cond, encoder_features = \
@@ -1408,7 +1418,7 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             tf.Tensor | tuple: Predicted image/noise, or ``(noises, cond,
-            features_list, regs_list, z_vals)`` when ``full_return=True``.
+            features_list, regs_list, z_vals_list)`` when ``full_return=True``.
         """
 
         outputs = self.call(
@@ -1427,7 +1437,7 @@ class DiTDecoder(DiffusionTransformer):
                 outputs["cond"], 
                 outputs["features_list"], 
                 outputs["regs_list"], 
-                outputs["z_vals"], 
+                outputs["z_vals_list"], 
             )
         return outputs["noises"]
 
@@ -1708,7 +1718,7 @@ def run_self_tests() -> dict[str, str]:
         full_return=True, training=False,
     )
     assert set(legacy) == {
-        "noises", "cond", "features_list", "regs_list", "z_vals", 
+        "noises", "cond", "features_list", "regs_list", "z_vals_list", 
         "decoder_cond", "decoder_features_list", "encoder_cond", 
         "encoder_features_list", 
     }
@@ -1847,7 +1857,8 @@ def run_self_tests() -> dict[str, str]:
     )
     assert bottleneck_full[0].shape == (2, 4, 4, 1)
     assert bottleneck_full[3][-1].shape == (2, 2)
-    assert bottleneck_full[4][0].shape[0] == 2
+    assert bottleneck_full[4][0][0].shape[0] == 2
+    assert bottleneck_full[4][0][1].shape == bottleneck_full[4][0][0].shape
     assert bottleneck._get_last_grid_size(
         0, bottleneck.layers_dicts, bottleneck.grid_size
     ) is None

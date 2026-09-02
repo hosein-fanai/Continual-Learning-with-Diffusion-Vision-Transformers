@@ -22,6 +22,9 @@ intentionally empty in version control.
 | Classification | [cnn](classification/cnn.ipynb) | Convolutional baseline | Images | 30 |
 | Classification | [dnn](classification/dnn.ipynb) | Dense baseline | Flattened images | 30 |
 | Classification | [pretrained](classification/pretrained.ipynb) | Xception transfer learning | Images | 30 |
+| Continual learning | [cnn](continual/cnn.ipynb) | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
+| Continual learning | [dnn](continual/dnn.ipynb) | Classifier-only sequential/cumulative/replay baseline | Flattened images | 20 |
+| Continual learning | [pretrained](continual/pretrained.ipynb) | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
 | Continual learning | [diffusion_transformer](continual/diffusion_transformer.ipynb) | Conditional replay buffer | Images | 20 |
 | Continual learning | [dit_decoder](continual/dit_decoder.ipynb) | Conditional replay buffer | Images | 20 |
 | Continual learning | [dit_encoder_decoder](continual/dit_encoder_decoder.ipynb) | Conditional replay buffer | Images | 20 |
@@ -30,7 +33,18 @@ intentionally empty in version control.
 | Continual learning | [dit_classifier](continual/dit_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
 | Continual learning | [dit_encoder_decoder_classifier](continual/dit_encoder_decoder_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
 | Continual learning | [unet_classifier](continual/unet_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
-| Continual learning | [vae_classifier](continual/vae_classifier.ipynb) | Joint-model replay buffer | Feature vectors | 20 |
+
+The API-only continual model name `diffusion_classifier` searches those last
+three diffusion-classifier families in one conditional study. Family-specific
+parameter names are prefixed, so Optuna can compare DiT, encoder-decoder DiT,
+and U-Net candidates without incompatible conditional distributions.
+
+Continual `vae_classifier` search is intentionally omitted. Its attached
+classifier is a fixed full-class, raw-input branch independent of the VAE
+latent path, so tuning its loss weight would neither define a growing
+class-incremental head nor improve the replay representation. Continual VAE
+studies instead use the ordinary conditional VAE with the learner's expanding
+external DNN.
 
 ## Execution notes
 
@@ -51,11 +65,19 @@ intentionally empty in version control.
        epochs=EPOCHS,
        seed=SEED,
        results_path=RESULTS_PATH,
+       # Use model_name="diffusion_classifier" to search every diffusion
+       # classifier family. Enable the previous-task teacher lifecycle with:
+       use_distillation=True,
+       # Optional bounded plumbing-study controls (sealed in study_spec.json):
+       max_train_samples=512,
+       max_val_samples=256,
+       n_startup_trials=2,
+       search_space_overrides={"timesteps": [250], "test_steps": [10, 20]},
        # Diffusion-classifier joint/continual studies only:
        use_ensemble_accuracy=False,
        ensemble_accuracy_kwargs={"weighted": True, "max_t": 128},
        # Optional runtime-only teacher for the same classifier families:
-       # teacher_network=teacher,
+       # teacher_model=teacher,
        # Optional diffusion curriculum:
        fit_method="fit_progressively",
        fit_kwargs={
@@ -72,18 +94,53 @@ intentionally empty in version control.
    `results/hpo/<task>/<model>/<dataset>/` by default.
 
 Each successful trial saves its resolved YAML config, final model weights,
-history and evaluation CSV files, plots, a GIF, and TensorBoard events. The
+history and evaluation CSV files, plots, available trajectory GIFs, and
+TensorBoard events. The
 TensorBoard event suffix lists every sampled value in alphabetical parameter
 name order; the complete name-to-value mapping is also stored in the trial
 config and TensorBoard text summary. Compact logs live below
 `results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
 gives a study-level table.
 
+Optuna feedback comes from the post-training validation evaluation of the same
+saved/restored model state, not from a historical best or the last row of the
+pre-restoration Keras history. Diffusion objectives use the configured raw or
+EMA branch; ordinary classifiers and VAEs use `valset_eval`. The semantic
+defaults are generation loss, a generation/accuracy Pareto pair for joint
+models, validation accuracy for standalone classifiers, and validation
+`final_average_accuracy` for continual studies. `objective_metrics` can name
+other scalar validation metrics with matching or inferred directions. Test-set
+metrics are never HPO feedback, and trials are scored only after the complete
+fit; there is no intermediate pruning contract.
+
+Reverse-process `test_steps`, CFG scale, and eta are sampled only in continual
+diffusion studies, where generated examples enter later replay tasks and can
+change the objective. Generation and joint studies optimize validation losses,
+so these otherwise inert dimensions are fixed to at most 50 steps, CFG 4, and
+eta 0. Final visualization settings remain reporting choices rather than HPO
+parameters.
+
+`swap_noise_image=True` is an immutable wrapper override for direct x0/VAE
+prediction. These studies fix `image_loss_coef=0`, tune a positive
+`kl_loss_coef` unless the override supplies one, and optimize reconstruction
+plus weighted main-latent KL. They do not request denoising GIFs. The immutable
+main-network topology must also be sampleable: DiT, DiT encoder-decoder, and
+DiT encoder-decoder-classifier studies require
+`model_overrides={"vit_block_ids": [1], "reshaper_ids_dict": {1: "flatten",
+2: "unflatten"}, "reshaper_kwargs": {"add_kl": True}}`; U-Net and U-Net
+classifier studies require
+`model_overrides={"reshaper_kwargs": {"add_kl": True}}`. Standalone
+`dit_classifier` and `dit_decoder` x0 studies are rejected because their raw
+call contracts cannot resume main-latent decoding. Noise distillation is also
+incompatible with x0 prediction.
+
 DiT classifier studies sample `classifier_architecture` from `linear`,
 `local_mixer`, `connection`, `cross_attention`, `cross_attention_decoder`,
 `cross_attention_aggregation`, `u_shape`, and `u_vae`. Each choice uses the
 model's existing classifier-layer arguments; `u_vae` additionally samples a
-positive `kl_loss_coef` for its KL-enabled variational bottleneck.
+positive `kl_loss_coef` for its KL-enabled variational bottleneck. On grids
+divisible by four, `u_multilevel_vae` adds two independent variational scales;
+it is not advertised as a conditional-prior hierarchical VAE.
 
 The zero-inclusive `ctr_loss_coef` search applies to joint DiT and U-Net
 classifiers. A positive value adds a regularizer at the final classifier depth.
@@ -91,7 +148,33 @@ It uses normal labels without a teacher; teacher-backed studies can select
 `normal`, `distil`, or `both`, with hard or soft teacher targets for the latter
 two modes. Accuracy coefficients are balanced across the active classifier,
 distillation, and regularizer predictions through `clf_acc_coef`,
-`distil_acc_coef`, and `ctr_acc_coef`.
+`clf_distil_acc_coef`, and `ctr_acc_coef`.
+
+With `task_size=1`, the schedule starts from one class and then adds one class
+per task; `task_size=2` starts from two and adds two, including a shorter final
+task when necessary. A one-output softmax has trivial 100% accuracy and zero
+classification gradient, so singleton classifier searches exclude a new-only
+sequential protocol unless positive replay exists. The first acquisition row
+is reported as unavailable. Consequently, forgetting and backward-transfer
+cannot be HPO objectives for a singleton first task; final validation average
+accuracy remains well defined.
+
+Dataset, split, class/task schedule, seed, epoch/trial budget, and objective are
+sealed experimental controls rather than hyperparameters: changing them across
+trials would make validation scores incomparable. The umbrella continual
+diffusion-classifier space instead searches the model family, architecture,
+optimizer, diffusion/noise schedule, raw/EMA evaluation and teacher branches,
+V1/V2 wrapper behavior, hard/soft distillation temperature and scope, optional
+noise distillation, and continual/replay policy. `search_space_overrides` may
+bound expensive dimensions for a plumbing study, but it becomes part of the
+immutable study identity and cannot be changed on resume.
+
+Umbrella categorical overrides are checked against each active conditional
+domain, and sampling steps must not exceed training timesteps. Raw
+`model_overrides`, `wrapper_overrides`, and a live external teacher require an
+exact model family because their tensor topology and diffusion process must
+match. The umbrella instead supports teacher-free continual distillation from
+the selected raw/EMA snapshot of the preceding task.
 
 For V2 DiT classifiers, `clf_vars_embedding_recipe` independently selects
 `none`, `label`, `conditions`, `core`, or `notebook`, while
@@ -123,7 +206,7 @@ SQLite study name, so resuming them cannot mix their trials with ordinary-fit
 studies. As with other HPO settings such as epoch count, use a different
 `results_path` when comparing different progressive curricula.
 
-Passing `teacher_network` enables conditional hard/soft distillation sampling
+Passing `teacher_model` enables conditional hard/soft distillation sampling
 for joint or continual `dit_classifier`, `dit_encoder_decoder_classifier`, and
 `unet_classifier` studies. The student token/head and wrapper loss settings are
 written to each trial config, while the live teacher is passed directly to

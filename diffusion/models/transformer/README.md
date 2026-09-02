@@ -38,7 +38,8 @@ outputs = network((noisy_images, timesteps, labels), training=False)
 `DiffusionTransformer` returns `[B, H, W, channels]` when
 `use_unpatchify=True`, or `[B, tokens, features]` otherwise. With
 `full_return=True`, it returns
-`(output, cond, features_list, regs_list, (z_mean, z_log_var))`.
+`(output, cond, features_list, regs_list, z_vals_list)`, where `z_vals_list` is an
+ordered list of `(mean, log_variance)` pairs.
 `DiTClassifier` instead returns `{"noises": ..., "classes": ...}` and adds both
 branches' intermediate values when `full_return=True`. With a distillation
 token, it also returns the independent `distil_classes` head. `classes` remains
@@ -48,7 +49,7 @@ the class-token/average-pooling result in both training and inference.
 `noisy_images` as the decoder image. A fourth float image tensor supplies an
 explicit teacher-forcing input. Its ordinary result is the decoder tensor. Its
 `full_return=True` result preserves the standard five-item transformer contract:
-`(noises, encoder_cond, encoder_features, encoder_regs, encoder_z_vals)`.
+`(noises, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list)`.
 
 `DiTEncoderDecoderClassifier` accepts the same three tensors for wrapper
 compatibility. It uses `noisy_images` as both the encoder and decoder image in
@@ -67,8 +68,8 @@ Its ordinary result has the same two keys as `DiTClassifier`, but `"noises"`
 is the decoder prediction and `"classes"` is computed from encoder features
 (or from the decoder prediction when `aggregate_from_noises=True`). With
 `full_return=True`, the result also contains `cond`, `features_list`,
-`regs_list`, `z_vals`, `clf_cond`, `clf_features_list`, `clf_regs_list`,
-`clf_z_vals`, `decoder_cond`, `decoder_features_list`, `encoder_cond`, and
+`regs_list`, `z_vals_list`, `clf_cond`, `clf_features_list`, `clf_regs_list`,
+`clf_z_vals_list`, `decoder_cond`, `decoder_features_list`, `encoder_cond`, and
 `encoder_features_list`. The last two are explicit aliases of `cond` and
 `features_list` for decoder-oriented code.
 
@@ -161,13 +162,14 @@ hidden projection before that softmax. Its `activation_function` defaults to
 metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
-When several KL-enabled flatten stages execute, the network concatenates all
-posterior means and log-variances in depth order. The wrapper's standard-normal
-KL over that concatenation is exactly the sum of the per-level KL terms. This
-supports U-shaped multilevel variational classifiers with matching same-grid
-skips. It is not a conditional hierarchical VAE: the code does not define
-learned top-down priors `p(z_l | z_{l+1})` or sample and inject a latent pyramid.
-A patch grid must be divisible by `2**L` for `L` factor-two down/up levels.
+When several KL-enabled flatten stages execute, the network keeps their
+posterior statistics separate and the wrapper sums their standard-normal KL
+terms. `sample_vae` draws or accepts one latent per flatten stage and injects
+them in depth order, so U-shaped skips can originate from stochastic
+unflattened features. This is a multiscale factorized VAE, not a conditional
+hierarchical VAE: the code does not define learned top-down priors
+`p(z_l | z_{l+1})`. A patch grid must be divisible by `2**L` for `L`
+factor-two down/up levels.
 
 `DiTClassifier` adds main-feature aggregators and cross-attention aggregators
 before the analogous classifier components. Its final extraction behavior,
@@ -324,12 +326,10 @@ inputs even though eager three-input calls are valid. Configuration round trips
 preserve both nested dictionaries and standard Keras model state.
 
 The raw model may return decoder tokens when `use_unpatchify=False`. The
-`DiffusionModel` wrapper instead requires an unpatchified decoder
-image with the same shape as its sampled noise target. Encoder resume calls
-with `min_depth>0` also require an explicit fourth decoder image. Therefore the
-base wrapper's three-input `sample_vae` path cannot resume this composite;
-leave `swap_noise_image=False` and use ordinary diffusion sampling unless a
-custom VAE decoder call supplies that fourth tensor.
+`DiffusionModel` wrapper instead requires an unpatchified decoder image with
+the same shape as its sampled noise target. During latent resume the composite
+uses that image as its decoder input, so `sample_vae` supports the same ordered
+single- or multiscale-latent contract as the standalone transformer models.
 
 ## Encoder-decoder classifier API
 

@@ -622,33 +622,63 @@ class VariationalAutoencoder(models.Model):
 
     @staticmethod
     def compute_kl(
-        z_mean: tf.Tensor, 
-        z_log_var: tf.Tensor,
-        dtype: tf.dtypes.DType | str | None = None,
+        z_mean: tf.Tensor | Sequence[tuple[tf.Tensor, tf.Tensor]], 
+        z_log_var: tf.Tensor | None = None, 
+        sample_weight: tf.Tensor | None = None, 
+        dtype: tf.dtypes.DType | str | None = None
     ) -> tf.Tensor:
-        """Compute mean KL divergence from the unit Gaussian prior.
+        """Compute weighted KL divergence from one or more Gaussian latents.
 
         Args:
-            z_mean (tf.Tensor): Rank-two means shaped ``[batch, latent_dim]``.
-            z_log_var (tf.Tensor): Matching log variances.
+            z_mean (tf.Tensor | Sequence[tuple[tf.Tensor, tf.Tensor]]): One
+                rank-two mean tensor, or an ordered sequence of
+                ``(mean, log_variance)`` pairs for multiple latent sites.
+            z_log_var (tf.Tensor | None): Log variances matching a single
+                ``z_mean`` tensor. Leave None when ``z_mean`` is a sequence.
+            sample_weight (tf.Tensor | None): Optional per-row weights. The
+                weighted result divides by their sum and is zero when every
+                weight is zero.
             dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
-                None preserves ``z_mean.dtype``.
+                None preserves the first mean tensor's dtype.
 
         Returns:
-            tf.Tensor: Scalar floating tensor.  Divergence is summed over
-            the last latent axis and averaged across the batch.
+            tf.Tensor: Scalar floating tensor. Divergence is summed over every
+            latent dimension and site, then averaged across batch rows.
+            An empty sequence returns zero.
         """
 
-        stable_dtype = tf.as_dtype(dtype or z_mean.dtype)
-        stable_mean = tf.cast(z_mean, stable_dtype)
-        stable_log_var = tf.cast(z_log_var, stable_dtype)
+        z_vals_list = tuple(z_mean) if z_log_var is None else ((z_mean, z_log_var),)
+        stable_dtype = tf.as_dtype(
+            dtype or (
+                z_vals_list[0][0].dtype
+                if z_vals_list else tf.keras.backend.floatx()
+            )
+        )
 
-        return -0.5 * tf.reduce_mean(
-            tf.reduce_sum(
-                1 + stable_log_var - tf.square(stable_mean)
-                - tf.exp(stable_log_var),
+        if not z_vals_list:
+            return tf.constant(0., dtype=stable_dtype)
+
+        kl_rows = tf.add_n([
+            -0.5 * tf.reduce_sum(
+                1. + tf.cast(log_var, stable_dtype)
+                - tf.square(tf.cast(mean, stable_dtype))
+                - tf.exp(tf.cast(log_var, stable_dtype)), 
                 axis=-1
             )
+            for mean, log_var in z_vals_list
+        ])
+
+        if sample_weight is None:
+            return tf.reduce_mean(kl_rows)
+
+        sample_weight = tf.cast(
+            tf.reshape(sample_weight, (-1,)),
+            stable_dtype
+        )
+
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(kl_rows * sample_weight), 
+            tf.reduce_sum(sample_weight)
         )
 
     @property
@@ -1477,6 +1507,72 @@ def run_self_tests() -> dict[str, str]:
     tf.debugging.assert_near(
         VariationalAutoencoder.compute_kl(tf.ones((3, 2)), zero_latents), 
         tf.constant(1.0), 
+    )
+    weighted_means = tf.constant([
+        [0., 0.],
+        [1., 1.],
+    ])
+    weighted_log_vars = tf.zeros_like(weighted_means)
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(
+            weighted_means, weighted_log_vars
+        ),
+        tf.constant(0.5),
+    )
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(
+            weighted_means, weighted_log_vars,
+            sample_weight=tf.constant([1., 0.]),
+        ),
+        tf.constant(0.),
+    )
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(
+            weighted_means, weighted_log_vars,
+            sample_weight=tf.constant([0., 1.]),
+        ),
+        tf.constant(1.),
+    )
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(
+            weighted_means, weighted_log_vars,
+            sample_weight=tf.zeros((2,)),
+        ),
+        tf.constant(0.),
+    )
+    latent_sites = [
+        (weighted_means[:, :1], weighted_log_vars[:, :1]),
+        (weighted_means[:, 1:], weighted_log_vars[:, 1:]),
+    ]
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(latent_sites),
+        VariationalAutoencoder.compute_kl(
+            weighted_means, weighted_log_vars
+        ),
+    )
+    tf.debugging.assert_near(
+        VariationalAutoencoder.compute_kl(
+            latent_sites,
+            sample_weight=tf.constant([0., 1.]),
+        ),
+        tf.constant(1.),
+    )
+    assert VariationalAutoencoder.compute_kl(
+        [], dtype=tf.float64
+    ).dtype == tf.float64
+    gradient_means = [
+        tf.Variable([[0.5], [1.0]]),
+        tf.Variable([[1.5], [2.0]]),
+    ]
+    with tf.GradientTape() as tape:
+        gradient_kl = VariationalAutoencoder.compute_kl([
+            (mean, tf.zeros_like(mean)) for mean in gradient_means
+        ])
+    gradients = tape.gradient(gradient_kl, gradient_means)
+    assert all(
+        gradient is not None
+        and bool(tf.reduce_all(tf.math.is_finite(gradient)))
+        for gradient in gradients
     )
     tf.random.set_seed(77)
     sampled_a = VariationalAutoencoder.compute_z(zero_latents, zero_latents)

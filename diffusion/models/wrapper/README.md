@@ -113,7 +113,7 @@ Important constructor controls are:
   runs an unconditional pass and applies CFG;
 - `test_cfg_scale`: evaluation/sampling guidance;
 - `test_steps` and `test_eta`: default sampler discretization/stochasticity;
-- `noise_loss_coef`, `noise_distil_coef`, `image_loss_coef`, `kl_loss_coef`,
+- `noise_loss_coef`, `noise_distil_loss_coef`, `image_loss_coef`, `kl_loss_coef`,
   `ctr_loss_coef`: loss
   multipliers; a zero auxiliary coefficient disables that objective;
 - `show_separate_noise_losses=False`: keep the usual `noise_loss` progress
@@ -124,8 +124,8 @@ Important constructor controls are:
 - `kl_train_type` and `ctr_train_type`: choose conditional or unconditional
   branch values for auxiliary losses;
 - `*_noisified_min_timesteps` / `*_noisified_max_timesteps`: half-open train and
-  test ranges `[minimum, maximum)`; a base-wrapper maximum of `None` or `-1`
-  uses the network's full timestep count;
+  test ranges `[minimum, maximum)`; a base-wrapper maximum of `None` or `0`
+  selects clean-only inputs, while `-1` uses the full timestep count;
 - `resize_method`, `resize_antialias`: active-resolution input resizing;
 - `map_preprocess=False`: keep `prep_inputs` in the train/test step. When true,
   `fit`, `evaluate`, validation, and progressive stages map each
@@ -277,7 +277,7 @@ Classifier-specific progressive names also include `feature_aggregator` and
 ## Distillation training
 
 `DiffusionModel` owns the shared teacher lifecycle. Set
-`noise_distil_coef > 0` to match the student's epsilon prediction to a frozen
+`noise_distil_loss_coef > 0` to match the student's epsilon prediction to a frozen
 teacher on the same `x_t`, timestep, condition IDs, and CFG scale. The teacher
 is run with `training=False`, its outputs are stopped, and its variables are
 never optimized. `defer_teacher=True` permits task one to train before
@@ -285,7 +285,7 @@ continual learning snapshots the first completed denoiser.
 
 Distillation-token loss is enabled only when the wrapped classifier has a
 distillation token, `teacher_network` is supplied, and
-`distil_loss_coef > 0`. Teacher-trained classifier regularizers also enable the
+`clf_distil_loss_coef > 0`. Teacher-trained classifier regularizers also enable the
 same inherited `map_preprocess` path when `ctr_loss_coef > 0` and their
 `train_type` is `distil` or `both`. Pass a
 compatible raw classifier, or another wrapper whose `.network` is that
@@ -315,10 +315,10 @@ student = DiTClassifier(
 model = DiffusionClassifier(
     network=student,
     teacher_network=teacher,
-    distil_type="soft",
-    distil_loss_coef=1.0,
+    clf_distil_type="soft",
+    clf_distil_loss_coef=1.0,
     clf_acc_coef=0.5,
-    distil_acc_coef=0.5,
+    clf_distil_acc_coef=0.5,
     ctr_acc_coef=0.0,
 )
 model.compile(optimizer="adam", loss="mse")
@@ -339,23 +339,22 @@ During training the teacher receives `(x_t, t, selected_labels)`, where
 by `clf_train_type`. During validation/evaluation it receives the same clean
 `x0`, zero timestep, and unconditional label used by the student's established
 classification path. If it provides `predict_class`, that method supplies the
-target; otherwise its call result is used directly, with `result["classes"]`
-selected from mappings. The custom train/test steps consume the prepared tuple
-without noising or shifting it a second time. Array inputs, separate `x`/`y`,
-validation tuples, and already-prepared datasets are not automatically adapted
-by this path. Progressive resolution changes are mirrored to compatible
-teachers. For a narrower past teacher, old conditional IDs are retained and a
-new-task ID is replaced by the safe zero/null condition before lookup. When continual
+target. The custom train/test steps consume the prepared tuple without noising
+or shifting it a second time. Array inputs, separate `x`/`y`, validation tuples,
+and already-prepared datasets are not automatically adapted by this path.
+Progressive resolution changes are mirrored to compatible teachers. For a
+narrower past teacher, old conditional IDs are retained and a new-task ID is
+replaced by the safe zero/null condition before lookup. When continual
 growth gives teacher and student different class widths, teacher probabilities
 are restricted or zero-padded to the student's current width and normalized
 before either loss is computed.
 
-`distil_type="hard"` takes `argmax(teacher_labels)` and applies sparse
+`clf_distil_type="hard"` takes `argmax(teacher_labels)` and applies sparse
 categorical cross-entropy. `"soft"` applies KL divergence in the
-teacher-to-student direction. Its positive `distil_temperature` defaults to
+teacher-to-student direction. Its positive `clf_distil_temperature` defaults to
 `1.0`; other values soften teacher and student distributions consistently and
 scale the KL term by the temperature squared. The scalar optimization objective adds
-`distil_loss_coef * distil_loss` to the existing diffusion and classifier
+`clf_distil_loss_coef * clf_distil_loss` to the existing diffusion and classifier
 terms. The coefficient defaults to `0.0`; at zero, distillation-token loss and
 its metrics are disabled. Teacher mapping remains enabled only when a
 classifier regularizer independently requests it.
@@ -368,9 +367,9 @@ Classifier regularizers read `train_type` and `distil_type` from
 two losses before applying the existing `ctr_loss_coef`.
 
 When both class and distillation tokens are active, `DiffusionClassifier`
-reports `distil_loss` plus three classification accuracies:
-`cls_token_accuracy`, `distil_token_accuracy`, and `total_accuracy` for their
-`clf_acc_coef`/`distil_acc_coef` combination. When classifier regularizers are
+reports `clf_distil_loss` plus three classification accuracies:
+`cls_token_accuracy`, `clf_distil_acc`, and `total_accuracy` for their
+`clf_acc_coef`/`clf_distil_acc_coef` combination. When classifier regularizers are
 active, `ctr_acc_coef` also adds their averaged probabilities to
 `total_accuracy`. A distillation token paired
 with global average pooling reports `avg_pooling_accuracy` for the ordinary
@@ -378,18 +377,20 @@ head instead. Without a distillation token, the existing
 `classifier_accuracy` name and output behavior remain unchanged. The raw
 classifier always leaves `classes` and `distil_classes` independent; only the
 wrapper forms the coefficient-weighted prediction used by `total_accuracy`.
-`EnsembleAccuracy` accepts the same `clf_acc_coef`, `distil_acc_coef`, and
+`EnsembleAccuracy` accepts the same `clf_acc_coef`, `clf_distil_acc_coef`, and
 `ctr_acc_coef` values and applies them at every ensembled timestep.
 
-`DiffusionModel` owns only the generic dataset-map switch and
-`prep_inputs_map` hook. Teacher calls, hard/soft losses, and distillation
-trackers live on `DiffusionClassifier` and are inherited by V2.
+`DiffusionModel` owns noise-teacher attachment, mapped noise prediction/mask,
+and the noise-distillation loss. `DiffusionClassifier` extends that same map
+with classifier-teacher probabilities and owns hard/soft classifier losses and
+their trackers; V2 inherits this separation.
 `DiffusionClassifierV2` assigns the effective distillation token and its softmax
 head to the classifier variable group and applies distillation only in the
-discriminator train/test phase. Its generator map returns only the ordinary
-seven prepared diffusion tensors and never calls the teacher. Its discriminator
-map returns `(t, x_t, null_labels, classes, x0, teacher_labels)`, so the teacher and
-student see the same clean or bounded-noise phase-specific input.
+discriminator train/test phase. Its generator map returns the ordinary seven
+diffusion tensors, plus the noise-teacher prediction/mask when noise
+distillation is active. Its discriminator map returns
+`(t, x_t, null_labels, classes, x0, teacher_labels)`, so the classifier teacher
+and student see the same clean or bounded-noise phase-specific input.
 
 ## Split generator/discriminator training
 

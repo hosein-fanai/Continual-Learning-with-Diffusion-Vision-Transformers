@@ -299,37 +299,6 @@ PROJECT_SELF_TEST_CLASSES = {
     "autoencoder.vae_classifier": ("VAEClassifier",),
     "autoencoder.decoder_accuracy_callback": ("DecoderAccuracyCallback",), 
     "autoencoder.variational_autoencoder": ("VariationalAutoencoder",), 
-    "common.argument_saver": (
-        "ArgumentSaver", 
-        "ArgumentSaverLayer", 
-        "ArgumentSaverModel", 
-    ), 
-    "common.config": (
-        "KwargsMixin", 
-        "DiffusionTransformerConfig", 
-        "DiTDecoderConfig",
-        "DiTEncoderDecoderConfig",
-        "DiTClassifierConfig", 
-        "DiTEncoderDecoderClassifierConfig",
-        "UNetConfig",
-        "UNetClassifierConfig",
-        "DiffusionModelConfig", 
-        "DiffusionClassifierConfig", 
-        "DiffusionClassifierV2Config",
-        "VariationalAutoencoderConfig",
-        "VAEClassifierConfig",
-        "DatasetConfig", 
-        "ModelConfig", 
-        "OptimizerConfig", 
-        "ContinuallyLearnConfig",
-        "TrainingConfig", 
-        "ReportingConfig", 
-        "Config", 
-    ), 
-    "common.lr_logger_callback": ("LrLoggerCallback",), 
-    "common.masked_loss": ("MaskedLoss",), 
-    "common.recovery": ("TaskCheckpoint",),
-    "common.replay_buffer": ("ReplayBuffer",), 
     "diffusion.callbacks.batch_loss_plateau": ("BatchLossPlateau",), 
     "diffusion.callbacks.image_generator_callback": ("ImageGeneratorCallback",), 
     "diffusion.callbacks.raw_network_validation_callback": (
@@ -381,7 +350,7 @@ PROJECT_SELF_TEST_CLASSES = {
     "diffusion.models.wrapper.diffusion_model": ("DiffusionModel",), 
     "diffusion.schedulers": ("ScheduleKind", "ScheduleConfig"), 
 }
-"""Classes that must be covered by each module's ``run_self_tests`` result."""
+"""Classes still covered by embedded model and layer self-tests."""
 
 
 def run_project_self_tests(
@@ -409,7 +378,7 @@ def run_project_self_tests(
 
     Returns:
         dict[str, dict[str, str]]: Ordered-by-registration module results.  A
-        successful result covers all 65 registered classes and every inner
+        successful result covers all registered classes and every inner
         value is ``"passed"``.
 
     Raises:
@@ -517,7 +486,7 @@ def run_project_self_tests(
     expected_classes = sum(
         len(class_names) for class_names in PROJECT_SELF_TEST_CLASSES.values()
     )
-    assert tested_classes == expected_classes == 65
+    assert tested_classes == expected_classes
 
     # Print the project-wide summary when progress output is requested.
     if verbose:

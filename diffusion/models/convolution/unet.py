@@ -37,6 +37,8 @@ class UNet(ArgumentSaverModel):
     uses encoder skips. Setting ``reshaper_kwargs={"add_kl": True}`` inserts a
     flatten/unflatten variational bottleneck and disables skips by default, so
     :meth:`DiffusionModel.sample_vae` can decode a latent without bypassing it.
+    Explicitly enabling skips inserts a variational pair at every encoder level,
+    making each routed skip independently sampleable.
 
     Args:
         num_classes: Number of real dataset classes, or ``None`` for dynamic
@@ -64,12 +66,9 @@ class UNet(ArgumentSaverModel):
         upsampling_interpolation: Interpolation used by image upsamplers.
         use_skip_connections: Use encoder-to-decoder skips. ``None`` enables
             them for an ordinary U-Net and disables them for a reshaped/VAE
-            bottleneck. Explicit ``True`` is rejected with a bottleneck because
-            the unchanged VAE sampler cannot provide pre-latent features.
-        reshaper_ids_dict: Optional explicit bottleneck depth mapping. The only
-            valid mapping is the model-computed consecutive flatten/unflatten
-            pair. Leave empty and set ``add_kl`` to create that pair
-            automatically.
+            bottleneck. Explicit ``True`` makes every skip stochastic.
+        reshaper_ids_dict: Optional exact model-computed flatten/unflatten
+            mapping. Leave it empty to create the required stages automatically.
         reshaper_kwargs: ``add_kl`` and ``latent_dim_ratio``.
         cls_token_regularizer_ids: Depth IDs for auxiliary class heads. ID 0
             regularizes the label embedding; ``[None]`` selects every depth.
@@ -151,9 +150,10 @@ class UNet(ArgumentSaverModel):
             upsampling_method (str): ImageUpsample method name.
             upsampling_interpolation (str): TensorFlow resize method.
             use_skip_connections (bool | None): Explicit skip behavior; None
-                disables skips only for a variational bottleneck.
-            reshaper_ids_dict (Mapping[int, str]): Optional exact consecutive
-                flatten/unflatten bottleneck mapping.
+                disables skips only for a variational bottleneck; True creates
+                stochastic multiscale skips.
+            reshaper_ids_dict (Mapping[int, str]): Optional exact generated
+                flatten/unflatten mapping.
             reshaper_kwargs (Mapping[str, object]): ``add_kl`` and positive
                 ``latent_dim_ratio`` options.
             cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class
@@ -225,23 +225,27 @@ class UNet(ArgumentSaverModel):
         # Default to skip connections unless the resumable VAE path is active.
         if self.use_skip_connections is None:
             self.use_skip_connections = not self.use_reshaper
-        # Prevent skip routes from bypassing a resumable variational bottleneck.
-        if self.use_reshaper and self.use_skip_connections:
-            raise ValueError(
-                "use_skip_connections must be False for a resumable VAE "
-                "bottleneck."
-            )
-
         self._base_depth = self._compute_base_depth()
-        flatten_depth = 2 * len(self.widths) + 2
-        expected_reshapers = {
-            flatten_depth: "flatten", 
-            flatten_depth + 1: "unflatten", 
-        } if self.use_reshaper else {}
-        # Restrict convolutional reshaping to the supported bottleneck pair.
+        if self.use_reshaper and self.use_skip_connections:
+            expected_reshapers = {
+                depth: reshape_type
+                for level in range(len(self.widths) + 1)
+                for depth, reshape_type in (
+                    (4 * level + 2, "flatten"),
+                    (4 * level + 3, "unflatten"),
+                )
+            }
+        elif self.use_reshaper:
+            flatten_depth = 2 * len(self.widths) + 2
+            expected_reshapers = {
+                flatten_depth: "flatten",
+                flatten_depth + 1: "unflatten",
+            }
+        else:
+            expected_reshapers = {}
         if self.reshaper_ids_dict and self.reshaper_ids_dict != expected_reshapers:
             raise ValueError(
-                "reshaper_ids_dict must be the bottleneck pair "
+                "reshaper_ids_dict must match the model reshaper stages "
                 f"{expected_reshapers}."
             )
         self.reshaper_ids_dict = expected_reshapers
@@ -459,7 +463,9 @@ class UNet(ArgumentSaverModel):
             int: Number of non-progressive U-Net stages.
         """
 
-        encoder_depth = 2 * len(self.widths)
+        encoder_depth = 2 * len(self.widths) + 2 * len(self.widths) * int(
+            self.use_reshaper and self.use_skip_connections
+        )
         bottleneck_depth = 1 + 2 * int(self.use_reshaper)
         decoder_depth = len(self.widths) * (
             3 if self.use_skip_connections else 2
@@ -690,6 +696,7 @@ class UNet(ArgumentSaverModel):
         """
 
         skip_depths = []
+        base_side = self.image_size
         for width in self.widths:
             block_key = len(self.layers_dicts) + 1
             self._append_stage(
@@ -702,7 +709,52 @@ class UNet(ArgumentSaverModel):
                 }, 
                 "convolution", 
             )
-            skip_depths.append(block_key)
+            if self.use_reshaper and self.use_skip_connections:
+                source_shape = (base_side, base_side, width)
+                flatten_key = len(self.layers_dicts) + 1
+                flatten_name = (
+                    f"{self.name_prefix}depth_{flatten_key}_{self.R[2:]}"
+                )
+                self._append_stage(
+                    {
+                        self.R: VariationalReshaper(
+                            "flatten",
+                            source_shape,
+                            add_kl=bool(
+                                self.reshaper_kwargs.get("add_kl", False)
+                            ),
+                            latent_dim_ratio=float(
+                                self.reshaper_kwargs.get(
+                                    "latent_dim_ratio", 1.0
+                                )
+                            ),
+                            seed=derive_seed(
+                                self.seed, "reshaper", flatten_name
+                            ),
+                            name=flatten_name,
+                            dtype=self.dtype_policy,
+                        )
+                    },
+                    "flatten",
+                )
+                unflatten_key = len(self.layers_dicts) + 1
+                self._append_stage(
+                    {
+                        self.R: VariationalReshaper(
+                            "unflatten",
+                            source_shape,
+                            name=(
+                                f"{self.name_prefix}depth_{unflatten_key}_"
+                                f"{self.R[2:]}"
+                            ),
+                            dtype=self.dtype_policy,
+                        )
+                    },
+                    "unflatten",
+                )
+                skip_depths.append(unflatten_key)
+            else:
+                skip_depths.append(block_key)
             down_key = len(self.layers_dicts) + 1
             self._append_stage(
                 {
@@ -715,6 +767,7 @@ class UNet(ArgumentSaverModel):
                 },
                 "downsample",
             )
+            base_side = (base_side + 1) // 2
 
         bottleneck_key = len(self.layers_dicts) + 1
         self._append_stage(
@@ -730,7 +783,6 @@ class UNet(ArgumentSaverModel):
 
         # Build the output head from bottleneck geometry in resumable VAE mode.
         if self.use_reshaper:
-            base_side = self._bottleneck_resolution(self.image_size)
             source_shape = (base_side, base_side, self.bottleneck_width)
             flatten_key = len(self.layers_dicts) + 1
             flatten_name = f"{self.name_prefix}depth_{flatten_key}_{self.R[2:]}"
@@ -970,7 +1022,7 @@ class UNet(ArgumentSaverModel):
         tf.Tensor, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Run a contiguous range of convolutional depths.
 
@@ -984,9 +1036,9 @@ class UNet(ArgumentSaverModel):
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, list[tf.Tensor | None],
-            list[tf.Tensor | None], tuple[tf.Tensor | None, tf.Tensor | None]]:
+            list[tf.Tensor | None], list[tuple[tf.Tensor, tf.Tensor]]]:
             Final representation, condition, depth features, auxiliary class
-            predictions, and most recent latent mean/log variance.
+            predictions, and ordered latent mean/log-variance pairs.
         """
 
         # Require resumed execution to start at a valid stage boundary.
@@ -1005,7 +1057,10 @@ class UNet(ArgumentSaverModel):
             x = tf.concat([x, self._broadcast_condition(condition, x)], axis=-1)
         # Treat the supplied tensor as an already embedded intermediate feature.
         else:
-            x = inputs[0]
+            latent_inputs = list(inputs[0]) if isinstance(
+                inputs[0], (list, tuple)
+            ) else [inputs[0]]
+            x = latent_inputs[0]
 
         label_reg = self.labels_embed_reg(
             label_embeddings,
@@ -1014,7 +1069,8 @@ class UNet(ArgumentSaverModel):
 
         features_list: list[tf.Tensor | None] = [None] * min_depth + [x]
         regs_list: list[tf.Tensor | None] = [label_reg] + [None] * min_depth
-        z_vals: tuple[tf.Tensor | None, tf.Tensor | None] = (None, None)
+        z_vals_list: list[tuple[tf.Tensor, tf.Tensor]] = []
+        latent_index = 1
 
         for index, stage in enumerate(self.layers_dicts):
             # Stop before the exclusive maximum depth.
@@ -1051,23 +1107,32 @@ class UNet(ArgumentSaverModel):
             # Apply the configured flatten or unflatten bottleneck transform.
             if self.R in stage:
                 reshape_type = self.reshaper_ids_dict[index + 1]
-                # Resize to native bottleneck geometry before flattening.
-                if reshape_type == "flatten":
-                    base_side = self._bottleneck_resolution(self.image_size)
-                    x = tf.image.resize(x, (base_side, base_side))
+                if min_depth > 0 and reshape_type == "flatten":
+                    x = latent_inputs[latent_index]
+                    latent_index += 1
+                    x_mean, x_log_var = None, None
+                else:
+                    if reshape_type == "flatten":
+                        x = tf.image.resize(
+                            x, stage[self.R].source_shape_[:2]
+                        )
+                    x, x_mean, x_log_var = stage[self.R](
+                        x, training=training
+                    )
 
-                x, x_mean, x_log_var = stage[self.R](x, training=training)
-
-                # Restore spatial bottleneck geometry before decoder stages.
+                # Restore the active geometry at this hierarchy level.
                 if reshape_type == "unflatten":
-                    side = self._bottleneck_resolution(self.current_resolution)
+                    side = self.current_resolution
+                    for previous_stage in self.layers_dicts[:index]:
+                        if self.DS in previous_stage:
+                            side = (side + 1) // 2
                     x = tf.image.resize(x, (side, side))
 
                 # Preserve mean and log variance from a variational flatten stage.
                 if reshape_type == "flatten" and bool(
                     self.reshaper_kwargs.get("add_kl", False)
-                ):
-                    z_vals = (x_mean, x_log_var)
+                ) and x_mean is not None:
+                    z_vals_list.append((x_mean, x_log_var))
 
             regularizer = stage[self.CTR](
                 x, 
@@ -1077,7 +1142,7 @@ class UNet(ArgumentSaverModel):
             features_list.append(x)
             regs_list.append(regularizer)
 
-        return x, condition, features_list, regs_list, z_vals
+        return x, condition, features_list, regs_list, z_vals_list
 
     def call(
         self, 
@@ -1099,7 +1164,7 @@ class UNet(ArgumentSaverModel):
             prediction plus condition, features, regularizers, and latent stats.
         """
 
-        x, condition, features_list, regs_list, z_vals = self.encode(
+        x, condition, features_list, regs_list, z_vals_list = self.encode(
             inputs,
             min_depth=min_depth,
             training=training,
@@ -1114,7 +1179,7 @@ class UNet(ArgumentSaverModel):
 
         # Return intermediate features and auxiliary values only when requested.
         if full_return:
-            return predicted_noise, condition, features_list, regs_list, z_vals
+            return predicted_noise, condition, features_list, regs_list, z_vals_list
         return predicted_noise
 
     def predict_noise(
@@ -1388,13 +1453,13 @@ def run_self_tests() -> dict[str, str]:
     images = tf.ones((2, 5, 7, 1))
     times = tf.constant([0, 3], tf.int32)
     labels = tf.constant([0, 1], tf.uint8)
-    output, condition, features, regs, z_vals = model(
+    output, condition, features, regs, z_vals_list = model(
         (images, times, labels), full_return=True
     )
     assert output.shape == images.shape
     assert condition.shape == (2, 4)
     assert len(features) == len(regs) == model.depth + 1
-    assert z_vals == (None, None)
+    assert z_vals_list == []
     assert len(model.layers_dicts) == model.depth
     assert model.connection_ids_dict
 
@@ -1414,8 +1479,8 @@ def run_self_tests() -> dict[str, str]:
     square_images = images[:, :5, :5]
     vae_output = vae((square_images, times, labels), full_return=True)
     assert vae_output[0].shape == (2, 5, 5, 1)
-    assert vae_output[-1][0].shape.rank == 2
-    assert vae_output[-1][1].shape == vae_output[-1][0].shape
+    assert vae_output[-1][0][0].shape.rank == 2
+    assert vae_output[-1][0][1].shape == vae_output[-1][0][0].shape
     assert not vae.connection_ids_dict and vae.reshaper_ids_dict
     json_clone = tf.keras.models.model_from_json(vae.to_json())
     assert json_clone.reshaper_ids_dict == vae.reshaper_ids_dict
@@ -1423,6 +1488,61 @@ def run_self_tests() -> dict[str, str]:
 
 
     from diffusion.models.wrapper.diffusion_model import DiffusionModel
+
+
+    multiscale_vae = UNet(
+        **common,
+        use_skip_connections=True,
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5},
+    )
+    multiscale_output = multiscale_vae(
+        (square_images, times, labels), full_return=True, training=False
+    )
+    flatten_ids = sorted(
+        depth for depth, reshape_type in
+        multiscale_vae.reshaper_ids_dict.items()
+        if reshape_type == "flatten"
+    )
+    unflatten_ids = {
+        depth for depth, reshape_type in
+        multiscale_vae.reshaper_ids_dict.items()
+        if reshape_type == "unflatten"
+    }
+    assert len(multiscale_output[-1]) == len(flatten_ids) == 3
+    assert all(
+        sources[0] in unflatten_ids
+        for sources in multiscale_vae.connection_ids_dict.values()
+    )
+    kernel, bias = multiscale_vae.output_projection.get_weights()
+    multiscale_vae.output_projection.set_weights([
+        tf.ones_like(kernel), bias
+    ])
+    multiscale_wrapper = DiffusionModel(
+        network=multiscale_vae,
+        use_ema=False,
+        test_network_name="raw",
+        test_steps=2,
+    )
+    z_inputs = [
+        tf.zeros((1, int(
+            multiscale_vae.layers_dicts[depth - 1][
+                multiscale_vae.R
+            ].output_shape[1][-1]
+        )))
+        for depth in flatten_ids
+    ]
+    base_sample = multiscale_wrapper.sample_vae(
+        network_name="raw", labels=[1], z=z_inputs
+    )
+    for latent_index in range(len(z_inputs)):
+        changed_inputs = [tf.identity(value) for value in z_inputs]
+        changed_inputs[latent_index] = tf.ones_like(
+            changed_inputs[latent_index]
+        )
+        changed_sample = multiscale_wrapper.sample_vae(
+            network_name="raw", labels=[1], z=changed_inputs
+        )
+        assert float(tf.reduce_max(tf.abs(changed_sample - base_sample))) > 0.
 
 
     wrapper = DiffusionModel(

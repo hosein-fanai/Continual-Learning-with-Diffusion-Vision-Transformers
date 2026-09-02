@@ -35,17 +35,18 @@ projected image + broadcast time/label condition       depth 0
 number of residual blocks inside each encoder/decoder stack;
 `bottleneck_depth` applies to the central stack. Each operation above is a
 separate tracked `LayerDict`, so `layers_dicts[i]` produces feature depth
-`i + 1`. Encoder residual-stack outputs are the standard skip sources. Decoder
-features are resized to the exact source shape before concatenation, including
-at odd or progressively changed resolutions.
+`i + 1`. Encoder residual-stack outputs are the standard deterministic skip
+sources. In a KL-enabled U-VAE, skip sources instead come from the stochastic
+unflatten stages. Decoder features are resized to the exact source shape before
+concatenation, including at odd or progressively changed resolutions.
 
 Depth `0` is the 1x1-projected image concatenated with spatially broadcast
 timestep and label embeddings. `encode(...)` returns
-`(x, condition, features_list, regs_list, z_vals)`, where feature and
+`(x, condition, features_list, regs_list, z_vals_list)`, where feature and
 regularizer index equals depth. `call(..., full_return=True)` returns:
 
 ```python
-predicted_noise, condition, features_list, regs_list, z_vals = network(
+predicted_noise, condition, features_list, regs_list, z_vals_list = network(
     (x_t, timesteps, labels), 
     full_return=True, 
     training=False, 
@@ -54,8 +55,9 @@ assert len(features_list) == len(regs_list) == network.depth + 1
 ```
 
 `features_list` contains real intermediate tensors, `regs_list` contains
-configured auxiliary predictions or `None`, and `z_vals` is `(mean, log_var)`
-for a KL flatten stage or `(None, None)` otherwise. `layers_dicts`,
+configured auxiliary predictions or `None`, and `z_vals_list` is an ordered list of
+`(mean, log_var)` pairs, one per KL flatten stage; it is empty without KL.
+`layers_dicts`,
 `connection_ids_dict`, `reshaper_ids_dict`, and the depth-indexed lists provide
 the same inspection points expected by the wrappers.
 
@@ -100,8 +102,8 @@ The reusable implementations are documented in the
 
 ## Diffusion and variational training
 
-An ordinary `UNet` enables encoder skips by default. Enable the hierarchical
-variational bottleneck with only its configuration:
+An ordinary `UNet` enables encoder skips by default. Enable a variational
+bottleneck with only its configuration:
 
 ```python
 import tensorflow as tf
@@ -140,13 +142,16 @@ images = model.sample_vae(
 callers do not need to calculate `reshaper_ids_dict`. With
 `use_skip_connections=None` (the default), any reshaped bottleneck disables
 skips automatically so a decoded latent cannot bypass the encoder. Explicitly
-combining a bottleneck with `use_skip_connections=True` is rejected.
+setting `use_skip_connections=True` instead inserts a variational pair after
+each encoder level and routes decoder skips from their stochastic unflattened
+features.
 
 Normal `DiffusionModel` training retains the diffusion noise target and adds
 the configured KL loss. Setting `swap_noise_image=True` selects the wrapper's
 alternate image/noise target and also routes `model.sample(...)` to
-`sample_vae(...)`. A supplied latent `z` must match the configured latent
-width; omitting it draws a standard-normal latent.
+`sample_vae(...)`. A single-bottleneck latent may still be supplied as one
+tensor. Multiscale models accept one tensor per ordered flatten stage; omitted
+latents are drawn independently from the standard-normal prior.
 
 ## Progressive resolution and depth
 
@@ -222,7 +227,8 @@ outputs = network((x_t, t, labels), training=False)
 Selected main features are spatially aligned and normalized to `clf_dim`, so
 relative selectors remain shape-stable when the main network grows.
 `full_return=True` additionally provides the main `cond`, `features_list`,
-`regs_list`, and `z_vals`, plus their `clf_` counterparts. Classifier-side KL
+`regs_list`, and `z_vals_list`, plus `clf_cond`, `clf_features_list`,
+`clf_regs_list`, and `clf_z_vals_list`. Classifier-side KL
 statistics can be enabled with
 `clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": ...}`.
 `predict_noise(...)` runs only the denoiser, while `predict_class(...)` executes
@@ -278,7 +284,7 @@ caps are independent of progressive generator bounds. Direct evaluation must
 select a phase with `evaluate_generator`, `evaluate_discriminator`, or
 `test_part`, or request `eval_both=True`. An optional third replay-provenance
 tensor is accepted by raw V2 batches and retained by mapped preprocessing for
-`distil_scope="replay_only"`.
+`clf_distil_scope="replay_only"`.
 
 Classifier progression accepts ordinary main-network specifications or a
 targeted mapping:

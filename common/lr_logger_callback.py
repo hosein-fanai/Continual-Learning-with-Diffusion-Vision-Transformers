@@ -46,36 +46,3 @@ class LrLoggerCallback(callbacks.Callback):
         if logs is None:
             logs = {}
         logs["learning_rate"] = float(K.get_value(lr))
-
-
-def run_self_tests() -> dict[str, str]:
-    """Smoke-test scalar and scheduled learning-rate logging.
-
-    Returns:
-        dict[str, str]: Passing marker for :class:`LrLoggerCallback`.
-    """
-
-    from types import SimpleNamespace
-
-    import tensorflow as tf
-
-    callback = LrLoggerCallback()
-    optimizer = SimpleNamespace(
-        learning_rate=tf.Variable(0.125, dtype=tf.float32), 
-        iterations=tf.Variable(2, dtype=tf.int64), 
-    )
-    callback.set_model(SimpleNamespace(optimizer=optimizer))
-    logs = {"loss": 1.0}
-    callback.on_epoch_end(0, logs)
-    assert abs(logs["learning_rate"] - 0.125) < 1e-7
-
-    optimizer.learning_rate = tf.keras.optimizers.schedules.InverseTimeDecay(
-        initial_learning_rate=0.4,
-        decay_steps=1,
-        decay_rate=1.0,
-    )
-    callback.on_epoch_end(1, logs)
-    assert logs["loss"] == 1.0
-    assert abs(logs["learning_rate"] - (0.4 / 3.0)) < 1e-7
-
-    return {"LrLoggerCallback": "passed"}

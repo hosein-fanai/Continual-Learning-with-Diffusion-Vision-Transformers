@@ -147,10 +147,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
             value = local_vars[name]
             require(
                 value is None or (
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and (value == -1 or 1 <= value <= self.timesteps)), 
-                f"{name} must be None, -1, or an integer in [1, timesteps]."
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and -1 <= value <= self.timesteps),
+                f"{name} must be None or an integer in [-1, timesteps]."
             )
 
         require(
@@ -626,7 +626,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         # Append the frozen target before final replay provenance, matching the
         # joint classifier wrapper's unambiguous mapped-batch ordering.
-        if self.use_teacher:
+        if self.use_classifier_distil:
             teacher_labels = self._predict_teacher_labels(
                 prepared_inputs[1], 
                 prepared_inputs[0], 
@@ -661,8 +661,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         replay_mask = None
         # Decode the exact tensor contract emitted by mapped preprocessing.
-        if self.map_preprocess:
-            expected_length = 5 + int(self.use_teacher)
+        if self.map_preprocess and len(inputs) not in (2, 3):
+            expected_length = 5 + int(self.use_classifier_distil)
             # Treat one final mapped tensor as replay provenance.
             if len(inputs) == expected_length + 1:
                 inputs, replay_mask = inputs[:-1], inputs[-1]
@@ -676,7 +676,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
             prepared_inputs = inputs
             # Extract the teacher target from mapped teacher-enabled batches.
-            if self.use_teacher:
+            if self.use_classifier_distil:
                 prepared_inputs, teacher_labels = (
                     prepared_inputs[:-1], prepared_inputs[-1]
                 )
@@ -705,7 +705,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 prepared_inputs[1], 
                 prepared_inputs[0], 
                 prepared_inputs[2]
-            ) if self.use_teacher else None
+            ) if self.use_classifier_distil else None
 
         return prepared_inputs, teacher_labels, replay_mask
 
@@ -976,11 +976,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
         """
 
         # Forward mapped generator data only after enforcing its exact arity.
-        if self.map_preprocess:
-            # The inherited generator step consumes seven diffusion tensors.
-            if len(inputs) != 7:
+        if self.map_preprocess and len(inputs) not in (2, 3):
+            expected_length = 7 + 2 * int(self.use_noise_distil_loss)
+            if len(inputs) != expected_length:
                 raise ValueError(
-                    "Mapped V2 generator batches must contain seven tensors."
+                    f"Mapped V2 generator batches must contain "
+                    f"{expected_length} tensors."
                 )
         # Discard raw replay provenance because generation does not consume it.
         elif len(inputs) == 3:
@@ -1009,11 +1010,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
         """
 
         # Forward mapped generator data only after enforcing its exact arity.
-        if self.map_preprocess:
-            # The inherited generator step consumes seven diffusion tensors.
-            if len(inputs) != 7:
+        if self.map_preprocess and len(inputs) not in (2, 3):
+            expected_length = 7 + 2 * int(self.use_noise_distil_loss)
+            if len(inputs) != expected_length:
                 raise ValueError(
-                    "Mapped V2 generator batches must contain seven tensors."
+                    f"Mapped V2 generator batches must contain "
+                    f"{expected_length} tensors."
                 )
         # Discard validation provenance because generation does not consume it.
         elif len(inputs) == 3:
@@ -1068,16 +1070,16 @@ class DiffusionClassifierV2(DiffusionClassifier):
             )
             classes_pred = class_outputs[0]
             clf_regs_list = class_outputs[3]
-            clf_z_vals = class_outputs[4]
-            distil_preds = None
+            clf_z_vals_list = class_outputs[4]
+            distil_classes = None
             # Read the independent distillation head when it is active.
             if self.use_clf_distil_loss:
-                distil_preds = class_outputs[5]
+                distil_classes = class_outputs[5]
 
             outputs = self.compute_clf_kl_ctr_distil_loss(
                 classes, None, None, None, None, 
-                classes_pred, clf_z_vals, 
-                clf_regs_list, distil_preds, 
+                classes_pred, clf_z_vals_list, 
+                clf_regs_list, distil_classes, 
                 clf_loss_mask=clf_loss_mask, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
@@ -1088,9 +1090,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 training=True
             )
             (loss, clf_loss, kl_loss, 
-            ctr_loss, distil_loss, 
+            ctr_loss, clf_distil_loss, 
             classes_pred, ctr_preds, 
-            distil_preds) = outputs
+            distil_classes) = outputs
 
         self.apply_grads(tape, loss, self.clf_trainable_variables)
         self.update_ema(self.clf_trainable_variables)
@@ -1102,16 +1104,16 @@ class DiffusionClassifierV2(DiffusionClassifier):
             total_loss=loss, 
             clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
-            clf_distil_loss=distil_loss, 
+            clf_distil_loss=clf_distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds, 
+            distil_classes=distil_classes, 
             clf_ctr_mask=self._classifier_ctr_metric_mask(
                 classes, 
                 teacher_labels, 
                 replay_mask, 
                 clf_acc_mask
             ) if self.use_clf_ctr_loss else None, 
-            distil_acc_mask=self._distillation_metric_mask(
+            clf_distil_acc_mask=self._distillation_metric_mask(
                 classes, 
                 teacher_labels, 
                 replay_mask, 
@@ -1159,16 +1161,16 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
-        clf_z_vals = class_outputs[4]
-        distil_preds = None
+        clf_z_vals_list = class_outputs[4]
+        distil_classes = None
         # Read the independent distillation head when it is active.
         if self.use_clf_distil_loss:
-            distil_preds = class_outputs[5]
+            distil_classes = class_outputs[5]
 
         outputs = self.compute_clf_kl_ctr_distil_loss(
             classes, None, None, None, None, 
-            classes_pred, clf_z_vals, 
-            clf_regs_list, distil_preds, 
+            classes_pred, clf_z_vals_list, 
+            clf_regs_list, distil_classes, 
             clf_loss_mask=clf_loss_mask, 
             clf_train_type="uncond", 
             kl_train_type="uncond", 
@@ -1179,9 +1181,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             training=False
         )
         (loss, clf_loss, kl_loss, 
-        ctr_loss, distil_loss, 
+        ctr_loss, clf_distil_loss, 
         classes_pred, ctr_preds, 
-        distil_preds) = outputs
+        distil_classes) = outputs
 
         results = self.get_clf_results_dict(
             clf_loss, 
@@ -1191,16 +1193,16 @@ class DiffusionClassifierV2(DiffusionClassifier):
             total_loss=loss, 
             clf_kl_loss=kl_loss, 
             clf_ctr_loss=ctr_loss, 
-            clf_distil_loss=distil_loss, 
+            clf_distil_loss=clf_distil_loss, 
             clf_ctr_preds=ctr_preds, 
-            clf_distil_preds=distil_preds, 
+            distil_classes=distil_classes, 
             clf_ctr_mask=self._classifier_ctr_metric_mask(
                 classes, 
                 teacher_labels, 
                 replay_mask, 
                 clf_acc_mask
             ) if self.use_clf_ctr_loss else None, 
-            distil_acc_mask=self._distillation_metric_mask(
+            clf_distil_acc_mask=self._distillation_metric_mask(
                 classes, 
                 teacher_labels, 
                 replay_mask, 
@@ -1501,6 +1503,23 @@ def run_self_tests() -> dict[str, str]:
     assert len(mapped_wrapper.prep_inputs_map(
         images, classes, tf.constant([False, True])
     )) == 7
+    noise_teacher = wrapper.snapshot_teacher_network("raw")
+    noise_distilled = make_wrapper(
+        teacher_network=noise_teacher,
+        noise_distil_loss_coef=1.,
+    )
+    noise_distilled._switch_train_part("generator")
+    noise_distilled._switch_test_part("generator")
+    noise_distilled._preprocess_training = True
+    mapped_noise_generator = noise_distilled.prep_inputs_map(images, classes)
+    assert len(mapped_noise_generator) == 9
+    assert "noise_distil_loss" in noise_distilled.generator_train_step(
+        mapped_noise_generator
+    )
+    noise_distilled._preprocess_training = None
+    assert "noise_distil_loss" in noise_distilled.generator_test_step(
+        (images, classes)
+    )
 
     capped = make_wrapper(
         clf_train_noisified_max_timesteps=2, 
@@ -1574,8 +1593,9 @@ def run_self_tests() -> dict[str, str]:
             clf_distil_token_type="new_weight",
         ),
         defer_teacher=True,
-        distil_loss_coef=1.0,
-        distil_scope="replay_only",
+        noise_distil_loss_coef=1.0,
+        clf_distil_loss_coef=1.0,
+        clf_distil_scope="replay_only",
     )
     assert continual_v2.teacher_network is None
     assert continual_v2.use_clf_distil_loss is False
@@ -1602,7 +1622,7 @@ def run_self_tests() -> dict[str, str]:
         tf.constant([2], dtype=tf.uint8),
         tf.constant([True]),
     )
-    assert len(mapped_generator) == 7
+    assert len(mapped_generator) == 9
     continual_v2._switch_test_part("discriminator")
     mapped_discriminator = continual_v2.prep_inputs_map(
         images[:1],
@@ -1624,14 +1644,14 @@ def run_self_tests() -> dict[str, str]:
         epochs=1,
         verbose=0,
     )
-    assert "distil_loss" in continual_v2_history.history
+    assert "clf_distil_loss" in continual_v2_history.history
     continual_v2_eval = continual_v2.evaluate_discriminator(
         x=new_v2_dataset,
         network_name="raw",
         verbose=0,
         return_dict=True,
     )
-    assert "distil_loss" in continual_v2_eval
+    assert "clf_distil_loss" in continual_v2_eval
     continual_v2_generator_history = continual_v2.fit_generator(
         x=new_v2_dataset,
         epochs=1,

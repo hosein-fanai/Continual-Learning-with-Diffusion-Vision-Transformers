@@ -14,6 +14,10 @@ import numpy as np
 import tensorflow as tf
 
 from common.continual_reporting import (
+    continual_metrics,
+    observed_max,
+    observed_mean,
+    task_accuracy_summaries,
     write_continual_csv_artifacts,
     write_continual_tensorboard_summaries,
 )
@@ -92,6 +96,32 @@ def _details_fixture() -> dict[str, object]:
 
 class ContinualReportingTests(unittest.TestCase):
     """Verify complete, sparse, and TensorBoard continual report outputs."""
+
+    def test_continual_metric_math_is_nan_aware(self) -> None:
+        """A singleton acquisition row does not hide later observations."""
+
+        matrix = [
+            [np.nan, np.nan, np.nan],
+            [0.80, 0.75, np.nan],
+            [0.65, 0.70, 0.85],
+        ]
+        metrics = continual_metrics(matrix)
+
+        self.assertTrue(np.isnan(observed_mean([np.nan])))
+        self.assertTrue(np.isnan(observed_max([np.nan])))
+        self.assertAlmostEqual(metrics["average_forgetting"], 0.10)
+        self.assertAlmostEqual(metrics["backward_transfer"], -0.05)
+        new_accuracy, old_accuracy = task_accuracy_summaries(matrix)
+        np.testing.assert_allclose(
+            new_accuracy,
+            [np.nan, 0.75, 0.85],
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            old_accuracy,
+            [np.nan, 0.80, 0.675],
+            equal_nan=True,
+        )
 
     def test_csv_artifacts_preserve_scalar_metrics(self: "ContinualReportingTests") -> None:
         """Verify long-form rows, schedules, matrices, and summaries.
@@ -275,8 +305,8 @@ class ContinualReportingTests(unittest.TestCase):
             "loss": [3.0],
             "total_noise_loss": [2.0],
             "classifier_loss": [0.8],
-            "distil_loss": [0.2],
-            "distil_token_accuracy": [0.75],
+            "clf_distil_loss": [0.2],
+            "clf_distil_acc": [0.75],
         }
         details = {
             "task_classes": [[4]],
@@ -295,8 +325,8 @@ class ContinualReportingTests(unittest.TestCase):
         self.assertIn(("generator", "total_noise_loss"), observed)
         self.assertIn(("generator", "loss"), observed)
         self.assertIn(("classifier", "classifier_loss"), observed)
-        self.assertIn(("classifier", "distil_loss"), observed)
-        self.assertIn(("classifier", "distil_token_accuracy"), observed)
+        self.assertIn(("classifier", "clf_distil_loss"), observed)
+        self.assertIn(("classifier", "clf_distil_acc"), observed)
 
     def test_short_diagnostic_aliases_remain_supported(
         self: "ContinualReportingTests",

@@ -186,10 +186,10 @@ Student distillation settings are serializable model fields. A DiT classifier
 sets `classifier_only_distil_token: true` together with a non-null
 `clf_distil_token_type` (or shares a non-null inherited `distil_token_type`); a
 UNet classifier sets `classifier_only_distil_token: true`. Set
-`distil_type`, `distil_loss_coef`, `clf_acc_coef`, `distil_acc_coef`, and
+`clf_distil_type`, `clf_distil_loss_coef`, `clf_acc_coef`, `clf_distil_acc_coef`, and
 `ctr_acc_coef` in its diffusion-classifier wrapper.
 Token regularizer mappings accept `train_type: normal|distil|both` and
-`distil_type: hard|soft`. Continual configs additionally set
+`clf_distil_type: hard|soft`. Continual configs additionally set
 `continually_learn.use_distillation: true`. Task one trains without a teacher by
 default. Before each later task, the completed `snapshot_network_name`
 (`raw` or `ema`) student is copied into an independent frozen teacher, then the
@@ -200,7 +200,7 @@ EMA-enabled wrapper. An optional live teacher can initialize task one through
 lifecycle works with ordinary and progressive fitting and with both diffusion
 classifier wrappers.
 
-`distil_scope` accepts `old_classes`, `replay_only`, or the default
+`clf_distil_scope` accepts `old_classes`, `replay_only`, or the default
 `current_and_replay`. Replay-only scope requires generative replay; the learner
 adds row-level replay provenance to training batches, V2 retains it through
 mapped preprocessing, and teacher-targeted losses/metrics select only those

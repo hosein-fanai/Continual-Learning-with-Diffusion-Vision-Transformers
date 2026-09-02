@@ -330,7 +330,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             also contains the independent ``"distil_classes"`` distribution.
             A non-full resumed call returns only the decoder noise tensor for
             inherited VAE sampling. Full return additionally contains
-            ``cond``, ``features_list``, ``regs_list``, ``z_vals``, all four
+            ``cond``, ``features_list``, ``regs_list``, ``z_vals_list``, all four
             ``clf_*`` fields, and the decoder's ``decoder_cond``,
             ``decoder_features_list``, ``encoder_cond``, and
             ``encoder_features_list`` fields.
@@ -344,7 +344,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 self, inputs, min_depth
             )
 
-        _, encoder_cond, encoder_features, encoder_regs, encoder_z = self.encode(
+        _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (noisy_images, times, labels), 
             min_depth=min_depth, 
             training=training, 
@@ -368,7 +368,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             labels, 
             training=training, 
         )
-        classes, clf_cond, clf_features, clf_regs, clf_z = class_outputs[:5]
+        classes, clf_cond, clf_features, clf_regs, clf_z_vals_list = class_outputs[:5]
 
         outputs = {
             "noises": noises, 
@@ -383,11 +383,11 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 "cond": encoder_cond, 
                 "features_list": encoder_features, 
                 "regs_list": encoder_regs, 
-                "z_vals": encoder_z, 
+                "z_vals_list": encoder_z_vals_list, 
                 "clf_cond": clf_cond, 
                 "clf_features_list": clf_features, 
                 "clf_regs_list": clf_regs, 
-                "clf_z_vals": clf_z, 
+                "clf_z_vals_list": clf_z_vals_list, 
                 "decoder_cond": decoder_outputs["decoder_cond"], 
                 "decoder_features_list": decoder_outputs[
                     "decoder_features_list"
@@ -410,7 +410,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Run the encoder-context and decoder noise branches only.
 
@@ -418,7 +418,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             inputs (tuple[tf.Tensor, ...]): Three- or four-tensor input with the
                 same normalization as :meth:`call`.
             full_return (bool): Return the base-compatible five-item tuple
-                ``(noises, cond, features_list, regs_list, z_vals)``.
+                ``(noises, cond, features_list, regs_list, z_vals_list)``.
             training (bool | None): Keras training mode.
             min_depth (int): First encoder stage. With three inputs, values
                 above zero initialize the decoder from a zero image.
@@ -439,7 +439,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 self, inputs, min_depth
             )
 
-        _, encoder_cond, encoder_features, encoder_regs, encoder_z = self.encode(
+        _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (noisy_images, times, labels), 
             min_depth=min_depth, 
             training=training, 
@@ -461,7 +461,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 encoder_cond, 
                 encoder_features, 
                 encoder_regs, 
-                encoder_z, 
+                encoder_z_vals_list, 
             )
         return noises
 
@@ -595,7 +595,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Classify encoder features or the decoder's final noise prediction.
 
@@ -795,8 +795,8 @@ def run_self_tests() -> dict[str, str]:
     )
     assert set(full_outputs) == {
         "noises", "classes", "cond", "features_list", "regs_list", 
-        "z_vals", "clf_cond", "clf_features_list", "clf_regs_list", 
-        "clf_z_vals", "decoder_cond", "decoder_features_list", 
+        "z_vals_list", "clf_cond", "clf_features_list", "clf_regs_list", 
+        "clf_z_vals_list", "decoder_cond", "decoder_features_list", 
         "encoder_cond", "encoder_features_list", 
     }
     assert full_outputs["noises"].shape == (2, 4, 4, 1)
@@ -1305,6 +1305,10 @@ def run_self_tests() -> dict[str, str]:
         )
         assert len(restored_wrapper.network.weights) == len(
             source_wrapper.network.weights
+        ), (
+            type(source_wrapper).__name__,
+            len(source_wrapper.network.weights),
+            len(restored_wrapper.network.weights),
         )
         for source, restored in zip(
             source_wrapper.network.weights, 

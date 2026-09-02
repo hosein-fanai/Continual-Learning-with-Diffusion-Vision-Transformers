@@ -26,6 +26,7 @@ from common.learner import (
     _sample_diffusion_replay,
 )
 from common.mechanistic import calibration_metrics, replay_quality_metrics
+from common.recovery import fingerprint_state
 from common.runtime import derive_seed
 
 
@@ -458,6 +459,33 @@ class ResearchControlTests(unittest.TestCase):
         self.assertEqual(sampled.dtype, np.dtype("float32"))
         model.sample.assert_not_called()
 
+    def test_run_identity_authenticates_diffusion_scale(self) -> None:
+        """Bind preprocessing scale to checkpoints and replay-cache identity."""
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "common.learner.fingerprint_state",
+            wraps=fingerprint_state,
+        ) as fingerprint_mock:
+            template_path = Path(directory) / "tiny_classifier.h5"
+            self._write_template(template_path)
+            details = _run_continual_tasks(
+                **self._run_args(template_path),
+                baseline="cumulative",
+            )
+
+        expected_scale = {"data_min": 0., "data_range": 1.}
+        self.assertEqual(
+            details["run_descriptor"]["data"]["diffusion_scale"],
+            expected_scale,
+        )
+        cache_descriptor = next(
+            call.args[0]
+            for call in fingerprint_mock.call_args_list
+            if call.args and isinstance(call.args[0], dict)
+            and "train_inputs" in call.args[0]
+        )
+        self.assertEqual(cache_descriptor["diffusion_scale"], expected_scale)
+
     def test_fixed_total_buffer_exposure_is_exact(self) -> None:
         """Match current and old example exposure despite a tiny reservoir.
 
@@ -803,7 +831,31 @@ class ResearchControlTests(unittest.TestCase):
                 context_fingerprint="b" * 64,
             )
             self.assertNotEqual(first_path, second_path)
-            self.assertIn("classes-7-5", first_path.name)
+            self.assertIn("classes-", first_path.name)
+            legacy_path = Path(directory) / (
+                "context-aaaaaaaaaaaaaaaa_task-0002_"
+                "classes-7-5_candidates-3.npz"
+            )
+            legacy_path.touch()
+            self.assertEqual(
+                _replay_cache_path(
+                    directory,
+                    1,
+                    [7, 5],
+                    3,
+                    context_fingerprint="a" * 64,
+                ),
+                legacy_path,
+            )
+            legacy_path.unlink()
+            long_path = _replay_cache_path(
+                directory,
+                99,
+                range(100),
+                1_000,
+                context_fingerprint="a" * 64,
+            )
+            self.assertLess(len(long_path.name), 100)
 
             written = _cached_replay_candidates(
                 samples,
@@ -866,7 +918,7 @@ class ResearchControlTests(unittest.TestCase):
             raise FileExistsError(destination)
 
         with tempfile.TemporaryDirectory() as directory, patch(
-            "common.learner.os.link",
+            "common.replay_buffer.os.link",
             side_effect=commit_then_report_collision,
         ) as link_mock:
             committed = _cached_replay_candidates(

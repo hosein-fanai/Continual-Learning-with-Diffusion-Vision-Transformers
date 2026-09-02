@@ -13,6 +13,8 @@ import numpy as np
 import tensorflow as tf
 
 from common.recovery import (
+    SCHEMA_VERSION,
+    TaskCheckpoint,
     capture_rng_state,
     find_latest_task_checkpoint,
     fingerprint_state,
@@ -68,7 +70,7 @@ def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
         p_uncond=0.0,
         mask_by_nulls=False,
         defer_teacher=True,
-        distil_loss_coef=1.0,
+        clf_distil_loss_coef=1.0,
         seed=seed,
     )
     wrapper.compile(
@@ -81,6 +83,31 @@ def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
 
 class RecoveryTests(unittest.TestCase):
     """Exercise committed discovery, state, replay, and TF optimizer recovery."""
+
+    def test_task_checkpoint_state_exposes_recovery_cursor(self) -> None:
+        """The integration mapping must combine state, schedule, and cursor."""
+
+        checkpoint = TaskCheckpoint(
+            task_dir=Path("task-0000"),
+            completed_task_index=0,
+            next_task_index=1,
+            class_order=(4, 2),
+            task_groups=((4,), (2,)),
+            experiment_state={"accuracy": 0.75},
+            rng_state={"schema_version": SCHEMA_VERSION},
+            replay_state=None,
+            fingerprint="test-fingerprint",
+        )
+
+        self.assertEqual(checkpoint.state, {
+            "accuracy": 0.75,
+            "completed_task_index": 0,
+            "next_task_index": 1,
+            "class_order": [4, 2],
+            "task_groups": [[4], [2]],
+            "rng_state": {"schema_version": SCHEMA_VERSION},
+            "fingerprint": "test-fingerprint",
+        })
 
     @staticmethod
     def _create_optimizer_slots(
@@ -311,7 +338,7 @@ class RecoveryTests(unittest.TestCase):
             test_network_name="ema",
             test_steps=2,
             defer_teacher=True,
-            distil_loss_coef=1.0,
+            clf_distil_loss_coef=1.0,
             seed=47,
         )
         teacher = wrapper.snapshot_teacher_network("ema")

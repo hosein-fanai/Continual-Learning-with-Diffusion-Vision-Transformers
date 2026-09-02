@@ -1084,7 +1084,7 @@ class DiTClassifier(DiffusionTransformer):
             ordinary class/average path and the optional distillation path.
         """
 
-        classifier = models.Sequential( # TODO: build it as a functional model
+        classifier = models.Sequential(
             name=f"{self.name_prefix}{name}"
         )
 
@@ -1127,8 +1127,9 @@ class DiTClassifier(DiffusionTransformer):
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
+        min_depth: int = 0, 
         training: bool | None = None
-    ) -> dict:
+    ) -> dict[str, object] | tf.Tensor:
         """Predict diffusion noise and class probabilities in one pass.
 
         Args:
@@ -1142,16 +1143,20 @@ class DiTClassifier(DiffusionTransformer):
             [B,num_classes]}``. With a distillation token it also contains
             the independent ``"distil_classes"`` distribution in both training
             and inference modes. With ``full_return=True``, it also contains
-            ``cond``, ``features_list``, ``regs_list``, and ``z_vals`` for the
+            ``cond``, ``features_list``, ``regs_list``, and ``z_vals_list`` for the
             main branch plus ``clf_cond``, ``clf_features_list``,
-            ``clf_regs_list``, and ``clf_z_vals`` for the classifier branch.
+            ``clf_regs_list``, and ``clf_z_vals_list`` for the classifier branch.
         """
 
-        noises, cond, features_list, regs_list, z_vals = super().call(
+        noises, cond, features_list, regs_list, z_vals_list = super().call(
             inputs, 
             full_return=True, 
-            training=training
+            training=training,
+            min_depth=min_depth
         )
+        if min_depth != 0:
+            return noises
+
         outputs = self.compute_class(
             features_list, 
             noises, 
@@ -1169,11 +1174,11 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["cond"] = cond
             output_dict["features_list"] = features_list
             output_dict["regs_list"] = regs_list
-            output_dict["z_vals"] = z_vals
+            output_dict["z_vals_list"] = z_vals_list
             output_dict["clf_cond"] = outputs[1]
             output_dict["clf_features_list"] = outputs[2]
             output_dict["clf_regs_list"] = outputs[3]
-            output_dict["clf_z_vals"] = outputs[4]
+            output_dict["clf_z_vals_list"] = outputs[4]
 
         # Expose both component distributions whenever distillation is active.
         if len(outputs) > 5:
@@ -1215,7 +1220,7 @@ class DiTClassifier(DiffusionTransformer):
         training: bool | None = None
     ) -> tf.Tensor | tuple[
         tf.Tensor, tf.Tensor, list[tf.Tensor], list[tf.Tensor], 
-        tuple[tf.Tensor, tf.Tensor]
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Run only the inherited diffusion noise-prediction branch.
 
@@ -1259,11 +1264,11 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             tuple: ``(classes, clf_cond, clf_features_list, clf_regs_list,
-            clf_z_vals)``. When distillation is active, ``distil_classes`` is
+            clf_z_vals_list)``. When distillation is active, ``distil_classes`` is
             appended as the sixth value. Both probability distributions remain
             independent in training and inference. Features index 0 is
             classifier depth 0, regularizer entries may be None, and latent
-            statistics are ``(mean, log_variance)`` or ``(None, None)``.
+            statistics are an ordered list of ``(mean, log_variance)`` pairs.
         """
 
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
@@ -1280,7 +1285,7 @@ class DiTClassifier(DiffusionTransformer):
 
         clf_features_list = []
         clf_regs_list = [z]
-        clf_z_vals = (None, None)
+        clf_z_vals_list = []
         for i, layers_dict in enumerate(self.clf_layers_dicts):
             x = layers_dict[self.FA](
                 features_list, 
@@ -1297,8 +1302,8 @@ class DiTClassifier(DiffusionTransformer):
                     if self.classifier_only_cls_token:
                         x = self.patch_embedder(
                             noises, 
-                            output_grid_size=self._current_resolution // self.patch_size if \
-                                            self.image_size != self._current_resolution \
+                            output_grid_size=self._current_resolution // self.patch_size if 
+                                            self.image_size != self._current_resolution 
                                             else None, 
                             training=training
                         )
@@ -1332,7 +1337,8 @@ class DiTClassifier(DiffusionTransformer):
                     self.clf_distil_token_type, 
                     time_embeds=time_embeds, 
                     label_embeds=label_embeds, 
-                    times=times, labels=labels, 
+                    times=times, 
+                    labels=labels, 
                     training=training
                 ) if self.classifier_only_distil_token and \
                     self.clf_distil_token_type is not None else x
@@ -1406,13 +1412,9 @@ class DiTClassifier(DiffusionTransformer):
             clf_features_list.append(x)
             clf_regs_list.append(z)
             if x_mean is not None and \
-            self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten":
-                clf_z_vals = (
-                    (x_mean, x_log_var) if clf_z_vals[0] is None else (
-                        tf.concat((clf_z_vals[0], x_mean), axis=-1),
-                        tf.concat((clf_z_vals[1], x_log_var), axis=-1),
-                    )
-                )
+            self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" \
+            and bool(self.clf_reshaper_kwargs.get("add_kl", False)):
+                clf_z_vals_list.append((x_mean, x_log_var))
 
         classes = self.classifier_feature_extractor(
             x, 
@@ -1435,12 +1437,12 @@ class DiTClassifier(DiffusionTransformer):
 
             return (
                 classes, clf_cond, clf_features_list, 
-                clf_regs_list, clf_z_vals, distil_classes
+                clf_regs_list, clf_z_vals_list, distil_classes
             )
 
         return (
             classes, clf_cond, clf_features_list, 
-            clf_regs_list, clf_z_vals
+            clf_regs_list, clf_z_vals_list
         )
 
     def predict_class(
@@ -1468,7 +1470,8 @@ class DiTClassifier(DiffusionTransformer):
             distribution when active.
         """
 
-        max_encoder_num = self.max_encoder_num if max_encoder_num is None else max_encoder_num
+        max_encoder_num = self.max_encoder_num if max_encoder_num is None \
+                        else max_encoder_num
 
         x, cond, features_list, _, _ = self.encode(
             inputs, 
@@ -2009,9 +2012,9 @@ def run_self_tests() -> dict[str, str]:
     model = make_model()
     outputs = model(inputs, full_return=True, training=False)
     assert set(outputs) == {
-        "noises", "cond", "features_list", "regs_list", "z_vals",
+        "noises", "cond", "features_list", "regs_list", "z_vals_list",
         "classes", "clf_cond", "clf_features_list", "clf_regs_list",
-        "clf_z_vals",
+        "clf_z_vals_list",
     }
     assert outputs["noises"].shape == (2, 4, 4, 1)
     assert outputs["classes"].shape == (2, 2)
@@ -2272,8 +2275,10 @@ def run_self_tests() -> dict[str, str]:
         )
         reshaped_outputs = reshaped(inputs, full_return=True, training=False)
         assert reshaped_outputs["classes"].shape == (2, 2)
-        latent = reshaped_outputs["clf_z_vals"]
-        assert latent[0] is not None and latent[1] is not None
+        latent = reshaped_outputs["clf_z_vals_list"]
+        assert len(latent) == int(add_kl)
+        if add_kl:
+            assert latent[0][0].shape == latent[0][1].shape
 
     regularized = make_model(
         clf_cls_token_regularizer_ids=[None], 

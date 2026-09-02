@@ -16,6 +16,7 @@ from common.config import (
     TrainingConfig,
     load_config,
     normalize_training_task,
+    resolve_continual_schedule,
     save_config,
 )
 from common.replay_buffer import ReplayBuffer
@@ -87,6 +88,7 @@ class ReplayConfigTests(unittest.TestCase):
             path = Path(directory) / "config.yaml"
             save_config(config, path)
             restored = load_config(path)
+        self.assertEqual(restored, config)
         self.assertTrue(restored.continually_learn.use_buffer)
         self.assertEqual(
             restored.continually_learn.optimizer_steps_per_epoch,
@@ -122,6 +124,46 @@ class ReplayConfigTests(unittest.TestCase):
 
 class CoreConfigValidationTests(unittest.TestCase):
     """Verify shared task, result-path, and clipping contracts."""
+
+    def test_nested_model_sections_and_kwargs_are_independent(self) -> None:
+        """Nested mappings must convert to configs and return copied kwargs."""
+
+        config = Config(
+            dataset={"batch_size": 4},
+            model={
+                "diffusion_transformer": {"dim": 16},
+                "diffusion_classifier": {
+                    "clf_distil_temperature": 0.0,
+                    "clf_distil_scope": "EXPERIMENTAL",
+                },
+            },
+        )
+        self.assertEqual(config.dataset.batch_size, 4)
+        self.assertEqual(config.model.diffusion_transformer.dim, 16)
+        self.assertEqual(
+            config.model.diffusion_classifier.clf_distil_temperature,
+            0.0
+        )
+        self.assertEqual(
+            config.model.diffusion_classifier.clf_distil_scope,
+            "EXPERIMENTAL",
+        )
+
+        kwargs_copy = config.model.diffusion_transformer.kwargs()
+        kwargs_copy["dim"] = 99
+        self.assertEqual(config.model.diffusion_transformer.dim, 16)
+
+    def test_explicit_continual_schedule_is_preserved(self) -> None:
+        """Supplied class order and task groups must remain authoritative."""
+
+        order, groups = resolve_continual_schedule(
+            3,
+            class_order=[2, 0, 1],
+            task_groups=[[2], [0, 1]],
+            available_class_num=3,
+        )
+        self.assertEqual(order, [2, 0, 1])
+        self.assertEqual(groups, [[2], [0, 1]])
 
     def test_task_config_is_passive_and_public_normalizer_is_strict(self) -> None:
         """Task values are interpreted only at task-bearing entry points.

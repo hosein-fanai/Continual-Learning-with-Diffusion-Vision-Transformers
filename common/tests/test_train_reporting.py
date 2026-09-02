@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import warnings
 
 from pathlib import Path
 from unittest.mock import patch
@@ -52,6 +53,51 @@ class _FakeDiffusion:
 
 class TrainReportingTests(unittest.TestCase):
     """Verify continual visual artifacts and isolated report RNG streams."""
+
+    def test_singleton_validation_accuracy_is_warning_free(self) -> None:
+        """Keep an undefined first-task validation score as NaN."""
+
+        inputs = tf.keras.Input((1,))
+        classifier = tf.keras.Model(inputs, tf.keras.layers.Dense(1)(inputs))
+        details = {
+            "model": classifier,
+            "generative_model": None,
+            "accuracies": [np.nan, 0.70, 0.80],
+            "ensemble_accuracies": [],
+            "validation_accuracy_matrix": [
+                [np.nan, np.nan, np.nan],
+                [0.60, 0.70, np.nan],
+                [0.50, 0.65, 0.80],
+            ],
+            "histories": [{}, {}, {}],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "common.learner._run_continual_tasks",
+            return_value=details,
+        ), warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            history = train_model(
+                model={"classifier_name": "tiny", "classifier": classifier},
+                trainset=object(),
+                results_path=temporary,
+                task="continual",
+                dataset_name="mnist",
+                epochs=1,
+                batch_size=2,
+                show_images=False,
+                save_gifs=False,
+                save_weights=False,
+                use_tensorboard=False,
+                verbose=0,
+                continually_learn_kwargs={
+                    "class_num": 3,
+                    "task_groups": [[0], [1], [2]],
+                    "baseline": "cumulative",
+                },
+            )
+
+        self.assertTrue(np.isnan(history["task_val_accuracy"][0]))
 
     def test_configured_continual_seed_is_forwarded_once(self) -> None:
         """Use the effective training seed without duplicate keyword routing."""
@@ -200,6 +246,34 @@ class TrainReportingTests(unittest.TestCase):
             2.5,
             19,
         )
+
+    def test_continual_report_all_nan_means_are_warning_free(self) -> None:
+        """Undefined singleton summaries remain NaN without RuntimeWarning."""
+
+        bundle = {"generative_model": None, "continual_details": {}}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("common.train.plot_history"), \
+                patch("common.train._report_final_visuals"), \
+                warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = report(
+                history={
+                    "continual_accuracy": [np.nan],
+                    "continual_ensemble_accuracy": [np.nan],
+                },
+                model=bundle,
+                trainset=object(),
+                results_path=temporary,
+                show_history_plot=False,
+                save_history_plot=False,
+                save_csv=False,
+                show_final_images=False,
+                save_final_images=False,
+                save_final_gifs=False,
+            )
+
+        self.assertTrue(np.isnan(result["average_accuracy"]))
+        self.assertTrue(np.isnan(result["average_ensemble_accuracy"]))
 
     def test_diffusion_final_gif_uses_derived_seed(
         self: "TrainReportingTests",

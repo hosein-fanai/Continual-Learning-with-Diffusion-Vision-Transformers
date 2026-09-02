@@ -19,17 +19,27 @@ per-epoch measurements as inferential replicates.
 
 from __future__ import annotations
 
+from scipy import stats
+
 import csv
+
 import hashlib
+
 import json
+
 import math
+
 import os
+
 import random
+
 import re
+
 import statistics
 
-from collections.abc import Mapping, Sequence
 from pathlib import Path
+
+from collections.abc import Mapping, Sequence
 
 from common.validation import require
 
@@ -951,210 +961,6 @@ def read_long_results(
         return [_normalize_result_row(row) for row in reader]
 
 
-def _beta_continued_fraction(a: float, b: float, x: float) -> float:
-    """Evaluate the incomplete-beta continued fraction numerically.
-
-    Args:
-        a (float): Positive first beta shape parameter.
-        b (float): Positive second beta shape parameter.
-        x (float): Evaluation point strictly between zero and one.
-
-    Returns:
-        float: Continued-fraction factor used by regularized beta.
-    """
-
-    maximum_iterations = 200
-    tolerance = 3.0e-14
-    minimum = 1.0e-300
-    qab = a + b
-    qap = a + 1.0
-    qam = a - 1.0
-    c = 1.0
-    d = 1.0 - qab * x / qap
-
-    # Avoid division by a floating-point zero during initialization.
-    if abs(d) < minimum:
-        d = minimum
-
-    d = 1.0 / d
-    result = d
-
-    for iteration in range(1, maximum_iterations + 1):
-        doubled = 2 * iteration
-        coefficient = (
-            iteration * (b - iteration) * x
-            / ((qam + doubled) * (a + doubled))
-        )
-        d = 1.0 + coefficient * d
-
-        # Stabilize the first half-step denominator.
-        if abs(d) < minimum:
-            d = minimum
-
-        c = 1.0 + coefficient / c
-
-        # Stabilize the first half-step numerator.
-        if abs(c) < minimum:
-            c = minimum
-
-        d = 1.0 / d
-        result *= d * c
-
-        coefficient = -(
-            (a + iteration) * (qab + iteration) * x
-            / ((a + doubled) * (qap + doubled))
-        )
-        d = 1.0 + coefficient * d
-
-        # Stabilize the second half-step denominator.
-        if abs(d) < minimum:
-            d = minimum
-
-        c = 1.0 + coefficient / c
-        # Stabilize the second half-step numerator.
-        if abs(c) < minimum:
-            c = minimum
-
-        d = 1.0 / d
-        delta = d * c
-        result *= delta
-        # Stop once the multiplicative update is numerically negligible.
-        if abs(delta - 1.0) <= tolerance:
-            return result
-
-    raise ArithmeticError("Incomplete-beta continued fraction did not converge.")
-
-
-def _regularized_beta(x: float, a: float, b: float) -> float:
-    """Evaluate the regularized incomplete beta function without SciPy.
-
-    Args:
-        x (float): Evaluation point in the closed unit interval.
-        a (float): Positive first beta shape parameter.
-        b (float): Positive second beta shape parameter.
-
-    Returns:
-        float: Regularized incomplete beta value.
-    """
-
-    # Enforce the mathematical domain before evaluating logarithms.
-    if a <= 0.0 or b <= 0.0 or x < 0.0 or x > 1.0:
-        raise ValueError("Regularized beta arguments are outside their domain.")
-    # Return the exact lower boundary.
-    if x == 0.0:
-        return 0.0
-    # Return the exact upper boundary.
-    if x == 1.0:
-        return 1.0
-
-    factor = math.exp(
-        math.lgamma(a + b)
-        - math.lgamma(a)
-        - math.lgamma(b)
-        + a * math.log(x)
-        + b * math.log1p(-x)
-    )
-
-    # Use the branch with faster continued-fraction convergence.
-    if x < (a + 1.0) / (a + b + 2.0):
-        return factor * _beta_continued_fraction(a, b, x) / a
-
-    return 1.0 - factor * _beta_continued_fraction(b, a, 1.0 - x) / b
-
-
-def _student_t_cdf(value: float, degrees_of_freedom: int) -> float:
-    """Evaluate a Student t cumulative probability without required SciPy.
-
-    Args:
-        value (float): Student t variate.
-        degrees_of_freedom (int): Positive integer degrees of freedom.
-
-    Returns:
-        float: Cumulative probability at ``value``.
-    """
-
-    # A t distribution is undefined without positive degrees of freedom.
-    if isinstance(degrees_of_freedom, bool) \
-    or not isinstance(degrees_of_freedom, int) \
-    or degrees_of_freedom < 1:
-        raise ValueError("degrees_of_freedom must be a positive integer.")
-
-    # Symmetry gives the exact central probability.
-    if value == 0.0:
-        return 0.5
-
-    freedom = float(degrees_of_freedom)
-    ratio = freedom / (freedom + value * value)
-    tail = 0.5 * _regularized_beta(ratio, freedom / 2.0, 0.5)
-
-    # Reflect the lower-tail expression for positive variates.
-    if value > 0.0:
-        return 1.0 - tail
-
-    return tail
-
-
-def _student_t_critical_95(degrees_of_freedom: int) -> float:
-    """Return the two-sided 95% Student t critical value numerically.
-
-    Args:
-        degrees_of_freedom (int): Positive integer degrees of freedom.
-
-    Returns:
-        float: Quantile at cumulative probability 0.975.
-    """
-
-    # Validate through the common CDF domain check.
-    _student_t_cdf(0.0, degrees_of_freedom)
-    lower = 0.0
-    upper = 1.0
-
-    # Expand a finite bracket around the target quantile.
-    while _student_t_cdf(upper, degrees_of_freedom) < 0.975:
-        upper *= 2.0
-    for _ in range(100):
-        midpoint = (lower + upper) / 2.0
-
-        # Retain the half-interval containing the target quantile.
-        if _student_t_cdf(midpoint, degrees_of_freedom) < 0.975:
-            lower = midpoint
-        # Retain the complementary half when the CDF is above target.
-        else:
-            upper = midpoint
-
-    return (lower + upper) / 2.0
-
-
-def _optional_paired_t_p_value(
-    condition_a_values: Sequence[float], 
-    condition_b_values: Sequence[float]
-) -> float | None:
-    """Compute a two-sided paired t p-value when SciPy is installed.
-
-    Args:
-        condition_a_values (Sequence[float]): First values in paired order.
-        condition_b_values (Sequence[float]): Second values in paired order.
-
-    Returns:
-        float | None: Two-sided p-value, or ``None`` without a finite SciPy
-        result.
-    """
-
-    try:
-        from scipy import stats
-    except ImportError:
-        return None
-
-    result = stats.ttest_rel(condition_a_values, condition_b_values)
-    p_value = float(result.pvalue)
-
-    # Treat undefined degenerate SciPy results as unavailable, not evidence.
-    if not math.isfinite(p_value):
-        return None
-
-    return p_value
-
-
 def paired_run_statistics(
     rows: Sequence[Mapping[str, object]], 
     *, 
@@ -1334,18 +1140,23 @@ def paired_run_statistics(
     mean_difference = statistics.fmean(differences)
     sample_sd = statistics.stdev(differences)
     standard_error = sample_sd / math.sqrt(pair_count)
-    critical = _student_t_critical_95(pair_count - 1)
+    critical = float(stats.t.ppf(0.975, pair_count - 1))
     margin = critical * standard_error
 
     # Define the degenerate zero-variance statistic without dividing by zero.
     if standard_error == 0.0 and mean_difference == 0.0:
         t_statistic = 0.0
+        p_value = None
     # A constant nonzero difference has an unbounded t statistic.
     elif standard_error == 0.0:
         t_statistic = math.copysign(math.inf, mean_difference)
+        p_value = 0.0
     # Use the paired-difference standard error for the ordinary case.
     else:
         t_statistic = mean_difference / standard_error
+        p_value = float(stats.ttest_rel(a_values, b_values).pvalue)
+        if not math.isfinite(p_value):
+            p_value = None
 
     return {
         "manifest_hash": selected_hash, 
@@ -1367,7 +1178,7 @@ def paired_run_statistics(
         "t_critical_95": critical, 
         "ci_95_lower": mean_difference - margin, 
         "ci_95_upper": mean_difference + margin, 
-        "paired_t_p_value": _optional_paired_t_p_value(a_values, b_values), 
+        "paired_t_p_value": p_value,
         "tasks_used_as_replicates": False
     }
 

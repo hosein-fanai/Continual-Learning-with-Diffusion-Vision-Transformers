@@ -18,7 +18,7 @@ UNetFullOutput = tuple[
     tf.Tensor, 
     list[tf.Tensor | None], 
     list[tf.Tensor | None], 
-    tuple[tf.Tensor | None, tf.Tensor | None], 
+    list[tuple[tf.Tensor, tf.Tensor]],
 ]
 """Five-item full return contract shared with the diffusion wrapper."""
 

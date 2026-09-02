@@ -37,6 +37,7 @@ from common.model import get_model
 from common.runtime import configure_runtime, derive_seed, effective_seed
 from common.recovery import find_latest_task_checkpoint, load_task_checkpoint
 from common.continual_reporting import (
+    observed_mean,
     write_continual_csv_artifacts, 
     write_continual_tensorboard_summaries
 )
@@ -914,7 +915,7 @@ def train_model(
             else details.get("validation_accuracy_matrix", [])
         )
         final_val_accuracy = [
-            float(np.nanmean(np.asarray(row)[:index + 1]))
+            observed_mean(np.asarray(row)[:index + 1])
             for index, row in enumerate(selected_validation_matrix)
         ]
 
@@ -1406,9 +1407,7 @@ def report(
     # Summarize continual bundles from their recorded task accuracies.
     if is_continual:
         eval_results = {
-            "average_accuracy": float(np.nanmean(
-                history["continual_accuracy"]
-            )), 
+            "average_accuracy": observed_mean(history["continual_accuracy"]),
             "final_accuracy": float(history["continual_accuracy"][-1])
         }
 
@@ -1434,9 +1433,9 @@ def report(
         if "continual_ensemble_accuracy" in history \
         and len(history["continual_ensemble_accuracy"]) > 0:
             eval_results.update({
-                "average_ensemble_accuracy": float(np.nanmean(
+                "average_ensemble_accuracy": observed_mean(
                     history["continual_ensemble_accuracy"]
-                )), 
+                ),
                 "final_ensemble_accuracy": float(
                     history["continual_ensemble_accuracy"][-1]
                 )

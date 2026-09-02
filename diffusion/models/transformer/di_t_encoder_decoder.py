@@ -37,7 +37,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
     The ordinary result is the decoder's noise/image tensor, matching
     :class:`DiffusionTransformer`.  ``full_return=True`` returns
-    ``(noises, encoder_cond, encoder_features, encoder_regs, encoder_z_vals)``.
+    ``(noises, encoder_cond, encoder_features, encoder_regs,
+    encoder_z_vals_list)``.
     Decoder intermediates remain available from ``model.decoder``.
 
     Attributes:
@@ -521,9 +522,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
         # Reuse encoder images as decoder inputs for the standard three-tensor call.
         if len(inputs) == 3:
             encoder_input, times, labels = inputs
+            batch_input = encoder_input[0] if min_depth > 0 and isinstance(
+                encoder_input, (list, tuple)
+            ) else encoder_input
             decoder_images = encoder_input if min_depth == 0 else tf.zeros(
                 (
-                    tf.shape(encoder_input)[0], 
+                    tf.shape(batch_input)[0],
                     self.decoder.current_resolution, 
                     self.decoder.current_resolution, 
                     self.decoder.channels, 
@@ -595,7 +599,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Encode context and predict noise with the attached decoder.
 
@@ -617,7 +621,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             tf.Tensor | tuple: Decoder image/noise ``[B,H,W,C]``. Full return is
             ``(noises, encoder_cond, encoder_features, encoder_regs,
-            encoder_z_vals)``; condition, skipped features/regularizers, and
+            encoder_z_vals_list)``; condition, skipped features/regularizers,
+            and
             absent latent statistics may contain ``None``.
 
         Raises:
@@ -628,7 +633,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         encoder_images, times, labels, decoder_images = \
             self._split_encoder_decoder_inputs(inputs, min_depth)
 
-        _, encoder_cond, encoder_features, encoder_regs, encoder_z = self.encode(
+        _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (encoder_images, times, labels), 
             min_depth=min_depth, 
             training=training, 
@@ -645,7 +650,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         # Return encoder intermediates and auxiliary outputs only when requested.
         if full_return:
-            return noises, encoder_cond, encoder_features, encoder_regs, encoder_z
+            return (
+                noises, encoder_cond, encoder_features, encoder_regs,
+                encoder_z_vals_list
+            )
         return noises
 
     def predict_noise(
@@ -661,7 +669,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        tuple[tf.Tensor | None, tf.Tensor | None], 
+        list[tuple[tf.Tensor, tf.Tensor]],
     ]:
         """Run the standard encoder/decoder noise path.
 

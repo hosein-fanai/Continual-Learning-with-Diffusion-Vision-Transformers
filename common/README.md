@@ -163,7 +163,7 @@ classifier with independent optimizers; progressive fitting changes only the
 generator phase and keeps the classifier on ordinary `fit`. Classifier noising
 caps mean clean timestep 0 for `None`, the full horizon for `-1`, or `[0, cap)`
 for a positive cap, independently of progressive generator bounds. Reporting
-evaluates both phases. A continual `distil_scope="replay_only"` carries an
+evaluates both phases. A continual `clf_distil_scope="replay_only"` carries an
 explicit row-level provenance mask through raw or mapped V2 batches, restricts
 teacher-targeted losses/metrics to replay rows, and requires generative replay.
 

@@ -84,7 +84,7 @@ timestep/label condition; every later depth is one tracked `LayerDict` in
 `layers_dicts`. The standard hierarchy uses residual encoder stacks,
 downsampling, a bottleneck, then upsampling with encoder skips. Its real
 `full_return=True` result is
-`(noise, condition, features_list, regs_list, z_vals)`.
+`(noise, condition, features_list, regs_list, z_vals_list)`.
 
 Set a KL bottleneck directly on the model:
 
@@ -124,7 +124,7 @@ generator's current lower bound. Call `evaluate_generator`,
 `evaluate_discriminator`, `evaluate(test_part=...)`, or
 `evaluate(eval_both=True)`; evaluating without a selected phase is rejected,
 while `common.train.report` selects both. For continual
-`distil_scope="replay_only"`, an explicit third replay-provenance tensor is
+`clf_distil_scope="replay_only"`, an explicit third replay-provenance tensor is
 preserved through raw and mapped V2 discriminator batches so teacher-targeted
 losses and their accuracy metric use replay rows only.
 

@@ -367,11 +367,11 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertAlmostEqual(result["t_critical_95"], 3.182446305284263)
         self.assertAlmostEqual(result["ci_95_lower"], 0.445739743239121)
         self.assertAlmostEqual(result["ci_95_upper"], 4.554260256760879)
+        self.assertAlmostEqual(
+            result["paired_t_p_value"],
+            0.030466291662170977,
+        )
         self.assertFalse(result["tasks_used_as_replicates"])
-        # SciPy is optional, so validate its result only when present.
-        if result["paired_t_p_value"] is not None:
-            self.assertGreaterEqual(result["paired_t_p_value"], 0.0)
-            self.assertLessEqual(result["paired_t_p_value"], 1.0)
 
         task_rows = copy.deepcopy(rows)
         task_rows[0]["analysis_unit"] = "task"
@@ -390,6 +390,28 @@ class ExperimentDesignTests(unittest.TestCase):
                 metric="final_average_accuracy",
             )
         self.assertEqual(tuple(rows[0]), LONG_RESULT_FIELDS)
+
+    def test_paired_statistics_keep_zero_variance_results_defined(self) -> None:
+        """Preserve the established outputs for identical paired conditions."""
+
+        rows = self._result_rows("a" * 64, phase="development")
+        for row in rows:
+            row["value"] = float(row["block_id"].split("-")[-1])
+
+        result = paired_run_statistics(
+            rows,
+            condition_a="a",
+            condition_b="b",
+            metric="final_average_accuracy",
+        )
+
+        self.assertEqual(result["mean_paired_difference"], 0.0)
+        self.assertEqual(result["sample_sd_paired_difference"], 0.0)
+        self.assertEqual(result["standard_error"], 0.0)
+        self.assertEqual(result["t_statistic"], 0.0)
+        self.assertEqual(result["ci_95_lower"], 0.0)
+        self.assertEqual(result["ci_95_upper"], 0.0)
+        self.assertIsNone(result["paired_t_p_value"])
 
     def test_confirmation_analysis_enforces_the_frozen_primary_contrast(self) -> None:
         """Bind confirmation collection and inference to preregistered choices.

@@ -13,7 +13,9 @@ from __future__ import annotations
 import numpy as np
 
 import csv
+
 import json
+
 import re
 
 from pathlib import Path
@@ -36,13 +38,13 @@ _CLASSIFIER_HISTORY_NAMES = frozenset((
     "clf_loss", 
     "clf_kl_loss", 
     "clf_ctr_loss", 
-    "distil_loss", 
+    "clf_distil_loss", 
     "classifier_accuracy", 
     "clf_accuracy", 
     "cls_token_accuracy", 
     "avg_pooling_accuracy", 
     "clf_ctr_accuracy", 
-    "distil_token_accuracy", 
+    "clf_distil_acc", 
     "total_accuracy"
 ))
 """Classifier/KD metrics embedded in a joint generator history."""
@@ -58,6 +60,85 @@ _TASK_DIAGNOSTIC_SOURCES = (
     ("mechanistic", "task_mechanistic_metrics", "mechanistic_metrics")
 )
 """Task diagnostics with canonical learner keys and legacy-friendly aliases."""
+
+
+def _observed(values: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Return non-NaN values as a float64 array."""
+
+    array = np.asarray(values, dtype="float64")
+    return array[~np.isnan(array)]
+
+
+def observed_mean(values: Sequence[float] | np.ndarray) -> float:
+    """Return the observed mean, or NaN when every value is unavailable."""
+
+    values = _observed(values)
+    return float(np.mean(values)) if values.size else float("nan")
+
+
+def observed_max(values: Sequence[float] | np.ndarray) -> float:
+    """Return the observed maximum, or NaN when every value is unavailable."""
+
+    values = _observed(values)
+    return float(np.max(values)) if values.size else float("nan")
+
+
+def continual_metrics(
+    accuracy_matrix: Sequence[Sequence[float]],
+) -> dict[str, float]:
+    """Compute task-balanced metrics from a continual accuracy matrix."""
+
+    matrix = np.asarray(accuracy_matrix, dtype="float64")
+    task_num = len(matrix)
+    if task_num == 0:
+        return {
+            "final_average_accuracy": np.nan,
+            "average_incremental_accuracy": np.nan,
+            "average_forgetting": np.nan,
+            "backward_transfer": np.nan,
+        }
+
+    row_averages = [
+        observed_mean(matrix[index, :index + 1])
+        for index in range(task_num)
+    ]
+    if task_num == 1:
+        average_forgetting = 0.
+        backward_transfer = 0.
+    else:
+        final_old = matrix[-1, :task_num - 1]
+        maxima = np.asarray([
+            observed_max(matrix[index:task_num - 1, index])
+            for index in range(task_num - 1)
+        ])
+        diagonal = np.asarray([
+            matrix[index, index] for index in range(task_num - 1)
+        ])
+        average_forgetting = observed_mean(maxima - final_old)
+        backward_transfer = observed_mean(final_old - diagonal)
+
+    return {
+        "final_average_accuracy": observed_mean(matrix[-1, :task_num]),
+        "average_incremental_accuracy": observed_mean(row_averages),
+        "average_forgetting": average_forgetting,
+        "backward_transfer": backward_transfer,
+    }
+
+
+def task_accuracy_summaries(
+    accuracy_matrix: Sequence[Sequence[float]],
+) -> tuple[list[float], list[float]]:
+    """Return current-task and prior-task macro accuracy after each task."""
+
+    new_task_accuracy = [
+        float(accuracy_matrix[index][index])
+        for index in range(len(accuracy_matrix))
+    ]
+    old_task_accuracy = [
+        np.nan if index == 0 else observed_mean(accuracy_matrix[index][:index])
+        for index in range(len(accuracy_matrix))
+    ]
+    return new_task_accuracy, old_task_accuracy
 
 
 def _python_value(value: object) -> object:

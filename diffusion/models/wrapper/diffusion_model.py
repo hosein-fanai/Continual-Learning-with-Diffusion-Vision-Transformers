@@ -10,8 +10,9 @@ from tensorflow.keras import metrics, losses, callbacks, optimizers
 
 import numpy as np
 
-from collections.abc import Mapping
 from importlib import import_module
+
+from collections.abc import Mapping
 from numbers import Integral, Real
 from typing import Literal, Sequence, get_args
 
@@ -24,7 +25,7 @@ from . import (
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
-from common.runtime import validate_model_dtype_policy
+from common.runtime import derive_seed, validate_model_dtype_policy
 from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
@@ -103,7 +104,7 @@ class DiffusionModel(ArgumentSaverModel):
         map_preprocess: bool = False, 
         map_num_parallel_calls: int | None = 1, 
         seen_classes: dict[object, int] = {}, 
-        noise_distil_coef: float = 0., 
+        noise_distil_loss_coef: float = 0., 
         seed: int | None = None, 
         **kwargs: object
     ) -> None:
@@ -182,7 +183,7 @@ class DiffusionModel(ArgumentSaverModel):
                 mapping restores dynamic growth and expands a smaller raw/EMA
                 topology before checkpoint weights are loaded. The normalized
                 dictionary is retained by reference in the wrapper config.
-            noise_distil_coef (float): Multiplier for matching a frozen
+            noise_distil_loss_coef (float): Multiplier for matching a frozen
                 teacher's noise prediction on the same noisy inputs.
             teacher_network (tf.keras.Model | None): Runtime-only frozen raw
                 diffusion network or wrapper used by noise distillation.
@@ -253,8 +254,9 @@ class DiffusionModel(ArgumentSaverModel):
         network_config = tf.keras.utils.serialize_keras_object(self.network)
         network_config["module"] = self.network.__class__.__module__
         self._init_config["network"] = network_config
-
+        self._init_config.pop("teacher_network", None)
         self._init_config["seen_classes"] = self.seen_classes
+
         self.image_size = self.network.image_size
         self.channels = self.network.channels
         self.timesteps = self.network.timesteps
@@ -278,8 +280,8 @@ class DiffusionModel(ArgumentSaverModel):
             self.ctr_loss_coef, 
             dtype=stable_dtype
         )
-        self.noise_distil_coef = tf.constant(
-            self.noise_distil_coef, 
+        self.noise_distil_loss_coef = tf.constant(
+            self.noise_distil_loss_coef, 
             dtype=stable_dtype
         )
         self.use_image_loss = bool(self.image_loss_coef > 0.)
@@ -288,7 +290,7 @@ class DiffusionModel(ArgumentSaverModel):
         self.train_noisified_max_timesteps = self.timesteps if self.train_noisified_max_timesteps == -1 \
                                             else int(self.train_noisified_max_timesteps)
         self.test_noisified_max_timesteps = 0 if self.test_noisified_max_timesteps is None \
-                                            else self.test_noisified_max_timestep
+                                            else self.test_noisified_max_timesteps
         self.test_noisified_max_timesteps = self.timesteps if self.test_noisified_max_timesteps == -1 \
                                             else int(self.test_noisified_max_timesteps)
         self.map_num_parallel_calls = tf.data.AUTOTUNE if self.map_num_parallel_calls is None \
@@ -370,12 +372,13 @@ class DiffusionModel(ArgumentSaverModel):
                 ),
                 f"{prefix}_noisified_max_timesteps must be an integer or None.",
             )
-            t_max = network.timesteps if raw_t_max in (None, -1) \
-                    else raw_t_max
+            t_max = 0 if raw_t_max is None else raw_t_max
+            t_max = network.timesteps if t_max == -1 else t_max
             require(
+                (t_min == 0 and t_max == 0) or
                 t_min < t_max <= network.timesteps,
-                f"{prefix}_noisified_max_timesteps must be greater than its "
-                f"minimum and no greater than {network.timesteps}.",
+                f"{prefix}_noisified_max_timesteps must be 0 for clean-only "
+                f"inputs or in ({t_min}, {network.timesteps}].",
             )
 
         require(local_vars["test_network_name"] in get_args(NetworkName), \
@@ -414,18 +417,18 @@ class DiffusionModel(ArgumentSaverModel):
 
         for name in (
             "noise_loss_coef", "image_loss_coef", 
-            "kl_loss_coef", "ctr_loss_coef", "noise_distil_coef"
+            "kl_loss_coef", "ctr_loss_coef", "noise_distil_loss_coef"
         ):
             value = local_vars[name]
             require(isinstance(value, Real) and \
                 not isinstance(value, bool) and np.isfinite(value) and value >= 0., \
                 f"{name} must be a finite nonnegative number.")
 
-        if local_vars["noise_distil_coef"] > 0.:
+        if local_vars["noise_distil_loss_coef"] > 0.:
             require(
                 local_vars["teacher_network"] is not None
                 or local_vars["defer_teacher"],
-                "teacher_network is required when noise_distil_coef is "
+                "teacher_network is required when noise_distil_loss_coef is "
                 "positive unless defer_teacher=True.",
             )
             require(
@@ -605,16 +608,17 @@ class DiffusionModel(ArgumentSaverModel):
         newly appended layer may enable either loss.
 
         Returns:
-            ``None``. ``use_noise_distil_loss``, ``use_kl_loss`` and ``use_ctr_loss`` 
-            are updated in place.
+            ``None``. ``use_noise_distil_loss``, ``use_kl_loss`` and 
+            ``use_ctr_loss`` are updated in place.
         """
 
         self.use_noise_distil_loss = bool(
-            self.noise_distil_coef > 0. and 
+            self.noise_distil_loss_coef > 0. and 
             self.teacher_network is not None
         )
         self.use_kl_loss = bool(
             self.kl_loss_coef > 0. and
+            "flatten" in self.network.reshaper_ids_dict.values() and
             self.network.reshaper_kwargs.get("add_kl", False)
         )
         self.use_ctr_loss = bool(
@@ -680,6 +684,9 @@ class DiffusionModel(ArgumentSaverModel):
             for raw_weight, ema_weight in zip(raw_weights, ema_weights):
                 ema_weight.assign(raw_weight)
 
+        network_config = tf.keras.utils.serialize_keras_object(self.network)
+        network_config["module"] = self.network.__class__.__module__
+        self._init_config["network"] = network_config
         self._refresh_loss_flags()
         self._register_optimizer_variables()
         self.train_function = None
@@ -988,9 +995,9 @@ class DiffusionModel(ArgumentSaverModel):
         return [
             self.total_loss_tracker, 
             self.noise_loss_tracker, 
-            self.noise_distil_loss_tracker, 
             self.cond_noise_loss_tracker, 
             self.uncond_noise_loss_tracker, 
+            self.noise_distil_loss_tracker, 
             self.image_loss_tracker, 
             self.kl_loss_tracker, 
             self.ctr_loss_tracker, 
@@ -1254,7 +1261,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             inputs (tuple[tf.Tensor, ...]): Clean images and integer classes, or
-                the seven prepared tensors when ``map_preprocess=True``.
+                seven prepared tensors plus the optional noise-teacher
+                prediction and mask when ``map_preprocess=True``.
 
         Returns:
             dict[str, tf.Tensor]: Running enabled loss/accuracy metrics.  Noise
@@ -1262,13 +1270,18 @@ class DiffusionModel(ArgumentSaverModel):
             according to active loss flags.
         """
 
-        prepared_inputs = self.prep_inputs(
-            inputs
-        ) if not self.map_preprocess else inputs
+        if self.map_preprocess and len(inputs) == 2:
+            self._preprocess_training = True
+            prepared_inputs = self.prep_inputs_map(*inputs)
+            self._preprocess_training = None
+        else:
+            prepared_inputs = self.prep_inputs(
+                inputs
+            ) if not self.map_preprocess else inputs
         if self.use_noise_distil_loss:
-            prepared_inputs = prepared_inputs[:-3]
             teacher_noises_pred = prepared_inputs[-2]
             teacher_noise_mask = prepared_inputs[-1]
+            prepared_inputs = prepared_inputs[:-2]
         else:
             teacher_noises_pred = None
             teacher_noise_mask = None
@@ -1317,20 +1330,27 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             inputs (tuple[tf.Tensor, ...]): Clean images and integer classes, or
-                the seven prepared tensors when ``map_preprocess=True``.
+                seven prepared tensors plus the optional noise-teacher
+                prediction and mask when ``map_preprocess=True``.
 
         Returns:
             dict[str, tf.Tensor]: Running evaluation metrics.  Image loss is
             explicitly evaluated even when its training coefficient is zero.
         """
 
-        prepared_inputs = self.prep_inputs(
-            inputs, use_label_dropout=False
-        ) if not self.map_preprocess else inputs
+        if self.map_preprocess and len(inputs) == 2:
+            self._preprocess_training = False
+            prepared_inputs = self.prep_inputs_map(*inputs)
+            self._preprocess_training = None
+        else:
+            prepared_inputs = self.prep_inputs(
+                inputs, 
+                use_label_dropout=False
+            ) if not self.map_preprocess else inputs
         if self.use_noise_distil_loss:
-            prepared_inputs = prepared_inputs[:-3]
             teacher_noises_pred = prepared_inputs[-2]
             teacher_noise_mask = prepared_inputs[-1]
+            prepared_inputs = prepared_inputs[:-2]
         else:
             teacher_noises_pred = None
             teacher_noise_mask = None
@@ -1938,9 +1958,11 @@ class DiffusionModel(ArgumentSaverModel):
             functions so traced random ranges are rebuilt.
 
         Raises:
-            AssertionError: Unless ``0 <= min < max <= timesteps``.
+            AssertionError: Unless bounds are clean-only ``[0,0)`` or satisfy
+                ``0 <= min < max <= timesteps``.
         """
 
+        min_timesteps = 0 if min_timesteps is None else min_timesteps
         max_timesteps = 0 if max_timesteps is None else max_timesteps
         max_timesteps = self.timesteps if max_timesteps == -1 else max_timesteps
 
@@ -1957,8 +1979,10 @@ class DiffusionModel(ArgumentSaverModel):
         min_timesteps = int(min_timesteps)
         max_timesteps = int(max_timesteps)
         require(
+            (min_timesteps == 0 and max_timesteps == 0) or
             0 <= min_timesteps < max_timesteps <= self.timesteps, 
-            "Expected 0 <= min_timesteps < max_timesteps <= timesteps, "
+            "Expected clean-only bounds [0, 0) or "
+            "0 <= min_timesteps < max_timesteps <= timesteps, "
             f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
         )
 
@@ -2022,7 +2046,7 @@ class DiffusionModel(ArgumentSaverModel):
         for ensuring that it was trained with the same forward process.
         """
 
-        if teacher_network is not None and self.noise_distil_coef > 0. \
+        if teacher_network is not None and self.noise_distil_loss_coef > 0. \
         and getattr(
             teacher_network, 
             "swap_noise_image", 
@@ -2049,7 +2073,15 @@ class DiffusionModel(ArgumentSaverModel):
         if teacher_network is not None and getattr(
             teacher_network, "network", None
         ) is not None:
-            teacher_network = teacher_network.network
+            raw_teacher = teacher_network.network
+            raw_teacher._diffusion_scheduler_name = teacher_schedule
+            raw_teacher._diffusion_modify_first_t = teacher_modify_first
+            raw_teacher._diffusion_swap_noise_image = getattr(
+                teacher_network, 
+                "swap_noise_image", 
+                getattr(raw_teacher, "_diffusion_swap_noise_image", False)
+            )
+            teacher_network = raw_teacher
 
         if teacher_network is not None:
             validate_model_dtype_policy(
@@ -2065,40 +2097,14 @@ class DiffusionModel(ArgumentSaverModel):
                 "teacher_network must be an independent frozen snapshot."
             )
 
-        regularizer_kwargs = getattr(
-            self.network, 
-            "clf_cls_token_regularizer_kwargs", 
-            None
-        )
-        if regularizer_kwargs is None:
-            regularizer_kwargs = getattr(
-                self.network, 
-                "cls_token_regularizer_kwargs", 
-                {}
-            )
-
-        supports_class_teacher = hasattr(self, "distil_loss_coef")
-        needs_class_teacher = supports_class_teacher and bool(
-            getattr(self, "distil_loss_coef", 0.) > 0.
-            and getattr(self.network, "distil_token", None) is not None
-        ) or supports_class_teacher and bool(
-            self.ctr_loss_coef > 0.
-            and regularizer_kwargs.get("train_type", "normal") in (
-                "distil", "both"
-            )
-        )
-        needs_noise_teacher = bool(self.noise_distil_coef > 0.)
-        if teacher_network is None and (
-            needs_class_teacher or needs_noise_teacher
-        ) and not self.defer_teacher:
+        needs_noise_teacher = bool(self.noise_distil_loss_coef > 0.)
+        if teacher_network is None and needs_noise_teacher \
+        and not self.defer_teacher:
             raise ValueError(
-                "A configured distillation objective requires teacher_network; "
+                "Noise distillation requires teacher_network; "
                 "set defer_teacher=True only when it will be attached later."
             )
-
-        if teacher_network is not None and (
-            needs_noise_teacher or needs_class_teacher
-        ):
+        if teacher_network is not None and needs_noise_teacher:
             if teacher_schedule is not None \
             and teacher_schedule != self.scheduler_name:
                 raise ValueError(
@@ -2125,12 +2131,9 @@ class DiffusionModel(ArgumentSaverModel):
                     self._current_resolution
                 )
 
-        if hasattr(self, "distil_loss_coef"):
-            self._refresh_loss_flags()
-        else:
-            DiffusionModel._refresh_loss_flags(self)
+        DiffusionModel._refresh_loss_flags(self)
 
-        self.map_preprocess = True if getattr(self, "use_teacher", False) \
+        self.map_preprocess = True if self.use_noise_distil_loss \
                             else self._map_preprocess_without_teacher
         self.train_function = None
         self.test_function = None
@@ -2337,6 +2340,13 @@ class DiffusionModel(ArgumentSaverModel):
 
             min_timesteps = int(min_timesteps)
             max_timesteps = int(max_timesteps)
+
+            if min_timesteps == 0 and max_timesteps == 0:
+                return (
+                    x0, 
+                    tf.zeros_like(x0), 
+                    tf.zeros((x_shape[0],), dtype=tf.int32)
+                )
 
             # Require a nonempty half-open range inside the diffusion horizon.
             if not 0 <= min_timesteps < max_timesteps <= self.timesteps:
@@ -2628,7 +2638,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             tuple[tf.Tensor, ...]: The seven tensors returned by
-            :meth:`prep_inputs`.
+            :meth:`prep_inputs`, followed by the noise-teacher prediction and
+            mask when noise distillation is active.
         """
 
         outputs = self.prep_inputs(
@@ -2646,6 +2657,10 @@ class DiffusionModel(ArgumentSaverModel):
         cfg_scale = self.train_cfg_scale if self._preprocess_training \
                     else self.test_cfg_scale
 
+        teacher_noise_mask = tf.ones_like(
+            cond_labels, 
+            dtype=tf.bool
+        )
         teacher_num_labels = getattr(
             self.teacher_network, 
             "num_labels", 
@@ -2695,48 +2710,43 @@ class DiffusionModel(ArgumentSaverModel):
             metric receives zero sample weight in :meth:`get_results_dict`.
         """
 
-        # Compute reporting-only conditional losses without changing `loss`.
-        if self.show_separate_noise_losses:
-            require(
-                cond_labels is not None, 
-                "cond_labels are required to show separate noise losses."
-            )
+        require(
+            cond_labels is not None, 
+            "cond_labels are required to show separate noise losses."
+        )
 
-            # Without CFG, zero is a real class and every row is conditional.
-            if self.use_cfg:
-                cond_mask = cond_labels != 0
-            # Keep every class-conditioned row when no null ID is reserved.
-            else:
-                cond_mask = tf.ones_like(cond_labels, dtype=tf.bool)
-
-            uncond_mask = tf.logical_not(cond_mask)
-            noises_pred = tf.stop_gradient(noises_pred)
-
-            cond_has_rows = tf.reduce_any(cond_mask)
-            cond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, cond_mask), 
-                tf.boolean_mask(noises_pred, cond_mask)
-            )
-            cond_noise_loss = tf.where(
-                cond_has_rows, 
-                cond_noise_loss, 
-                tf.zeros_like(cond_noise_loss)
-            )
-
-            uncond_has_rows = tf.reduce_any(uncond_mask)
-            uncond_noise_loss = self.compiled_loss(
-                tf.boolean_mask(noises, uncond_mask), 
-                tf.boolean_mask(noises_pred, uncond_mask)
-            )
-            uncond_noise_loss = tf.where(
-                uncond_has_rows, 
-                uncond_noise_loss, 
-                tf.zeros_like(uncond_noise_loss)
-            )
-        # Leave both reporting losses absent when the feature is disabled.
+        # Without CFG, zero is a real class and every row is conditional.
+        if self.use_cfg:
+            cond_mask = cond_labels != 0
+        # Keep every class-conditioned row when no null ID is reserved.
         else:
-            cond_noise_loss = None
-            uncond_noise_loss = None
+            cond_mask = tf.ones_like(cond_labels, dtype=tf.bool)
+
+        uncond_mask = tf.logical_not(cond_mask)
+        noises_pred = tf.stop_gradient(noises_pred)
+
+        cond_has_rows = tf.reduce_any(cond_mask)
+        cond_noise_loss = self.compiled_loss(
+            tf.boolean_mask(noises, cond_mask), 
+            tf.boolean_mask(noises_pred, cond_mask)
+        )
+        cond_noise_loss = tf.where(
+            cond_has_rows, 
+            cond_noise_loss, 
+            tf.zeros_like(cond_noise_loss)
+        )
+
+        uncond_has_rows = tf.reduce_any(uncond_mask)
+        uncond_noise_loss = self.compiled_loss(
+            tf.boolean_mask(noises, uncond_mask), 
+            tf.boolean_mask(noises_pred, uncond_mask)
+        )
+        uncond_noise_loss = tf.where(
+            uncond_has_rows, 
+            uncond_noise_loss, 
+            tf.zeros_like(uncond_noise_loss)
+        )
+
 
         return cond_noise_loss, uncond_noise_loss
 
@@ -2745,9 +2755,17 @@ class DiffusionModel(ArgumentSaverModel):
         teacher_noises_pred: tf.Tensor, 
         noises_pred: tf.Tensor, 
         teacher_noise_mask: tf.Tensor | None = None
-    ):
-        """
-        
+    ) -> tf.Tensor | float:
+        """Compute the optional masked noise-distillation loss.
+
+        Args:
+            teacher_noises_pred (tf.Tensor): Frozen teacher noise predictions.
+            noises_pred (tf.Tensor): Student noise predictions.
+            teacher_noise_mask (tf.Tensor | None): Samples taught by the
+                previous network, or None to use the whole batch.
+
+        Returns:
+            tf.Tensor | float: Distillation loss, or 0.0 when disabled.
         """
 
         noise_distil_sample_weight = None
@@ -2776,7 +2794,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.stop_gradient(teacher_noises_pred), 
             noises_pred, 
             sample_weight=noise_distil_sample_weight
-        ) if self.use_noise_distil_loss else 0.
+        )
 
         return noise_distil_loss
 
@@ -2829,10 +2847,10 @@ class DiffusionModel(ArgumentSaverModel):
         classes: tf.Tensor, 
         x0_pred: tf.Tensor, 
         noises_pred: tf.Tensor, 
-        z_vals_c: tuple[tf.Tensor, tf.Tensor], 
+        z_vals_list_c: list[tuple[tf.Tensor, tf.Tensor]],
         regs_list_c: list[tf.Tensor], 
         teacher_noises_pred: tf.Tensor | None = None, 
-        z_vals_u: tuple[tf.Tensor, tf.Tensor] | None = None, 
+        z_vals_list_u: list[tuple[tf.Tensor, tf.Tensor]] | None = None,
         regs_list_u: list[tf.Tensor] | None = None,
         kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
@@ -2852,14 +2870,14 @@ class DiffusionModel(ArgumentSaverModel):
             classes (tf.Tensor): Zero-based classes ``[B]``.
             x0_pred (tf.Tensor): Reconstructed clean images matching ``x0``.
             noises_pred (tf.Tensor): Guided noise prediction matching ``noises``.
-            z_vals_c (tuple[tf.Tensor | None, tf.Tensor | None]): Conditional
-                latent mean/log variance.
+            z_vals_list_c (list[tuple[tf.Tensor, tf.Tensor]]): Conditional latent
+                mean/log-variance pairs.
             regs_list_c (list[tf.Tensor | None]): Conditional auxiliary class
                 probabilities by depth.
             teacher_noises_pred (tf.Tensor | None): Frozen teacher prediction
                 on the same noisy inputs, timestep, labels, and CFG scale.
-            z_vals_u (tuple[tf.Tensor | None, tf.Tensor | None] | None):
-                Unconditional latent statistics, required when KL trains uncond.
+            z_vals_list_u (list[tuple[tf.Tensor, tf.Tensor]] | None): Unconditional
+                latent pairs, required when KL trains unconditionally.
             regs_list_u (list[tf.Tensor] | None): Unconditional
                 regularizers, required when token loss trains unconditionally.
             kl_train_type (TrainType | None): ``"cond"``/``"uncond"`` source;
@@ -2893,20 +2911,19 @@ class DiffusionModel(ArgumentSaverModel):
             noises, 
             noises_pred, 
             cond_labels
-        )
+        ) if self.show_separate_noise_losses else (None, None)
         noise_distil_loss = self.compute_distil_noise_loss(
             teacher_noises_pred, 
             noises_pred, 
             teacher_noise_mask
-        )
+        ) if self.use_noise_distil_loss else 0.
         image_loss = self.compiled_loss(
             x0, 
             x0_pred
         ) if use_image_loss else 0.
         kl_loss = VariationalAutoencoder.compute_kl(
-            z_mean=z_vals_c[0] if kl_train_type == "cond" else z_vals_u[0], 
-            z_log_var=z_vals_c[1] if kl_train_type == "cond" else z_vals_u[1],
-            dtype=self.dtype_policy.variable_dtype,
+            z_vals_list_c if kl_train_type == "cond" else z_vals_list_u, 
+            dtype=self.dtype_policy.variable_dtype
         ) if self.use_kl_loss else 0.
         ctr_loss, ctr_preds = self.compute_ctr_loss(
             classes, 
@@ -2925,7 +2942,7 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_loss = tf.cast(ctr_loss, stable_dtype)
         loss = (
             noise_loss * self.noise_loss_coef + 
-            noise_distil_loss * self.noise_distil_coef + 
+            noise_distil_loss * self.noise_distil_loss_coef + 
             image_loss * self.image_loss_coef + 
             kl_loss * self.kl_loss_coef + 
             ctr_loss * self.ctr_loss_coef
@@ -2952,7 +2969,10 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tuple[
         tuple[tf.Tensor, tf.Tensor | None], 
         tuple[list[tf.Tensor], list[tf.Tensor] | None], 
-        tuple[tuple[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor] | None]
+        tuple[
+            list[tuple[tf.Tensor, tf.Tensor]], 
+            list[tuple[tf.Tensor, tf.Tensor]] | None
+        ]
     ]:
         """Run conditional and, when requested, unconditional network passes.
 
@@ -2968,7 +2988,8 @@ class DiffusionModel(ArgumentSaverModel):
             training (bool): Keras training mode.
 
         Returns:
-            tuple: ``((eps_c, eps_u), (regs_c, regs_u), (z_c, z_u))``.  Noise
+            tuple: ``((eps_c, eps_u), (regs_c, regs_u),
+            (z_vals_list_c, z_vals_list_u))``. Noise
             predictions are ``[B,H,W,C]``; unconditional members are None when
             no second pass runs.
         """
@@ -2976,17 +2997,20 @@ class DiffusionModel(ArgumentSaverModel):
 
 
         def run_network(
-            labels: tf.Tensor,
-        ) -> tuple[tf.Tensor, list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+            labels: tf.Tensor
+        ) -> tuple[
+            tf.Tensor, 
+            list[tf.Tensor], 
+            list[tuple[tf.Tensor, tf.Tensor]]
+        ]:
             """Run one conditional-label branch of the selected network.
 
             Args:
                 labels (tf.Tensor): Integer condition IDs of shape ``[B]``.
 
             Returns:
-                tuple[tf.Tensor, list[tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
-                Noise prediction, auxiliary class predictions, and latent
-                mean/log-variance tensors for the selected label branch.
+                tuple: Noise prediction, auxiliary class predictions, and an
+                ordered list of latent mean/log-variance pairs.
             """
 
             # Supply the decoder-specific encoder placeholders and unpack its output.
@@ -2996,14 +3020,15 @@ class DiffusionModel(ArgumentSaverModel):
                     encoder_cond=None, 
                     encoder_features_list=[None] * len(
                         network.encoder_feature_dims
-                    ),
+                    ), 
                     full_return=True, 
                     training=training
                 )
+
                 return (
                     outputs["noises"], 
                     outputs["regs_list"], 
-                    outputs["z_vals"]
+                    outputs["z_vals_list"]
                 )
 
             outputs = network(
@@ -3016,22 +3041,22 @@ class DiffusionModel(ArgumentSaverModel):
                 return (
                     outputs["noises"], 
                     outputs.get("regs_list", []), 
-                    outputs.get("z_vals", (None, None))
+                    outputs.get("z_vals_list", [])
                 )
 
-            eps, *_, regs_list, z_vals = outputs
+            eps, *_, regs_list, z_vals_list = outputs
 
-            return eps, regs_list, z_vals
+            return eps, regs_list, z_vals_list
 
 
-        eps_c, regs_list_c, z_vals_c = run_network(cond_labels)
-        eps_u, regs_list_u, z_vals_u = run_network(uncond_labels) \
+        eps_c, regs_list_c, z_vals_list_c = run_network(cond_labels)
+        eps_u, regs_list_u, z_vals_list_u = run_network(uncond_labels) \
                                     if self.use_cfg and scale is not None \
-                                    else (None, None, (None, None))
+                                    else (None, None, [])
 
         return ((eps_c, eps_u), 
                 (regs_list_c, regs_list_u), 
-                (z_vals_c, z_vals_u))
+                (z_vals_list_c, z_vals_list_u))
 
     def compute_eps(
         self, 
@@ -3124,9 +3149,12 @@ class DiffusionModel(ArgumentSaverModel):
         scale: float | None = None, 
         training: bool | None = None
     ) -> tuple[
-        tf.Tensor, tf.Tensor,
-        tuple[list[tf.Tensor], list[tf.Tensor] | None],
-        tuple[tuple[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor] | None]
+        tf.Tensor, tf.Tensor, 
+        tuple[list[tf.Tensor], list[tf.Tensor] | None], 
+        tuple[
+            list[tuple[tf.Tensor, tf.Tensor]], 
+            list[tuple[tf.Tensor, tf.Tensor]] | None
+        ]
     ]:
         """Run network pass(es), guidance, and algebraic x0 reconstruction.
 
@@ -3142,7 +3170,8 @@ class DiffusionModel(ArgumentSaverModel):
             training (bool | None): Keras training mode.
 
         Returns:
-            tuple: ``(x0, eps, (regs_c, regs_u), (z_c, z_u))``.  Image tensors
+            tuple: ``(x0, eps, (regs_c, regs_u),
+            (z_vals_list_c, z_vals_list_u))``. Image tensors
             match ``x_t``; regularizers and latent pairs preserve branch outputs.
         """
 
@@ -3227,10 +3256,10 @@ class DiffusionModel(ArgumentSaverModel):
         outputs = self.compute_noise_distil_image_kl_ctr_loss(
             x0, noises, classes, 
             x0_pred, noises_pred, 
-            z_vals_c=others[1][0], 
+            z_vals_list_c=others[1][0], 
             regs_list_c=others[0][0], 
             teacher_noises_pred=teacher_noises_pred, 
-            z_vals_u=others[1][1], 
+            z_vals_list_u=others[1][1], 
             regs_list_u=others[0][1], 
             kl_train_type=kl_train_type, 
             ctr_train_type=ctr_train_type, 
@@ -3442,14 +3471,14 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
-        z: tf.Tensor | None = None, 
+        z: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         seed: int | None = None
     ) -> tf.Tensor:
         """Generate images by decoding the configured variational bottleneck.
 
-        The first ``"flatten"`` reshaper is treated as the encoder/decoder
-        boundary.  Sampling resumes the raw network at that depth, so later
-        connections may not route around the boundary to earlier features.
+        The first ``"flatten"`` reshaper is the encoder/decoder boundary.
+        Each flatten stage receives its own latent and later connections may
+        not route around the boundary to deterministic encoder features.
 
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
@@ -3459,8 +3488,10 @@ class DiffusionModel(ArgumentSaverModel):
                 mode likewise samples each class condition once and excludes
                 the CFG null label. Explicit values are already network label
                 IDs, not unshifted dataset classes.
-            z (tf.Tensor | None): Latent batch ``[B, latent_width]``.  ``None``
-                draws standard normal values; its batch size must match labels.
+            z (tf.Tensor | Sequence[tf.Tensor] | None): One latent batch per
+                flatten stage. A tensor remains valid for a single-stage VAE.
+                ``None`` draws independent standard-normal values; each batch
+                size must match labels.
             seed (int | None): Latent random seed; None uses ``self.seed``.
 
         Returns:
@@ -3472,10 +3503,10 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         network = self.get_network(network_name)
-        flatten_ids = [
+        flatten_ids = sorted([
             int(id_) for id_, type_ in network.reshaper_ids_dict.items()
             if type_ == "flatten"
-        ]
+        ])
         z_id = flatten_ids[0] if flatten_ids else None
 
         # Require a flattening boundary before attempting latent decoding.
@@ -3483,13 +3514,6 @@ class DiffusionModel(ArgumentSaverModel):
             raise ValueError(
                 "sample_vae requires a flatten reshaper."
             )
-        if len(flatten_ids) != 1:
-            raise ValueError(
-                "sample_vae supports exactly one variational boundary; "
-                "multiple posterior flatten sites require an explicit "
-                "ancestral prior model."
-            )
-
         # Require the flattening reshaper to expose a variational latent.
         if not network.reshaper_kwargs.get("add_kl", False):
             raise ValueError(
@@ -3508,10 +3532,18 @@ class DiffusionModel(ArgumentSaverModel):
                         "features before the flatten reshaper."
                     )
 
-        reshaper = network.layers_dicts[z_id-1][network.R]
-        z_projector = reshaper.get_layer(
-            f"{network.name_prefix}depth_{z_id}_{network.R[2:]}/z"
-        ) if network.reshaper_kwargs.get("latent_dim_ratio", 1) != 1 else None
+        reshapers = [
+            network.layers_dicts[flatten_id - 1][network.R]
+            for flatten_id in flatten_ids
+        ]
+        z_projectors = [
+            reshaper.get_layer(
+                f"{network.name_prefix}depth_{flatten_id}_{network.R[2:]}/z"
+            ) if network.reshaper_kwargs.get(
+                "latent_dim_ratio", 1
+            ) != 1 else None
+            for flatten_id, reshaper in zip(flatten_ids, reshapers)
+        ]
 
         default_labels = [
             value + int(network.use_cfg)
@@ -3530,68 +3562,116 @@ class DiffusionModel(ArgumentSaverModel):
         )
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         ts = tf.zeros_like(labels, dtype=tf.int32)
-        latent_width = int(reshaper.output_shape[1][-1])
+        latent_widths = [
+            int(reshaper.output_shape[1][-1]) 
+            for reshaper in reshapers
+        ]
 
-        # Draw one latent per requested label when no latent is supplied.
+        # Draw one independent latent at every variational boundary.
         if z is None:
-            z = tf.random.normal(
-                shape=tf.stack((n, latent_width)), 
-                mean=0., 
-                stddev=1., 
-                dtype=stable_dtype, 
-                seed=seed
-            )
-        # Normalize and validate caller-supplied variational latents.
+            z_vals_list = [
+                tf.random.normal(
+                    shape=tf.stack((n, latent_width)), 
+                    mean=0., 
+                    stddev=1., 
+                    dtype=stable_dtype, 
+                    seed=derive_seed(seed, "sample_vae", flatten_id)
+                )
+                for flatten_id, latent_width in zip(
+                    flatten_ids, latent_widths
+                )
+            ]
+        # A single boundary retains the historical tensor/list input API.
+        elif len(flatten_ids) == 1:
+            if isinstance(z, (list, tuple)):
+                if len(z) != 1:
+                    raise ValueError("z must contain one latent tensor.")
+
+                z_vals_list = list(z)
+            else:
+                z_vals_list = [z]
         else:
+            if not isinstance(z, (list, tuple)) or len(z) != len(flatten_ids):
+                raise ValueError(
+                    f"z must contain {len(flatten_ids)} latent tensors."
+                )
+
+            z_vals_list = list(z)
+
+        projected_z_vals_list = []
+        for latent, latent_width, z_projector in zip(
+            z_vals_list, latent_widths, z_projectors
+        ):
             try:
-                z = tf.convert_to_tensor(z)
+                latent = tf.convert_to_tensor(latent)
             except (TypeError, ValueError) as error:
                 raise TypeError("z must be a floating tensor.") from error
             # Latent arithmetic requires a floating dtype.
-            if not z.dtype.is_floating:
+            if not latent.dtype.is_floating:
                 raise TypeError("z must have a floating dtype.")
             # The variational bottleneck consumes one vector per example.
-            if z.shape.rank is not None and z.shape.rank != 2:
+            if latent.shape.rank is not None and latent.shape.rank != 2:
                 raise ValueError("z must be a rank-2 latent tensor.")
             # Reject a statically incompatible bottleneck width early.
-            if z.shape.rank == 2 and z.shape[-1] is not None \
-            and int(z.shape[-1]) != latent_width:
+            if latent.shape.rank == 2 and latent.shape[-1] is not None \
+            and int(latent.shape[-1]) != latent_width:
                 raise ValueError(
-                    f"z width must be {latent_width}, got {z.shape[-1]}."
+                    f"z width must be {latent_width}, got {latent.shape[-1]}."
                 )
             # Reject a statically incompatible batch size early.
-            if z.shape.rank == 2 and z.shape[0] is not None \
+            if latent.shape.rank == 2 and latent.shape[0] is not None \
             and labels.shape[0] is not None \
-            and int(z.shape[0]) != int(labels.shape[0]):
+            and int(latent.shape[0]) != int(labels.shape[0]):
                 raise ValueError("z batch size must match labels.")
             z_assertions = (
                 tf.debugging.assert_rank(
-                    z, 2, message="z must be a rank-2 latent tensor."
-                ),
+                    latent, 
+                    2,
+                    message="z must be a rank-2 latent tensor."
+                ), 
                 tf.debugging.assert_equal(
-                    tf.shape(z)[0], n,
+                    tf.shape(latent)[0], 
+                    n, 
                     message="z batch size must match labels.",
-                ),
+                ), 
                 tf.debugging.assert_equal(
-                    tf.shape(z)[1], latent_width,
-                    message="z width does not match the variational bottleneck.",
-                ),
+                    tf.shape(latent)[1], 
+                    latent_width, 
+                    message="z width does not match the variational bottleneck."
+                )
             )
             with tf.control_dependencies([
                 assertion for assertion in z_assertions
                 if assertion is not None
             ]):
-                z = tf.cast(tf.identity(z), stable_dtype)
+                latent = tf.cast(tf.identity(latent), stable_dtype)
 
-        z = z_projector(
-            z, 
-            training=False
-        ) if z_projector is not None else z
-        images = network(
-            (z, ts, labels), 
-            min_depth=z_id, 
-            training=False
-        )
+            projected_z_vals_list.append(
+                z_projector(latent, training=False)
+                if z_projector is not None else latent
+            )
+
+        decoder_input = projected_z_vals_list[0] \
+                        if len(projected_z_vals_list) == 1 \
+                        else projected_z_vals_list
+        if isinstance(network, DiTDecoder):
+            images = network(
+                (decoder_input, ts, labels), 
+                encoder_cond=None, 
+                encoder_features_list=[None] * len(
+                    network.encoder_feature_dims
+                ), 
+                min_depth=z_id, 
+                training=False
+            )
+        else:
+            images = network(
+                (decoder_input, ts, labels), 
+                min_depth=z_id, 
+                training=False
+            )
+        if isinstance(images, Mapping):
+            images = images["noises"]
 
         return self.postprocess(images)
 
@@ -3983,8 +4063,8 @@ def run_self_tests() -> dict[str, str]:
         map_num_parallel_calls=np.int64(2),
         seed=np.int64(17),
     )
-    assert normalized_policy.train_noisified_max_timesteps == 4
-    assert normalized_policy.test_noisified_max_timesteps == 4
+    assert normalized_policy.train_noisified_max_timesteps == 0
+    assert normalized_policy.test_noisified_max_timesteps == 0
     assert normalized_policy.map_num_parallel_calls == 2
     assert normalized_policy.seed == 17
     assert normalized_policy.get_config()[
@@ -4152,6 +4232,13 @@ def run_self_tests() -> dict[str, str]:
     wrapper.set_timestep_bounds(np.int64(1), np.int64(4))
     assert wrapper.current_timesteps_bounds == (1, 4)
     wrapper.set_timestep_bounds(None, None)
+    assert wrapper.current_timesteps_bounds == (0, 0)
+    clean = tf.zeros((2, 4, 4, 1), dtype=tf.float32)
+    clean_x, clean_noise, clean_t = wrapper.noisify(clean)
+    tf.debugging.assert_equal(clean_x, clean)
+    tf.debugging.assert_equal(clean_noise, tf.zeros_like(clean))
+    tf.debugging.assert_equal(clean_t, tf.zeros((2,), tf.int32))
+    wrapper.set_timestep_bounds()
     assert wrapper.current_timesteps_bounds == (0, 4)
     for invalid_bounds in ((-1, 2), (2, 2), (3, 2), (0, 5)):
         try:
@@ -4396,7 +4483,7 @@ def run_self_tests() -> dict[str, str]:
     )
     tf.debugging.assert_near(
         weighted_losses[0], 
-        0.5 * weighted_losses[1] + 0.25 * weighted_losses[4], 
+        0.5 * weighted_losses[1] + 0.25 * weighted_losses[5],
         atol=1e-5, 
     )
     weighted.set_current_resolution(8)
@@ -4694,6 +4781,15 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=tensor_vae_labels, z=supplied_full_latent
     )
     assert supplied_vae_images.shape == (2, 4, 4, 1)
+    supplied_sequence_images = variational_cond.sample_vae(
+        network_name="raw",
+        labels=tensor_vae_labels,
+        z=[supplied_full_latent],
+    )
+    tf.debugging.assert_near(
+        supplied_sequence_images,
+        supplied_vae_images,
+    )
     for invalid_z in (
         tf.zeros((1, full_latent_width), dtype=tf.float32),
         tf.zeros((2, full_latent_width + 1), dtype=tf.float32),
@@ -5130,7 +5226,7 @@ def run_self_tests() -> dict[str, str]:
 
     swap = make_wrapper(swap_noise_image=True)
     swap_prepared = swap.prep_inputs((images, classes), seed=31)
-    tf.debugging.assert_near(swap_prepared[1], swap_prepared[0])
+    tf.debugging.assert_near(swap_prepared[1], swap_prepared[3])
     try:
         swap.sample(network_name="raw", labels=[1])
     except ValueError as error:
@@ -5153,7 +5249,6 @@ def run_self_tests() -> dict[str, str]:
         {"map_num_parallel_calls": False},
         {"map_num_parallel_calls": 0},
         {"train_noisified_min_timesteps": -1},
-        {"train_noisified_max_timesteps": 0},
         {"test_noisified_min_timesteps": 3,
          "test_noisified_max_timesteps": 2},
         {"test_noisified_max_timesteps": 5},
