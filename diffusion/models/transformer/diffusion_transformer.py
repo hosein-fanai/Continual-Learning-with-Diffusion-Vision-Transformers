@@ -730,7 +730,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             id_less_than_key=False, 
             allowed_keys=(reshaper_kwargs_allowed_vals:=(
                 "add_kl", 
-                "latent_mlp_ratio"
+                "latent_dim_ratio"
             )), 
             check_values=False
         ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
