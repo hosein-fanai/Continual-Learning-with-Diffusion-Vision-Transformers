@@ -486,14 +486,15 @@ class DiTDecoder(DiffusionTransformer):
                 and merged_dim > self.dim else None, 
             "ln_mlp_ratio": self.ln_mlp_ratio, 
             "ln_no_adaptation": self.ln_no_adaptation, 
+            "grid_size": self._get_encoder_grid_size(
+                ids, kwargs, second_grid_size,
+                include_second=bool(increased_dim)
+            ),
             "name": name, 
         }
         options.update(kwargs)
         handler = FeatureHandler(**options)
-        handler.output_grid_size = self._get_encoder_grid_size(
-            ids, kwargs, second_grid_size, 
-            include_second=bool(increased_dim)
-        )
+        handler.output_grid_size = handler.grid_size
         handler.output_is_flat = all(grid is None for grid in grids)
 
         return handler
@@ -503,15 +504,16 @@ class DiTDecoder(DiffusionTransformer):
         ids_set: list[int], 
         layers_dicts: list[dict], 
         base_dim: int, 
+        base_grid_size: int,
         dim_forced: bool, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
         kwargs: dict, 
         zero_index_base_dim: int | None = None, 
         increased_dim: int = 0, 
+        increased_grid_size: int | None = None,
         output_dim_flag: bool = True, 
         name: str | None = None, 
-        second_grid_size: int | None = None, 
     ) -> FeatureHandler:
         """Create an internal connector with accurate width/grid metadata.
 
@@ -519,6 +521,7 @@ class DiTDecoder(DiffusionTransformer):
             ids_set (list[int]): Decoder feature depths to select.
             layers_dicts (list[dict]): Previously created decoder stages.
             base_dim (int): Forced output width and depth-zero width.
+            base_grid_size (int): Decoder depth-zero square token-grid side.
             dim_forced (bool): Project widened channel concatenation back to
                 ``base_dim``.
             ln_mlp_ratio (float | None): Adaptive-normalization MLP ratio.
@@ -526,9 +529,9 @@ class DiTDecoder(DiffusionTransformer):
             kwargs (dict[str, object]): ``FeatureHandler`` options.
             zero_index_base_dim (int | None): Optional depth-zero width.
             increased_dim (int): Width of an appended secondary tensor.
+            increased_grid_size (int | None): Grid of the secondary tensor.
             output_dim_flag (bool): Permit automatic forced projection.
             name (str | None): Keras layer name.
-            second_grid_size (int | None): Grid of the secondary tensor.
 
         Returns:
             FeatureHandler: Connector with ``output_grid_size`` metadata.
@@ -543,14 +546,14 @@ class DiTDecoder(DiffusionTransformer):
             for index in ids_set
         ]
         grids = [
-            self.grid_size if index == 0 else self._get_last_grid_size(
-                index - 1, layers_dicts, self.grid_size
+            base_grid_size if index == 0 else self._get_last_grid_size(
+                index - 1, layers_dicts, base_grid_size
             )
             for index in ids_set
         ]
         # Include the current decoder grid when its feature width is present.
         if increased_dim:
-            grids.append(second_grid_size)
+            grids.append(increased_grid_size)
         connect_type = kwargs.get("connect_type", "concat")
         connect_axis = kwargs.get("connect_axis", -1)
         channel_axis = self._uses_channel_axis(connect_axis, grids) \
@@ -588,11 +591,12 @@ class DiTDecoder(DiffusionTransformer):
                 and merged_dim > base_dim else None, 
             "ln_mlp_ratio": ln_mlp_ratio, 
             "ln_no_adaptation": ln_no_adaptation, 
+            "grid_size": output_grid_size,
             "name": name, 
         }
         options.update(kwargs)
         handler = FeatureHandler(**options)
-        handler.output_grid_size = output_grid_size
+        handler.output_grid_size = handler.grid_size
         handler.output_is_flat = bool(grids) and all(
             grid is None for grid in grids
         )
@@ -675,6 +679,10 @@ class DiTDecoder(DiffusionTransformer):
                 if not skip_reshaper or not handler.output_is_flat:
                     grid_size = handler.output_grid_size
                     grid_was_set = True
+            # Transformer blocks preserve or adopt their recorded query grid.
+            if self.VTB in stage:
+                grid_size = stage[self.VTB].grid_size
+                grid_was_set = True
             for key in (self.LM, self.DS, self.US):
                 # Let spatial mixers and scalers update the current grid.
                 if key in stage:
@@ -694,7 +702,7 @@ class DiTDecoder(DiffusionTransformer):
             skip_reshaper
         )
 
-    def _create_layer_dict(self, i: int, layers_dicts: list[dict]) -> dict:
+    def _create_layers_dict(self, i: int, layers_dicts: list[dict]) -> dict:
         """Create one complete decoder stage in execution order.
 
         Args:
@@ -729,15 +737,16 @@ class DiTDecoder(DiffusionTransformer):
                 ids_set=self.connection_ids_dict[key],
                 layers_dicts=layers_dicts,
                 base_dim=self.dim,
+                base_grid_size=self.grid_size,
                 dim_forced=self.dim_forced,
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
                 increased_dim=stage[self.FA].output_dim
                     if self.FA in stage else 0,
+                increased_grid_size=stage[self.FA].output_grid_size
+                    if self.FA in stage else None,
                 kwargs=self.connection_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}",
-                second_grid_size=stage[self.FA].output_grid_size
-                    if self.FA in stage else None,
             )
 
         # Build the encoder cross-attention feature aggregator.
@@ -755,15 +764,16 @@ class DiTDecoder(DiffusionTransformer):
                 ids_set=self.cross_attention_ids_dict[key],
                 layers_dicts=layers_dicts,
                 base_dim=self.dim,
+                base_grid_size=self.grid_size,
                 dim_forced=self.dim_forced,
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
                 increased_dim=stage[self.CAA].output_dim
                     if self.CAA in stage else 0,
+                increased_grid_size=stage[self.CAA].output_grid_size
+                    if self.CAA in stage else None,
                 kwargs=self.cross_attention_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}",
-                second_grid_size=stage[self.CAA].output_grid_size
-                    if self.CAA in stage else None,
             )
 
         # Build a transformer block using the widths produced by feature handlers.
@@ -792,6 +802,7 @@ class DiTDecoder(DiffusionTransformer):
                 layers_dicts=layers_dicts,
                 layers_dict=stage,
                 base_dim=self.dim,
+                base_grid_size=self.grid_size,
                 mha_key_dim=self.mha_key_dim,
                 mha_value_dim=self.mha_value_dim,
                 mha_query_dim=query_dim,
@@ -804,6 +815,8 @@ class DiTDecoder(DiffusionTransformer):
                 drop_per_sample=self.drop_per_sample,
                 use_decoder=key in self.use_decoder_ids,
                 name_prefix=f"{self.name_prefix}depth_{key}_",
+                mha_query_grid_size=query_grid
+                    if self.cross_attention_plug_type == "queries" else None,
             )
 
         # Build this decoder depth's local mixer.
@@ -870,7 +883,11 @@ class DiTDecoder(DiffusionTransformer):
                 base_grid_size=self.grid_size,
                 grid_has_tokens=int(self.cls_token_type is not None) +
                     int(self.distil_token_type is not None),
-                kwargs=self.reshaper_kwargs,
+                kwargs=self._get_reshaper_kwargs_for_depth(
+                    key,
+                    self.reshaper_ids_dict,
+                    self.reshaper_kwargs
+                ),
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}",
             )
 
@@ -1140,6 +1157,20 @@ class DiTDecoder(DiffusionTransformer):
         latent_inputs = list(decoder_input) if min_depth > 0 and isinstance(
             decoder_input, (list, tuple)
         ) else [decoder_input]
+        if min_depth > 0:
+            expected_latents = 1 + sum(
+                flatten_id > min_depth and (
+                    max_depth < 0 or flatten_id <= max_depth
+                )
+                for flatten_id in self._get_flatten_ids(
+                    self.reshaper_ids_dict
+                )
+            )
+            if len(latent_inputs) != expected_latents:
+                raise ValueError(
+                    f"Resuming at depth {min_depth} requires "
+                    f"{expected_latents} input feature/latent tensors."
+                )
         batch_input = latent_inputs[0]
         # Build decoder-owned conditions when separate conditioning is enabled.
         if self.decoder_separate_cond:
@@ -1230,6 +1261,24 @@ class DiTDecoder(DiffusionTransformer):
             if i < min_depth:
                 continue
 
+            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
+            # During prior decoding, replace every later posterior-building
+            # flatten stage before it can read unavailable encoder features.
+            if self.R in layers_dict and min_depth > 0 and is_flatten:
+                x = latent_inputs[latent_index]
+                latent_index += 1
+                reg = layers_dict[self.CTR](
+                    self.slice_and_flatten_tokens(
+                        x,
+                        self.cls_token_regularizer_kwargs["start"],
+                        self.cls_token_regularizer_kwargs["end"]
+                    ),
+                    training=training
+                ) if self.CTR in layers_dict else None
+                features_list.append(x)
+                regs_list.append(reg)
+                continue
+
             # Aggregate routed encoder features into the decoder stream.
             if self.FA in layers_dict:
                 x = layers_dict[self.FA](
@@ -1303,15 +1352,9 @@ class DiTDecoder(DiffusionTransformer):
                 (x, cond), training=training
             ) if self.US in layers_dict else x
 
-            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
-            if self.R in layers_dict and min_depth > 0 and is_flatten:
-                x = latent_inputs[latent_index]
-                latent_index += 1
-                x_mean, x_log_var = None, None
-            else:
-                x, x_mean, x_log_var = layers_dict[self.R](
-                    x, training=training
-                ) if self.R in layers_dict else (x, None, None)
+            x, x_mean, x_log_var = layers_dict[self.R](
+                x, training=training
+            ) if self.R in layers_dict else (x, None, None)
             reg = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
                     x, 
@@ -1843,7 +1886,7 @@ def run_self_tests() -> dict[str, str]:
         vit_block_ids=[], 
         use_decoder_ids=[], 
         reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
         cls_token_regularizer_ids=[2], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 
@@ -1865,6 +1908,51 @@ def run_self_tests() -> dict[str, str]:
     assert bottleneck._get_last_grid_size(
         1, bottleneck.layers_dicts, bottleneck.grid_size
     ) == 2
+
+    multilevel = DiTDecoder(
+        depth=8,
+        vit_block_ids=[],
+        use_decoder_ids=[],
+        feature_aggregation_ids_dict={4: [0], 6: [1]},
+        reshaper_ids_dict={
+            2: "flatten", 3: "unflatten",
+            4: "flatten", 5: "unflatten",
+            6: "flatten", 7: "unflatten",
+        },
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [0.5, 1.0, 0.25],
+        },
+        **common,
+    )
+    multilevel_full = multilevel.predict_noise(
+        (images, times, labels),
+        encoder_cond,
+        encoder_features,
+        full_return=True,
+        training=False,
+    )
+    assert [
+        int(z_mean.shape[-1])
+        for z_mean, _ in multilevel_full[-1]
+    ] == [8, 16, 4]
+    resumed_multilevel = multilevel.predict_noise(
+        ([tf.zeros((2, 16))] * 3, times, labels),
+        None,
+        [None, None],
+        min_depth=2,
+        training=False,
+    )
+    assert resumed_multilevel.shape == (2, 4, 4, 1)
+    truncated_multilevel = multilevel.decode(
+        ([tf.zeros((2, 16))], times, labels),
+        None,
+        [None, None],
+        min_depth=2,
+        max_depth=3,
+        training=False,
+    )
+    assert truncated_multilevel[0].shape == (2, 4, 4)
 
     flat_connector = DiTDecoder(
         depth=2, 

@@ -115,7 +115,7 @@ vae_network = UNet(
     image_size=32, 
     channels=3, 
     widths=(32, 64, 96), 
-    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
 )
 model = DiffusionModel(
     network=vae_network, 
@@ -138,13 +138,25 @@ images = model.sample_vae(
 # images: [3, 32, 32, 3] in [0,1]
 ```
 
-`add_kl=True` computes and inserts the consecutive flatten/unflatten depths;
-callers do not need to calculate `reshaper_ids_dict`. With
+`add_kl=True` computes and inserts the contiguous flatten/unflatten pair or
+pairs; callers do not need to calculate `reshaper_ids_dict`.
+`latent_dim_ratio` must contain exactly one positive entry per pair in
+ascending flatten-depth order. With
 `use_skip_connections=None` (the default), any reshaped bottleneck disables
-skips automatically so a decoded latent cannot bypass the encoder. Explicitly
-setting `use_skip_connections=True` instead inserts a variational pair after
-each encoder level and routes decoder skips from their stochastic unflattened
-features.
+skips automatically and creates one pair, so the example uses a one-entry
+list. Explicitly setting `use_skip_connections=True` creates one pair for each
+encoder level plus the deepest bottleneck; with three `widths`, its ratio list
+therefore has four entries.
+
+The convolutional multiscale layout is intentionally different from the
+central bridge used by multilevel U-DiT. For each configured width its order is
+`encoder residual -> flatten -> unflatten -> downsample`; the deepest
+bottleneck residual has one final pair before decoder computation begins. List
+entries therefore run from the highest-resolution encoder pair to the deepest
+bottleneck pair. Training passes the current encoder feature through each
+posterior. During `sample_vae`, the first projected latent resumes at the first
+flatten output and every later flatten result is replaced by the next latent;
+decoder skip connectors source the corresponding stochastic unflatten depths.
 
 Normal `DiffusionModel` training retains the diffusion noise target and adds
 the configured KL loss. Setting `swap_noise_image=True` selects the wrapper's
@@ -230,7 +242,10 @@ relative selectors remain shape-stable when the main network grows.
 `regs_list`, and `z_vals_list`, plus `clf_cond`, `clf_features_list`,
 `clf_regs_list`, and `clf_z_vals_list`. Classifier-side KL
 statistics can be enabled with
-`clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": ...}`.
+`clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}`. This
+classifier branch owns one terminal flatten stage rather than an unflatten
+pair, so its list contains one entry when KL is enabled and is empty when KL
+is disabled.
 `predict_noise(...)` runs only the denoiser, while `predict_class(...)` executes
 only the main depths required by the selected classifier features. Its ordinary
 result remains `classes`; `full_return=True` appends `distil_classes` as the

@@ -72,12 +72,12 @@ external DNN.
        max_train_samples=512,
        max_val_samples=256,
        n_startup_trials=2,
-       search_space_overrides={"timesteps": [250], "test_steps": [10, 20]},
+       search_space_overrides={"timesteps": [500], "test_steps": [20, 50]},
        # Diffusion-classifier joint/continual studies only:
        use_ensemble_accuracy=False,
        ensemble_accuracy_kwargs={"weighted": True, "max_t": 128},
        # Optional runtime-only teacher for the same classifier families:
-       # teacher_model=teacher,
+       # teacher_network=teacher,
        # Optional diffusion curriculum:
        fit_method="fit_progressively",
        fit_kwargs={
@@ -104,8 +104,8 @@ gives a study-level table.
 
 Optuna feedback comes from the post-training validation evaluation of the same
 saved/restored model state, not from a historical best or the last row of the
-pre-restoration Keras history. Diffusion objectives use the configured raw or
-EMA branch; ordinary classifiers and VAEs use `valset_eval`. The semantic
+pre-restoration Keras history. Diffusion objectives use the EMA branch;
+ordinary classifiers and VAEs use `valset_eval`. The semantic
 defaults are generation loss, a generation/accuracy Pareto pair for joint
 models, validation accuracy for standalone classifiers, and validation
 `final_average_accuracy` for continual studies. `objective_metrics` can name
@@ -134,16 +134,27 @@ classifier studies require
 call contracts cannot resume main-latent decoding. Noise distillation is also
 incompatible with x0 prediction.
 
-DiT classifier studies sample `classifier_architecture` from `linear`,
-`local_mixer`, `connection`, `cross_attention`, `cross_attention_decoder`,
-`cross_attention_aggregation`, `u_shape`, and `u_vae`. Each choice uses the
-model's existing classifier-layer arguments; `u_vae` additionally samples a
-positive `kl_loss_coef` for its KL-enabled variational bottleneck. On grids
-divisible by four, `u_multilevel_vae` adds two independent variational scales;
-it is not advertised as a conditional-prior hierarchical VAE.
+DiT classifier studies focus `classifier_architecture` on `linear`,
+`connection`, and `u_shape`. On grids divisible by four, `u_vae` and
+`u_multilevel_vae` are also available. The variational templates follow the
+network order demonstrated in `DiT mini copy 35.ipynb`: all encoder blocks and
+downsampling operations precede a central variational bridge, every
+flatten/unflatten pair occurs inside that bridge, and all decoder blocks and
+upsampling operations follow it. This makes the encoder/latent/decoder
+boundary and the occurrence order used by the ratio list unambiguous.
+
+`reshaper_kwargs["latent_dim_ratio"]` is always a list in flatten occurrence
+order, with exactly one member per flatten/unflatten pair. HPO samples an
+independent absolute latent width of 16, 32, or 64 for each occurrence and
+divides it by that occurrence's flattened width. It does not repeat one ratio:
+doing so made the later, larger feature maps produce latent widths of 128 and
+256 in the incomplete multi-level notebook run and caused an extreme KL and
+parameter increase. These models are variational bottlenecks, not
+conditional-prior hierarchical VAEs.
 
 The zero-inclusive `ctr_loss_coef` search applies to joint DiT and U-Net
-classifiers. A positive value adds a regularizer at the final classifier depth.
+classifiers. A positive value adds a regularizer at the final classifier depth,
+or at the central latent depth for a U-VAE classifier.
 It uses normal labels without a teacher; teacher-backed studies can select
 `normal`, `distil`, or `both`, with hard or soft teacher targets for the latter
 two modes. Accuracy coefficients are balanced across the active classifier,
@@ -163,7 +174,7 @@ Dataset, split, class/task schedule, seed, epoch/trial budget, and objective are
 sealed experimental controls rather than hyperparameters: changing them across
 trials would make validation scores incomparable. The umbrella continual
 diffusion-classifier space instead searches the model family, architecture,
-optimizer, diffusion/noise schedule, raw/EMA evaluation and teacher branches,
+optimizer, diffusion/noise schedule, teacher snapshot branches,
 V1/V2 wrapper behavior, hard/soft distillation temperature and scope, optional
 noise distillation, and continual/replay policy. `search_space_overrides` may
 bound expensive dimensions for a plumbing study, but it becomes part of the
@@ -176,13 +187,49 @@ exact model family because their tensor topology and diffusion process must
 match. The umbrella instead supports teacher-free continual distillation from
 the selected raw/EMA snapshot of the preceding task.
 
-For V2 DiT classifiers, `clf_vars_embedding_recipe` independently selects
-`none`, `label`, `conditions`, `core`, or `notebook`, while
-`clf_vars_noise_recipe` selects `none`, `first`, `last`, or `last_two`. These
-map to embedding IDs `[]`, `[2]`, `[1, 2]`, `[0, 1, 2]`, `[0, 1, 2, 3]` and
-noise-part IDs `[]`, `[1]`, `[-1]`, `[-2, -1]`, respectively. Negative final
-IDs continue to refer to the final stages when progressive fitting grows the
-network.
+V1 classifier trials compare the ordinary conditional classifier prediction
+with the notebook's unconditional branch at CFG scale 1. Timestep masking is
+limited to 50%, 70%, or 90%; null, timestep, combined, and unmasked recipes
+remain available.
+
+For V2 DiT classifiers, `clf_vars_recipe` selects one of three coupled,
+notebook-supported variable assignments: `separate` maps to embedding/noise
+IDs `([], [])`, `conditions` maps to `([1, 2], [])`, and `notebook` maps to
+`([0, 1, 2, 3], [1])`. Coupling the assignments avoids unsupported Cartesian
+combinations. Classifier input noising is limited to clean inputs or caps of
+64 and 256 timesteps when below the selected diffusion horizon. V2 performs a
+generator fit and then a separate classifier fit, each using `epochs`; compare
+V1 and V2 only with that difference in compute budget made explicit.
+
+## Notebook-informed search-space limits
+
+Search-space version 9 uses the stored notebook outputs as practical anchors,
+not as definitive benchmarks. Most comparisons are single stochastic runs,
+some notebooks are incomplete, and the selected legacy CIFAR VAE objective is
+circular; consequently, failed or weak runs are used to exclude implausible
+regions rather than to assert a precise optimum.
+
+For DiT, the default space emphasizes four-head capacities, MLP ratios 2 and
+4, MSE, adaptive normalization, global 2D sinusoidal positions, 500 or 1,000
+timesteps, and Adam/AdamW. Ordinary generation/joint fitting uses cosine
+decay; continual and progressive fits retain a constant rate because their
+complete update count is not known up front. The plain backbone is joined by
+the compact symmetric two-level feature-skip U-DiT on compatible grids.
+Resampling positions are retained. Continual sampling concentrates on 20, 50,
+or 100 reverse steps, CFG 2.5–5, and eta 0 or 1.
+
+The CNN space includes the saved CIFAR stage shape
+`(64, 128, 128, 256)` with depths `(1, 2, 2, 1)`, dropout 0.15 and 0.20, max
+intermediate pooling, and global-average pooling. Transfer learning includes
+the 12-layer Xception tail used by both CIFAR notebooks. Dense classifier
+templates include a linear head and the saved two-layer widths, but the legacy
+DNN results used frozen Xception features and must not be interpreted as
+evidence for the same learning rates on raw flattened pixels.
+
+Reservoir replay independently samples capacity (2,500/5,000/10,000), replay
+sample count (500/1,000/2,500), and insertion count (500/1,000). Capacity is a
+storage limit; tying it to both per-update counts excluded the saved
+10,000-capacity/1,000-sample setup and needlessly coupled memory with compute.
 
 For joint or continual `dit_classifier`,
 `dit_encoder_decoder_classifier`, and `unet_classifier` studies, set
@@ -206,7 +253,7 @@ SQLite study name, so resuming them cannot mix their trials with ordinary-fit
 studies. As with other HPO settings such as epoch count, use a different
 `results_path` when comparing different progressive curricula.
 
-Passing `teacher_model` enables conditional hard/soft distillation sampling
+Passing `teacher_network` enables conditional hard/soft distillation sampling
 for joint or continual `dit_classifier`, `dit_encoder_decoder_classifier`, and
 `unet_classifier` studies. The student token/head and wrapper loss settings are
 written to each trial config, while the live teacher is passed directly to

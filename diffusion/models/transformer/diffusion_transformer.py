@@ -11,6 +11,8 @@ from tensorflow.keras import layers, models
 
 import math
 
+from copy import deepcopy
+
 from numbers import Real
 from typing import Literal, get_args
 
@@ -324,12 +326,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ``cnn_kernel_size``, and ``cnn_activation_func``.
             reshaper_ids_dict (dict[int, str]): Maps depths to ``"flatten"``
                 (tokens to one vector) or ``"unflatten"`` (vector back to the
-                inferred token grid).  Example: ``{2: "flatten", 4:
-                "unflatten"}`` creates a bottleneck between stages 2 and 4.
+                inferred token grid). Reshapers form consecutive pairs, for
+                example ``{2: "flatten", 3: "unflatten"}``.
             reshaper_kwargs (dict[str, object]): Only ``add_kl`` (bool) and
-                ``latent_dim_ratio`` (positive float) are allowed.  With
-                ``add_kl=True``, a flatten reshaper returns a sampled latent,
-                mean, and log variance for a VAE KL objective.
+                ``latent_dim_ratio`` (a list of positive floats) are allowed.
+                The list has one entry per flatten/unflatten pair in ascending
+                flatten-depth order. With ``add_kl=True``, each flatten
+                reshaper returns a sampled latent, mean, and log variance for
+                a VAE KL objective.
             cls_token_regularizer_ids (list[int | None]): Depth IDs whose token
                 slice feeds an auxiliary ``num_classes`` softmax.  ID 0 applies
                 a regularizer to the label embedding; ``[None]`` selects 0..N.
@@ -367,7 +371,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._save_init_args(locals())
         self._handle_all_ids()
         self.set_current_resolution()
-        derive_seed(self.seed, "diffusion_transformer", "validation")
+        derive_seed(
+            self.seed, 
+            "diffusion_transformer", 
+            "validation"
+        )
 
         self.seed = None if self.seed is None else int(self.seed)
         self.dynamic_num_classes = self.num_classes is None
@@ -379,6 +387,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self.dim = self.patches_dim + self.cond_dim if self.patches_conds_merger_type == "concat" else self.dim
         self.cond_embedder_dim = self.cond_dim // 2 if self.conds_merger_type == "concat" and \
                                 self.cond_type == "time_label" else self.cond_dim
+        self.has_cls_token = self.clf_cls_token_type is not None
+        self.has_distil_token = self.clf_distil_token_type is not None
+        self.prepended_tokens_num = int(self.has_cls_token) + int(self.has_distil_token)
 
         self._create_embedders()
         self.cls_token = self._create_single_token(
@@ -498,36 +509,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         id_ in allowed_values, \
                         f"The ids in each set of {dict_name} can only be one of {allowed_values} .")
 
-    @staticmethod
-    def _check_reshaper_kwargs(
-        kwargs: dict[str, object], 
-        prefix: str = ""
-    ) -> None:
-        """Validate variational switches shared by both transformer branches.
-
-        Args:
-            kwargs (dict[str, object]): Reshaper option mapping after its key
-                whitelist has been checked.
-            prefix (str): Optional branch name used in assertion messages.
-
-        Returns:
-            None: Valid values return normally; invalid values raise
-            ``AssertionError``.
-        """
-
-        add_kl = kwargs.get("add_kl", False)
-        latent_dim_ratio = kwargs.get("latent_dim_ratio", 1.0)
-
-        require(
-            isinstance(add_kl, bool), 
-            f"{prefix}reshaper add_kl must be boolean."
-        )
-        require(
-            isinstance(latent_dim_ratio, Real) and not isinstance(latent_dim_ratio, bool) and 
-            math.isfinite(float(latent_dim_ratio)) and latent_dim_ratio > 0.0, 
-            f"{prefix}reshaper latent_dim_ratio must be finite and positive."
-        )
-    
     def _check_assertions(self, local_vars: dict) -> None:
         """Validate constructor values and record each kwargs whitelist.
 
@@ -590,7 +571,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Split concatenated time/label conditions into two equal-width halves.
         if local_vars["conds_merger_type"] == "concat" and \
-                local_vars["cond_type"] == "time_label":
+        local_vars["cond_type"] == "time_label":
             require(effective_cond_dim % 2 == 0, \
                 "cond_dim must be even when time and label embeddings are concatenated.")
 
@@ -735,7 +716,24 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )), 
             check_values=False, 
         ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
-        self._check_reshaper_kwargs(local_vars["reshaper_kwargs"])
+        self._check_dict_assertions(
+            local_vars, 
+            "reshaper_ids_dict", 
+            check_values=False, 
+            id_less_than_key=False, 
+            none_is_filler=False
+        )
+        self._check_dict_assertions(
+            local_vars, 
+            "reshaper_kwargs", 
+            check_items_num=False, 
+            id_less_than_key=False, 
+            allowed_keys=(reshaper_kwargs_allowed_vals:=(
+                "add_kl", 
+                "latent_mlp_ratio"
+            )), 
+            check_values=False
+        ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
         self._check_dict_assertions(
             local_vars, 
             "cls_token_regularizer_ids", 
@@ -748,16 +746,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=(cls_token_regularizer_kwargs_allowed_vals:=(
-                "start", "end", "mlp_ratio", "activation_function",
+                "start", "end", "mlp_ratio", 
+                "activation_function", 
                 "train_type", "distil_type"
             )), 
             check_values=False, 
         ); self.cls_token_regularizer_kwargs_allowed_vals = cls_token_regularizer_kwargs_allowed_vals
-        regularizer_mlp_ratio = local_vars["cls_token_regularizer_kwargs"].get(
-            "mlp_ratio", None
-        )
-        require(regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
-            "regularizer mlp_ratio must be None or positive.")
+
         require(local_vars["cls_token_regularizer_kwargs"].get(
             "train_type", "normal"
         ) in ("normal", "distil", "both"), \
@@ -1123,6 +1118,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         grid_size = None
         # Inspect the requested stage when it exists.
         if i < len(layers_dicts):
+            # Read spatial size after a feature connector.
+            if (key:=self.FC) in layers_dicts[i]:
+                grid_size = layers_dicts[i][key].grid_size
+            # Read spatial size after a transformer.
+            if (key:=self.VTB) in layers_dicts[i]:
+                grid_size = layers_dicts[i][key].grid_size
             # Read spatial size after a local mixer.
             if (key:=self.LM) in layers_dicts[i]:
                 grid_size = layers_dicts[i][key].output_grid_size
@@ -1135,13 +1136,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             # Infer the grid from a spatial reshaper, or mark flattened output nonspatial.
             if (key:=self.R) in layers_dicts[i] and not skip_reshaper:
                 output_shape = layers_dicts[i][key].output_shape[0]
-                return int(output_shape[1] ** 0.5) if len(output_shape) == 3 \
-                    else None
+                grid_size = int(output_shape[1] ** 0.5) if len(output_shape) == 3 \
+                            else 0
 
         grid_size = self._get_last_grid_size(
             i-1, 
             layers_dicts, 
-            base_grid_size,
+            base_grid_size, 
             skip_reshaper=skip_reshaper
         ) if grid_size is None else grid_size
 
@@ -1214,6 +1215,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     layers_dicts=layers_dicts, 
                     base_grid_size=base_grid_size
                 ))
+
+        # An empty feature selection has no independently inferable grid.
+        if len(grid_sizes) == 0:
+            return None if must_be_same else []
 
         # Return all source grids when equality is not required.
         if not must_be_same:
@@ -1420,10 +1425,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self, 
         ids_set: list[int], 
         layers_dicts: list[dict], 
-        base_dim: int, dim_forced: bool, 
-        ln_mlp_ratio: float, ln_no_adaptation: bool, 
-        kwargs: dict, zero_index_base_dim: int | None = None, 
-        increased_dim: int = 0, output_dim_flag: bool = True, 
+        base_dim: int, 
+        base_grid_size: int, 
+        dim_forced: bool, 
+        ln_mlp_ratio: float, 
+        ln_no_adaptation: bool, 
+        kwargs: dict, 
+        zero_index_base_dim: int | None = None, 
+        increased_dim: int = 0, 
+        output_dim_flag: bool = True, 
         name: str | None = None
     ) -> FeatureHandler:
         """Create a feature selector/merger with an inferred projection width.
@@ -1432,6 +1442,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ids_set (list[int]): Absolute feature depths selected at call time.
             layers_dicts (list[dict]): Source stages used for width inference.
             base_dim (int): Nominal output width for forced projection.
+            base_grid_size (int): Square token-grid side at source depth zero.
             dim_forced (bool): Project concatenated growth back to ``base_dim``.
             ln_mlp_ratio (float | None): Adaptive-normalization MLP expansion.
             ln_no_adaptation (bool): Disable condition-dependent normalization.
@@ -1458,6 +1469,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     else zero_index_base_dim, 
             kwargs=kwargs
         )
+
         # Sum connector width growth when features are concatenated.
         if kwargs.get("connect_type", "concat") == "concat":
             increased_dim_ += increased_dim
@@ -1468,9 +1480,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 "In connect_type == add, all of the feature dimensions must be equal."
             )
 
-        mlp_output_dim = base_dim if dim_forced and \
-                        increased_dim_ > base_dim and \
+        mlp_output_dim = base_dim if dim_forced and increased_dim_ > base_dim and \
                         output_dim_flag else None
+        grid_size = self._get_ids_grid_size(
+            ids_set, 
+            layers_dicts, 
+            base_grid_size, 
+            must_be_same=True
+        )
 
         feature_handler_kwargs = {
             "ids": ids_set, 
@@ -1478,6 +1495,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "mlp_output_dim": mlp_output_dim, 
             "ln_mlp_ratio": ln_mlp_ratio, 
             "ln_no_adaptation": ln_no_adaptation, 
+            "grid_size": grid_size, 
             "name": name
         }
         feature_handler_kwargs.update(kwargs)
@@ -1494,6 +1512,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         layers_dicts: list[dict], 
         layers_dict: dict, 
         base_dim: int, 
+        base_grid_size: int, 
         mha_key_dim: int | None, 
         mha_value_dim: int | None, 
         mha_num_heads: int, 
@@ -1514,6 +1533,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dicts (list[dict]): Completed stages.
             layers_dict (dict): Current partially built stage.
             base_dim (int): Depth-0 feature width.
+            base_grid_size (int): Depth-0 square token-grid side.
             mha_key_dim (int | None): Per-head key width.
             mha_value_dim (int | None): Per-head value width.
             mha_num_heads (int): Attention-head count.
@@ -1550,11 +1570,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "ln_no_adaptation": ln_no_adaptation, 
             "drop_prob": drop_prob, 
             "drop_per_sample": drop_per_sample, 
+            "grid_size": self._get_current_grid_size(
+                i, 
+                layers_dicts, 
+                layers_dict, 
+                base_grid_size=base_grid_size
+            ), 
             "seed": derive_seed(
-                self.seed,
-                "transformer_block",
-                i,
-                name_prefix,
+                self.seed, 
+                "transformer_block", 
+                i, 
+                name_prefix
             ),
             "name": name_prefix
         }
@@ -1765,8 +1791,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         x_shape = tf.shape(x)
         input_grid_size = tf.cast(
             tf.sqrt(tf.cast(
-                x_shape[1], dtype=self.dtype_policy.variable_dtype
-            )),
+                x_shape[1], 
+                dtype=self.dtype_policy.variable_dtype
+            )), 
             dtype=tf.int32
         ) if input_grid_size is None else input_grid_size
 
@@ -1877,17 +1904,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 "reshape_type needs to be either flatten or unflatten."
             )
 
-        reshaper_layer = layers.Reshape(
-            target_shape, 
-            dtype=self.dtype_policy,
-            name=name
-        )
-
-        inputs = layers.Input(
-            shape=(None, dim) if reshape_type == "flatten" else source_shape,
-            dtype=self.compute_dtype,
-        )
-
 
         def resize_to_base(x: tf.Tensor) -> tf.Tensor:
             """Resize an active-resolution token grid to the base grid.
@@ -1929,21 +1945,38 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
 
 
+        inputs = layers.Input(
+            shape=(None, dim) if reshape_type == "flatten" else source_shape, 
+            dtype=self.compute_dtype
+        )
+
         x = layers.Lambda(
-            resize_to_base,
-            dtype=self.dtype_policy,
+            resize_to_base, 
+            dtype=self.dtype_policy, 
             name=name+"/resize_to_base"
         )(inputs) if reshape_type == "flatten" else inputs
-        x = reshaper_layer(x)
+        x = layers.Reshape(
+            target_shape, 
+            dtype=self.dtype_policy, 
+            name=name
+        )(x)
         x = layers.Lambda(
-            resize_from_base,
-            dtype=self.dtype_policy,
+            resize_from_base, 
+            dtype=self.dtype_policy, 
             name=name+"/resize_from_base"
         )(x) if reshape_type == "unflatten" else x
 
         # Add a variational latent projection only on KL-enabled flatten stages.
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
-            latent_dim_ratio = kwargs.get("latent_dim_ratio", 1)
+            id_ = sorted(
+                depth for depth, reshape_type in self.reshaper_ids_dict.items()
+                if reshape_type == "flatten"
+            ).index(i+1)
+            latent_dim_ratio_list = kwargs.get("latent_dim_ratio", [])
+            latent_dim_ratio = latent_dim_ratio_list[id_] if len(
+                latent_dim_ratio_list
+            ) > 0 else 1.
+
             latent_dim = int(target_shape[-1] * latent_dim_ratio)
 
             # A positive fractional ratio can still truncate to an unusable
@@ -1955,28 +1988,28 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             z_mean = layers.Dense(
                 latent_dim, 
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
                 name=name+"/z_mean"
             )(x)
             z_log_var = layers.Dense(
                 latent_dim, 
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
                 name=name+"/z_log_var"
             )(x)
             z = VariationalAutoencoder.compute_z(
-                z_mean,
-                z_log_var,
+                z_mean, 
+                z_log_var, 
                 seed=derive_seed(
-                    self.seed,
-                    "reshaper",
-                    name,
-                    "reparameterization",
-                ),
-                dtype=self.dtype_policy.variable_dtype,
+                    self.seed, 
+                    "reshaper", 
+                    name, 
+                    "reparameterization"
+                ), 
+                dtype=self.dtype_policy.variable_dtype
             )
             z = layers.Dense(
                 target_shape[-1], 
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
                 name=name+"/z"
             )(z) if latent_dim_ratio != 1 else z
 
@@ -2060,7 +2093,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return token_regularizer
 
-    def _create_layer_dict(
+    def _create_layers_dict(
         self, 
         i: int, 
         layers_dicts: list[dict]
@@ -2088,6 +2121,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ids_set=self.connection_ids_dict[key], 
                 layers_dicts=layers_dicts, 
                 base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
                 dim_forced=self.dim_forced, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
@@ -2101,6 +2135,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ids_set=self.cross_attention_ids_dict[key], 
                 layers_dicts=layers_dicts, 
                 base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
                 dim_forced=self.dim_forced, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
@@ -2118,6 +2153,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dict[self.VTB] = self._create_vit_block(
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
                 mha_key_dim=self.mha_key_dim, 
                 mha_value_dim=self.mha_value_dim, 
                 mha_query_dim=mha_query_dim, 
@@ -2143,8 +2179,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_tokens=int(self.cls_token_type is not None) + 
-                                int(self.distil_token_type is not None), 
+                circumvent_tokens=self.prepended_tokens_num, 
                 kwargs=self.local_mixer_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
             )
@@ -2161,8 +2196,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_tokens=int(self.cls_token_type is not None) + 
-                                int(self.distil_token_type is not None), 
+                circumvent_tokens=self.prepended_tokens_num, 
                 kwargs=self.downsample_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
             )
@@ -2179,8 +2213,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 base_grid_size=self.grid_size, 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                circumvent_tokens=int(self.cls_token_type is not None) + 
-                                int(self.distil_token_type is not None), 
+                circumvent_tokens=self.prepended_tokens_num, 
                 kwargs=self.upsample_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
             )
@@ -2190,10 +2223,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dict[self.R] = self._create_reshaper(
                 reshape_type=self.reshaper_ids_dict[key], 
                 i=i, layers_dicts=layers_dicts, 
-                layers_dict=layers_dict, base_dim=self.dim, 
+                layers_dict=layers_dict, 
+                base_dim=self.dim, 
                 base_grid_size=self.grid_size, 
-                grid_has_tokens=int(self.cls_token_type is not None) + 
-                                int(self.distil_token_type is not None), 
+                grid_has_tokens=self.prepended_tokens_num, 
                 kwargs=self.reshaper_kwargs, 
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
             )
@@ -2223,7 +2256,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         for i in range(self.depth):
             self.layers_dicts.append(
-                self._create_layer_dict(i, self.layers_dicts)
+                self._create_layers_dict(i, self.layers_dicts)
             )
 
     def _create_unpatchifier(self) -> None:
@@ -2277,9 +2310,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             x_shape = tf.shape(x)
             batch_size = x_shape[0]
             grid_size = tf.cast(
-                tf.sqrt(
-                    tf.cast(x_shape[1], self.dtype_policy.variable_dtype)
-                ), 
+                tf.sqrt(tf.cast(
+                    x_shape[1], 
+                    self.dtype_policy.variable_dtype
+                )), 
                 tf.int32
             )
 
@@ -2534,10 +2568,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         resolution = self.image_size if resolution is None else resolution
 
         require(
-            not isinstance(resolution, bool) and int(resolution) == resolution, 
-            "resolution must be an integer."
-        )
-        require(
             resolution > 0, 
             "resolution must be positive."
         )
@@ -2732,77 +2762,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return x
 
-    def prepend_cls_token(
-        self,
-        x: tf.Tensor,
-        cls_token_type: TokenType,
-        time_embeds: tf.Tensor | None = None,
-        label_embeds: tf.Tensor | None = None,
-        times: tf.Tensor | None = None,
-        labels: tf.Tensor | None = None,
-        training: bool | None = None
-    ) -> tf.Tensor:
-        """Prepend the configured class token.
-
-        This public helper keeps the class-token API while delegating to the
-        shared single-token implementation.
-
-        Args:
-            x (tf.Tensor): Patch tokens ``[B, P, D]``.
-            cls_token_type (TokenType): Class-token source.
-            time_embeds (tf.Tensor | None): Reusable time embedding.
-            label_embeds (tf.Tensor | None): Reusable label embedding.
-            times (tf.Tensor | None): Integer timestep IDs.
-            labels (tf.Tensor | None): Integer class IDs.
-            training (bool | None): Keras training mode.
-
-        Returns:
-            tf.Tensor: Sequence with the class token prepended.
-        """
-
-        return self.prepend_single_token(
-            x, self.cls_token, cls_token_type,
-            time_embeds=time_embeds,
-            label_embeds=label_embeds,
-            times=times,
-            labels=labels,
-            training=training
-        )
-
-    def prepend_distil_token(
-        self,
-        x: tf.Tensor,
-        distil_token_type: TokenType,
-        time_embeds: tf.Tensor | None = None,
-        label_embeds: tf.Tensor | None = None,
-        times: tf.Tensor | None = None,
-        labels: tf.Tensor | None = None,
-        training: bool | None = None
-    ) -> tf.Tensor:
-        """Prepend the configured distillation token.
-
-        Args:
-            x (tf.Tensor): Patch tokens ``[B, P, D]``.
-            distil_token_type (TokenType): Distillation-token source.
-            time_embeds (tf.Tensor | None): Reusable time embedding.
-            label_embeds (tf.Tensor | None): Reusable label embedding.
-            times (tf.Tensor | None): Integer timestep IDs.
-            labels (tf.Tensor | None): Integer class IDs.
-            training (bool | None): Keras training mode.
-
-        Returns:
-            tf.Tensor: Sequence with the distillation token prepended.
-        """
-
-        return self.prepend_single_token(
-            x, self.distil_token, distil_token_type,
-            time_embeds=time_embeds,
-            label_embeds=label_embeds,
-            times=times,
-            labels=labels,
-            training=training
-        )
-
     def slice_and_flatten_tokens(
         self, 
         x: tf.Tensor, 
@@ -2886,8 +2845,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 full_return=True, 
                 training=training
             )
-            x = self.prepend_distil_token(
-                x, 
+            x = self.prepend_single_token(
+                x, self.distil_token, 
                 self.distil_token_type, 
                 time_embeds=time_embeds, 
                 label_embeds=label_embeds, 
@@ -2895,8 +2854,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 labels=inputs[2], 
                 training=training
             )
-            x = self.prepend_cls_token(
-                x, 
+            x = self.prepend_single_token(
+                x, self.cls_token, 
                 self.cls_token_type, 
                 time_embeds=time_embeds, 
                 label_embeds=label_embeds, 
@@ -2934,6 +2893,25 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             if i < min_depth:
                 continue
 
+            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
+            if self.R in layers_dict and min_depth > 0 and is_flatten:
+                x = latent_inputs[latent_index]
+                latent_index += 1
+                x_mean, x_log_var = None, None
+
+                z = layers_dict[self.CTR](
+                    self.slice_and_flatten_tokens(
+                        x, 
+                        self.cls_token_regularizer_kwargs["start"], 
+                        self.cls_token_regularizer_kwargs["end"]
+                    ), 
+                    training=training
+                ) if self.CTR in layers_dict else None
+
+                features_list.append(x)
+                regs_list.append(z)
+                continue
+
             x = layers_dict[self.FC](
                 features_list, 
                 cond=cond, 
@@ -2968,16 +2946,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             ) if self.US in layers_dict else x
 
-            is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
-            if self.R in layers_dict and min_depth > 0 and is_flatten:
-                x = latent_inputs[latent_index]
-                latent_index += 1
-                x_mean, x_log_var = None, None
-            else:
-                x, x_mean, x_log_var = layers_dict[self.R](
-                    x, 
-                    training=training
-                ) if self.R in layers_dict else (x, None, None)
+            x, x_mean, x_log_var = layers_dict[self.R](
+                x, 
+                training=training
+            ) if self.R in layers_dict else (x, None, None)
 
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
@@ -3032,7 +3004,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         for each item. A dictionary also describes one depth and may provide
         ``ids`` for ``feature_connector`` or ``cross_attention_connector``,
         ``use_decoder`` and ``mlp_output_dim`` for
-        ``vision_transformer_block``, or ``reshape_type`` for ``reshaper``.
+        ``vision_transformer_block``, or ``reshape_type`` plus an optional
+        scalar ``latent_dim_ratio`` for a new flatten ``reshaper``. That ratio
+        is appended to the model-level list.
         Other names are ``local_mixer``, ``downsampler``, ``upsampler``, and
         ``cls_token_regularizer``.  These are the suffixes of the class's layer
         constants and therefore the exact accepted strings.
@@ -3078,9 +3052,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "vit_block_ids", "use_decoder_ids", 
             "vit_block_mlp_output_dims", "local_mixer_ids", 
             "downsample_ids", "upsample_ids", "reshaper_ids_dict", 
-            "cls_token_regularizer_ids", 
+            "reshaper_kwargs", "cls_token_regularizer_ids"
         )
-        metadata = {name: getattr(self, name) for name in metadata_names}
+        metadata = {
+            name: deepcopy(getattr(self, name)) for name in metadata_names
+        }
         old_dim = self._get_last_output_dim(
             old_depth-1, self.layers_dicts, self.dim
         )
@@ -3165,12 +3141,49 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         ]
                     # Register the new depth's flattening direction.
                     elif layer_name == self.R[2:]:
-                        reshape_type = options.get("reshape_type") \
-                                    if isinstance(options, dict) else options
+                        reshaper_options = options \
+                            if isinstance(options, dict) else {
+                                "reshape_type": options
+                            }
+                        if set(reshaper_options) - {
+                            "reshape_type", "latent_dim_ratio"
+                        }:
+                            raise ValueError(
+                                "Progressive reshaper options are limited to "
+                                "reshape_type and latent_dim_ratio."
+                            )
+                        reshape_type = reshaper_options.get("reshape_type")
 
                         self.reshaper_ids_dict = {
                             **self.reshaper_ids_dict, key: reshape_type
                         }
+                        if reshape_type == "flatten":
+                            ratio = reshaper_options.get(
+                                "latent_dim_ratio", 1.0
+                            )
+                            if not (
+                                isinstance(ratio, Real) and
+                                not isinstance(ratio, bool) and
+                                math.isfinite(float(ratio)) and ratio > 0.0
+                            ):
+                                raise ValueError(
+                                    "Progressive latent_dim_ratio must be "
+                                    "finite and positive."
+                                )
+                            self.reshaper_kwargs = {
+                                **self.reshaper_kwargs,
+                                "latent_dim_ratio": [
+                                    *self.reshaper_kwargs[
+                                        "latent_dim_ratio"
+                                    ],
+                                    ratio
+                                ]
+                            }
+                        elif "latent_dim_ratio" in reshaper_options:
+                            raise ValueError(
+                                "latent_dim_ratio belongs on the flatten "
+                                "member of a reshaper pair."
+                            )
                     # Register an auxiliary token classifier at the new depth.
                     elif layer_name == self.CTR[2:]:
                         self.cls_token_regularizer_ids = [
@@ -3182,10 +3195,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             f"Unknown progressive classifier layer: {layer_name}."
                         )
 
-                layers_dict = self._create_layer_dict(
+                layers_dict = self._create_layers_dict(
                     key-1, planned_layers
                 )
                 planned_layers.append(layers_dict)
+
+            try:
+                self._check_reshaper_kwargs(
+                    self.reshaper_kwargs,
+                    self.reshaper_ids_dict
+                )
+            except AssertionError as error:
+                raise ValueError(str(error)) from error
 
             # Keep progressive output width compatible with the existing output head.
             if self._get_last_output_dim(
@@ -3564,7 +3585,7 @@ def run_self_tests() -> dict[str, str]:
             depth=2, 
             vit_block_ids=[], 
             reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-            reshaper_kwargs={"add_kl": add_kl, "latent_dim_ratio": 1.0}, 
+            reshaper_kwargs={"add_kl": add_kl, "latent_dim_ratio": [1.0]},
             **base, 
         )
         value, _, _, _, latent = bottleneck(inputs, full_return=True, training=False)
@@ -3576,6 +3597,30 @@ def run_self_tests() -> dict[str, str]:
         # Keep disabled KL metadata empty.
         else:
             assert latent == []
+
+    multilevel_resume = DiffusionTransformer(
+        depth=6,
+        vit_block_ids=[],
+        reshaper_ids_dict={
+            1: "flatten", 2: "unflatten",
+            3: "flatten", 4: "unflatten",
+            5: "flatten", 6: "unflatten",
+        },
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [1.0, 1.0, 1.0],
+        },
+        **base,
+    )
+    # The exclusive stop precedes both later flatten stages, so a bounded
+    # resume needs only the representation consumed by depth 2.
+    truncated_tokens, *_ = multilevel_resume.encode(
+        ([tf.zeros((2, 16))], times, labels),
+        min_depth=1,
+        max_depth=2,
+        training=False,
+    )
+    assert truncated_tokens.shape == (2, 4, 4)
 
     regularized = DiffusionTransformer(
         depth=1, 
@@ -3705,7 +3750,12 @@ def run_self_tests() -> dict[str, str]:
 
     progressive_reshape = DiffusionTransformer(depth=0, **base)
     reshape_growth = progressive_reshape.add_depths([
-        {"reshaper": {"reshape_type": "flatten"}}, 
+        {
+            "reshaper": {
+                "reshape_type": "flatten",
+                "latent_dim_ratio": 0.5,
+            }
+        },
         {"reshaper": {"reshape_type": "unflatten"}}, 
     ])
     assert reshape_growth["network"] == {"before": 0, "added": 2, "after": 2}
@@ -3713,6 +3763,7 @@ def run_self_tests() -> dict[str, str]:
         1: "flatten", 
         2: "unflatten", 
     }
+    assert progressive_reshape.reshaper_kwargs["latent_dim_ratio"] == [0.5]
     assert all(
         progressive_reshape.R in stage
         for stage in progressive_reshape.layers_dicts
@@ -3776,28 +3827,41 @@ def run_self_tests() -> dict[str, str]:
         "downsample_ids", 
         "upsample_ids", 
         "reshaper_ids_dict", 
+        "reshaper_kwargs",
         "cls_token_regularizer_ids", 
     )
     rollback_metadata = {
         name: getattr(progressive_rollback, name).copy()
         for name in rollback_metadata_names
     }
-    for incompatible_specification in (
-        {"vision_transformer_block": {"mlp_output_dim": 6}},
-        {"reshaper": {"reshape_type": "flatten"}},
-    ):
-        try:
-            progressive_rollback.add_depths(incompatible_specification)
-        except ValueError as error:
-            assert "preserve the output-head feature dimension" in str(error)
-        else:
-            raise AssertionError("Incompatible progressive output width must fail")
-        assert progressive_rollback.depth == 0
-        assert len(progressive_rollback.layers_dicts) == 0
-        assert all(
-            getattr(progressive_rollback, name) == rollback_metadata[name]
-            for name in rollback_metadata_names
-        )
+    try:
+        progressive_rollback.add_depths({
+            "vision_transformer_block": {"mlp_output_dim": 6}
+        })
+    except ValueError as error:
+        assert "preserve the output-head feature dimension" in str(error)
+    else:
+        raise AssertionError("Incompatible progressive output width must fail")
+    assert progressive_rollback.depth == 0
+    assert len(progressive_rollback.layers_dicts) == 0
+    assert all(
+        getattr(progressive_rollback, name) == rollback_metadata[name]
+        for name in rollback_metadata_names
+    )
+    try:
+        progressive_rollback.add_depths({
+            "reshaper": {"reshape_type": "flatten"}
+        })
+    except ValueError as error:
+        assert "consecutive flatten/unflatten pairs" in str(error)
+    else:
+        raise AssertionError("An incomplete progressive reshape pair must fail")
+    assert progressive_rollback.depth == 0
+    assert len(progressive_rollback.layers_dicts) == 0
+    assert all(
+        getattr(progressive_rollback, name) == rollback_metadata[name]
+        for name in rollback_metadata_names
+    )
     assert progressive_rollback(inputs, training=False).shape == (2, 4, 4, 1)
 
     grid_rollback = DiffusionTransformer(depth=0, **base)
@@ -4029,12 +4093,12 @@ def run_self_tests() -> dict[str, str]:
             raise AssertionError(f"Expected invalid configuration to fail: {overrides}")
     try:
         DiffusionTransformer(
-            depth=1,
+            depth=2,
             vit_block_ids=[],
-            reshaper_ids_dict={1: "flatten"},
+            reshaper_ids_dict={1: "flatten", 2: "unflatten"},
             reshaper_kwargs={
                 "add_kl": True,
-                "latent_dim_ratio": 1e-12,
+                "latent_dim_ratio": [1e-12],
             },
             build=False,
             **base,

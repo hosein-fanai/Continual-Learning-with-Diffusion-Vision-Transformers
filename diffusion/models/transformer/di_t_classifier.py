@@ -228,8 +228,10 @@ class DiTClassifier(DiffusionTransformer):
             clf_reshaper_ids_dict (dict[int, str]): Classifier depth to
                 ``"flatten"``/``"unflatten"`` mapping; empty by default.
             clf_reshaper_kwargs (dict[str, object]): ``add_kl`` (bool) and
-                ``latent_dim_ratio`` (positive float).  The default empty
-                mapping is classifier-specific and does not inherit main values.
+                ``latent_dim_ratio`` (one positive-float list entry per
+                consecutive pair, ordered by ascending flatten depth). The
+                default mapping is classifier-specific and does not inherit
+                main values.
             clf_cls_token_regularizer_ids (list[int | None]): Classifier depths
                 0..``clf_depth`` with auxiliary class softmax heads.  Empty by
                 default; ``[None]`` selects the full range.
@@ -276,11 +278,12 @@ class DiTClassifier(DiffusionTransformer):
         self.set_max_encoder_num()
 
         self.first_aggregated_dim = self._get_unforced_total_dim(
-            ids_set=self.feature_aggregation_ids_dict[1], 
+            ids_set=self.feature_aggregation_ids_dict[1],  
             layers_dicts=self.layers_dicts, 
             base_dim=self.dim, 
             kwargs=self.feature_aggregation_kwargs
-        ) if not self.clf_dim_forced and 1 not in self.clf_connection_ids_dict else self.clf_dim
+        ) if not self.clf_dim_forced or 1 in self.clf_connection_ids_dict \
+        else self.clf_dim
         self.first_aggregated_dim = (
             self.patches_dim if self.classifier_only_cls_token else self.dim
         ) if self.aggregate_from_noises else self.first_aggregated_dim
@@ -296,6 +299,10 @@ class DiTClassifier(DiffusionTransformer):
                                 else self.cls_token_type is not None
         self.clf_has_distil_token = self.clf_distil_token_type is not None if self.classifier_only_distil_token \
                                     else self.distil_token_type is not None
+        self.clf_prepended_tokens_num = int(self.clf_has_cls_token) + int(self.clf_has_distil_token)
+        self.has_cls_token = 0 if self.classifier_only_cls_token else self.has_cls_token
+        self.has_distil_token = 0 if self.classifier_only_distil_token else self.has_distil_token
+        self.prepended_tokens_num = int(self.has_cls_token) + int(self.has_distil_token)
 
         self._create_clf_embedders()
         self.cls_token = self._create_single_token(
@@ -325,25 +332,25 @@ class DiTClassifier(DiffusionTransformer):
                     layers.Lambda(
                         remove_second_token if self.clf_has_cls_token \
                         else remove_first_token, 
-                        dtype=self.dtype_policy,
+                        dtype=self.dtype_policy, 
                         name=f"{self.name_prefix}remove_distil_token"
                     ), 
                     layers.GlobalAveragePooling1D(
-                        dtype=self.dtype_policy,
+                        dtype=self.dtype_policy, 
                         name=f"{self.name_prefix}global_average_pooling"
                     )
                 ], name=f"{self.name_prefix}classifier_feature_extractor")
             # Keep the established direct pooling layer without distillation.
             else:
                 self.classifier_feature_extractor = layers.GlobalAveragePooling1D(
-                    dtype=self.dtype_policy,
+                    dtype=self.dtype_policy, 
                     name=f"{self.name_prefix}classifier_feature_extractor"
                 )
         # Otherwise classify from the first class-token position.
         else:
             self.classifier_feature_extractor = layers.Lambda(
                 select_first_token, 
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
@@ -574,12 +581,6 @@ class DiTClassifier(DiffusionTransformer):
             allowed_keys=self.reshaper_kwargs_allowed_vals, 
             check_values=False, 
         ) if local_vars[key:="clf_reshaper_kwargs"] is not None else None
-        # Validate classifier reshaper geometry after its generic mapping checks.
-        if local_vars["clf_reshaper_kwargs"] is not None:
-            self._check_reshaper_kwargs(
-                local_vars["clf_reshaper_kwargs"],
-                prefix="classifier ",
-            )
         self._check_dict_assertions(
             local_vars, 
             "clf_cls_token_regularizer_ids", 
@@ -760,6 +761,44 @@ class DiTClassifier(DiffusionTransformer):
 
         return last_output_dim
 
+    def _get_last_grid_size( # TODO: implement it like output_dim overriding
+        self, 
+        i: int, 
+        layers_dicts: list[dict], 
+        base_grid_size: int, 
+        skip_reshaper: bool = False
+    ) -> int | None:
+        """Resolve classifier grids including main-feature aggregation.
+
+        Args:
+            i (int): Zero-based classifier stage, or ``-1`` for depth zero.
+            layers_dicts (list[dict]): Classifier stage dictionaries.
+            base_grid_size (int): Classifier depth-zero grid side.
+            skip_reshaper (bool): Ignore reshaper rank changes when true.
+
+        Returns:
+            int | None: Latest square grid side, including a terminal feature
+            aggregator when no later primary-path component supersedes it.
+        """
+
+        if 0 <= i < len(layers_dicts):
+            stage = layers_dicts[i]
+            later_grid_keys = (self.FC, self.VTB, self.LM, self.DS, self.US)
+            reshaper_sets_grid = self.R in stage and not skip_reshaper
+
+            if self.FA in stage and not (
+                any(key in stage for key in later_grid_keys) or
+                reshaper_sets_grid
+            ):
+                return stage[self.FA].grid_size
+
+        return super()._get_last_grid_size(
+            i, 
+            layers_dicts, 
+            base_grid_size, 
+            skip_reshaper
+        )
+
     def _create_clf_embedders(self) -> None:
         """Create or reuse condition layers needed by the classifier branch.
 
@@ -831,22 +870,7 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
 
-    def _get_clf_prefix_tokens_num(self) -> int:
-        """Return the number of active classifier-side prefix tokens.
-
-        Returns:
-            int: Zero, one, or two for the active class and distillation token
-            configuration.
-        """
-
-        cls_token_type = self.clf_cls_token_type if self.classifier_only_cls_token \
-                        else self.cls_token_type
-        distil_token_type = self.clf_distil_token_type if self.classifier_only_distil_token \
-                        else self.distil_token_type
-
-        return int(cls_token_type is not None) + int(distil_token_type is not None)
-
-    def _create_clf_layer_dict(
+    def _create_clf_layers_dict(
         self, 
         i: int, 
         layers_dicts: list[dict]
@@ -865,6 +889,7 @@ class DiTClassifier(DiffusionTransformer):
             regularizer order.  Aggregators read ``self.layers_dicts`` (main
             features); ``clf_`` connectors read classifier features.
         """
+
         layers_dict = {}
         key = i+1
 
@@ -876,6 +901,7 @@ class DiTClassifier(DiffusionTransformer):
                         if not bypass_aggregator else [], 
                 layers_dicts=self.layers_dicts, 
                 base_dim=self.clf_dim, 
+                base_grid_size=self.grid_size,
                 dim_forced=False if bypass_aggregator else self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -885,7 +911,7 @@ class DiTClassifier(DiffusionTransformer):
                     layers_dicts=layers_dicts, 
                     base_dim=self.clf_dim
                 ) if key not in self.clf_connection_ids_dict and i != 0 \
-                  else self.first_aggregated_dim if bypass_aggregator else 0, 
+                else self.first_aggregated_dim if bypass_aggregator else 0, 
                 output_dim_flag=key not in self.clf_connection_ids_dict, 
                 kwargs={} if bypass_aggregator else self.feature_aggregation_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.FA[2:]}"
@@ -897,6 +923,7 @@ class DiTClassifier(DiffusionTransformer):
                 ids_set=self.clf_connection_ids_dict[key], 
                 layers_dicts=layers_dicts, 
                 base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size,
                 dim_forced=self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -918,6 +945,7 @@ class DiTClassifier(DiffusionTransformer):
                 ids_set=self.cross_attention_aggregation_ids_dict[key], 
                 layers_dicts=self.layers_dicts, 
                 base_dim=self.clf_dim, 
+                base_grid_size=self.grid_size, 
                 dim_forced=self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -933,6 +961,7 @@ class DiTClassifier(DiffusionTransformer):
                 ids_set=self.clf_cross_attention_ids_dict[key], 
                 layers_dicts=layers_dicts, 
                 base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
                 dim_forced=self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -960,7 +989,9 @@ class DiTClassifier(DiffusionTransformer):
 
             layers_dict[self.VTB] = self._create_vit_block(
                 i=i, layers_dicts=layers_dicts, 
-                layers_dict=layers_dict, base_dim=self.clf_dim, 
+                layers_dict=layers_dict, 
+                base_dim=self.clf_dim, 
+                base_grid_size=self.clf_grid_size, 
                 mha_key_dim=self.clf_mha_key_dim, 
                 mha_value_dim=self.clf_mha_value_dim, 
                 mha_query_dim=mha_query_dim, 
@@ -986,7 +1017,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_tokens=self._get_clf_prefix_tokens_num(),
+                circumvent_tokens=self.clf_prepended_tokens_num, 
                 kwargs=self.clf_local_mixer_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.LM[2:]}"
             )
@@ -1003,7 +1034,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_tokens=self._get_clf_prefix_tokens_num(),
+                circumvent_tokens=self.clf_prepended_tokens_num, 
                 kwargs=self.clf_downsample_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.DS[2:]}"
             )
@@ -1020,7 +1051,7 @@ class DiTClassifier(DiffusionTransformer):
                 base_grid_size=self.clf_grid_size, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                circumvent_tokens=self._get_clf_prefix_tokens_num(),
+                circumvent_tokens=self.clf_prepended_tokens_num, 
                 kwargs=self.clf_upsample_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.US[2:]}"
             )
@@ -1030,9 +1061,10 @@ class DiTClassifier(DiffusionTransformer):
             layers_dict[self.R] = self._create_reshaper(
                 reshape_type=self.clf_reshaper_ids_dict[key], 
                 i=i, layers_dicts=layers_dicts, 
-                layers_dict=layers_dict, base_dim=self.clf_dim, 
+                layers_dict=layers_dict, 
+                base_dim=self.clf_dim, 
                 base_grid_size=self.clf_grid_size, 
-                grid_has_tokens=self._get_clf_prefix_tokens_num(), 
+                grid_has_tokens=self.clf_prepended_tokens_num, 
                 kwargs=self.clf_reshaper_kwargs, 
                 name=f"{self.name_prefix}clf_depth_{key}_{self.R[2:]}"
             )
@@ -1063,7 +1095,7 @@ class DiTClassifier(DiffusionTransformer):
 
         for i in range(self.clf_depth+1):
             self.clf_layers_dicts.append(
-                self._create_clf_layer_dict(i, self.clf_layers_dicts)
+                self._create_clf_layers_dict(i, self.clf_layers_dicts)
             )
 
         # Retain an append-only tracking path for executable classifier stages.
@@ -1602,10 +1634,11 @@ class DiTClassifier(DiffusionTransformer):
             "clf_use_decoder_ids", "clf_vit_block_mlp_output_dims", 
             "clf_local_mixer_ids", "clf_downsample_ids", 
             "clf_upsample_ids", "clf_reshaper_ids_dict", 
-            "clf_cls_token_regularizer_ids", 
+            "clf_reshaper_kwargs", "clf_cls_token_regularizer_ids"
         )
         metadata = {
-            name: deepcopy(getattr(self, name)) for name in metadata_names
+            name: deepcopy(getattr(self, name)) 
+            for name in metadata_names
         }
         old_terminal_key = old_clf_depth + 1
         terminal_layers = dict(self.clf_layers_dicts[-1])
@@ -1722,10 +1755,49 @@ class DiTClassifier(DiffusionTransformer):
                         ]
                     # Register the classifier depth's reshape direction.
                     elif layer_name == self.R[2:]:
-                        reshape_type = options.get("reshape_type")
+                        reshaper_options = options \
+                            if isinstance(options, dict) else {
+                                "reshape_type": options
+                            }
+                        if set(reshaper_options) - {
+                            "reshape_type", "latent_dim_ratio"
+                        }:
+                            raise ValueError(
+                                "Progressive classifier reshaper options are "
+                                "limited to reshape_type and latent_dim_ratio."
+                            )
+                        reshape_type = reshaper_options.get("reshape_type")
                         self.clf_reshaper_ids_dict = {
                             **self.clf_reshaper_ids_dict, key: reshape_type
                         }
+                        if reshape_type == "flatten":
+                            ratio = reshaper_options.get(
+                                "latent_dim_ratio", 1.0
+                            )
+                            if not (
+                                isinstance(ratio, Real) and
+                                not isinstance(ratio, bool) and
+                                math.isfinite(float(ratio)) and ratio > 0.0
+                            ):
+                                raise ValueError(
+                                    "Progressive classifier "
+                                    "latent_dim_ratio must be finite and "
+                                    "positive."
+                                )
+                            self.clf_reshaper_kwargs = {
+                                **self.clf_reshaper_kwargs,
+                                "latent_dim_ratio": [
+                                    *self.clf_reshaper_kwargs[
+                                        "latent_dim_ratio"
+                                    ],
+                                    ratio
+                                ]
+                            }
+                        elif "latent_dim_ratio" in reshaper_options:
+                            raise ValueError(
+                                "latent_dim_ratio belongs on the flatten "
+                                "member of a classifier reshaper pair."
+                            )
                     # Register an auxiliary classifier token head at the new depth.
                     elif layer_name == self.CTR[2:]:
                         self.clf_cls_token_regularizer_ids = [
@@ -1737,10 +1809,19 @@ class DiTClassifier(DiffusionTransformer):
                             f"Unknown progressive classifier layer: {layer_name}."
                         )
 
-                layers_dict = self._create_clf_layer_dict(
+                layers_dict = self._create_clf_layers_dict(
                     key-1, planned_layers
                 )
                 planned_layers.append(layers_dict)
+
+            try:
+                self._check_reshaper_kwargs(
+                    self.clf_reshaper_kwargs,
+                    self.clf_reshaper_ids_dict,
+                    prefix="classifier "
+                )
+            except AssertionError as error:
+                raise ValueError(str(error)) from error
 
             new_clf_depth = old_clf_depth + len(classifier_specs)
             # Retarget the terminal connector when it referenced the old last depth.
@@ -1992,7 +2073,9 @@ def run_self_tests() -> dict[str, str]:
     public_default_first.clf_reshaper_kwargs["probe"] = True
     assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_second.clf_connection_ids_dict == {2: [1]}
-    assert public_default_second.clf_reshaper_kwargs == {}
+    assert public_default_second.clf_reshaper_kwargs == {
+        "latent_dim_ratio": []
+    }
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
     assert public_reshaper_default == {}
@@ -2004,7 +2087,10 @@ def run_self_tests() -> dict[str, str]:
         clf_connection_kwargs=None,
     )
     supplied_reshaper_kwargs["add_kl"] = True
-    assert supplied_options.clf_reshaper_kwargs == {"add_kl": False}
+    assert supplied_options.clf_reshaper_kwargs == {
+        "add_kl": False,
+        "latent_dim_ratio": [],
+    }
     assert supplied_options.clf_connection_kwargs == {"connect_type": "concat"}
     assert supplied_options.clf_connection_kwargs is not \
         supplied_options.connection_kwargs
@@ -2187,6 +2273,24 @@ def run_self_tests() -> dict[str, str]:
         assert cross_connected(inputs, training=False)["classes"].shape == (2, 2)
         assert cross_connected.clf_connection_ids_dict == {2: [0, 1], 3: [2]}
 
+    aggregator_only_connections = make_model(
+        depth=2,
+        clf_depth=3,
+        feature_aggregation_ids_dict={1: [None], 2: [None]},
+        clf_connection_ids_dict={
+            1: [], 2: [], 3: [None], -1: [-1]
+        },
+        classifier_only_cls_token=False,
+        cls_token_type="new_weight",
+    )
+    assert aggregator_only_connections.first_aggregated_dim == 12
+    assert aggregator_only_connections.clf_connection_ids_dict == {
+        1: [], 2: [], 3: [0, 1, 2], 4: [3]
+    }
+    assert aggregator_only_connections(
+        inputs, training=False
+    )["classes"].shape == (2, 2)
+
     additive_aggregation = make_model(
         depth=2, 
         feature_aggregation_ids_dict={1: [0, 1]}, 
@@ -2270,7 +2374,10 @@ def run_self_tests() -> dict[str, str]:
             clf_depth=2, 
             clf_vit_block_ids=[], 
             clf_reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-            clf_reshaper_kwargs={"add_kl": add_kl, "latent_dim_ratio": 1.0}, 
+            clf_reshaper_kwargs={
+                "add_kl": add_kl,
+                "latent_dim_ratio": [1.0]
+            },
             force_global_avg_pooling=True, 
         )
         reshaped_outputs = reshaped(inputs, full_return=True, training=False)
@@ -2373,7 +2480,12 @@ def run_self_tests() -> dict[str, str]:
             "local_mixer", 
             "downsampler", 
             "upsampler", 
-            {"reshaper": {"reshape_type": "flatten"}}, 
+            {
+                "reshaper": {
+                    "reshape_type": "flatten",
+                    "latent_dim_ratio": 0.5,
+                }
+            },
             {"reshaper": {"reshape_type": "unflatten"}}, 
             "cls_token_regularizer", 
             {
@@ -2406,6 +2518,9 @@ def run_self_tests() -> dict[str, str]:
         9: "flatten", 
         10: "unflatten", 
     }
+    assert progressive_components.clf_reshaper_kwargs[
+        "latent_dim_ratio"
+    ] == [0.5]
     assert progressive_components.clf_cls_token_regularizer_ids == [11]
     assert progressive_components.clf_use_decoder_ids == [12]
     assert progressive_components.clf_vit_block_mlp_output_dims == {12: 4}
@@ -2513,6 +2628,7 @@ def run_self_tests() -> dict[str, str]:
         "clf_downsample_ids", 
         "clf_upsample_ids", 
         "clf_reshaper_ids_dict", 
+        "clf_reshaper_kwargs",
         "clf_cls_token_regularizer_ids", 
     )
     rollback_metadata = {

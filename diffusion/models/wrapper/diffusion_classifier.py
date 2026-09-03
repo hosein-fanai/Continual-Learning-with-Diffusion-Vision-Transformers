@@ -2456,7 +2456,7 @@ def run_self_tests() -> dict[str, str]:
         clf_depth=2, 
         clf_vit_block_ids=[], 
         clf_reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 1.0}, 
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [1.0]},
         clf_cls_token_regularizer_ids=[None], 
         force_global_avg_pooling=True, 
     )

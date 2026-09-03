@@ -34,6 +34,7 @@ import uuid
 import re
 
 from collections.abc import Mapping, Sequence
+from numbers import Real
 from typing import Any
 
 from common.config import (
@@ -65,47 +66,61 @@ _DIFFUSION_HPO_MODELS = _DIFFUSION_MODELS | {
 _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
     _DIFFUSION_CLASSIFIER_STUDY
 }
-SEARCH_SPACE_VERSION = 7
+SEARCH_SPACE_VERSION = 9
 
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
     "learning_rate": "log-uniform; model-family-specific bounds", 
     "learning_rate_schedule": "cosine decay or constant", 
-    "optimizer": "SGD, RMSprop, Adam, AdamW, or Nadam", 
+    "optimizer": "family-specific subset of SGD, RMSprop, Adam, AdamW, Nadam",
     "weight_decay": "AdamW-only log-uniform value from 1e-6 to 1e-3",
-    "momentum": "SGD/RMSprop only: 0, 0.5, 0.9, or 0.95",
+    "momentum": "SGD/RMSprop only: 0, 0.3, 0.9, or 0.95",
     "clipnorm": "None, 0.5, 1, or 5"
 }
 _DIT = {
-    **_OPTIMIZATION, 
-    "patch_size": "valid image-size divisor", 
-    "capacity": (
-        "32x2, 64x4, 96x4, 128x8, 32x4, 64x2, 96x2, 128x4, "
-        "32x6, 64x6, 96x6, or 128x6"
-    ), 
-    "depth": "2, 3, 4, 5, or 6 transformer blocks", 
-    "mlp_ratio": "1, 2, 4, or 6", 
-    "drop_prob": "0, 0.05, 0.1, or 0.2", 
+    **_OPTIMIZATION,
+    "learning_rate_schedule": (
+        "cosine for ordinary fit; constant for continual/progressive fit"
+    ),
+    "patch_size": "2 or 4 when it divides the image size",
+    "capacity": "32x4, 64x4, 96x4, or 128x4",
+    "architecture": (
+        "standalone generator: plain DiT or compact two-level feature-skip U-DiT"
+    ),
+    "depth": (
+        "2 through 6 plain blocks; standalone compact U-DiT uses 9 stages"
+    ),
+    "mlp_ratio": "2 or 4",
+    "drop_prob": "0, 0.05, or 0.1",
     "patchify_with_cnn": "boolean", 
+    "patch_position_embedding": "fixed 2D sinusoidal",
+    "normalization_adaptation": "fixed enabled",
+    "resampling_position_embedding": (
+        "compact U-DiT only: 2D sinusoidal or learned new weights"
+    ),
     "use_refiner_cnn": "boolean (applied to the decoder when present)", 
-    "timesteps": "250, 500, or 1000", 
-    "noise_schedule": "linear, scaled-linear, cosine, or clipped-cosine", 
-    "modify_first_t": "boolean", 
-    "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
-    "ema_decay": "0.99, 0.995, or 0.999", 
-    "loss_function": "mse or mae", 
+    "timesteps": "500 or 1000",
+    "noise_schedule": "linear, cosine, or clipped-cosine",
+    "modify_first_t": "fixed false",
+    "p_uncond": "0.05, 0.1, or 0.2",
+    "ema_decay": "0.995 or 0.999",
+    "evaluation_network": "fixed EMA",
+    "loss_function": "mse",
     "image_loss_coefficient": (
         "0, 0.01, 0.05, or 0.1; fixed to 0 for x0 prediction"
     ),
     "variational_kl_coefficient": (
-        "log-uniform 1e-4 to 1e-1 for x0 prediction"
+        "log-uniform 1e-4 to 1e-2 for x0 prediction"
     ),
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
     ),
 }
 _UNET = {
-    **_OPTIMIZATION, 
+    **_OPTIMIZATION,
+    "learning_rate_schedule": (
+        "cosine for ordinary fit; constant for continual/progressive fit"
+    ),
     "width_template": "(32,64), (32,64,96), or (64,96,128)", 
     "block_depth": "1 or 2 residual blocks per scale", 
     "bottleneck_multiplier": "1.5 or 2 times the widest stage", 
@@ -114,17 +129,18 @@ _UNET = {
     "normalization": "batch normalization on/off", 
     "dropout": "0, 0.05, or 0.1", 
     "resampling": "average/interpolation or learned convolutional pair", 
-    "timesteps": "250, 500, or 1000", 
-    "noise_schedule": "linear, scaled-linear, cosine, or clipped-cosine", 
-    "modify_first_t": "boolean", 
-    "p_uncond": "0.05, 0.1, 0.2, or 0.25", 
-    "ema_decay": "0.99, 0.995, or 0.999", 
-    "loss_function": "mse or mae", 
+    "timesteps": "500 or 1000",
+    "noise_schedule": "linear, cosine, or clipped-cosine",
+    "modify_first_t": "fixed false",
+    "p_uncond": "0.05, 0.1, or 0.2",
+    "ema_decay": "0.995 or 0.999",
+    "evaluation_network": "fixed EMA",
+    "loss_function": "mse",
     "image_loss_coefficient": (
         "0, 0.01, 0.05, or 0.1; fixed to 0 for x0 prediction"
     ),
     "variational_kl_coefficient": (
-        "log-uniform 1e-4 to 1e-1 for x0 prediction"
+        "log-uniform 1e-4 to 1e-2 for x0 prediction"
     ),
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
@@ -133,7 +149,7 @@ _UNET = {
 _VAE = {
     **_OPTIMIZATION, 
     "latent_dim": "8, 16, 32, 64, or 128", 
-    "hidden_template": "validated descending dense-width template", 
+    "hidden_template": "16, 64-16, 256-64, 512-128, or 512-256-64",
     "beta": "log-uniform 0.01 to 2.0", 
     "loss_function": "mse or mae", 
     "activation": "ReLU or SELU", 
@@ -141,35 +157,37 @@ _VAE = {
 }
 _CNN = {
     **_OPTIMIZATION, 
-    "width_template": "three validated convolutional stage templates", 
-    "stage_depth": "1 or 2 blocks per stage", 
+    "width/depth_template": "three coupled convolutional stage templates",
     "kernel_size": "3 or 5; first kernel 3, 5, or 7", 
     "batch_normalization": "boolean", 
-    "pooling": "max or average; global max or average", 
-    "dropout": "0 to 0.5"
+    "pooling": "max between stages and global average",
+    "dropout": "0 to 0.3, including 0.15"
 }
 _DNN = {
     **_OPTIMIZATION, 
-    "hidden_template": "one to three descending dense layers", 
+    "hidden_template": "linear, 256-128, 512-256, or 1024-512",
     "activation/initializer": "coupled ReLU-He, ELU-He, or SELU-LeCun", 
     "batch_normalization": "boolean except with SELU", 
     "dropout": "0 to 0.5"
 }
 _PRETRAINED = {
     **_OPTIMIZATION, 
-    "unfrozen_tail": "1, 5, 20, or all Xception layers", 
+    "unfrozen_tail": "1, 5, 12, 20, or all Xception layers",
     "dropout": "0 to 0.5"
 }
 _JOINT_NOTE = {
-    "classifier_loss_coefficient": "log-uniform 1e-4 to 1e-1", 
+    "classifier_loss_coefficient": "log-uniform 1e-3 to 3e-2",
     "ctr_loss_coef": (
         "0, 1e-4, 1e-3, 1e-2, or 5e-2; positive values enable a final "
         "classifier token regularizer"
     ), 
     "masking_recipe": "V1 only: CFG-null, timestep, both, or neither",
     "mask_t_percentage": (
-        "V1 only: 35, 50, 70, or 90 when timestep masking is used"
-    ), 
+        "V1 only: 50, 70, or 90 when timestep masking is used"
+    ),
+    "classifier_train_type": (
+        "V1 only: conditional prediction or unconditional prediction at CFG 1"
+    ),
     "distillation": (
         "with a runtime or previous-task teacher: hard or soft targets and "
         "log-uniform clf_distil_loss_coef; soft temperature and example scope"
@@ -178,31 +196,32 @@ _JOINT_NOTE = {
 }
 _DIT_CLASSIFIER_NOTE = {
     "classifier_architecture": (
-        "linear, local mixer, connection, cross-attention, decoder "
-        "cross-attention, cross-attention aggregation, U-shaped, U-VAE, "
-        "or a U-shaped multilevel variational bottleneck"
+        "linear, feature connection, U-shaped, central U-VAE, or a central "
+        "multilevel variational U-shaped bottleneck"
     ), 
-    "feature_aggregation": "last denoiser feature or all features", 
+    "feature_aggregation": "last, early depth-1, or all denoiser features",
     "classifier_only_cls_token": "boolean", 
     "classifier_cls_token_type": (
-        "new weight, time-label, or label when a separate token is used"
+        "new weight or time-label when a separate token is used"
     ), 
-    "classifier_depth": "1 through 12, depending on the selected template",
-    "classifier_layer_norm_adaptation": "enabled or disabled", 
-    "classifier_block_dropout": "0, 0.1, 0.2, or 0.25", 
-    "classifier_mlp_ratio": "None, 1, or 2", 
-    "classifier_head_dropout": "0, 0.1, 0.2, 0.25, or 0.5"
+    "classifier_depth": "1 through 15, depending on the selected template",
+    "classifier_layer_norm_adaptation": "fixed enabled",
+    "classifier_block_dropout": "0, 0.05, or 0.1",
+    "classifier_mlp_ratio": "None or 1",
+    "classifier_head_dropout": "0, 0.05, or 0.1",
+    "variational_latent_width": (
+        "independent 16, 32, or 64 feature budget for each central pair"
+    )
 }
 _DIT_CLASSIFIER_WRAPPER_NOTE = {
     "wrapper_name": "diffusion_classifier (V1) or diffusion_classifier_v2 (V2)", 
     "v2_classifier_variables": (
-        "V2 only: classifier-only, shared embedding, first/final, or final-two "
-        "main-transformer variable recipes"
+        "V2 only: coupled separate, conditions-only, or notebook "
+        "classification-heavy variable recipes"
     ), 
     "clf_train_noisified_max_timesteps": (
-        "V2 only: None (clean input at timestep 0), 64, 128, 256, 512, "
-        "or timesteps (full [0, timesteps) range); numeric caps are bounded "
-        "by timesteps"
+        "V2 only: None (clean input at timestep 0), 64, or 256; numeric caps "
+        "are bounded by timesteps"
     )
 }
 _CONTINUAL_NOTE = {
@@ -214,9 +233,9 @@ _CONTINUAL_NOTE = {
 }
 _CONTINUAL_DIFFUSION_NOTE = {
     **_CONTINUAL_NOTE,
-    "test_steps": "10, 20, 50, 100, 250, 500, or 1000 up to timesteps",
-    "test_cfg_scale": "uniform 1.1 to 7",
-    "test_eta": "uniform 0 to 1",
+    "test_steps": "20, 50, or 100 up to timesteps",
+    "test_cfg_scale": "uniform 2.5 to 5",
+    "test_eta": "0 or 1",
 }
 _CONTINUAL_CLASSIFIER_NOTE = {
     "protocol": (
@@ -224,6 +243,9 @@ _CONTINUAL_CLASSIFIER_NOTE = {
         "singleton first task: cumulative or reservoir replay"
     ),
     "task_size": "one or more classes per task; at least two tasks required",
+    "reservoir_capacity": "2500, 5000, or 10000 rows",
+    "reservoir_sample_count": "500, 1000, or 2500 rows",
+    "reservoir_insert_count": "500 or 1000 rows",
     "objective": "maximize validation class-incremental accuracy",
 }
 _CONTINUAL_DIFFUSION_CLASSIFIER_NOTE = {
@@ -398,7 +420,7 @@ class _TrialView:
 
     def _override(self, name: str) -> object | None:
         base_name = re.sub(
-            r"_(?:t\d+|grid\d+|flat|singleton|multiclass)$",
+            r"_(?:t\d+|grid\d+|pair\d+|flat|singleton|multiclass)$",
             "",
             name,
         )
@@ -437,6 +459,9 @@ class _TrialView:
             "replay_old_examples",
             "replay_current_examples",
             "replay_candidate_multiplier",
+            "replay_buffer_capacity",
+            "replay_buffer_insert_count",
+            "replay_buffer_sample_count",
             "train_num",
         }
         if override is not None and name in extensible_counts:
@@ -660,13 +685,13 @@ def _suggest_optimizer(
     # Search the VAE-specific learning-rate range.
     elif family in ("vae", "vae_classifier"):
         learning_rate = trial.suggest_float(
-            "learning_rate", 1e-5, 1e-3, log=True
+            "learning_rate", 1e-4, 3e-3, log=True
         )
         batch_choices = [128, 256, 512]
     # Search the classifier-specific learning-rate range.
     elif family in ("cnn", "dnn"):
         learning_rate = trial.suggest_float(
-            "learning_rate", 1e-5, 3e-3, log=True
+            "learning_rate", 1e-4, 3e-3, log=True
         )
         batch_choices = [64, 128, 256]
     # Search the U-Net-specific learning-rate range.
@@ -678,28 +703,38 @@ def _suggest_optimizer(
     # Use the transformer learning-rate range for remaining families.
     else:
         learning_rate = trial.suggest_float(
-            "learning_rate", 1e-5, 5e-3, log=True
+            "learning_rate", 3e-4, 5e-3, log=True
         )
         batch_choices = [32, 64, 128]
 
     batch_size = trial.suggest_categorical("batch_size", batch_choices)
-    optimizer = trial.suggest_categorical("optimizer", [
-        "sgd", "rmsprop", "adam", 
-        "adamw", "nadam"
-    ])
+    if family in _DIFFUSION_MODELS:
+        optimizer_choices = ["adam", "adamw"]
+    elif family in ("vae", "vae_classifier"):
+        optimizer_choices = ["adam", "adamw", "nadam"]
+    elif family == "pretrained":
+        optimizer_choices = ["adam", "adamw"]
+    else:
+        optimizer_choices = ["sgd", "rmsprop", "adam", "adamw", "nadam"]
+    optimizer = trial.suggest_categorical("optimizer", optimizer_choices)
     # TensorFlow 2.10 exposes weight decay only through AdamW here.
     weight_decay = trial.suggest_float(
         "weight_decay", 1e-6, 1e-3, log=True
     ) if optimizer == "adamw" else None
     momentum = trial.suggest_categorical(
-        "momentum", [0., 0.5, 0.9, 0.95]
+        "momentum", [0., 0.3, 0.9, 0.95]
     ) if optimizer in ("sgd", "rmsprop") else 0.
     clipnorm = trial.suggest_categorical(
         "clipnorm", [None, 0.5, 1., 5.]
     )
+    if not allow_cosine:
+        schedule_choices = ["constant"]
+    elif family in _DIFFUSION_MODELS:
+        schedule_choices = ["cosine"]
+    else:
+        schedule_choices = ["cosine", "constant"]
     schedule = trial.suggest_categorical(
-        "learning_rate_schedule",
-        ["cosine", "constant"] if allow_cosine else ["constant"],
+        "learning_rate_schedule", schedule_choices,
     )
 
     return {
@@ -741,29 +776,23 @@ def _suggest_diffusion_wrapper(
     """
 
     timesteps = trial.suggest_categorical(
-        "timesteps", [250, 500, 1000]
+        "timesteps", [500, 1000]
     )
     wrapper_kwargs = {
         "use_ema": True, 
         "ema_decay": trial.suggest_categorical(
-            "ema_decay", [0.99, 0.995, 0.999]
+            "ema_decay", [0.995, 0.999]
         ), 
         "scheduler_name": trial.suggest_categorical(
             "schedule", [
-                "linear", "scaled_linear", 
-                "squaredcos_cap_v2", "clipped_cosine", "sigmoid",
-                "quadratic", "ve", "karras", "sub_vp", "logistic",
+                "clipped_cosine", "squaredcos_cap_v2", "linear",
             ]
         ), 
-        "modify_first_t": trial.suggest_categorical(
-            "modify_first_t", [True, False]
-        ), 
+        "modify_first_t": False,
         "p_uncond": trial.suggest_categorical(
-            "p_uncond", [0.05, 0.1, 0.2, 0.25]
+            "p_uncond", [0.05, 0.1, 0.2]
         ), 
-        "test_network_name": trial.suggest_categorical(
-            "test_network_name", ["raw", "ema"]
-        ),
+        "test_network_name": "ema",
         "image_loss_coef": 0. if swap_noise_image else trial.suggest_categorical(
             "image_loss_coef", [0., 0.01, 0.05, 0.1]
         ),
@@ -771,13 +800,13 @@ def _suggest_diffusion_wrapper(
     if swap_noise_image:
         wrapper_kwargs["kl_loss_coef"] = fixed_kl_loss_coef \
             if fixed_kl_loss_coef is not None else trial.suggest_float(
-                "kl_loss_coef", 1e-4, 1e-1, log=True
+                "kl_loss_coef", 1e-4, 1e-2, log=True
             )
     # Reverse-process settings affect continual replay samples, but not the
     # loss-based generation and joint objectives used by this module.
     if tune_sampling:
         test_step_choices = [
-            value for value in (10, 20, 50, 100, 250, 500, 1_000)
+            value for value in (20, 50, 100)
             if value <= timesteps
         ]
         test_steps = trial.suggest_categorical(
@@ -786,9 +815,9 @@ def _suggest_diffusion_wrapper(
         wrapper_kwargs.update({
             "test_steps": test_steps,
             "test_cfg_scale": trial.suggest_float(
-                "test_cfg_scale", 1.1, 7.
+                "test_cfg_scale", 2.5, 5.
             ),
-            "test_eta": trial.suggest_float("test_eta", 0., 1.),
+            "test_eta": trial.suggest_categorical("test_eta", [0., 1.]),
         })
         set_user_attr = getattr(trial, "set_user_attr", None)
         if callable(set_user_attr):
@@ -829,6 +858,24 @@ def _validate_swap_noise_hpo(
             "reshaper_kwargs={'add_kl': True}."
         )
 
+    latent_dim_ratios = reshaper_kwargs.get("latent_dim_ratio")
+    if latent_dim_ratios is not None:
+        if not isinstance(latent_dim_ratios, list):
+            raise ValueError(
+                "reshaper_kwargs latent_dim_ratio must be a list."
+            )
+        if any(
+            not isinstance(ratio, Real)
+            or isinstance(ratio, (bool, np.bool_))
+            or not math.isfinite(float(ratio))
+            or ratio <= 0.0
+            for ratio in latent_dim_ratios
+        ):
+            raise ValueError(
+                "reshaper_kwargs latent_dim_ratio entries must be finite "
+                "positive real numbers."
+            )
+
     if model_name in ("unet", "unet_classifier"):
         if overrides.get("reshaper_ids_dict"):
             raise ValueError(
@@ -848,10 +895,24 @@ def _validate_swap_noise_hpo(
         if not flatten_ids or any(
             reshapers.get(depth + 1) != "unflatten"
             for depth in flatten_ids
-        ):
+        ) or len(reshapers) != 2 * len(flatten_ids):
             raise ValueError(
                 "DiT x0 HPO requires at least one consecutive "
                 "flatten/unflatten pair."
+            )
+        if latent_dim_ratios is not None \
+        and len(latent_dim_ratios) != len(flatten_ids):
+            raise ValueError(
+                "reshaper_kwargs latent_dim_ratio must contain exactly one "
+                "entry per ascending flatten/unflatten pair; expected "
+                f"{len(flatten_ids)}, got {len(latent_dim_ratios)}."
+            )
+        if len(flatten_ids) > 1 and sorted(reshapers) != list(range(
+            flatten_ids[0], flatten_ids[-1] + 2
+        )):
+            raise ValueError(
+                "Multilevel DiT x0 HPO reshaper pairs must form one "
+                "contiguous central bridge."
             )
         first_flatten = flatten_ids[0]
         for route_name in (
@@ -860,7 +921,9 @@ def _validate_swap_noise_hpo(
         ):
             routes = overrides.get(route_name, {})
             if isinstance(routes, Mapping) and any(
-                depth > first_flatten and any(
+                depth > first_flatten
+                and reshapers.get(depth) != "flatten"
+                and any(
                     source < first_flatten for source in sources
                 )
                 for depth, sources in routes.items()
@@ -903,7 +966,8 @@ def _validate_swap_noise_hpo(
 def _suggest_dit(
     trial: Any, 
     image_size: int, 
-    model_name: str
+    model_name: str,
+    allow_u_shape: bool = True,
 ) -> dict[str, object]:
     """Suggest a shape-compatible transformer architecture.
 
@@ -911,20 +975,18 @@ def _suggest_dit(
         trial (optuna.trial.Trial): Active Optuna trial.
         image_size (int): Square input resolution.
         model_name (str): Selected DiT-family name.
+        allow_u_shape (bool): Include the compact U-DiT template when its
+            spatial grid is compatible.
 
     Returns:
         dict[str, object]: Raw-network constructor options.
     """
 
     capacity = trial.suggest_categorical(
-        "capacity", [
-            "32x2", "64x4", "96x4", "128x8", 
-            "32x4", "64x2", "96x2", "128x4", 
-            "32x6", "64x6", "96x6", "128x6", 
-        ]
+        "capacity", ["32x4", "64x4", "96x4", "128x4"]
     )
     dim, heads = (int(value) for value in capacity.split("x"))
-    patch_choices = [value for value in (2, 4, 7, 8) if image_size % value == 0]
+    patch_choices = [value for value in (2, 4) if image_size % value == 0]
     kwargs = {
         "patchify_with_cnn": trial.suggest_categorical(
             "patchify_with_cnn", [False, True]
@@ -933,11 +995,13 @@ def _suggest_dit(
         "dim": dim, 
         "mha_num_heads": heads, 
         "vit_block_mlp_ratio": trial.suggest_categorical(
-            "mlp_ratio", [1., 2., 4., 6.]
+            "mlp_ratio", [2., 4.]
         ), 
         "drop_prob": trial.suggest_categorical(
-            "drop_prob", [0., 0.05, 0.1, 0.2]
+            "drop_prob", [0., 0.05, 0.1]
         ), 
+        "patches_pos_embed_type": "2d_sincos",
+        "ln_no_adaptation": False,
         "use_refiner_cnn": trial.suggest_categorical(
             "use_refiner_cnn", [False, True]
         )
@@ -962,6 +1026,56 @@ def _suggest_dit(
             "shift_inputs": False, 
             "use_causal_mask": False
         })
+    # Compare the plain backbone with the notebook's compact, symmetric
+    # feature-skip U-DiT when two spatial reductions are shape-compatible.
+    elif model_name == "diffusion_transformer":
+        patch_grid = image_size // kwargs["patch_size"]
+        architecture_choices = ["plain"]
+        if allow_u_shape and patch_grid % 4 == 0:
+            architecture_choices.append("u_skip")
+        architecture_parameter = (
+            "dit_architecture_grid4" if patch_grid % 4 == 0
+            else "dit_architecture_plain"
+        )
+        architecture = trial.suggest_categorical(
+            architecture_parameter, architecture_choices
+        )
+        set_user_attr = getattr(trial, "set_user_attr", None)
+        if callable(set_user_attr):
+            set_user_attr("dit_architecture", architecture)
+        if architecture == "plain":
+            kwargs["depth"] = trial.suggest_categorical(
+                "depth", [2, 3, 4, 5, 6]
+            )
+        else:
+            resampling_pos = trial.suggest_categorical(
+                "resampling_pos_embed_type", ["2d_sincos", "new_weight"]
+            )
+            kwargs.update({
+                "depth": 9,
+                "dim_forced": False,
+                "connection_ids_dict": {7: [3, 6], 9: [1, 8]},
+                "vit_block_ids": [1, 3, 5, 7, 9],
+                "vit_block_mlp_output_dims": {
+                    1: dim, 3: 2 * dim, 5: 2 * dim,
+                    7: dim, 9: dim,
+                },
+                "downsample_ids": [2, 4],
+                "downsample_kwargs": {
+                    "use_layer_norm": True,
+                    "ln_no_adaptation": False,
+                    "scaling_method": "avg_pooling",
+                    "pos_embed_type": resampling_pos,
+                },
+                "upsample_ids": [6, 8],
+                "upsample_kwargs": {
+                    "use_layer_norm": True,
+                    "ln_no_adaptation": False,
+                    "scaling_method": "interpolate",
+                    "scaling_interpolation_method": "bilinear",
+                    "pos_embed_type": resampling_pos,
+                },
+            })
     # Tune a single shared depth for the remaining transformer families.
     else:
         kwargs["depth"] = trial.suggest_categorical(
@@ -1065,7 +1179,9 @@ def _suggest_vae(
         "latent_dim", [8, 16, 32, 64, 128]
     )
     template = trial.suggest_categorical(
-        "hidden_template", ["256-64", "512-128", "512-256-64"]
+        "hidden_template", [
+            "16", "64-16", "256-64", "512-128", "512-256-64"
+        ]
     )
     activation = trial.suggest_categorical("activation", ["relu", "selu"])
     batch_norm = False if activation == "selu" else trial.suggest_categorical(
@@ -1089,6 +1205,33 @@ def _suggest_vae(
         kwargs["alpha"] = trial.suggest_float("alpha", 1e-5, 1e-2, log=True)
 
     return kwargs
+
+
+def _suggest_latent_dim_ratios(
+    trial: Any,
+    flattened_dims: Sequence[int],
+) -> list[float]:
+    """Suggest one absolute latent width per flatten/unflatten pair.
+
+    The reshaper consumes ratios, but sampling absolute widths prevents the
+    later, larger feature maps in a multilevel VAE from receiving
+    disproportionately large latent projections.
+
+    Args:
+        trial (optuna.trial.Trial): Active Optuna trial.
+        flattened_dims (Sequence[int]): Flattened input width for each pair in
+            occurrence order.
+
+    Returns:
+        list[float]: Per-pair latent-width ratios in occurrence order.
+    """
+
+    return [
+        trial.suggest_categorical(
+            f"clf_latent_dim_pair{index}", [16, 32, 64]
+        ) / flattened_dim
+        for index, flattened_dim in enumerate(flattened_dims, start=1)
+    ]
 
 
 def _suggest_joint(
@@ -1122,17 +1265,14 @@ def _suggest_joint(
     classifier_architecture = "linear"
     # Add DiT-specific architecture and conditioning choices.
     if model_name.startswith("dit"):
-        architecture_choices = [
-            "linear", "local_mixer", "connection", "cross_attention",
-            "cross_attention_decoder", "cross_attention_aggregation",
-        ]
+        architecture_choices = ["linear", "connection"]
         patch_grid = None if image_size is None else (
             image_size // kwargs["patch_size"]
         )
         if patch_grid is None or patch_grid % 2 == 0:
-            architecture_choices.extend(["u_shape", "u_vae"])
+            architecture_choices.append("u_shape")
         if patch_grid is None or patch_grid % 4 == 0:
-            architecture_choices.append("u_multilevel_vae")
+            architecture_choices.extend(["u_vae", "u_multilevel_vae"])
         architecture_parameter = "classifier_architecture" if patch_grid is None \
             else "classifier_architecture_grid4" if patch_grid % 4 == 0 \
             else "classifier_architecture_grid2" if patch_grid % 2 == 0 \
@@ -1147,60 +1287,50 @@ def _suggest_joint(
             "classifier_only_cls_token", [True, False]
         )
         feature_aggregation = trial.suggest_categorical(
-            "feature_aggregation", ["last", "all"]
+            "feature_aggregation", ["last", "early", "all"]
         )
         # Preserve the existing classifier-depth search for the linear baseline.
         if classifier_architecture == "linear":
             clf_depth = trial.suggest_categorical(
-                "clf_depth", [1, 2, 3, 4, 5]
+                "clf_depth", [1, 2, 3]
             )
-        # Use two stages for the compact mixer and routing templates.
-        elif classifier_architecture in (
-            "local_mixer", "connection", "cross_attention", 
-            "cross_attention_decoder"
-        ):
+        # Use two stages for the compact feature-connection template.
+        elif classifier_architecture == "connection":
             clf_depth = 2
-        # Cross-attention aggregation is applied at the first classifier stage.
-        elif classifier_architecture == "cross_attention_aggregation":
-            clf_depth = 1
         # Use a down/bottleneck/up classifier for the U-shaped template.
         elif classifier_architecture == "u_shape":
             clf_depth = 4
-        # Use stochastic skip and bottleneck latents in the compact U-VAE.
+        # Use one central stochastic bottleneck in the compact U-VAE.
         elif classifier_architecture == "u_vae":
-            clf_depth = 8
+            clf_depth = 11
         # Use three stochastic latent levels in the nested U-VAE.
         else:
-            clf_depth = 12
+            clf_depth = 15
 
         kwargs.update({
             "feature_aggregation_ids_dict": {
-                1: [-1] if feature_aggregation == "last" else [None]
+                1: (
+                    [-1] if feature_aggregation == "last"
+                    else [1] if feature_aggregation == "early"
+                    else [None]
+                )
             }, 
             "classifier_only_cls_token": classifier_only_cls_token, 
             "clf_depth": clf_depth,
-            "clf_ln_no_adaptation": trial.suggest_categorical(
-                "clf_ln_no_adaptation", [True, False]
-            ), 
+            "clf_ln_no_adaptation": False,
             "clf_drop_prob": trial.suggest_categorical(
-                "clf_drop_prob", [0., 0.1, 0.2, 0.25]
+                "clf_drop_prob", [0., 0.05, 0.1]
             ), 
             "classifier_mlp_ratio": trial.suggest_categorical(
-                "classifier_mlp_ratio", [None, 1, 2]
+                "classifier_mlp_ratio", [None, 1]
             ), 
             "dropout_rate": trial.suggest_categorical(
-                "dropout_rate", [0., 0.1, 0.2, 0.25, 0.5]
+                "dropout_rate", [0., 0.05, 0.1]
             )
         })
 
-        # Add a spatially local residual mixer between transformer blocks.
-        if classifier_architecture == "local_mixer":
-            kwargs.update({
-                "clf_local_mixer_ids": [1], 
-                "clf_local_mixer_kwargs": {"pos_embed_type": None}
-            })
         # Merge the classifier input and first-stage output before stage two.
-        elif classifier_architecture == "connection":
+        if classifier_architecture == "connection":
             kwargs.update({
                 "clf_connection_ids_dict": {2: [0, 1], -1: [-1]},
                 "clf_connection_kwargs": {
@@ -1208,28 +1338,6 @@ def _suggest_joint(
                         "clf_connection_type", ["add", "concat"]
                     )
                 }
-            })
-        # Route the classifier input through ordinary cross-attention.
-        elif classifier_architecture in (
-            "cross_attention", 
-            "cross_attention_decoder"
-        ):
-            kwargs.update({
-                "clf_cross_attention_ids_dict": {2: [0]}, 
-                "clf_cross_attention_plug_type": trial.suggest_categorical(
-                    "clf_cross_attention_plug_type", ["values", "queries"]
-                )
-            })
-            # Select the existing decoder block for the decoder variant.
-            if classifier_architecture == "cross_attention_decoder":
-                kwargs["clf_use_decoder_ids"] = [2]
-        # Cross-attend directly to the main transformer's input feature.
-        elif classifier_architecture == "cross_attention_aggregation":
-            kwargs.update({
-                "cross_attention_aggregation_ids_dict": {1: [0]}, 
-                "clf_cross_attention_plug_type": trial.suggest_categorical(
-                    "clf_cross_attention_plug_type", ["values", "queries"]
-                )
             })
         # Build a compact spatial downsample/bottleneck/upsample classifier.
         elif classifier_architecture == "u_shape":
@@ -1247,74 +1355,120 @@ def _suggest_joint(
             })
         # Insert a KL-enabled flatten/unflatten bottleneck into the U-shape.
         elif classifier_architecture == "u_vae":
+            prefix_tokens = int(classifier_only_cls_token) + int(
+                use_distillation
+            )
+            deepest_width = 2 * kwargs["dim"] * (
+                (patch_grid // 4) ** 2 + prefix_tokens
+            )
             kwargs.update({
-                "clf_vit_block_ids": [1, 4, 7, 8],
-                "clf_downsample_ids": [4],
-                "clf_downsample_kwargs": {"scaling_method": "avg_pooling"}, 
+                "clf_vit_block_ids": [1, 3, 5, 9, 11],
+                "clf_use_decoder_ids": [9, 11],
+                "clf_vit_block_mlp_output_dims": {
+                    1: kwargs["dim"], 3: 2 * kwargs["dim"],
+                    5: 2 * kwargs["dim"], 9: kwargs["dim"],
+                    11: kwargs["dim"],
+                },
+                "clf_downsample_ids": [2, 4],
+                "clf_downsample_kwargs": {
+                    "scaling_method": "avg_pooling",
+                    "pos_embed_type": "2d_sincos",
+                },
                 "clf_reshaper_ids_dict": {
-                    2: "flatten", 3: "unflatten",
-                    5: "flatten", 6: "unflatten",
+                    6: "flatten", 7: "unflatten",
                 },
                 "clf_reshaper_kwargs": {
                     "add_kl": True, 
-                    "latent_dim_ratio": trial.suggest_categorical(
-                        "clf_latent_dim_ratio", [0.125, 0.25, 0.5]
-                    )
+                    "latent_dim_ratio": _suggest_latent_dim_ratios(
+                        trial, [deepest_width]
+                    ),
                 }, 
-                "clf_upsample_ids": [7],
-                "clf_connection_ids_dict": {8: [3, 7], -1: [-1]},
-                "clf_connection_kwargs": {"connect_type": "add"},
+                "clf_upsample_ids": [8, 10],
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate", 
-                    "scaling_interpolation_method": "bilinear"
-                }
+                    "scaling_interpolation_method": "bilinear",
+                    "pos_embed_type": "2d_sincos",
+                },
+                "clf_cross_attention_ids_dict": {9: [3], 11: [1]},
+                "clf_cross_attention_kwargs": {
+                    "use_layer_norm": True,
+                    "ln_no_adaptation": False,
+                },
             })
         # Stack three KL bottlenecks and restore both same-grid U skips.
         elif classifier_architecture == "u_multilevel_vae":
+            prefix_tokens = int(classifier_only_cls_token) + int(
+                use_distillation
+            )
+            flattened_dims = [
+                2 * kwargs["dim"] * (
+                    (patch_grid // 4) ** 2 + prefix_tokens
+                ),
+                2 * kwargs["dim"] * (
+                    (patch_grid // 2) ** 2 + prefix_tokens
+                ),
+                kwargs["dim"] * (patch_grid ** 2 + prefix_tokens),
+            ]
             kwargs.update({
-                "clf_vit_block_ids": [1, 4, 7, 10, 11, 12],
-                "clf_downsample_ids": [4, 7],
-                "clf_downsample_kwargs": {"scaling_method": "avg_pooling"},
+                "clf_vit_block_ids": [1, 3, 5, 13, 15],
+                "clf_use_decoder_ids": [13, 15],
+                "clf_vit_block_mlp_output_dims": {
+                    1: kwargs["dim"], 3: 2 * kwargs["dim"],
+                    5: 2 * kwargs["dim"], 13: kwargs["dim"],
+                    15: kwargs["dim"],
+                },
+                "clf_downsample_ids": [2, 4],
+                "clf_downsample_kwargs": {
+                    "scaling_method": "avg_pooling",
+                    "pos_embed_type": "2d_sincos",
+                },
                 "clf_reshaper_ids_dict": {
-                    2: "flatten", 3: "unflatten",
-                    5: "flatten", 6: "unflatten",
+                    6: "flatten", 7: "unflatten",
                     8: "flatten", 9: "unflatten",
+                    10: "flatten", 11: "unflatten",
                 },
                 "clf_reshaper_kwargs": {
                     "add_kl": True,
-                    "latent_dim_ratio": trial.suggest_categorical(
-                        "clf_latent_dim_ratio", [0.125, 0.25, 0.5]
+                    "latent_dim_ratio": _suggest_latent_dim_ratios(
+                        trial, flattened_dims
                     ),
                 },
-                "clf_upsample_ids": [10, 11],
+                "clf_connection_ids_dict": {
+                    8: [3], 10: [1], 12: [7]
+                },
+                "clf_upsample_ids": [12, 14],
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate",
                     "scaling_interpolation_method": "bilinear",
+                    "pos_embed_type": "2d_sincos",
                 },
-                "clf_connection_ids_dict": {
-                    11: [6, 10], 12: [3, 11], -1: [-1]
+                "clf_cross_attention_ids_dict": {13: [9], 15: [11]},
+                "clf_cross_attention_kwargs": {
+                    "use_layer_norm": True,
+                    "ln_no_adaptation": False,
                 },
-                "clf_connection_kwargs": {"connect_type": "add"},
             })
 
         # Project concatenated all-depth features back to the classifier width.
         if feature_aggregation == "all":
             kwargs.update({
                 "clf_dim": kwargs["dim"], 
-                "clf_dim_forced": True
+                "clf_dim_forced": classifier_architecture not in (
+                    "u_vae", "u_multilevel_vae"
+                ),
             })
 
         # Tune a dedicated classifier token only when the branch uses one.
         if classifier_only_cls_token:
             kwargs["clf_cls_token_type"] = trial.suggest_categorical(
-                "clf_cls_token_type", ["new_weight", "time_label", "label"]
+                "clf_cls_token_type", ["new_weight", "time_label"]
             )
 
         # Weight the classifier's variational bottleneck only when it exists.
         if classifier_architecture in ("u_vae", "u_multilevel_vae") \
         and "kl_loss_coef" not in wrapper_kwargs:
             wrapper_kwargs["kl_loss_coef"] = trial.suggest_float(
-                "kl_loss_coef", 1e-4, 1e-1, log=True
+                "kl_loss_coef", 1e-3, 3e-2, log=True
             )
 
     # Enable the family-specific student distillation head when requested.
@@ -1362,7 +1516,10 @@ def _suggest_joint(
                 "regularizer_distil_type", ["hard", "soft"]
             )
 
-        kwargs["clf_cls_token_regularizer_ids"] = [kwargs["clf_depth"]]
+        regularizer_depth = 6 if classifier_architecture in (
+            "u_vae", "u_multilevel_vae"
+        ) else kwargs["clf_depth"]
+        kwargs["clf_cls_token_regularizer_ids"] = [regularizer_depth]
         regularizer_kwargs = {
             "start": (
                 0 if kwargs.get("classifier_only_cls_token", False)
@@ -1393,11 +1550,18 @@ def _suggest_joint(
     })
 
     wrapper_kwargs["clf_loss_coef"] = trial.suggest_float(
-        "clf_loss_coef", 1e-4, 1e-1, log=True
+        "clf_loss_coef", 1e-3, 3e-2, log=True
     )
 
     # Tune classifier masking only for the jointly trained V1 wrapper.
     if tune_masking:
+        clf_train_type = trial.suggest_categorical(
+            "clf_train_type", ["cond", "uncond"]
+        )
+        wrapper_kwargs["clf_train_type"] = clf_train_type
+        if clf_train_type == "uncond":
+            wrapper_kwargs["train_cfg_scale"] = 1.
+
         masking = trial.suggest_categorical(
             "masking", ["neither", "null", "timestep", "both"]
         )
@@ -1409,7 +1573,7 @@ def _suggest_joint(
         # Tune timestep masking only for modes that use it.
         if masking in ("timestep", "both"):
             wrapper_kwargs["mask_t_percentage"] = trial.suggest_categorical(
-                "mask_t", [35, 50, 70, 90]
+                "mask_t", [50, 70, 90]
             )
 
 
@@ -1429,17 +1593,22 @@ def _suggest_classifier(
 
     # Build tunable convolutional stage widths and depths.
     if model_name == "cnn":
-        widths = trial.suggest_categorical(
-            "widths", ["32-64-128", "64-128-256", "64-128-128-256"]
+        template = trial.suggest_categorical(
+            "cnn_template", ["cifar", "compact", "wide"]
         )
-        filters = tuple(int(value) for value in widths.split("-"))
-        depth = trial.suggest_categorical("stage_depth", [1, 2])
+        filters, depths = {
+            "cifar": ((64, 128, 128, 256), (1, 2, 2, 1)),
+            "compact": ((32, 64, 128), (1, 1, 1)),
+            "wide": ((64, 128, 256), (1, 2, 2)),
+        }[template]
 
         return {
-            "dropout_rate": trial.suggest_float("dropout", 0., 0.5, step=0.1), 
+            "dropout_rate": trial.suggest_categorical(
+                "dropout", [0., 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+            ),
             "architecture_kwargs": {
                 "conv_filters": filters, 
-                "conv_depths": (depth,) * len(filters), 
+                "conv_depths": depths,
                 "kernel_size": trial.suggest_categorical("kernel_size", [3, 5]), 
                 "first_kernel_size": trial.suggest_categorical(
                     "first_kernel", [3, 5, 7]
@@ -1447,24 +1616,33 @@ def _suggest_classifier(
                 "use_batch_norm": trial.suggest_categorical(
                     "batch_norm", [False, True]
                 ), 
-                "pooling": trial.suggest_categorical("pooling", ["max", "avg"]), 
-                "global_pooling": trial.suggest_categorical(
-                    "global_pooling", ["avg", "max"]
-                )
+                "pooling": "max",
+                "global_pooling": "avg",
             }
         }
 
     # Build a tunable dense hidden-layer template.
     if model_name == "dnn":
         template = trial.suggest_categorical(
-            "hidden_template", ["256", "512-128", "512-256-64"]
+            "hidden_template", [
+                "linear", "256-128", "512-256", "1024-512"
+            ]
         )
+        if template == "linear":
+            return {
+                "dropout_rate": trial.suggest_categorical(
+                    "dropout", [0., 0.1, 0.25, 0.5]
+                ),
+                "architecture_kwargs": {"hidden_dims": ()},
+            }
         activation = trial.suggest_categorical(
             "activation", ["relu", "elu", "selu"]
         )
 
         return {
-            "dropout_rate": trial.suggest_float("dropout", 0., 0.5, step=0.1), 
+            "dropout_rate": trial.suggest_categorical(
+                "dropout", [0., 0.1, 0.25, 0.5]
+            ),
             "architecture_kwargs": {
                 "hidden_dims": tuple(int(value) for value in template.split("-")), 
                 "activation": activation, 
@@ -1480,7 +1658,7 @@ def _suggest_classifier(
             "dropout", 0., 0.5, step=0.1
         ), 
         "num_last_not_frozen": trial.suggest_categorical(
-            "unfrozen", [1, 5, 20, None]
+            "unfrozen", [1, 5, 12, 20, None]
         )
     }
 
@@ -2527,8 +2705,11 @@ def _build_trial_config(
     # Tune the shared generative loss only for diffusion and VAE families.
     if model_name in _DIFFUSION_MODELS \
     or model_name in ("vae", "vae_classifier"):
+        loss_choices = ["mse", "mae"] if model_name in (
+            "vae", "vae_classifier"
+        ) else ["mse"]
         loss_function = trial.suggest_categorical(
-            "loss_function", ["mse", "mae"]
+            "loss_function", loss_choices
         )
 
     # Teacher objectives operate on every diffusion wrapper.
@@ -2547,7 +2728,12 @@ def _build_trial_config(
         )
         if swap_noise_image:
             wrapper_kwargs["swap_noise_image"] = swap_noise_image
-        model_kwargs = _suggest_dit(trial, image_size, model_name)
+        model_kwargs = _suggest_dit(
+            trial,
+            image_size,
+            model_name,
+            allow_u_shape=not swap_noise_image,
+        )
         model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
     # Tune U-Net diffusion schedules and wrapper behavior.
     elif model_name in ("unet", "unet_classifier"):
@@ -2659,10 +2845,9 @@ def _build_trial_config(
             wrapper_kwargs["mask_by_nulls"] = False
             clf_timestep_choices = [None]
             clf_timestep_choices.extend(
-                value for value in (64, 128, 256, 512)
+                value for value in (64, 256)
                 if value < timesteps
             )
-            clf_timestep_choices.append("timesteps")
             timestep_parameter = (
                 f"clf_train_noisified_max_timesteps_t{timesteps}"
             )
@@ -2671,9 +2856,7 @@ def _build_trial_config(
                 clf_timestep_choices,
             )
             wrapper_kwargs["clf_train_noisified_max_timesteps"] = (
-                None if clf_max_timesteps is None 
-                else timesteps if clf_max_timesteps == "timesteps" 
-                else clf_max_timesteps
+                clf_max_timesteps
             )
             set_user_attr = getattr(trial, "set_user_attr", None)
             if callable(set_user_attr):
@@ -2681,29 +2864,21 @@ def _build_trial_config(
                     "clf_train_noisified_max_timesteps",
                     wrapper_kwargs["clf_train_noisified_max_timesteps"],
                 )
-            embedding_recipe = trial.suggest_categorical(
-                "clf_vars_embedding_recipe", [
-                    "none", "label", "conditions", "core", "notebook"
-                ]
-            )
-            noise_recipe = trial.suggest_categorical(
-                "clf_vars_noise_recipe", [
-                    "none", "first", "last", "last_two"
+            variable_recipe = trial.suggest_categorical(
+                "clf_vars_recipe", [
+                    "separate", "conditions", "notebook"
                 ]
             )
             wrapper_kwargs["clf_vars_embedding_ids"] = {
-                "none": [],
-                "label": [2],
+                "separate": [],
                 "conditions": [1, 2],
-                "core": [0, 1, 2],
                 "notebook": [0, 1, 2, 3],
-            }[embedding_recipe]
+            }[variable_recipe]
             wrapper_kwargs["clf_vars_noise_part_ids"] = {
-                "none": [],
-                "first": [1],
-                "last": [-1],
-                "last_two": [-2, -1],
-            }[noise_recipe]
+                "separate": [],
+                "conditions": [],
+                "notebook": [1],
+            }[variable_recipe]
 
     continual_kwargs = {}
     # Tune replay policy only for continual-learning studies.
@@ -2805,13 +2980,19 @@ def _build_trial_config(
                 set_user_attr("continual_protocol", protocol)
             continual_kwargs["baseline"] = protocol
             if protocol == "reservoir_er":
-                replay_rows = trial.suggest_categorical(
-                    "replay_buffer_rows", [250, 500, 1_000, 2_500, 5_000]
+                replay_capacity = trial.suggest_categorical(
+                    "replay_buffer_capacity", [2_500, 5_000, 10_000]
+                )
+                replay_sample_count = trial.suggest_categorical(
+                    "replay_buffer_sample_count", [500, 1_000, 2_500]
+                )
+                replay_insert_count = trial.suggest_categorical(
+                    "replay_buffer_insert_count", [500, 1_000]
                 )
                 continual_kwargs["buffer_kwargs"] = {
-                    "maxlen": replay_rows,
-                    "sample_num": replay_rows,
-                    "insert_num": replay_rows,
+                    "maxlen": replay_capacity,
+                    "sample_num": replay_sample_count,
+                    "insert_num": replay_insert_count,
                     "strategy": "reservoir",
                 }
 

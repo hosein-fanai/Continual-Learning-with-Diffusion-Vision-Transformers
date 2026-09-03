@@ -26,6 +26,9 @@ class FeatureHandler(BaseLayer):
         connect_type: ``"concat"`` concatenates selected tensors;
             ``"add"`` sums them and therefore requires broadcast-compatible
             shapes.
+        grid_size: Optional square token-grid side produced by the merge. This
+            is metadata for downstream spatial-shape inference and does not
+            alter feature selection or merging.
         **kwargs: :class:`BaseLayer` options. Useful keys include
             ``use_layer_norm``, ``ln_dim``, ``ln_mlp_ratio``,
             ``ln_no_adaptation``, ``mlp_ratio``, ``mlp_activation_func``, and
@@ -49,6 +52,7 @@ class FeatureHandler(BaseLayer):
         ids: list[int] | None = None, 
         connect_axis: int = -1, 
         connect_type: MergeType = "concat", 
+        grid_size: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Initialize feature-selection and post-merge processing options.
@@ -58,6 +62,8 @@ class FeatureHandler(BaseLayer):
                 require call-specific indices.
             connect_axis (int): Concatenation axis.
             connect_type (MergeType): Either ``"concat"`` or ``"add"``.
+            grid_size (int | None): Optional output token-grid side retained
+                for downstream architecture inference.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras options.
 
         Returns:

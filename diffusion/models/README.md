@@ -21,9 +21,20 @@ you have already prepared its timestep and condition inputs.
 image/condition tensor, depths `1..N` correspond to `layers_dicts`, and
 `full_return=True` supplies aligned feature, regularizer, and latent-statistic
 outputs. Its ordinary encoder/bottleneck/decoder hierarchy uses skips. Setting
-`reshaper_kwargs={"add_kl": True, "latent_dim_ratio": ...}` inserts the
+`reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [...]}` inserts the
 variational bottleneck and disables those skips automatically. It can then be
 trained by `DiffusionModel` with KL loss and decoded with `sample_vae`.
+`latent_dim_ratio` contains exactly one positive ratio per contiguous
+flatten/unflatten pair, ordered by ascending flatten depth; omission means
+`1.0` for every pair. A convolutional multiscale U-Net places such stochastic
+pairs at successive encoder scales so its decoder skips originate from their
+unflattened outputs.
+
+For a multilevel transformer U-DiT used with `sample_vae`, all adjacent pairs
+form one central bridge after the complete encoder stack and before the
+decoder/up-sampling computation. Training may route an encoder feature at each
+flatten stage; latent sampling bypasses those routes, and the decoder consumes
+the paired stochastic features without direct pre-latent encoder bypasses.
 
 `DiTEncoderDecoder` and `DiTEncoderDecoderClassifier` accept their base
 denoiser/classifier three-input contracts and additionally accept a fourth

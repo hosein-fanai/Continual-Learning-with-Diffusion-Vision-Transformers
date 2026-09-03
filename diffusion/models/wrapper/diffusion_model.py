@@ -1004,6 +1004,37 @@ class DiffusionModel(ArgumentSaverModel):
             self.ctr_accuracy_tracker
         ]
 
+    @classmethod
+    def from_config(
+        cls, 
+        config: Mapping[str, object]
+    ) -> "DiffusionModel":
+        """Reconstruct an independent wrapper and nested raw network."""
+
+        config = dict(config)
+        network = config["network"]
+
+        if isinstance(network, Mapping):
+            network_config = dict(network)
+            module_name = network_config.pop("module", None)
+
+            if module_name is None:
+                network = tf.keras.utils.deserialize_keras_object(
+                    network_config
+                )
+            else:
+                network_type = getattr(
+                    import_module(module_name), 
+                    network_config["class_name"]
+                )
+                network = network_type.from_config(network_config["config"])
+        elif isinstance(network, tf.keras.Model):
+            network = network.__class__.from_config(network.get_config())
+
+        config["network"] = network
+
+        return cls(**config)
+
     def compile(
         self, 
         loss: losses.Loss | str = "mse", 
@@ -3477,8 +3508,11 @@ class DiffusionModel(ArgumentSaverModel):
         """Generate images by decoding the configured variational bottleneck.
 
         The first ``"flatten"`` reshaper is the encoder/decoder boundary.
-        Each flatten stage receives its own latent and later connections may
-        not route around the boundary to deterministic encoder features.
+        Each flatten stage receives its own latent. Encoder-feature routes on
+        later flatten stages build multiscale posteriors during training and
+        are skipped during prior sampling; non-flatten decoder routes may not
+        bypass the boundary to deterministic encoder features and must keep
+        every unflattened latent feature connected to the sampled output.
 
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
@@ -3498,8 +3532,11 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor: Decoded, postprocessed images ``[B,H,W,C]`` in ``[0,1]``.
 
         Raises:
-            ValueError: If no flatten reshaper exists, it is not KL-enabled, or
-                a later connection bypasses the bottleneck.
+            ValueError: If no flatten reshaper exists, it is not KL-enabled,
+                a multilevel transformer bridge is not centrally placed,
+                a latent has no route to the output, latent inputs are
+                incompatible, or a decoder route bypasses the variational
+                bridge.
         """
 
         network = self.get_network(network_name)
@@ -3525,24 +3562,46 @@ class DiffusionModel(ArgumentSaverModel):
             network.cross_attention_ids_dict
         ):
             for depth, ids in ids_dict.items():
-                # Reject decoder routes that bypass the variational bottleneck.
+                # A route co-located with a flatten stage is an encoder-side
+                # posterior builder and is bypassed when that latent is injected.
+                if network.reshaper_ids_dict.get(depth) == "flatten":
+                    continue
+                # Reject actual decoder routes around the stochastic bridge.
                 if depth > z_id and any(id_ < z_id for id_ in ids):
                     raise ValueError(
-                        "VAE decoder connections cannot use "
-                        "features before the flatten reshaper."
+                        "VAE decoder connections cannot use features before "
+                        "the first flatten reshaper unless the target is "
+                        "itself a flatten stage."
                     )
+
+        # A standalone DiTDecoder receives no encoder feature tensors from
+        # sample_vae. Posterior-building aggregators on flatten stages are
+        # skipped, but any later aggregation would consume unavailable state.
+        if isinstance(network, DiTDecoder):
+            for mapping_name in (
+                "feature_aggregation_ids_dict", 
+                "cross_attention_aggregation_ids_dict"
+            ):
+                for depth, ids in getattr(network, mapping_name).items():
+                    if depth > z_id and ids and \
+                    network.reshaper_ids_dict.get(depth) != "flatten":
+                        raise ValueError(
+                            "sample_vae cannot use decoder encoder-feature "
+                            "aggregation after the variational boundary."
+                        )
 
         reshapers = [
             network.layers_dicts[flatten_id - 1][network.R]
             for flatten_id in flatten_ids
         ]
+        latent_dim_ratios = network.reshaper_kwargs["latent_dim_ratio"]
         z_projectors = [
             reshaper.get_layer(
                 f"{network.name_prefix}depth_{flatten_id}_{network.R[2:]}/z"
-            ) if network.reshaper_kwargs.get(
-                "latent_dim_ratio", 1
-            ) != 1 else None
-            for flatten_id, reshaper in zip(flatten_ids, reshapers)
+            ) if ratio != 1 else None
+            for flatten_id, reshaper, ratio in zip(
+                flatten_ids, reshapers, latent_dim_ratios
+            )
         ]
 
         default_labels = [
@@ -3584,9 +3643,6 @@ class DiffusionModel(ArgumentSaverModel):
         # A single boundary retains the historical tensor/list input API.
         elif len(flatten_ids) == 1:
             if isinstance(z, (list, tuple)):
-                if len(z) != 1:
-                    raise ValueError("z must contain one latent tensor.")
-
                 z_vals_list = list(z)
             else:
                 z_vals_list = [z]
@@ -3599,60 +3655,16 @@ class DiffusionModel(ArgumentSaverModel):
             z_vals_list = list(z)
 
         projected_z_vals_list = []
-        for latent, latent_width, z_projector in zip(
-            z_vals_list, latent_widths, z_projectors
-        ):
-            try:
-                latent = tf.convert_to_tensor(latent)
-            except (TypeError, ValueError) as error:
-                raise TypeError("z must be a floating tensor.") from error
-            # Latent arithmetic requires a floating dtype.
-            if not latent.dtype.is_floating:
-                raise TypeError("z must have a floating dtype.")
-            # The variational bottleneck consumes one vector per example.
-            if latent.shape.rank is not None and latent.shape.rank != 2:
-                raise ValueError("z must be a rank-2 latent tensor.")
-            # Reject a statically incompatible bottleneck width early.
-            if latent.shape.rank == 2 and latent.shape[-1] is not None \
-            and int(latent.shape[-1]) != latent_width:
-                raise ValueError(
-                    f"z width must be {latent_width}, got {latent.shape[-1]}."
-                )
-            # Reject a statically incompatible batch size early.
-            if latent.shape.rank == 2 and latent.shape[0] is not None \
-            and labels.shape[0] is not None \
-            and int(latent.shape[0]) != int(labels.shape[0]):
-                raise ValueError("z batch size must match labels.")
-            z_assertions = (
-                tf.debugging.assert_rank(
-                    latent, 
-                    2,
-                    message="z must be a rank-2 latent tensor."
-                ), 
-                tf.debugging.assert_equal(
-                    tf.shape(latent)[0], 
-                    n, 
-                    message="z batch size must match labels.",
-                ), 
-                tf.debugging.assert_equal(
-                    tf.shape(latent)[1], 
-                    latent_width, 
-                    message="z width does not match the variational bottleneck."
-                )
-            )
-            with tf.control_dependencies([
-                assertion for assertion in z_assertions
-                if assertion is not None
-            ]):
-                latent = tf.cast(tf.identity(latent), stable_dtype)
+        for latent, z_projector in zip(z_vals_list, z_projectors):
+            latent = tf.convert_to_tensor(latent)
+            latent = tf.cast(tf.identity(latent), stable_dtype)
 
             projected_z_vals_list.append(
                 z_projector(latent, training=False)
                 if z_projector is not None else latent
             )
 
-        decoder_input = projected_z_vals_list[0] \
-                        if len(projected_z_vals_list) == 1 \
+        decoder_input = projected_z_vals_list[0] if len(projected_z_vals_list) == 1 \
                         else projected_z_vals_list
         if isinstance(network, DiTDecoder):
             images = network(
@@ -3679,7 +3691,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
-        x_t: tf.Tensor | None = None, 
+        x_t: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         steps: int | None = None, 
         scale: float | None = None, 
         eta: float | None = None, 
@@ -3697,9 +3709,11 @@ class DiffusionModel(ArgumentSaverModel):
                 condition IDs and excludes the CFG null label. Fixed-width
                 mode likewise samples each class condition once and excludes
                 the CFG null label. The number of labels is the batch size.
-            x_t (tf.Tensor | None): Initial Gaussian state ``[B,H,W,C]``.  None
-                draws it at the active resolution.  In ``swap_noise_image`` VAE
-                mode this argument is instead passed to ``sample_vae`` as ``z``.
+            x_t (tf.Tensor | Sequence[tf.Tensor] | None): Initial Gaussian
+                state ``[B,H,W,C]``. None draws it at the active resolution.
+                In ``swap_noise_image`` VAE mode this argument is instead
+                passed to ``sample_vae`` as ``z`` and may contain one latent
+                tensor per flatten/unflatten pair.
             steps (int | None): Number of evenly spaced reverse evaluations;
                 None uses ``test_steps``.  Must be an integer in
                 ``[2, timesteps]``.
@@ -3722,15 +3736,6 @@ class DiffusionModel(ArgumentSaverModel):
             ``[images, x_ts?, x0s?]`` in requested order; trajectory entries are
             lists of NumPy arrays, one per reverse step.
         """
-
-        for name, value in (
-            ("return_x_ts", return_x_ts), 
-            ("return_x0s", return_x0s), 
-            ("verbose", verbose)
-        ):
-            # Sampling-control flags must be true Booleans.
-            if not isinstance(value, bool):
-                raise TypeError(f"{name} must be boolean.")
 
         # Route sampling through the variational decoder in swapped-objective mode.
         if self.swap_noise_image:
@@ -3836,23 +3841,14 @@ class DiffusionModel(ArgumentSaverModel):
         eta = self.test_eta if eta is None else eta
 
         # Validate the requested number of reverse steps against the schedule.
-        if isinstance(steps, bool) or not isinstance(steps, (int, np.integer)) \
-                or not 2 <= int(steps) <= self.timesteps:
+        if not 2 <= int(steps) <= self.timesteps:
             raise ValueError(
                 f"steps must be an integer in [2, {self.timesteps}], got {steps!r}."
             )
         # Validate stochasticity as a finite scalar in the documented range.
-        if isinstance(eta, bool) or not isinstance(
-                eta, (int, float, np.integer, np.floating)) \
-                or not np.isfinite(eta) or not 0. <= float(eta) <= 1.:
+        if not 0. <= float(eta) <= 1.:
             raise ValueError(
                 f"eta must be a finite number in [0, 1], got {eta!r}."
-            )
-        # Guidance may extrapolate in either direction but must remain finite.
-        if isinstance(scale, bool) or not isinstance(scale, Real) \
-        or not np.isfinite(scale):
-            raise ValueError(
-                f"scale must be a finite number, got {scale!r}."
             )
 
         steps = int(steps)
@@ -3939,42 +3935,11 @@ class DiffusionModel(ArgumentSaverModel):
         # Append clean-estimate history only when requested.
         if return_x0s:
             outputs.append(x0s)
+
         # Preserve the simple tensor return type when no histories were requested.
         if len(outputs) == 1:
             return outputs[0]
-
         return outputs
-
-    @classmethod
-    def from_config(
-        cls, 
-        config: Mapping[str, object]
-    ) -> "DiffusionModel":
-        """Reconstruct an independent wrapper and nested raw network."""
-
-        config = dict(config)
-        network = config["network"]
-
-        if isinstance(network, Mapping):
-            network_config = dict(network)
-            module_name = network_config.pop("module", None)
-
-            if module_name is None:
-                network = tf.keras.utils.deserialize_keras_object(
-                    network_config
-                )
-            else:
-                network_type = getattr(
-                    import_module(module_name), 
-                    network_config["class_name"]
-                )
-                network = network_type.from_config(network_config["config"])
-        elif isinstance(network, tf.keras.Model):
-            network = network.__class__.from_config(network.get_config())
-
-        config["network"] = network
-
-        return cls(**config)
 
 
 def run_self_tests() -> dict[str, str]:
@@ -3995,6 +3960,9 @@ def run_self_tests() -> dict[str, str]:
 
     from types import SimpleNamespace
     from unittest.mock import MagicMock, Mock
+    from diffusion.models.transformer.di_t_encoder_decoder import (
+        DiTEncoderDecoder,
+    )
 
 
     def make_network(**overrides: object) -> DiffusionTransformer:
@@ -4731,7 +4699,7 @@ def run_self_tests() -> dict[str, str]:
             reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
             reshaper_kwargs={
                 "add_kl": add_kl, 
-                "latent_dim_ratio": latent_dim_ratio, 
+                "latent_dim_ratio": [latent_dim_ratio],
             }, 
             connection_ids_dict=(
                 {} if connection_ids_dict is None else connection_ids_dict
@@ -4842,6 +4810,190 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=tensor_vae_labels, z=projected_latent
     )
     assert projected_images.shape == (2, 4, 4, 1)
+
+    # Mirror the central multi-level U-DiT bridge with training-only encoder
+    # routes on its later flatten stages. Distinct ratios also cover a
+    # full-width middle latent, for which no `/z` projector exists.
+    multilevel_network = make_network(
+        depth=8,
+        vit_block_ids=[1, 8],
+        connection_ids_dict={
+            4: [1],
+            6: [0],
+            8: [3, 5, 7],
+        },
+        reshaper_ids_dict={
+            2: "flatten", 3: "unflatten",
+            4: "flatten", 5: "unflatten",
+            6: "flatten", 7: "unflatten",
+        },
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [0.5, 1.0, 0.25],
+        },
+    )
+    multilevel_outputs = multilevel_network(
+        (images, tf.zeros_like(classes), tensor_vae_labels),
+        full_return=True,
+        training=False,
+    )
+    assert [
+        int(z_mean.shape[-1])
+        for z_mean, _ in multilevel_outputs[-1]
+    ] == [8, 16, 4]
+    assert multilevel_network.get_config()["reshaper_kwargs"][
+        "latent_dim_ratio"
+    ] == [0.5, 1.0, 0.25]
+    # A bounded resume needs latents only for flatten stages that execute
+    # before its exclusive maximum depth.
+    truncated_multilevel, *_ = multilevel_network.encode(
+        (
+            [tf.zeros((2, 16), dtype=tf.float32)],
+            tf.zeros_like(classes),
+            tensor_vae_labels,
+        ),
+        min_depth=2,
+        max_depth=3,
+        training=False,
+    )
+    assert truncated_multilevel.shape == (2, 4, 4)
+    multilevel_vae = make_wrapper(
+        network=multilevel_network,
+    )
+    assert multilevel_vae.ema_network.reshaper_kwargs[
+        "latent_dim_ratio"
+    ] == [0.5, 1.0, 0.25]
+    random_multilevel_images = multilevel_vae.sample_vae(
+        network_name="ema",
+        labels=tensor_vae_labels,
+        seed=59,
+    )
+    assert random_multilevel_images.shape == (2, 4, 4, 1)
+    multilevel_latents = [
+        tf.zeros((2, width), dtype=tf.float32)
+        for width in (8, 16, 4)
+    ]
+    supplied_multilevel_images = multilevel_vae.sample_vae(
+        network_name="raw",
+        labels=tensor_vae_labels,
+        z=multilevel_latents,
+    )
+    assert supplied_multilevel_images.shape == (2, 4, 4, 1)
+    try:
+        multilevel_vae.sample_vae(
+            network_name="raw",
+            labels=tensor_vae_labels,
+            z=multilevel_latents[:-1],
+        )
+    except ValueError as error:
+        assert "3 latent tensors" in str(error)
+    else:
+        raise AssertionError("Every multilevel VAE latent must be supplied")
+
+    dead_multilevel = make_network(
+        depth=4,
+        vit_block_ids=[],
+        reshaper_ids_dict={
+            1: "flatten", 2: "unflatten",
+            3: "flatten", 4: "unflatten",
+        },
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [1.0, 1.0],
+        },
+        build=False,
+    )
+    try:
+        DiffusionModel._validate_sample_vae_topology(
+            dead_multilevel, [1, 3]
+        )
+    except ValueError as error:
+        assert "must reach the sampled output" in str(error)
+    else:
+        raise AssertionError("Dead multilevel VAE latents must fail")
+
+    # Reachability is also required for a legacy single bottleneck. An attached
+    # depth-zero decoder starts from zeros and therefore disconnects the latent
+    # unless it explicitly consumes an encoder feature.
+    single_pair_encoder_kwargs = {
+        "num_classes": 2,
+        "use_cfg": False,
+        "timesteps": 4,
+        "image_size": 4,
+        "channels": 1,
+        "patch_size": 2,
+        "dim": 4,
+        "depth": 2,
+        "mha_num_heads": 1,
+        "vit_block_mlp_ratio": 1.0,
+        "vit_block_ids": [],
+        "reshaper_ids_dict": {1: "flatten", 2: "unflatten"},
+        "reshaper_kwargs": {
+            "add_kl": True,
+            "latent_dim_ratio": [1.0],
+        },
+    }
+    dead_single_combined = DiTEncoderDecoder(
+        encoder_kwargs=single_pair_encoder_kwargs,
+        decoder_kwargs={
+            "depth": 0,
+            "vit_block_ids": [],
+            "use_unpatchify": True,
+        },
+        build=False,
+    )
+    try:
+        DiffusionModel._validate_sample_vae_topology(
+            dead_single_combined, [1]
+        )
+    except ValueError as error:
+        assert "must reach the sampled output" in str(error)
+    else:
+        raise AssertionError("Dead single-pair VAE latents must fail")
+
+    # Attached decoder aggregators cannot consume skipped pre-bottleneck
+    # encoder features during resumed VAE sampling.
+    bypass_single_combined = DiTEncoderDecoder(
+        encoder_kwargs=single_pair_encoder_kwargs,
+        decoder_kwargs={
+            "depth": 1,
+            "vit_block_ids": [1],
+            "cross_attention_aggregation_ids_dict": {1: [0]},
+            "use_unpatchify": True,
+        },
+        build=False,
+    )
+    try:
+        DiffusionModel._validate_sample_vae_topology(
+            bypass_single_combined, [1]
+        )
+    except ValueError as error:
+        assert "before the first flatten" in str(error)
+    else:
+        raise AssertionError("Unavailable attached-decoder routes must fail")
+
+    noncentral_multilevel = make_network(
+        depth=6,
+        vit_block_ids=[],
+        reshaper_ids_dict={
+            1: "flatten", 2: "unflatten",
+            4: "flatten", 5: "unflatten",
+        },
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [1.0, 1.0],
+        },
+        build=False,
+    )
+    try:
+        DiffusionModel._validate_sample_vae_topology(
+            noncentral_multilevel, [1, 4]
+        )
+    except ValueError as error:
+        assert "contiguous central bridge" in str(error)
+    else:
+        raise AssertionError("Separated multilevel VAE pairs must fail")
+
     non_variational = make_wrapper(
         network=make_variational_network(add_kl=False),
         use_ema=False,

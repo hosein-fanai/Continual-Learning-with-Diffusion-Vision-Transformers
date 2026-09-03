@@ -133,6 +133,39 @@ Important constructor controls are:
 - `swap_noise_image=True`: trains a direct clean-`x0` prediction and makes
   `sample` use the network's KL-enabled flatten bottleneck via `sample_vae`.
 
+### VAE sampling topology
+
+A VAE-capable raw network configures `latent_dim_ratio` as a list with exactly
+one positive entry per flatten/unflatten pair, ordered by ascending flatten
+depth; omission selects a full-width ratio of `1.0` for every pair.
+`sample_vae(...)` starts at the first flatten boundary and injects one sampled
+or supplied latent for every pair in that same order. The immediately
+following unflatten restores the feature consumed downstream.
+
+In a multilevel transformer U-DiT, arrange all adjacent pairs as one central
+bridge after the complete encoder stack and before decoder/up-sampling
+computation. `sample_vae` enforces that the bridge is contiguous and free of
+transformer/local-mixer processing, with downsampling before it and upsampling
+after it. Block class does not define encoder versus decoder placement; depth
+relative to the bridge does. Normal training executes an encoder-feature route
+attached to a flatten stage before computing that pair's posterior. Sampling
+bypasses the whole flatten stage—including that training-only route—and injects
+its latent directly. Convolutional multiscale U-Net instead places stochastic
+pairs at successive encoder scales; its decoder skip routes source their
+unflattened outputs.
+
+For one pair, `z` may be a single rank-2 tensor or a one-element sequence. For
+multiple pairs, it must be a sequence in the same ascending-depth order; when
+`z=None`, the wrapper draws the latents independently. Decoder routes must use
+every stochastic unflattened feature—otherwise a later flatten overwrites the
+stream and leaves the earlier latent disconnected—and must not select
+pre-latent encoder features in a way that bypasses the variational path.
+`sample_vae` validates both reachability and the no-bypass rule. The same rules
+apply when `swap_noise_image=True` delegates `sample(...)` to `sample_vae(...)`.
+Reachability is checked even for one pair: an attached decoder must actually
+consume a post-flatten encoder feature rather than start from a disconnected
+zero stream.
+
 `compile(loss=..., **kwargs)` forwards `optimizer`, `run_eagerly`,
 `steps_per_execution`, supported `jit_compile`, metrics, weighted metrics, and
 loss weights to Keras. `fit(**kwargs)` and `evaluate(**kwargs)` accept the normal

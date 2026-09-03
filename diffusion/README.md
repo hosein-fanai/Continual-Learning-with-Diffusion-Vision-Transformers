@@ -97,7 +97,7 @@ network = UNet(
     image_size=32, 
     channels=3, 
     widths=(32, 64, 96), 
-    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
 )
 model = DiffusionModel(network, kl_loss_coef=1e-4)
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
@@ -109,6 +109,13 @@ KL mode inserts the computed flatten/unflatten depths and disables skips by
 default, ensuring the decoder cannot route around the latent. Ordinary U-Net
 mode keeps the standard skip hierarchy. Both modes support active-resolution
 changes and shape-preserving residual depth growth through `add_depths(...)`.
+The ratio list has exactly one entry per contiguous flatten/unflatten pair in
+ascending flatten-depth order; if omitted, every pair uses ratio `1.0`.
+Convolutional multiscale U-Net places stochastic pairs at successive encoder
+scales. Transformer multilevel U-DiT instead keeps its adjacent pairs together
+as a central bridge after the encoder and before decoder/up-sampling layers.
+Its flatten-stage encoder routes run during training but are bypassed by
+`sample_vae` when the matching latents are injected.
 
 `UNetClassifier` adds a feature-based convolutional classifier while retaining
 the denoising branch. It can be passed unchanged to `DiffusionClassifier` for

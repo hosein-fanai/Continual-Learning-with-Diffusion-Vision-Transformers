@@ -25,6 +25,7 @@ from common.hpo import (
     _restore_sampler_rng_state,
     _suggest_joint,
     _tensorboard_name,
+    _validate_swap_noise_hpo,
     _write_study_spec,
     run_hpo,
 )
@@ -656,7 +657,7 @@ class HpoConfigTests(unittest.TestCase):
                 **common,
                 search_space_overrides={
                     "model_family": ["dit_classifier"],
-                    "timesteps": [250],
+                    "timesteps": [500],
                     "test_steps": [1000],
                 },
             )
@@ -804,6 +805,74 @@ class HpoConfigTests(unittest.TestCase):
             )
             self.assertEqual(singleton_metric.hpo["objective_metrics"], [metric])
 
+    def test_notebook_evidenced_classifier_templates_are_expressible(
+        self,
+    ) -> None:
+        """Keep the saved CIFAR CNN shape and Xception tail in the space."""
+
+        cnn = _build_trial_config(
+            _SuggestionTrial(),
+            "classification",
+            "cnn",
+            "cifar10",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            search_space_overrides={
+                "cnn_template": ["cifar"],
+                "dropout": [0.15],
+                "first_kernel": [7],
+                "batch_norm": [True],
+            },
+        )
+        architecture = cnn.model.kwargs["architecture_kwargs"]
+        self.assertEqual(
+            architecture["conv_filters"], (64, 128, 128, 256)
+        )
+        self.assertEqual(architecture["conv_depths"], (1, 2, 2, 1))
+        self.assertEqual(architecture["pooling"], "max")
+        self.assertEqual(architecture["global_pooling"], "avg")
+        self.assertEqual(cnn.model.kwargs["dropout_rate"], 0.15)
+
+        pretrained = _build_trial_config(
+            _SuggestionTrial(),
+            "classification",
+            "pretrained",
+            "cifar100",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            search_space_overrides={"unfrozen": [12]},
+        )
+        self.assertEqual(pretrained.model.kwargs["num_last_not_frozen"], 12)
+
+    def test_reservoir_buffer_dimensions_are_independent(self) -> None:
+        """Keep replay capacity separate from sample and insertion counts."""
+
+        config = _build_trial_config(
+            _SuggestionTrial(),
+            "continual",
+            "cnn",
+            "cifar10",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            class_num=4,
+            task_size=2,
+            search_space_overrides={
+                "continual_protocol_multiclass": ["reservoir_er"],
+                "replay_buffer_capacity": [10_000],
+                "replay_buffer_sample_count": [2_500],
+                "replay_buffer_insert_count": [500],
+            },
+        )
+        self.assertEqual(config.continually_learn.buffer_kwargs, {
+            "maxlen": 10_000,
+            "sample_num": 2_500,
+            "insert_num": 500,
+            "strategy": "reservoir",
+        })
+
     def test_reverse_sampling_is_tuned_only_when_it_affects_replay(self) -> None:
         """Exclude unused reverse-process dimensions from loss objectives."""
 
@@ -839,8 +908,8 @@ class HpoConfigTests(unittest.TestCase):
             class_num=4,
             task_size=2,
         )
-        self.assertEqual(continual.model.wrapper_kwargs["test_steps"], 10)
-        self.assertIn("test_steps_t250", continual_trial.params)
+        self.assertEqual(continual.model.wrapper_kwargs["test_steps"], 20)
+        self.assertIn("test_steps_t500", continual_trial.params)
         self.assertIn("test_cfg_scale", continual_trial.params)
         self.assertIn("test_eta", continual_trial.params)
 
@@ -863,7 +932,10 @@ class HpoConfigTests(unittest.TestCase):
         dit_vae_overrides = {
             "vit_block_ids": [1],
             "reshaper_ids_dict": {1: "flatten", 2: "unflatten"},
-            "reshaper_kwargs": {"add_kl": True},
+            "reshaper_kwargs": {
+                "add_kl": True,
+                "latent_dim_ratio": [1.0],
+            },
         }
 
         with self.assertRaisesRegex(ValueError, "reshaper_kwargs"):
@@ -1016,8 +1088,126 @@ class HpoConfigTests(unittest.TestCase):
                 )
             self.assertFalse(results_path.exists())
 
+    def test_swap_noise_preflight_validates_multilevel_latent_ratios(
+        self,
+    ) -> None:
+        """Match ordered ratio lists to pairs without rejecting latent builders."""
+
+        model_overrides = {
+            "reshaper_ids_dict": {
+                2: "flatten", 3: "unflatten",
+                4: "flatten", 5: "unflatten",
+            },
+            "reshaper_kwargs": {
+                "add_kl": True,
+                "latent_dim_ratio": [0.5, np.float32(0.25)],
+            },
+            # This route builds the second posterior during training. Sampling
+            # replaces the complete flatten stage with its supplied latent.
+            "connection_ids_dict": {4: [0]},
+        }
+        self.assertEqual(
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                model_overrides,
+                {"swap_noise_image": True},
+            ),
+            (True, None),
+        )
+
+        for invalid_ratios in (
+            0.5,
+            (0.5, 0.25),
+            [0.5],
+            [0.5, 0.0],
+            [0.5, float("nan")],
+            [0.5, float("inf")],
+            [0.5, True],
+            [0.5, "0.25"],
+        ):
+            invalid_overrides = {
+                **model_overrides,
+                "reshaper_kwargs": {
+                    "add_kl": True,
+                    "latent_dim_ratio": invalid_ratios,
+                },
+            }
+            with self.subTest(invalid_ratios=invalid_ratios):
+                with self.assertRaisesRegex(ValueError, "latent_dim_ratio"):
+                    _validate_swap_noise_hpo(
+                        "diffusion_transformer",
+                        invalid_overrides,
+                        {"swap_noise_image": True},
+                    )
+
+        for invalid_reshapers in (
+            {2: "flatten", 4: "unflatten"},
+            {
+                2: "flatten", 3: "unflatten",
+                5: "unflatten",
+            },
+        ):
+            invalid_overrides = {
+                **model_overrides,
+                "reshaper_ids_dict": invalid_reshapers,
+            }
+            with self.subTest(invalid_reshapers=invalid_reshapers):
+                with self.assertRaisesRegex(ValueError, "consecutive"):
+                    _validate_swap_noise_hpo(
+                        "diffusion_transformer",
+                        invalid_overrides,
+                        {"swap_noise_image": True},
+                    )
+
+        separated_pairs = {
+            **model_overrides,
+            "reshaper_ids_dict": {
+                2: "flatten", 3: "unflatten",
+                5: "flatten", 6: "unflatten",
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "central bridge"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                separated_pairs,
+                {"swap_noise_image": True},
+            )
+
+    def test_swap_noise_preflight_retains_true_decoder_bypass_guard(
+        self,
+    ) -> None:
+        """Only a route whose target is a flatten stage may cross the boundary."""
+
+        base_overrides = {
+            "reshaper_ids_dict": {
+                2: "flatten", 3: "unflatten",
+                4: "flatten", 5: "unflatten",
+            },
+            "reshaper_kwargs": {
+                "add_kl": True,
+                "latent_dim_ratio": [0.5, 0.25],
+            },
+        }
+        for route_name in (
+            "connection_ids_dict",
+            "cross_attention_ids_dict",
+        ):
+            with self.subTest(route_name=route_name, target="flatten"):
+                _validate_swap_noise_hpo(
+                    "diffusion_transformer",
+                    {**base_overrides, route_name: {4: [0]}},
+                    {"swap_noise_image": True},
+                )
+            with self.subTest(route_name=route_name, target="decoder"):
+                with self.assertRaisesRegex(ValueError, "cannot bypass"):
+                    _validate_swap_noise_hpo(
+                        "diffusion_transformer",
+                        {**base_overrides, route_name: {6: [0]}},
+                        {"swap_noise_image": True},
+                    )
+
     def test_stochastic_u_vae_hpo_templates_construct(self) -> None:
-        """Keep every U-VAE classifier skip behind a sampled latent."""
+        """Keep U-VAE reshaper pairs in the central stochastic bridge."""
 
         import tensorflow as tf
         from diffusion.models.transformer.di_t_classifier import DiTClassifier
@@ -1039,9 +1229,9 @@ class HpoConfigTests(unittest.TestCase):
                 elif name == "feature_aggregation":
                     value = "last"
                 elif name == "classifier_only_cls_token":
-                    value = False
-                elif name == "clf_latent_dim_ratio":
-                    value = 0.125
+                    value = True
+                elif name.startswith("clf_latent_dim_pair"):
+                    value = 16
                 else:
                     value = choices[0]
                 self.params[name] = value
@@ -1053,7 +1243,7 @@ class HpoConfigTests(unittest.TestCase):
             tf.constant([1, 2], tf.uint8),
         )
         for architecture, latent_count in (
-            ("u_vae", 2),
+            ("u_vae", 1),
             ("u_multilevel_vae", 3),
         ):
             network_kwargs = {
@@ -1068,13 +1258,27 @@ class HpoConfigTests(unittest.TestCase):
                 "mha_num_heads": 1,
                 "vit_block_mlp_ratio": 1.,
             }
+            architecture_trial = ArchitectureTrial(architecture)
             _suggest_joint(
-                ArchitectureTrial(architecture),
+                architecture_trial,
                 "dit_classifier",
                 network_kwargs,
                 {},
                 image_size=8,
             )
+            flattened_dims = [32, 80, 136][:latent_count]
+            latent_ratios = network_kwargs[
+                "clf_reshaper_kwargs"
+            ]["latent_dim_ratio"]
+            self.assertEqual(len(latent_ratios), latent_count)
+            for index, (ratio, flattened_dim) in enumerate(
+                zip(latent_ratios, flattened_dims), start=1
+            ):
+                self.assertEqual(ratio * flattened_dim, 16)
+                self.assertIn(
+                    f"clf_latent_dim_pair{index}",
+                    architecture_trial.params,
+                )
             network = DiTClassifier(**network_kwargs)
             outputs = network(inputs, full_return=True, training=False)
             self.assertEqual(len(outputs["clf_z_vals_list"]), latent_count)
@@ -1083,9 +1287,24 @@ class HpoConfigTests(unittest.TestCase):
                 network.clf_reshaper_ids_dict.items()
                 if reshape_type == "unflatten"
             }
-            for depth, sources in network.clf_connection_ids_dict.items():
-                if depth <= network.clf_depth:
-                    self.assertTrue(set(sources) & unflatten_ids)
+            self.assertEqual(len(unflatten_ids), latent_count)
+            self.assertEqual(
+                sum(
+                    reshape_type == "flatten"
+                    for reshape_type in network.clf_reshaper_ids_dict.values()
+                ),
+                latent_count,
+            )
+            if architecture == "u_multilevel_vae":
+                self.assertEqual(
+                    network.clf_connection_ids_dict,
+                    {8: [3], 10: [1], 12: [7]},
+                )
+            self.assertTrue(all(
+                depth > max(network.clf_downsample_ids)
+                and depth < min(network.clf_upsample_ids)
+                for depth in network.clf_reshaper_ids_dict
+            ))
 
     def test_run_hpo_accepts_singleton_transfer_objectives(self) -> None:
         """Later task cells make singleton-first CL objectives computable."""
@@ -1429,8 +1648,8 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 7)
-            self.assertEqual(original["search_space_version"], 7)
+            self.assertEqual(SEARCH_SPACE_VERSION, 9)
+            self.assertEqual(original["search_space_version"], 9)
             _write_study_spec(study_root, original)
 
             with patch("optuna.load_study") as load_study:
@@ -1660,8 +1879,8 @@ class HpoConfigTests(unittest.TestCase):
             "batch_size": [32],
             "optimizer": ["adam"],
             "clipnorm": [1.],
-            "timesteps": [250],
-            "test_steps": [10],
+            "timesteps": [500],
+            "test_steps": [20],
             "snapshot_network_name": ["ema"],
             "continual_strategy_multiclass": ["generative_replay"],
             "clf_distil_scope_generative_replay": ["replay_only"],
@@ -1895,11 +2114,11 @@ class HpoConfigTests(unittest.TestCase):
             sampler=optuna.samplers.RandomSampler(seed=7),
         )
         study.enqueue_trial({
-            "timesteps": 250,
+            "timesteps": 500,
             "wrapper_name": "diffusion_classifier_v2",
         })
         study.enqueue_trial({
-            "timesteps": 500,
+            "timesteps": 1000,
             "wrapper_name": "diffusion_classifier_v2",
         })
         configs: list[Config] = []
@@ -1923,11 +2142,11 @@ class HpoConfigTests(unittest.TestCase):
             for trial in study.trials
         ))
         self.assertIn(
-            "clf_train_noisified_max_timesteps_t250",
+            "clf_train_noisified_max_timesteps_t500",
             study.trials[0].params,
         )
         self.assertIn(
-            "clf_train_noisified_max_timesteps_t500",
+            "clf_train_noisified_max_timesteps_t1000",
             study.trials[1].params,
         )
         self.assertIn(

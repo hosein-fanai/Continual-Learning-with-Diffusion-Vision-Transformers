@@ -3,9 +3,12 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+import math
+
 from collections.abc import Mapping, Sequence
 
 from copy import deepcopy
+from numbers import Real
 
 from . import UNetFullOutput, UNetInputs
 
@@ -69,7 +72,8 @@ class UNet(ArgumentSaverModel):
             bottleneck. Explicit ``True`` makes every skip stochastic.
         reshaper_ids_dict: Optional exact model-computed flatten/unflatten
             mapping. Leave it empty to create the required stages automatically.
-        reshaper_kwargs: ``add_kl`` and ``latent_dim_ratio``.
+        reshaper_kwargs: ``add_kl`` and an optional ``latent_dim_ratio`` list
+            ordered by ascending flatten/unflatten pair depth.
         cls_token_regularizer_ids: Depth IDs for auxiliary class heads. ID 0
             regularizes the label embedding; ``[None]`` selects every depth.
             The historical name is retained for wrapper compatibility.
@@ -154,8 +158,9 @@ class UNet(ArgumentSaverModel):
                 stochastic multiscale skips.
             reshaper_ids_dict (Mapping[int, str]): Optional exact generated
                 flatten/unflatten mapping.
-            reshaper_kwargs (Mapping[str, object]): ``add_kl`` and positive
-                ``latent_dim_ratio`` options.
+            reshaper_kwargs (Mapping[str, object]): ``add_kl`` and an optional
+                list of positive ``latent_dim_ratio`` values, one per generated
+                flatten/unflatten pair in ascending depth order.
             cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class
                 head depths; None expands across all depths.
             cls_token_regularizer_kwargs (Mapping[str, object]): Compatibility
@@ -249,6 +254,21 @@ class UNet(ArgumentSaverModel):
                 f"{expected_reshapers}."
             )
         self.reshaper_ids_dict = expected_reshapers
+        pair_count = sum(
+            reshape_type == "flatten"
+            for reshape_type in self.reshaper_ids_dict.values()
+        )
+        latent_dim_ratios = self.reshaper_kwargs.get("latent_dim_ratio")
+        if latent_dim_ratios is None:
+            latent_dim_ratios = [1.0] * pair_count
+        if len(latent_dim_ratios) != pair_count:
+            raise ValueError(
+                "latent_dim_ratio must contain one value per "
+                "flatten/unflatten pair."
+            )
+        self.reshaper_kwargs["latent_dim_ratio"] = [
+            float(ratio) for ratio in latent_dim_ratios
+        ]
         self.depth = self._base_depth + len(self.extra_depth_specs)
         self.cls_token_regularizer_ids = self._handle_ids(
             self.cls_token_regularizer_ids, 
@@ -356,7 +376,8 @@ class UNet(ArgumentSaverModel):
             label_embedding_dim (int): Label embedding width.
             dropout_rate (float): Dropout probability.
             use_skip_connections (bool | None): Requested skip behavior.
-            reshaper_kwargs (dict[str, object]): Variational reshaper options.
+            reshaper_kwargs (dict[str, object]): Variational reshaper options;
+                an explicit ``latent_dim_ratio`` is a per-pair list.
             cls_token_regularizer_kwargs (dict[str, object]): Compatibility
                 slice and training policy.
 
@@ -420,15 +441,25 @@ class UNet(ArgumentSaverModel):
                 f"Unknown reshaper kwargs: {sorted(unknown_reshaper_keys)}."
             )
         add_kl = reshaper_kwargs.get("add_kl", False)
-        ratio = reshaper_kwargs.get("latent_dim_ratio", 1.0)
         # Require an explicit boolean for variational KL behavior.
         if not isinstance(add_kl, bool):
             raise ValueError("reshaper add_kl must be boolean.")
-        # Require a positive numeric latent-width ratio.
-        if not isinstance(ratio, (int, float)) or isinstance(
-            ratio, bool
-        ) or ratio <= 0:
-            raise ValueError("latent_dim_ratio must be positive.")
+        latent_dim_ratios = reshaper_kwargs.get("latent_dim_ratio")
+        # An explicit model-level ratio maps one-to-one to generated pairs.
+        if latent_dim_ratios is not None and not isinstance(
+            latent_dim_ratios, list
+        ):
+            raise ValueError("latent_dim_ratio must be a list.")
+        if latent_dim_ratios is not None and any(
+            not isinstance(ratio, Real)
+            or isinstance(ratio, bool)
+            or not math.isfinite(float(ratio))
+            or ratio <= 0.0
+            for ratio in latent_dim_ratios
+        ):
+            raise ValueError(
+                "latent_dim_ratio values must be finite and positive."
+            )
         # Require both slice bounds and no unknown regularizer options.
         allowed_regularizer_keys = {
             "start", "end", "train_type", "distil_type"
@@ -696,6 +727,7 @@ class UNet(ArgumentSaverModel):
         """
 
         skip_depths = []
+        flatten_index = 0
         base_side = self.image_size
         for width in self.widths:
             block_key = len(self.layers_dicts) + 1
@@ -723,11 +755,9 @@ class UNet(ArgumentSaverModel):
                             add_kl=bool(
                                 self.reshaper_kwargs.get("add_kl", False)
                             ),
-                            latent_dim_ratio=float(
-                                self.reshaper_kwargs.get(
-                                    "latent_dim_ratio", 1.0
-                                )
-                            ),
+                            latent_dim_ratio=self.reshaper_kwargs[
+                                "latent_dim_ratio"
+                            ][flatten_index],
                             seed=derive_seed(
                                 self.seed, "reshaper", flatten_name
                             ),
@@ -737,6 +767,7 @@ class UNet(ArgumentSaverModel):
                     },
                     "flatten",
                 )
+                flatten_index += 1
                 unflatten_key = len(self.layers_dicts) + 1
                 self._append_stage(
                     {
@@ -792,9 +823,9 @@ class UNet(ArgumentSaverModel):
                         "flatten",  
                         source_shape, 
                         add_kl=bool(self.reshaper_kwargs.get("add_kl", False)), 
-                        latent_dim_ratio=float(
-                            self.reshaper_kwargs.get("latent_dim_ratio", 1.0)
-                        ), 
+                        latent_dim_ratio=self.reshaper_kwargs[
+                            "latent_dim_ratio"
+                        ][flatten_index],
                         seed=derive_seed(self.seed, "reshaper", flatten_name),
                         name=flatten_name, 
                         dtype=self.dtype_policy, 
@@ -802,6 +833,7 @@ class UNet(ArgumentSaverModel):
                 }, 
                 "flatten", 
             )
+            flatten_index += 1
             unflatten_key = len(self.layers_dicts) + 1
             self._append_stage(
                 {
@@ -1060,6 +1092,19 @@ class UNet(ArgumentSaverModel):
             latent_inputs = list(inputs[0]) if isinstance(
                 inputs[0], (list, tuple)
             ) else [inputs[0]]
+            expected_latents = 1 + sum(
+                flatten_id > min_depth and (
+                    max_depth < 0 or flatten_id <= max_depth
+                )
+                for flatten_id, reshape_type in self.reshaper_ids_dict.items()
+                if reshape_type == "flatten"
+            )
+            # Require one resumed value for every flatten stage still ahead.
+            if len(latent_inputs) != expected_latents:
+                raise ValueError(
+                    f"Resuming at depth {min_depth} requires "
+                    f"{expected_latents} input feature/latent tensors."
+                )
             x = latent_inputs[0]
 
         label_reg = self.labels_embed_reg(
@@ -1437,6 +1482,7 @@ def run_self_tests() -> dict[str, str]:
         "build": False, 
     }
     model = UNet(**common)
+    assert model.reshaper_kwargs["latent_dim_ratio"] == []
     assert model.cls_token_regularizer_kwargs["train_type"] == "normal"
     assert model.cls_token_regularizer_kwargs["distil_type"] == "hard"
     distil_regularized = UNet(
@@ -1472,10 +1518,27 @@ def run_self_tests() -> dict[str, str]:
     assert model.train_function is model.test_function is model.predict_function is None
     assert model((images, times, labels)).shape == images.shape
 
+    for invalid_reshaper_kwargs in (
+        {"add_kl": True, "latent_dim_ratio": 0.5},
+        {"add_kl": True, "latent_dim_ratio": []},
+        {"add_kl": True, "latent_dim_ratio": [True]},
+        {"add_kl": True, "latent_dim_ratio": [float("nan")]},
+        {"add_kl": True, "latent_dim_ratio": [0.0]},
+    ):
+        try:
+            UNet(**common, reshaper_kwargs=invalid_reshaper_kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "Invalid model-level latent_dim_ratio configuration must fail."
+            )
+
     vae = UNet(
         **common, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+        reshaper_kwargs={"add_kl": True},
     )
+    assert vae.reshaper_kwargs["latent_dim_ratio"] == [1.0]
     square_images = images[:, :5, :5]
     vae_output = vae((square_images, times, labels), full_return=True)
     assert vae_output[0].shape == (2, 5, 5, 1)
@@ -1493,7 +1556,10 @@ def run_self_tests() -> dict[str, str]:
     multiscale_vae = UNet(
         **common,
         use_skip_connections=True,
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5},
+        reshaper_kwargs={
+            "add_kl": True,
+            "latent_dim_ratio": [0.5, 1.0, 0.25],
+        },
     )
     multiscale_output = multiscale_vae(
         (square_images, times, labels), full_return=True, training=False
@@ -1509,6 +1575,43 @@ def run_self_tests() -> dict[str, str]:
         if reshape_type == "unflatten"
     }
     assert len(multiscale_output[-1]) == len(flatten_ids) == 3
+    latent_widths = [
+        int(multiscale_vae.layers_dicts[depth - 1][
+            multiscale_vae.R
+        ].output_shape[1][-1])
+        for depth in flatten_ids
+    ]
+    assert latent_widths == [25, 27, 4]
+    assert [
+        int(z_mean.shape[-1]) for z_mean, _ in multiscale_output[-1]
+    ] == latent_widths
+    first_flatten = flatten_ids[0]
+    first_source_shape = multiscale_vae.layers_dicts[
+        first_flatten - 1
+    ][multiscale_vae.R].source_shape_
+    truncated_multiscale, *_ = multiscale_vae.encode(
+        (
+            [tf.zeros((2, math.prod(first_source_shape)))],
+            times,
+            labels,
+        ),
+        min_depth=first_flatten,
+        max_depth=first_flatten + 1,
+        training=False,
+    )
+    assert truncated_multiscale.shape.rank == 4
+    multiscale_clone = tf.keras.models.model_from_json(
+        multiscale_vae.to_json()
+    )
+    assert multiscale_clone.reshaper_kwargs["latent_dim_ratio"] == [
+        0.5, 1.0, 0.25
+    ]
+    assert [
+        int(multiscale_clone.layers_dicts[depth - 1][
+            multiscale_clone.R
+        ].output_shape[1][-1])
+        for depth in flatten_ids
+    ] == latent_widths
     assert all(
         sources[0] in unflatten_ids
         for sources in multiscale_vae.connection_ids_dict.values()

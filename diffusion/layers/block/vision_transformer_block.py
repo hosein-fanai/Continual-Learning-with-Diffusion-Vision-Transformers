@@ -43,6 +43,8 @@ class VisionTransformerBlock(BaseLayer):
         drop_prob: Stochastic-depth probability in ``[0, 1)`` for each branch.
         drop_per_sample: Use independent path masks per example when true, or
             one path decision for the full batch when false.
+        grid_size: Optional square token-grid side retained as architecture
+            metadata for later spatial reshapers. It does not alter attention.
         **kwargs: Remaining :class:`BaseLayer`/Keras options. Supported layer
             keys include ``ln_mlp_ratio``, ``ln_no_adaptation``, and
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
@@ -79,7 +81,8 @@ class VisionTransformerBlock(BaseLayer):
         gate_query_flag: bool = True, 
         drop_prob: float = 0., 
         drop_per_sample: bool = True, 
-        seed: int | None = None,
+        seed: int | None = None, 
+        grid_size: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
@@ -97,17 +100,17 @@ class VisionTransformerBlock(BaseLayer):
             drop_per_sample (bool): Whether each example receives its own path mask.
             seed (int | None): Optional component seed used to derive distinct
                 attention and MLP stochastic-depth streams.
+            grid_size (int | None): Optional output token-grid side retained
+                for downstream architecture inference.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
             ``None``.
         """
 
-        derive_seed(seed, "vision_transformer_block", "validation")
-        seed = None if seed is None else int(seed)
         temp_val = (
-            kwargs.pop("use_layer_norm", True),
-            kwargs.pop("ln_dim", dim),
+            kwargs.pop("use_layer_norm", True), 
+            kwargs.pop("ln_dim", dim)
         )
         # Preserve the block's mandatory adaptive-normalization setting.
         if temp_val[0] is not True:
@@ -123,7 +126,13 @@ class VisionTransformerBlock(BaseLayer):
             **kwargs
         )
         self._save_init_args(locals())
+        derive_seed(
+            self.seed, 
+            "vision_transformer_block", 
+            "validation"
+        )
 
+        self.seed = None if self.seed is None else int(self.seed)
         self.key_dim = self.dim // self.num_heads if self.key_dim is None else self.key_dim
         self.mlp_output_dim = self.dim if self.mlp_output_dim is None else self.mlp_output_dim
         self.query_dim = self.dim if self.query_dim is None else self.query_dim
@@ -137,20 +146,20 @@ class VisionTransformerBlock(BaseLayer):
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
             output_shape=self.query_dim if self.gate_query_flag else self.dim,
-            name="mha",
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name="mha"
         )
         self.mha_residual_projector = layers.Dense(
             self.query_dim, 
-            name="mha_residual_projector",
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name="mha_residual_projector"
         ) if self.query_dim != self.dim else None
         self.mha_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
-            seed=derive_seed(self.seed, "mha_drop_path"),
+            seed=derive_seed(self.seed, "mha_drop_path"), 
+            dtype=self.dtype_policy, 
             name=f"{self.name}/mha_drop_path",
-            dtype=self.dtype_policy
         )
 
         self.mlp_layer_norm = self._create_layer_norm(
@@ -163,15 +172,15 @@ class VisionTransformerBlock(BaseLayer):
         )
         self.mlp_residual_projector = layers.Dense(
             self.mlp_output_dim, 
-            name="mlp_residual_projector",
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name="mlp_residual_projector"
         ) if self.mlp_output_dim != self.query_dim else None
         self.mlp_drop_path = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mlp_drop_path"),
-            name=f"{self.name}/mlp_drop_path",
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name=f"{self.name}/mlp_drop_path"
         )
 
     def _call_self_attention(

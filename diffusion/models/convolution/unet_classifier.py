@@ -3,9 +3,12 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+import math
+
 from copy import deepcopy
 
 from collections.abc import Mapping
+from numbers import Real
 
 from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
@@ -68,7 +71,8 @@ class UNetClassifier(UNet):
         ``clf_reshaper_kwargs`` accepts ``add_kl`` and ``latent_dim_ratio``.
         When KL is enabled, the globally pooled classifier feature is sampled
         through :class:`VariationalReshaper`, and its rank-two statistics are
-        returned for the unchanged classifier wrappers.
+        returned for the unchanged classifier wrappers. The ratio is a
+        one-entry list because this branch owns one terminal flatten stage.
 
         Args:
             aggregate_from_noises (bool): Classify the predicted noise image
@@ -84,7 +88,7 @@ class UNetClassifier(UNet):
             clf_depth (int): Nonnegative number of classifier residual stages.
             clf_block_depth (int): Positive residual blocks per classifier stage.
             clf_reshaper_kwargs (dict[str, object]): Optional classifier
-                ``add_kl`` and positive ``latent_dim_ratio``.
+                ``add_kl`` and a one-entry positive ``latent_dim_ratio`` list.
             clf_cls_token_regularizer_ids (list[int | None]): Auxiliary
                 classifier-head depths; None expands across all depths.
             force_global_avg_pooling (bool): Globally pool classifier maps when
@@ -255,16 +259,31 @@ class UNetClassifier(UNet):
                 "clf_reshaper_kwargs accepts only add_kl and latent_dim_ratio."
             )
         add_kl = local_vars["clf_reshaper_kwargs"].get("add_kl", False)
-        latent_dim_ratio = local_vars["clf_reshaper_kwargs"].get(
-            "latent_dim_ratio", 1.0,
-        )
+        if "latent_dim_ratio" not in local_vars["clf_reshaper_kwargs"]:
+            local_vars["clf_reshaper_kwargs"]["latent_dim_ratio"] = (
+                [1.0] if add_kl else []
+            )
+        latent_dim_ratios = local_vars["clf_reshaper_kwargs"][
+            "latent_dim_ratio"
+        ]
         # Require a boolean classifier KL switch.
         if not isinstance(add_kl, bool):
             raise ValueError("Classifier reshaper add_kl must be boolean.")
-        # Require a positive classifier latent-width ratio.
-        if not isinstance(latent_dim_ratio, (int, float)) \
-        or isinstance(latent_dim_ratio, bool) or latent_dim_ratio <= 0.0:
-            raise ValueError("Classifier latent_dim_ratio must be positive.")
+        if not isinstance(latent_dim_ratios, list):
+            raise ValueError("Classifier latent_dim_ratio must be a list.")
+        if len(latent_dim_ratios) != int(add_kl):
+            raise ValueError(
+                "Classifier latent_dim_ratio must contain one value for its "
+                "terminal flatten stage when add_kl=True."
+            )
+        if any(
+            not isinstance(ratio, Real) or isinstance(ratio, bool) or
+            not math.isfinite(float(ratio)) or ratio <= 0.0
+            for ratio in latent_dim_ratios
+        ):
+            raise ValueError(
+                "Classifier latent_dim_ratio values must be finite and positive."
+            )
 
     def _create_clf_regularizer(self, suffix: str) -> layers.Layer:
         """Create an auxiliary classifier head in the stable policy dtype.
@@ -311,9 +330,9 @@ class UNetClassifier(UNet):
                 reshape_type="flatten", 
                 source_shape=(self.clf_dim,), 
                 add_kl=True, 
-                latent_dim_ratio=self.clf_reshaper_kwargs.get(
-                    "latent_dim_ratio", 1.0, 
-                ), 
+                latent_dim_ratio=self.clf_reshaper_kwargs[
+                    "latent_dim_ratio"
+                ][0],
                 seed=derive_seed(
                     self.seed,
                     "classifier_reshaper",
@@ -1152,7 +1171,7 @@ def run_self_tests() -> dict[str, str]:
 
     variational = UNetClassifier(
         **common, 
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5},
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
     )
     variational_output = variational(inputs, full_return=True, training=False)
     assert variational_output["clf_z_vals_list"][0][0].shape == (2, 1)
@@ -1182,7 +1201,7 @@ def run_self_tests() -> dict[str, str]:
 
     main_variational = UNetClassifier(
         **common, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5},
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
     )
 
 

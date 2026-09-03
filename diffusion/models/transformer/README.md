@@ -162,14 +162,56 @@ hidden projection before that softmax. Its `activation_function` defaults to
 metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
-When several KL-enabled flatten stages execute, the network keeps their
-posterior statistics separate and the wrapper sums their standard-normal KL
-terms. `sample_vae` draws or accepts one latent per flatten stage and injects
-them in depth order, so U-shaped skips can originate from stochastic
-unflattened features. This is a multiscale factorized VAE, not a conditional
-hierarchical VAE: the code does not define learned top-down priors
-`p(z_l | z_{l+1})`. A patch grid must be divisible by `2**L` for `L`
-factor-two down/up levels.
+KL reshapers are configured as adjacent `"flatten"`, `"unflatten"` pairs.
+For a multilevel U-DiT intended for `sample_vae`, arrange all pairs as one
+contiguous central bridge after the complete encoder stack and before decoder
+or up-sampling computation. `sample_vae` validates this positional invariant:
+no transformer/local-mixer block can split the bridge, downsampling must occur
+before it, and upsampling must occur after it. Whether a transformer stage uses
+`VisionTransformerBlock` or `DiTDecoderBlock` does not determine which side it
+belongs to; its depth does. `latent_dim_ratio` is a list of positive numbers
+with exactly one entry per pair, ordered by ascending flatten depth; omitting
+it supplies `1.0` for every pair. For example, the three-level layout used by
+`notebooks/DiT mini copy 35.ipynb` has:
+
+```python
+connection_ids_dict = {8: (3,), 10: (1,), 12: (7,)}
+cross_attention_ids_dict = {13: (9,), 15: (11,)}
+reshaper_ids_dict = {
+    6: "flatten", 7: "unflatten",
+    8: "flatten", 9: "unflatten",
+    10: "flatten", 11: "unflatten",
+}
+reshaper_kwargs = {
+    "add_kl": True,
+    "latent_dim_ratio": [1 / 32, 1 / 32, 1 / 32],
+}
+```
+
+Here encoder blocks end at depth 5 and decoder blocks begin at depth 13. The
+three entries apply to pairs 6/7, 8/9, and 10/11 respectively; ordering is by
+depth, not dictionary insertion order. For pair `k`, the posterior mean and
+log-variance width is `int(flattened_width * latent_dim_ratio[k])`; sampling
+projects that latent back to the pair's flattened width before unflattening.
+In this notebook the routed 4x4, 8x8, and 16x16 feature levels flatten to
+widths 1024, 4096, and 8192, so the repeated `1 / 32` ratios produce latent
+widths 32, 128, and 256. At normal training time, a feature connector on a
+flatten stage runs first and can select the corresponding
+encoder-level feature. `sample_vae` instead resumes at the first flatten
+boundary, bypasses each flatten-stage encoder route, and injects that pair's
+sampled or supplied latent. Each following unflatten restores its multiscale
+feature for later decoder feature or cross-attention routes. Decoder routes
+must keep every unflattened feature reachable from the sampled output; without
+such a route, the next flatten replaces the current stream and that earlier
+latent would be dead. Routes also must not reach directly to
+pre-latent encoder depths, which would create a deterministic path around the
+VAE bottlenecks.
+
+The network keeps the posterior statistics for all pairs separate and the
+wrapper sums their standard-normal KL terms. This is a multiscale factorized
+VAE, not a conditional hierarchical VAE: the code does not define learned
+top-down priors `p(z_l | z_{l+1})`. A patch grid must be divisible by `2**L`
+for `L` factor-two down/up levels.
 
 `DiTClassifier` adds main-feature aggregators and cross-attention aggregators
 before the analogous classifier components. Its final extraction behavior,
@@ -187,7 +229,7 @@ selected depth of that component type; they are not keyed per depth.
 | `local_mixer_kwargs` | `embed_temperature: float`; `dim: int`; `grid_size: int`; `use_layer_norm: bool`; `ln_mlp_ratio`; `ln_no_adaptation`; `kernel_size: int`; `strides: int`; `depth_multiplier: int`; `use_pointwise: bool`; `pointwise_dim_ratio: int`; `zero_init: bool`; `pos_embed_type`; `pos_interpolation_method`; `pos_merger_type`: `"add"` or `"concat"`; `mlp_ratio`; `mlp_activation_func`; `mlp_output_dim` |
 | `downsample_kwargs` | Common embedding/norm/position/MLP keys above plus `scaling_method`: `"avg_pooling"`, `"max_pooling"`, or `"cnn_stride"`; `cnn_dim_ratio: int`; `cnn_kernel_size: int`; `cnn_activation_func` |
 | `upsample_kwargs` | Common embedding/norm/position/MLP keys plus `scaling_method`: `"cnn_transpose"`, `"interpolate"`, or `"cnn_interpolate"`; `scaling_interpolation_method`; `cnn_dim_ratio`; `cnn_kernel_size`; `cnn_activation_func` |
-| `reshaper_kwargs` | `add_kl: bool`; `latent_dim_ratio: positive float` |
+| `reshaper_kwargs` | `add_kl: bool`; `latent_dim_ratio: list[positive float]`, exactly one entry per contiguous flatten/unflatten pair in ascending flatten-depth order |
 | `cls_token_regularizer_kwargs`, `clf_cls_token_regularizer_kwargs` | `start: int`; `end: int`; these are Python token-slice bounds before flattening; optional `mlp_ratio: positive float or None` adds a hidden Dense layer; optional `activation_function: Keras activation` defaults to `"tanh"`; `train_type`: `"normal"`, `"distil"`, or `"both"`; `distil_type`: `"hard"` or `"soft"` |
 
 `pos_embed_type` is `None` or one of `new_weight`, `1d_sincos`,

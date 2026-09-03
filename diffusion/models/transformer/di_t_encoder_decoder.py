@@ -243,6 +243,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
         # Inspect the requested encoder stage when it exists.
         if i < len(layers_dicts):
             stage = layers_dicts[i]
+            # Feature connectors may switch back to a saved encoder scale.
+            if self.FC in stage:
+                grid_size = stage[self.FC].grid_size
+                grid_was_set = True
+            # Attention preserves the primary/query grid recorded at build time.
+            if self.VTB in stage:
+                grid_size = stage[self.VTB].grid_size
+                grid_was_set = True
             for key in (self.LM, self.DS, self.US):
                 # Let spatial mixers and scalers update the encoder grid.
                 if key in stage:
@@ -968,7 +976,7 @@ def run_self_tests() -> dict[str, str]:
         vit_block_mlp_ratio=1.0, 
         vit_block_ids=[], 
         reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": 0.5}, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
         build=False, 
     )
     assert vae_network.decoder.encoder_feature_grid_sizes == [2, None, 2]

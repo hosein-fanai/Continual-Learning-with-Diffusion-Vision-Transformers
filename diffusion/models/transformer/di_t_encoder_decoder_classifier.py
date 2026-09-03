@@ -1411,7 +1411,7 @@ def run_self_tests() -> dict[str, str]:
         "depth": 2, 
         "vit_block_ids": [], 
         "reshaper_ids_dict": {1: "flatten", 2: "unflatten"}, 
-        "reshaper_kwargs": {"add_kl": True, "latent_dim_ratio": 0.5}, 
+        "reshaper_kwargs": {"add_kl": True, "latent_dim_ratio": [0.5]},
     }
     vae_decoder_kwargs = {
         **decoder_kwargs, 
