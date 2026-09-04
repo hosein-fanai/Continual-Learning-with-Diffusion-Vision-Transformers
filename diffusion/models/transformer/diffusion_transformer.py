@@ -387,8 +387,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self.dim = self.patches_dim + self.cond_dim if self.patches_conds_merger_type == "concat" else self.dim
         self.cond_embedder_dim = self.cond_dim // 2 if self.conds_merger_type == "concat" and \
                                 self.cond_type == "time_label" else self.cond_dim
-        self.has_cls_token = self.clf_cls_token_type is not None
-        self.has_distil_token = self.clf_distil_token_type is not None
+        self.has_cls_token = self.cls_token_type is not None
+        self.has_distil_token = self.distil_token_type is not None
         self.prepended_tokens_num = int(self.has_cls_token) + int(self.has_distil_token)
 
         self._create_embedders()

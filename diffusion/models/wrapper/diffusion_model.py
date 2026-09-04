@@ -336,112 +336,55 @@ class DiffusionModel(ArgumentSaverModel):
             if not hasattr(network, attribute):
                 raise TypeError(f"network must define {attribute!r}.")
 
-        for name in (
-            "use_ema", "modify_first_t", "resize_antialias", 
-            "swap_noise_image", "map_preprocess", 
-            "show_separate_noise_losses", "defer_teacher"
-        ):
-            require(
-                isinstance(local_vars[name], bool), 
-                f"{name} must be boolean."
-            )
-
-        require(
-            local_vars["map_num_parallel_calls"] is None or (
-                isinstance(local_vars["map_num_parallel_calls"], Integral)
-                and not isinstance(local_vars["map_num_parallel_calls"], bool)
-                and local_vars["map_num_parallel_calls"] > 0
-            ),
-            "map_num_parallel_calls must be None or a positive integer.",
-        )
-
         for prefix in ("train", "test"):
             t_min = local_vars[f"{prefix}_noisified_min_timesteps"]
             raw_t_max = local_vars[f"{prefix}_noisified_max_timesteps"]
             require(
-                isinstance(t_min, Integral)
-                and not isinstance(t_min, bool)
-                and 0 <= t_min < network.timesteps,
+                0 <= t_min < network.timesteps, 
                 f"{prefix}_noisified_min_timesteps must be in "
-                f"[0, {network.timesteps}).",
+                f"[0, {network.timesteps})."
             )
-            require(
-                raw_t_max is None or (
-                    isinstance(raw_t_max, Integral)
-                    and not isinstance(raw_t_max, bool)
-                ),
-                f"{prefix}_noisified_max_timesteps must be an integer or None.",
-            )
+
             t_max = 0 if raw_t_max is None else raw_t_max
             t_max = network.timesteps if t_max == -1 else t_max
             require(
                 (t_min == 0 and t_max == 0) or
-                t_min < t_max <= network.timesteps,
-                f"{prefix}_noisified_max_timesteps must be 0 for clean-only "
-                f"inputs or in ({t_min}, {network.timesteps}].",
+                t_min < t_max <= network.timesteps, 
+                f"{prefix}_noisified_max_timesteps must be 0 for "
+                f"clean-only inputs or in ({t_min}, {network.timesteps}]."
             )
 
-        require(local_vars["test_network_name"] in get_args(NetworkName), \
-            f"test_network_name must be one of {get_args(NetworkName)}.")
+        require(
+            local_vars["test_network_name"] in get_args(NetworkName), 
+            f"test_network_name must be one of {get_args(NetworkName)}."
+        )
 
-        require(isinstance(local_vars["ema_decay"], Real) and \
-            not isinstance(local_vars["ema_decay"], bool) and \
-            np.isfinite(local_vars["ema_decay"]) and \
-            0. <= local_vars["ema_decay"] < 1., \
-            "ema_decay must be in the range of [0., 1.).")
+        require(
+            0. <= local_vars["ema_decay"] < 1., 
+            "ema_decay must be in the range of [0., 1.)."
+        )
 
-        require(isinstance(local_vars["test_steps"], Integral) and \
-            not isinstance(local_vars["test_steps"], bool) and \
-            2 <= local_vars["test_steps"] <= network.timesteps, \
-            "steps must be in the range of [2, timesteps].")
+        require(
+            2 <= local_vars["test_steps"] <= network.timesteps, 
+            "steps must be in the range of [2, timesteps]."
+        )
 
-        require(isinstance(local_vars["test_eta"], Real) and \
-            not isinstance(local_vars["test_eta"], bool) and \
-            np.isfinite(local_vars["test_eta"]) and \
-            0. <= local_vars["test_eta"] <= 1., \
-            "eta must be in the range of [0., 1.].")
+        require(
+            0. <= local_vars["test_eta"] <= 1., 
+            "eta must be in the range of [0., 1.]."
+        )
 
-        require(isinstance(local_vars["p_uncond"], Real) and \
-            not isinstance(local_vars["p_uncond"], bool) and \
-            np.isfinite(local_vars["p_uncond"]) and \
-            0. <= local_vars["p_uncond"] <= 1., \
-            "p_uncond must be in the range of [0., 1.].")
-
-        for name in ("train_cfg_scale", "test_cfg_scale"):
-            value = local_vars[name]
-            require(value is None or (
-                isinstance(value, Real)
-                and not isinstance(value, bool)
-                and np.isfinite(value)
-            ), f"{name} must be None or a finite number.")
-
-        for name in (
-            "noise_loss_coef", "image_loss_coef", 
-            "kl_loss_coef", "ctr_loss_coef", "noise_distil_loss_coef"
-        ):
-            value = local_vars[name]
-            require(isinstance(value, Real) and \
-                not isinstance(value, bool) and np.isfinite(value) and value >= 0., \
-                f"{name} must be a finite nonnegative number.")
+        require(
+            0. <= local_vars["p_uncond"] <= 1., 
+            "p_uncond must be in the range of [0., 1.]."
+        )
 
         if local_vars["noise_distil_loss_coef"] > 0.:
             require(
                 local_vars["teacher_network"] is not None
-                or local_vars["defer_teacher"],
-                "teacher_network is required when noise_distil_loss_coef is "
-                "positive unless defer_teacher=True.",
-            )
-            require(
-                not local_vars["swap_noise_image"],
-                "noise distillation requires epsilon prediction, not "
-                "swap_noise_image mode.",
-            )
-
-        if local_vars["swap_noise_image"]:
-            require(
-                local_vars["image_loss_coef"] == 0.,
-                "swap_noise_image already optimizes clean-image prediction; "
-                "image_loss_coef must be zero to avoid double weighting it.",
+                or local_vars["defer_teacher"], 
+                "teacher_network is required when noise_distil_loss_coef "
+                "is positive unless defer_teacher=True."
             )
 
         require(local_vars["kl_train_type"] in get_args(TrainType), \
@@ -459,12 +402,6 @@ class DiffusionModel(ArgumentSaverModel):
                 "Unconditional auxiliary losses require "
                 "CFG and a non-None train_cfg_scale."
             )
-
-        # Normalize persisted continual state before constructor serialization.
-        require(
-            isinstance(local_vars["seen_classes"], dict), 
-            "seen_classes must be a mapping."
-        )
 
         # Validate restoration width only when saved continual state is present.
         if local_vars["seen_classes"]:
@@ -2397,39 +2334,7 @@ class DiffusionModel(ArgumentSaverModel):
         # Validate caller-supplied timestep IDs before forward noising.
         else:
             t = tf.convert_to_tensor(t)
-
-            # Timesteps are discrete schedule indices, never floating or Boolean.
-            if not t.dtype.is_integer or t.dtype == tf.bool:
-                raise TypeError("t must have an integer dtype.")
-            # Reject a statically known non-vector timestep structure early.
-            if t.shape.rank is not None and t.shape.rank != 1:
-                raise ValueError("t must be a one-dimensional tensor.")
-            timestep_assertions = (
-                tf.debugging.assert_rank(
-                    t, 1, 
-                    message="t must be one-dimensional."
-                ), 
-                tf.debugging.assert_equal(
-                    tf.shape(t)[0], 
-                    x_shape[0], 
-                    message="t batch size must match x0."
-                ), 
-                tf.debugging.assert_greater_equal(
-                    t, 
-                    tf.cast(0, t.dtype), 
-                    message="timestep IDs must be nonnegative."
-                ), 
-                tf.debugging.assert_less(
-                    t, 
-                    tf.cast(self.timesteps, t.dtype), 
-                    message="timestep IDs must be less than timesteps."
-                )
-            )
-            with tf.control_dependencies([
-                assertion for assertion in timestep_assertions
-                if assertion is not None
-            ]):
-                t = tf.cast(tf.identity(t), tf.int32)
+            t = tf.cast(tf.identity(t), tf.int32)
 
         noises = tf.random.normal(
             x_shape, 
@@ -3089,33 +2994,6 @@ class DiffusionModel(ArgumentSaverModel):
                 (regs_list_c, regs_list_u), 
                 (z_vals_list_c, z_vals_list_u))
 
-    def compute_eps(
-        self, 
-        eps_c: tf.Tensor, 
-        eps_u: tf.Tensor | None = None, 
-        scale: float | None = None
-    ) -> tf.Tensor:
-        """Combine conditional/unconditional noise with CFG.
-
-        Args:
-            eps_c (tf.Tensor): Conditional prediction of any image-like shape.
-            eps_u (tf.Tensor | None): Unconditional prediction of the same shape.
-            scale (float | None): Guidance scale.  With CFG and a non-None value,
-                returns ``eps_u + scale*(eps_c-eps_u)``; otherwise ``eps_c``.
-
-        Returns:
-            tf.Tensor: Selected or guided noise prediction.
-        """
-
-        # Combine conditional and unconditional predictions with CFG.
-        if self.use_cfg and scale is not None:
-            eps = eps_u + scale * (eps_c - eps_u)
-        # Use the conditional prediction directly when CFG is inactive.
-        else:
-            eps = eps_c
-
-        return eps
-
     def denoise(
         self, 
         x_t: tf.Tensor, 
@@ -3142,11 +3020,12 @@ class DiffusionModel(ArgumentSaverModel):
             guided noise, both matching ``x_t`` shape.
         """
 
-        eps = self.compute_eps(
-            eps_c, 
-            eps_u, 
-            scale
-        )
+        # Combine conditional and unconditional predictions with CFG.
+        if self.use_cfg and scale is not None:
+            eps = eps_u + scale * (eps_c - eps_u)
+        # Use the conditional prediction directly when CFG is inactive.
+        else:
+            eps = eps_c
 
         sqrt_a_t, sqrt_one_minus_a_t = self.get_noise_and_signal_rates(t)
         # Broadcast scalar schedule rates across image dimensions when requested.
@@ -3216,10 +3095,6 @@ class DiffusionModel(ArgumentSaverModel):
             training
         )
 
-        # if self.swap_noise_image:
-        #     x0 = self.compute_eps(eps_c, eps_u, scale)
-        #     eps = x0
-        # else:
         x0, eps = self.denoise(
             x_t, 
             t, 
