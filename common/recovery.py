@@ -695,12 +695,6 @@ def _validate_schedule(
         and task groups.
     """
 
-    # Select the recovery action required by this condition.
-    if isinstance(completed_task_index, bool) or not isinstance(
-        completed_task_index, (int, np.integer)
-    ):
-        raise TypeError("completed_task_index must be an integer.")
-
     completed_task_index = int(completed_task_index)
 
     normalized_order = list(class_order)

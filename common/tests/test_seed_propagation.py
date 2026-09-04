@@ -102,8 +102,10 @@ class SeedPropagationTests(TestCase):
             derive_seed(37, "decoder_accuracy", 0),
         ])
         self.assertNotEqual(generated_seeds[0], generated_seeds[1])
-        with self.assertRaises(TypeError):
-            DecoderAccuracyCallback(classifier, seed=True)
+        self.assertEqual(
+            DecoderAccuracyCallback(classifier, seed=True).seed,
+            1,
+        )
 
     def test_vae_uses_explicit_reparameterization_and_generation_streams(
         self: SeedPropagationTests,

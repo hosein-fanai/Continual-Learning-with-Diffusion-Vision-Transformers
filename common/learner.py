@@ -40,8 +40,7 @@ from common.continual_reporting import (
 )
 from common.runtime import (
     configure_runtime, 
-    derive_seed, 
-    validate_model_dtype_policy
+    derive_seed
 )
 from common.recovery import (
     _array_recovery_descriptor, 
@@ -128,19 +127,38 @@ def _optimizer_iteration_metrics(
     return counters
 
 
+def _finite_fixed_step_dataset(
+    dataset: tf.data.Dataset,
+    steps_per_epoch: int,
+    epochs: int,
+) -> tf.data.Dataset:
+    """Repeat a task dataset without exposing an infinite public stream.
+
+    The diffusion wrappers discover newly observed labels by iterating their
+    input dataset before training.  A bare ``repeat()`` therefore never reaches
+    the fit call.  ``take`` retains enough repeated batches for the fixed update
+    budget while keeping at least one complete pass through a finite source so
+    label discovery still sees every task class.
+    """
+
+    required_batches = max(int(steps_per_epoch) * max(int(epochs), 1), 1)
+    source_batches = int(tf.data.experimental.cardinality(dataset).numpy())
+    if source_batches >= 0:
+        required_batches = max(required_batches, source_batches)
+    return dataset.repeat().take(required_batches)
+
+
 def _validate_supplied_model_runtime(
     model: tf.keras.Model | None, 
     seed: int | None, 
-    dtype_policy: str, 
     role: str
 ) -> None:
-    """Validate a caller-built continual model before it can be mutated."""
+    """Validate a caller-built continual model's seed before mutation."""
 
     if model is None:
         return
 
-    validate_model_dtype_policy(model, dtype_policy, role=role)
-    # An unseeded experiment imposes only the numerical-policy contract.
+    # An unseeded experiment imposes no model-seed contract.
     if seed is None:
         return
 
@@ -587,19 +605,15 @@ def _predict_teacher_probabilities(
 ) -> np.ndarray:
     """Evaluate one frozen diffusion classifier on replay candidates."""
 
-    predict_class = getattr(teacher, "predict_class", None)
-    # Cognitive gates require an actual classifier teacher.
-    if not callable(predict_class):
-        raise TypeError("replay scoring requires a teacher with predict_class().")
-
     diffusion_x = _prepare_diffusion_x(x, data_min, data_range)
     predictions = []
     for start in range(0, len(diffusion_x), batch_size):
         batch = diffusion_x[start:start + batch_size]
         timesteps = np.zeros((len(batch),), dtype="int32")
         null_labels = np.zeros((len(batch),), dtype="uint8")
-        predictions.append(np.asarray(predict_class(
-            (batch, timesteps, null_labels), training=False
+        predictions.append(np.asarray(teacher.predict_class(
+            (batch, timesteps, null_labels),
+            training=False
         )))
 
     if not predictions:
@@ -887,7 +901,6 @@ def _run_continual_tasks(
     _validate_supplied_model_runtime(
         generative_model, 
         seed, 
-        dtype_policy, 
         "continual replay model"
     )
 
@@ -896,21 +909,6 @@ def _run_continual_tasks(
             "Continual VAEClassifier is unsupported because its fixed "
             "full-class head exposes future logits. Use a conditioned "
             "VariationalAutoencoder with the expanding external classifier."
-        )
-
-    if initial_classifier is not None:
-        validate_model_dtype_policy(
-            initial_classifier,
-            dtype_policy,
-            role="initial continual classifier",
-        )
-
-    # A runtime teacher must use the same numerical policy as its student.
-    if teacher_network is not None:
-        validate_model_dtype_policy(
-            teacher_network,
-            dtype_policy,
-            role="initial continual teacher",
         )
 
     class_num = len(class_order)
@@ -962,7 +960,20 @@ def _run_continual_tasks(
         if optimizer_steps_per_epoch is not None:
             phase_fit_kwargs["steps_per_epoch"] = optimizer_steps_per_epoch
             if isinstance(phase_trainset, tf.data.Dataset):
-                phase_trainset = phase_trainset.repeat()
+                fixed_step_epochs = epochs
+                # Progressive stages create separate fit iterators and own
+                # their epoch budgets instead of using the outer value.
+                if "progressively" in fit_method:
+                    stage_epochs = int(phase_fit_kwargs.get("stage_epochs", 1))
+                    final_epochs = phase_fit_kwargs.get("final_epochs")
+                    final_epochs = stage_epochs if final_epochs is None \
+                        else int(final_epochs)
+                    fixed_step_epochs = max(stage_epochs, final_epochs, 1)
+                phase_trainset = _finite_fixed_step_dataset(
+                    phase_trainset,
+                    optimizer_steps_per_epoch,
+                    fixed_step_epochs,
+                )
 
         return train_model(
             None, 
@@ -1140,7 +1151,7 @@ def _run_continual_tasks(
 
     if optimizer_steps_per_epoch is not None:
         optimizer_steps_per_epoch = int(optimizer_steps_per_epoch)
-        if optimizer_steps_per_epoch <= 0:
+        if optimizer_steps_per_epoch < 1:
             raise ValueError("optimizer_steps_per_epoch must be positive.")
         # Keep the dedicated all-phase control unambiguous with the historical
         # diffusion-only fit mapping.
@@ -1177,7 +1188,7 @@ def _run_continual_tasks(
         )
     replay_candidate_multiplier = int(replay_candidate_multiplier)
     if replay_candidate_multiplier <= 0:
-        raise ValueError("replay_candidate_multiplier must be a positive integer.")
+        raise ValueError("replay_candidate_multiplier must be positive.")
     replay_selection = str(replay_selection).lower()
     replay_selection_names = {
         "all", "uniform", "random", "confidence", "surprise",
@@ -3013,9 +3024,6 @@ def continually_learn(
 
     if isinstance(config, dict):
         config = Config(**config)
-
-    if not isinstance(config, Config):
-        raise TypeError("config must be a Config, mapping, or None.")
 
     task = normalize_training_task(config.training.task)
 

@@ -12,7 +12,6 @@ import numpy as np
 
 from math import ceil
 
-from numbers import Integral, Real
 from typing import get_args, Literal
 
 from . import NetworkName, TrainType
@@ -172,27 +171,22 @@ class DiffusionClassifier(DiffusionModel):
             require(self.p_uncond > 0., \
                 "mask_by_nulls is not campatible with p_uncond = 0.")
 
-        require(isinstance(local_vars["mask_t_percentage"], Integral) and \
-            not isinstance(local_vars["mask_t_percentage"], bool) and \
-            0 <= local_vars["mask_t_percentage"] <= 100, \
-            "mask_t_percentage must be an integer in [0, 100].")
+        require(0 <= local_vars["mask_t_percentage"] <= 100, \
+            "mask_t_percentage must be in [0, 100].")
 
         for name in (
             "clf_loss_coef", "clf_distil_loss_coef", "clf_acc_coef",
-            "ctr_acc_coef", "clf_distil_acc_coef"
+            "ctr_acc_coef", "clf_distil_acc_coef",
         ):
             value = local_vars[name]
-            require(isinstance(value, Real) and not isinstance(value, bool) and \
-                np.isfinite(value) and value >= 0., \
-                f"{name} must be a finite nonnegative number.")
+            require(np.isfinite(value) and value >= 0., \
+                f"{name} must be finite and nonnegative.")
 
         require(local_vars["clf_distil_type"] in ("hard", "soft"), \
             "clf_distil_type must be either 'hard' or 'soft'.")
-        require(isinstance(local_vars["clf_distil_temperature"], Real) and \
-            not isinstance(local_vars["clf_distil_temperature"], bool) and \
-            np.isfinite(local_vars["clf_distil_temperature"]) and \
+        require(np.isfinite(local_vars["clf_distil_temperature"]) and \
             local_vars["clf_distil_temperature"] > 0., \
-            "clf_distil_temperature must be a finite positive number.")
+            "clf_distil_temperature must be finite and positive.")
         require(local_vars["clf_distil_scope"] in (
             "old_classes", "replay_only", "current_and_replay"
         ), "clf_distil_scope must be 'old_classes', 'replay_only', or " \
@@ -1376,13 +1370,11 @@ class DiffusionClassifier(DiffusionModel):
         clf_distil_scope = self.clf_distil_scope \
                         if clf_distil_scope is None else clf_distil_scope
 
-        # Keep probability softening within its finite positive domain.
-        if not isinstance(clf_distil_temperature, Real) \
-        or isinstance(clf_distil_temperature, bool) \
-        or not np.isfinite(clf_distil_temperature) \
+        # Zero or negative temperature would invalidate probability softening.
+        if not np.isfinite(clf_distil_temperature) \
         or clf_distil_temperature <= 0.:
             raise ValueError(
-                "clf_distil_temperature must be a finite positive number."
+                "clf_distil_temperature must be finite and positive."
             )
         # Reject unknown sample-selection policies before tensor computation.
         if clf_distil_scope not in (
@@ -1885,8 +1877,13 @@ class DiffusionClassifier(DiffusionModel):
                     "ctr_acc_coef > 0 requires clf_ctr_preds."
                 )
 
+                ctr_component = clf_ctr_preds[clf_acc_mask]
+                selected_scope = tf.cast(
+                    clf_ctr_mask[clf_acc_mask],
+                    ctr_component.dtype,
+                )[:, tf.newaxis]
                 total_preds += (
-                    clf_ctr_preds[clf_acc_mask] * self.ctr_acc_coef
+                    ctr_component * selected_scope * self.ctr_acc_coef
                 )
 
             # Add independent distillation-head predictions when weighted in.
@@ -2144,6 +2141,24 @@ def run_self_tests() -> dict[str, str]:
     )
     for metric in wrapper.metrics:
         metric.reset_state()
+
+    scoped_ctr = make_wrapper(clf_acc_coef=0., ctr_acc_coef=1.)
+    scoped_ctr_results = scoped_ctr.get_clf_results_dict(
+        tf.constant(0.),
+        classes,
+        tf.constant([[1., 0.], [1., 0.]]),
+        clf_ctr_loss=tf.constant(0.),
+        clf_ctr_preds=tf.constant([[1., 0.], [0., 1.]]),
+        clf_ctr_mask=tf.constant([True, False]),
+        use_total_loss=False,
+        use_kl_loss=False,
+        use_ctr_loss=True,
+        use_clf_distil_loss=False,
+    )
+    tf.debugging.assert_near(
+        scoped_ctr_results[scoped_ctr.total_accuracy_tracker.name],
+        .5,
+    )
 
     train_results = wrapper.train_step((images, classes))
     assert {
@@ -2582,10 +2597,9 @@ def run_self_tests() -> dict[str, str]:
         {"mask_by_nulls": True, "p_uncond": 0.0},
         {"mask_t_percentage": -1, "mask_by_nulls": False},
         {"mask_t_percentage": 101, "mask_by_nulls": False},
-        {"mask_t_percentage": True, "mask_by_nulls": False},
         {"clf_loss_coef": -1., "mask_by_nulls": False},
         {"clf_distil_loss_coef": float("nan"), "mask_by_nulls": False},
-        {"clf_acc_coef": -1., "mask_by_nulls": False},
+        {"clf_acc_coef": float("inf"), "mask_by_nulls": False},
         {"clf_train_type": "unknown", "mask_by_nulls": False},
         {
             "clf_train_type": "uncond", "train_cfg_scale": None,

@@ -20,6 +20,7 @@ from common.experiment import (
 )
 from common.learner import (
     _cached_replay_candidates,
+    _finite_fixed_step_dataset,
     _replay_cache_path,
     _resolve_baseline_controls,
     _run_continual_tasks,
@@ -591,6 +592,34 @@ class ResearchControlTests(unittest.TestCase):
         for task in details["task_resource_metrics"]:
             self.assertEqual(task["optimizer_steps_per_epoch"], 3)
             self.assertEqual(task["optimizer_updates"]["classifier_optimizer"], 3)
+
+    def test_fixed_step_dataset_is_finite_and_preserves_label_coverage(
+        self,
+    ) -> None:
+        """Bound repetition while retaining a full source pass for label scans."""
+
+        features = tf.range(6, dtype=tf.float32)[:, None]
+        labels = tf.constant([0, 0, 0, 0, 0, 1], dtype=tf.int32)
+        source = tf.data.Dataset.from_tensor_slices(
+            (features, labels)
+        ).batch(2)
+
+        coverage_stream = _finite_fixed_step_dataset(source, 1, 1)
+        coverage_batches = int(
+            tf.data.experimental.cardinality(coverage_stream).numpy()
+        )
+        observed_labels = tf.concat(
+            [batch_labels for _, batch_labels in coverage_stream],
+            axis=0,
+        )
+        self.assertEqual(coverage_batches, 3)
+        self.assertIn(1, observed_labels.numpy())
+
+        repeated_stream = _finite_fixed_step_dataset(source, 4, 2)
+        repeated_batches = int(
+            tf.data.experimental.cardinality(repeated_stream).numpy()
+        )
+        self.assertEqual(repeated_batches, 8)
 
     def test_optimizer_steps_conflict_is_rejected(self) -> None:
         """Reject two competing sources for the same Keras step budget.

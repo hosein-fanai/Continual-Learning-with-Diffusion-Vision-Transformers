@@ -8,7 +8,6 @@ import math
 from collections.abc import Mapping, Sequence
 
 from copy import deepcopy
-from numbers import Real
 
 from . import UNetFullOutput, UNetInputs
 
@@ -259,7 +258,7 @@ class UNet(ArgumentSaverModel):
             for reshape_type in self.reshaper_ids_dict.values()
         )
         latent_dim_ratios = self.reshaper_kwargs.get("latent_dim_ratio")
-        if latent_dim_ratios is None:
+        if latent_dim_ratios is None or len(latent_dim_ratios) == 0:
             latent_dim_ratios = [1.0] * pair_count
         if len(latent_dim_ratios) != pair_count:
             raise ValueError(
@@ -359,7 +358,7 @@ class UNet(ArgumentSaverModel):
         reshaper_kwargs: dict, 
         cls_token_regularizer_kwargs: dict
     ) -> None:
-        """Validate constructor dimensions and bottleneck options.
+        """Validate structural constructor combinations and option names.
 
         Args:
             num_classes (int | None): Real class count or dynamic sentinel.
@@ -385,52 +384,10 @@ class UNet(ArgumentSaverModel):
             None: Valid inputs return normally; invalid inputs raise ValueError.
         """
 
-        # Accept either a fixed positive width or the continual-growth sentinel.
-        if num_classes is not None and (
-            not isinstance(num_classes, int)
-            or isinstance(num_classes, bool)
-            or num_classes < 1
-        ):
-            raise ValueError("num_classes must be None or a positive integer.")
         # Dynamic construction needs the CFG null row as its initial vocabulary.
         if num_classes is None and not use_cfg:
             raise ValueError("num_classes=None requires use_cfg=True.")
 
-        dimensions = {
-            "timesteps": timesteps, 
-            "image_size": image_size, 
-            "channels": channels, 
-            "block_depth": block_depth, 
-            "bottleneck_width": bottleneck_width, 
-            "bottleneck_depth": bottleneck_depth, 
-            "image_embedding_dim": image_embedding_dim, 
-            "time_embedding_dim": time_embedding_dim, 
-            "label_embedding_dim": label_embedding_dim, 
-        }
-        for name, value in dimensions.items():
-            # Require every scalar size parameter to be a positive integer.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
-        # Require at least two diffusion states for sampling.
-        if timesteps < 2:
-            raise ValueError("timesteps must be at least 2.")
-
-        # Require a nonempty sequence of positive integer channel widths.
-        if not widths or any(
-            not isinstance(width, int) or isinstance(width, bool) or width < 1
-            for width in widths
-        ):
-            raise ValueError("widths must contain positive integers.")
-        # Require dropout probability to lie in the half-open unit interval.
-        if not isinstance(dropout_rate, (int, float)) or isinstance(
-            dropout_rate, bool
-        ) or not 0.0 <= dropout_rate < 1.0:
-            raise ValueError("dropout_rate must be in the range [0, 1).")
-        # Accept only a boolean or None for automatic skip-connection selection.
-        if use_skip_connections is not None and not isinstance(
-            use_skip_connections, bool
-        ):
-            raise ValueError("use_skip_connections must be bool or None.")
         unknown_reshaper_keys = set(reshaper_kwargs) - {
             "add_kl", 
             "latent_dim_ratio", 
@@ -439,26 +396,6 @@ class UNet(ArgumentSaverModel):
         if unknown_reshaper_keys:
             raise ValueError(
                 f"Unknown reshaper kwargs: {sorted(unknown_reshaper_keys)}."
-            )
-        add_kl = reshaper_kwargs.get("add_kl", False)
-        # Require an explicit boolean for variational KL behavior.
-        if not isinstance(add_kl, bool):
-            raise ValueError("reshaper add_kl must be boolean.")
-        latent_dim_ratios = reshaper_kwargs.get("latent_dim_ratio")
-        # An explicit model-level ratio maps one-to-one to generated pairs.
-        if latent_dim_ratios is not None and not isinstance(
-            latent_dim_ratios, list
-        ):
-            raise ValueError("latent_dim_ratio must be a list.")
-        if latent_dim_ratios is not None and any(
-            not isinstance(ratio, Real)
-            or isinstance(ratio, bool)
-            or not math.isfinite(float(ratio))
-            or ratio <= 0.0
-            for ratio in latent_dim_ratios
-        ):
-            raise ValueError(
-                "latent_dim_ratio values must be finite and positive."
             )
         # Require both slice bounds and no unknown regularizer options.
         allowed_regularizer_keys = {
@@ -534,9 +471,6 @@ class UNet(ArgumentSaverModel):
                 values = list(range(min_id, upper + 1))
             fixed = []
             for value in values:
-                # Require each explicit layer ID to be an integer.
-                if not isinstance(value, int) or isinstance(value, bool):
-                    raise ValueError("Layer IDs must be integers or None.")
                 # Resolve negative IDs relative to the final depth.
                 if value < 0:
                     # Negative IDs need a known depth for normalization.
@@ -924,9 +858,6 @@ class UNet(ArgumentSaverModel):
         # Interpret a collection as several enabled layers in one depth.
         elif isinstance(spec, (tuple, set, frozenset)):
             spec = dict.fromkeys(spec, True)
-        # Require the normalized depth specification to be a mapping.
-        if not isinstance(spec, Mapping):
-            raise ValueError("A depth specification must be a string or mapping.")
         aliases = {
             "convolution_block": self.CB, 
             "residual_block": self.CB, 
@@ -1272,12 +1203,6 @@ class UNet(ArgumentSaverModel):
         """
 
         resolution = self.image_size if resolution is None else resolution
-        # Require an integer progressive resolution rather than a boolean.
-        if not isinstance(resolution, int) or isinstance(resolution, bool):
-            raise ValueError("resolution must be an integer.")
-        # Require a positive spatial resolution.
-        if resolution < 1:
-            raise ValueError("resolution must be positive.")
         # Invalidate traced functions only when the active resolution changes.
         if getattr(self, "_current_resolution", None) != resolution:
             self._current_resolution = resolution
@@ -1519,10 +1444,6 @@ def run_self_tests() -> dict[str, str]:
     assert model((images, times, labels)).shape == images.shape
 
     for invalid_reshaper_kwargs in (
-        {"add_kl": True, "latent_dim_ratio": 0.5},
-        {"add_kl": True, "latent_dim_ratio": []},
-        {"add_kl": True, "latent_dim_ratio": [True]},
-        {"add_kl": True, "latent_dim_ratio": [float("nan")]},
         {"add_kl": True, "latent_dim_ratio": [0.0]},
     ):
         try:
@@ -1539,6 +1460,11 @@ def run_self_tests() -> dict[str, str]:
         reshaper_kwargs={"add_kl": True},
     )
     assert vae.reshaper_kwargs["latent_dim_ratio"] == [1.0]
+    empty_ratio_vae = UNet(
+        **common,
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []},
+    )
+    assert empty_ratio_vae.reshaper_kwargs["latent_dim_ratio"] == [1.0]
     square_images = images[:, :5, :5]
     vae_output = vae((square_images, times, labels), full_return=True)
     assert vae_output[0].shape == (2, 5, 5, 1)

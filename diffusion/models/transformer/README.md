@@ -163,9 +163,10 @@ metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
 KL reshapers are configured as adjacent `"flatten"`, `"unflatten"` pairs.
-For a multilevel U-DiT intended for `sample_vae`, arrange all pairs as one
-contiguous central bridge after the complete encoder stack and before decoder
-or up-sampling computation. `sample_vae` validates this positional invariant:
+For every transformer VAE intended for `sample_vae`, arrange its pair or pairs
+as one contiguous central bridge after real encoder computation and before
+real decoder or up-sampling computation. This applies to single- and
+multi-level bottlenecks. `sample_vae` validates this positional invariant:
 no transformer/local-mixer block can split the bridge, downsampling must occur
 before it, and upsampling must occur after it. Whether a transformer stage uses
 `VisionTransformerBlock` or `DiTDecoderBlock` does not determine which side it

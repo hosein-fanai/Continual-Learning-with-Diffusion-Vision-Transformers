@@ -30,10 +30,10 @@ class GradientTests(TestCase):
 
         tf.keras.mixed_precision.set_global_policy(self.previous_policy)
 
-    def test_float32_update_and_none_gradient_filtering(
+    def test_float32_update_and_none_gradient_warning(
         self: GradientTests,
     ) -> None:
-        """Apply an ordinary gradient and omit a disconnected variable.
+        """Warn for a disconnected variable and apply the connected gradient.
 
         Returns:
             None.
@@ -46,13 +46,18 @@ class GradientTests(TestCase):
         with tf.GradientTape() as tape:
             loss = trained ** 2
 
-        pairs = apply_policy_gradients(
-            tape,
-            optimizer,
-            loss,
-            [trained, disconnected],
-        )
+        with self.assertLogs("tensorflow", level="WARNING") as warnings:
+            pairs = apply_policy_gradients(
+                tape,
+                optimizer,
+                loss,
+                [trained, disconnected],
+            )
 
+        self.assertTrue(any(
+            "Gradients do not exist" in message
+            for message in warnings.output
+        ))
         self.assertEqual(len(pairs), 1)
         self.assertIs(pairs[0][1], trained)
         self.assertAlmostEqual(float(trained), 1.6, places=6)
@@ -93,10 +98,10 @@ class GradientTests(TestCase):
         self.assertAlmostEqual(float(disconnected), 7.0, places=6)
         self.assertEqual(int(optimizer.iterations), 1)
 
-    def test_empty_and_fully_disconnected_updates_are_noops(
+    def test_empty_selection_is_a_noop_but_disconnection_fails(
         self: GradientTests,
     ) -> None:
-        """Return no pairs and leave optimizer iterations unchanged.
+        """Allow no variables but reject a disconnected selected objective.
 
         Returns:
             None.
@@ -114,15 +119,13 @@ class GradientTests(TestCase):
         disconnected = tf.Variable(5.0)
         with tf.GradientTape() as disconnected_tape:
             loss = tf.constant(1.0)
-        self.assertEqual(
+        with self.assertRaisesRegex(ValueError, "disconnected"):
             apply_policy_gradients(
                 disconnected_tape,
                 optimizer,
                 loss,
                 [disconnected],
-            ),
-            [],
-        )
+            )
         self.assertEqual(int(optimizer.iterations), 0)
 
 

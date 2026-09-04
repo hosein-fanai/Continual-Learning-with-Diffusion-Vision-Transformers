@@ -113,33 +113,6 @@ class BaseEmbedding(BaseLayer):
         )
         self._save_init_args(locals())
 
-        # Require a positive integer target embedding width.
-        if not isinstance(self.dim, int) or isinstance(self.dim, bool) or self.dim < 1:
-            raise ValueError("dim must be a positive integer.")
-        # Validate an optional source-grid size.
-        if self.grid_size is not None and (
-            not isinstance(self.grid_size, int)
-            or isinstance(self.grid_size, bool)
-            or self.grid_size < 1
-        ):
-            raise ValueError("grid_size must be None or a positive integer.")
-        # Validate an optional raw frequency-embedding width.
-        if self.embed_freq_dim is not None and (
-            not isinstance(self.embed_freq_dim, int)
-            or isinstance(self.embed_freq_dim, bool)
-            or self.embed_freq_dim < 1
-        ):
-            raise ValueError("embed_freq_dim must be None or a positive integer.")
-        # Validate an optional discrete lookup-table size.
-        if self.embed_steps is not None and (
-            not isinstance(self.embed_steps, int)
-            or isinstance(self.embed_steps, bool)
-            or self.embed_steps < 1
-        ):
-            raise ValueError("embed_steps must be None or a positive integer.")
-        # Require a positive sinusoidal wavelength temperature.
-        if self.embed_temperature <= 0:
-            raise ValueError("embed_temperature must be positive.")
         # Restrict positional construction to the documented modes.
         if self.pos_embed_type not in (None,) + get_args(PosEmbedType):
             raise ValueError(
@@ -150,6 +123,8 @@ class BaseEmbedding(BaseLayer):
             raise ValueError(
                 f"pos_merger_type must be one of {get_args(MergeType)}."
             )
+        if self.embed_temperature <= 0:
+            raise ValueError("embed_temperature must be positive.")
 
 
         self.embed_dim = self.dim if self.embed_freq_dim is None else self.embed_freq_dim
@@ -645,6 +620,14 @@ def run_self_tests() -> dict[str, str]:
             pass
         else:
             raise AssertionError("Unknown positional merge modes must fail.")
+    try:
+        BaseEmbedding(
+            dim=4, pos_embed_type="1d_sincos", embed_temperature=0.0
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Nonpositive sinusoidal temperatures must fail.")
 
     helper = BaseEmbedding(dim=5, pos_embed_type=None)
     positions = np.array([0.0, 1.0, 2.0], dtype=np.float32)

@@ -146,13 +146,8 @@ def normalize_training_task(task: object) -> str:
         str: Lowercase supported task selector.
 
     Raises:
-        TypeError: If ``task`` is not a string.
         ValueError: If the normalized task is unsupported.
     """
-
-    # Require an actual selector instead of coercing unrelated objects.
-    if not isinstance(task, str):
-        raise TypeError("training task must be a string.")
 
     normalized = task.lower()
     # Reject unknown tasks before dataset/model construction can misroute them.
@@ -298,24 +293,16 @@ def resolve_continual_schedule(
         tuple[list[int], list[list[int]]]: Resolved class order and task groups.
 
     Raises:
-        TypeError: If class counts, task size, seed, or class IDs are not
-            non-boolean integers.
         ValueError: If the schedule is empty, duplicated, inconsistent, out of
             range, or uses an unsupported ordering mode.
     """
 
-    # Validate automatic grouping and reproducible ordering controls.
-    if isinstance(task_size, bool) or not isinstance(task_size, int):
-        raise TypeError("task_size must be a non-boolean integer.")
-    # Keep automatic task groups nonempty.
-    if task_size < 1:
-        raise ValueError("task_size must be positive.")
-    # Accept only the integer seed domain shared by schedule RNGs.
-    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
-        raise TypeError("seed must be a non-boolean integer or None.")
-
     class_order_mode = str(class_order_mode).lower()
     task_order_mode = str(task_order_mode).lower()
+    seed = None if seed is None else int(seed)
+    task_size = int(task_size)
+    if task_size < 1:
+        raise ValueError("task_size must be positive.")
     # Restrict class ordering to the two documented protocols.
     if class_order_mode not in ("fixed", "random"):
         raise ValueError("class_order_mode must be 'fixed' or 'random'.")
@@ -353,17 +340,6 @@ def resolve_continual_schedule(
                 "Flattened task_groups must exactly match class_order."
             )
 
-    # Validate optional class-count inputs without accepting booleans as ints.
-    for name, value in (
-        ("class_num", class_num),
-        ("available_class_num", available_class_num),
-    ):
-        # Reject ambiguous boolean or non-integral count values.
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, int)
-        ):
-            raise TypeError(f"{name} must be a non-boolean integer or None.")
-
     # Fill a completely unspecified schedule from the requested dataset prefix.
     if resolved_order is None:
         resolved_count = available_class_num if class_num is None else class_num
@@ -375,10 +351,12 @@ def resolve_continual_schedule(
             )
         resolved_order = list(range(resolved_count))
 
-    # Every class identifier must be an ordinary integer in the dataset range.
-    if any(isinstance(label, bool) or not isinstance(label, int)
-           for label in resolved_order):
-        raise TypeError("Continual class IDs must be non-boolean integers.")
+    resolved_order = [int(label) for label in resolved_order]
+    if normalized_groups is not None:
+        normalized_groups = [
+            [int(label) for label in group]
+            for group in normalized_groups
+        ]
     # Disallow negative labels, which no supported dataset uses.
     if any(label < 0 for label in resolved_order):
         raise ValueError("Continual class IDs must be nonnegative.")
@@ -1419,8 +1397,8 @@ def load_config(
         FileNotFoundError: If ``path`` does not exist.
         yaml.YAMLError: If YAML syntax is invalid or a mapping repeats an
             explicit key.
-        TypeError: If the YAML root/section is not a mapping or contains an
-            unknown dataclass field.
+        TypeError: If a YAML section is not a mapping or contains an unknown
+            dataclass field.
     """
 
     # Return pure dataclass defaults when no YAML path is supplied.
@@ -1430,10 +1408,6 @@ def load_config(
     with open(path, "r", encoding="utf-8") as stream:
         data = _safe_load_unique_yaml(stream)
     
-    # Require a mapping at the YAML document root.
-    if not isinstance(data, Mapping):
-        raise TypeError("The YAML document root must be a mapping.")
-
     return Config(**data)
 
 

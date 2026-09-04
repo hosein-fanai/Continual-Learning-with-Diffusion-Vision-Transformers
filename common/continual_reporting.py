@@ -994,16 +994,8 @@ def write_continual_csv_artifacts(
         mapped to their written CSV paths.
 
     Raises:
-        TypeError: If ``details`` or non-None ``metadata`` is not a mapping.
         OSError: If the destination cannot be created or written.
     """
-
-    # Require mapping semantics before any directories or files are created.
-    if not isinstance(details, Mapping):
-        raise TypeError("details must be a mapping.")
-    # Apply the same stable-mapping requirement to optional run metadata.
-    if metadata is not None and not isinstance(metadata, Mapping):
-        raise TypeError("metadata must be a mapping or None.")
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -1138,21 +1130,8 @@ def write_continual_tensorboard_summaries(
         number of scalar summaries written there.
 
     Raises:
-        TypeError: If ``details`` is not a mapping or ``start_step`` is not a
-            non-boolean integer.
-        ValueError: If ``start_step`` is negative.
         ImportError: If TensorFlow is unavailable.
     """
-
-    # Validate inputs before importing TensorFlow or creating event files.
-    if not isinstance(details, Mapping):
-        raise TypeError("details must be a mapping.")
-    # Reject booleans and non-integral TensorBoard step offsets.
-    if isinstance(start_step, bool) or not isinstance(start_step, Integral):
-        raise TypeError("start_step must be a non-boolean integer.")
-    # Keep every emitted TensorBoard step nonnegative.
-    if start_step < 0:
-        raise ValueError("start_step must be nonnegative.")
 
     import tensorflow as tf
 

@@ -3,9 +3,12 @@
 import tensorflow as tf
 from tensorflow.keras import callbacks, optimizers
 
+from collections.abc import Mapping
+
 from common.gradients import apply_policy_gradients
 from common.validation import require
 
+from diffusion.models.wrapper import NetworkName
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
@@ -103,13 +106,13 @@ class DiffusionClassifierV2(DiffusionClassifier):
         ]))
 
         self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
-                                                else self.clf_train_noisified_max_timesteps
-        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
                                                 else int(self.clf_train_noisified_max_timesteps)
+        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
+                                                else self.clf_train_noisified_max_timesteps
         self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
-                                                else self.clf_test_noisified_max_timesteps
-        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
                                                 else int(self.clf_test_noisified_max_timesteps)
+        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
+                                                else self.clf_test_noisified_max_timesteps
         
         self.clf_trainable_variables = None
         self.gen_trainable_variables = None
@@ -125,7 +128,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         Returns:
             None: Invalid embedding IDs or zero/out-of-range main depth IDs
-            raise ``AssertionError`` (or ``TypeError`` for nonnumeric depth IDs).
+            raise ``AssertionError``.
         """
 
         for id_ in local_vars["clf_vars_embedding_ids"]:
@@ -145,12 +148,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
             "clf_test_noisified_max_timesteps"
         ):
             value = local_vars[name]
+            value = None if value is None else int(value)
             require(
-                value is None or (
-                    isinstance(value, int)
-                    and not isinstance(value, bool)
-                    and -1 <= value <= self.timesteps),
-                f"{name} must be None or an integer in [-1, timesteps]."
+                value is None or -1 <= value <= self.timesteps,
+                f"{name} must be None or in [-1, timesteps]."
             )
 
         require(
@@ -424,6 +425,128 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         return len(element_spec) >= minimum_length
 
+    def _prepare_discriminator_batch(
+        self, 
+        inputs: tuple[tf.Tensor, ...], 
+        noisified_max_timesteps: int | None
+    ) -> tuple[tuple[tf.Tensor, ...], tf.Tensor | None, tf.Tensor | None]:
+        """Separate V2 discriminator tensors, teacher target, and provenance.
+
+        Args:
+            inputs (tuple[tf.Tensor, ...]): Raw image/class data with optional
+                replay mask, or its mapped discriminator representation.
+            noisified_max_timesteps (int | None): Phase-specific noising cap.
+
+        Returns:
+            tuple: Five student tensors, optional teacher probabilities, and
+            optional replay mask.
+
+        Raises:
+            ValueError: If a mapped or raw structure has an invalid arity.
+        """
+
+        replay_mask = None
+        # Decode the exact tensor contract emitted by mapped preprocessing.
+        if self.map_preprocess and len(inputs) not in (2, 3):
+            expected_length = 5 + int(self.use_classifier_distil)
+            # Treat one final mapped tensor as replay provenance.
+            if len(inputs) == expected_length + 1:
+                inputs, replay_mask = inputs[:-1], inputs[-1]
+            # Reject mapped arities that cannot be decoded unambiguously.
+            elif len(inputs) != expected_length:
+                raise ValueError(
+                    "Mapped V2 discriminator batches must contain five "
+                    "student tensors, an optional teacher target, and an "
+                    "optional final replay mask."
+                )
+
+            prepared_inputs = inputs
+            # Extract the teacher target from mapped teacher-enabled batches.
+            if self.use_classifier_distil:
+                prepared_inputs, teacher_labels = (
+                    prepared_inputs[:-1], prepared_inputs[-1]
+                )
+            # Keep ordinary mapped batches teacher-free.
+            else:
+                teacher_labels = None
+        # Prepare raw supervised batches inside the discriminator step.
+        else:
+            raw_inputs = inputs
+            # Separate optional replay provenance from the raw input pair.
+            if len(inputs) == 3:
+                raw_inputs, replay_mask = inputs[:2], inputs[-1]
+            # Reject every raw structure outside the pair-or-triple contract.
+            elif len(inputs) != 2:
+                raise ValueError(
+                    "Raw V2 discriminator batches must contain images, "
+                    "classes, and optional replay provenance."
+                )
+
+            prepared_inputs = self.prep_clfv2_inputs(
+                raw_inputs, 
+                noisified_max_timesteps, 
+                return_x0=True
+            )
+            teacher_labels = self._predict_teacher_labels(
+                prepared_inputs[1], 
+                prepared_inputs[0], 
+                prepared_inputs[2]
+            ) if self.use_classifier_distil else None
+
+        return prepared_inputs, teacher_labels, replay_mask
+
+    def _fit_selected_part(
+        self, 
+        part_name: str, 
+        progressive: bool, 
+        fit_kwargs: dict[str, object]
+    ) -> callbacks.History:
+        """Fit one optimizer phase and always restore neutral wrapper state.
+
+        Args:
+            part_name (str): ``"generator"`` or ``"discriminator"``.
+            progressive (bool): Use the progressive curriculum trainer when
+                true, otherwise use ordinary Keras fitting.
+            fit_kwargs (dict[str, object]): Arguments for the selected fit API.
+
+        Returns:
+            tf.keras.callbacks.History: History returned by the selected fit.
+
+        Raises:
+            ValueError: If ``part_name`` is not a supported optimizer phase.
+        """
+
+        # Select the optimizer and live variable group for the requested phase.
+        if part_name == "generator":
+            optimizer = self.gen_optimizer
+            variables = self.gen_trainable_variables
+        # Select the independently cloned classifier optimizer.
+        elif part_name == "discriminator":
+            optimizer = self.clf_optimizer
+            variables = self.clf_trainable_variables
+        # Reject internal phase names that would silently skip optimization.
+        else:
+            raise ValueError(
+                "part_name must be 'generator' or 'discriminator'."
+            )
+
+        self._switch_train_part(part_name)
+        self._switch_test_part(part_name)
+        self.optimizer = optimizer
+        self._active_trainable_variables = variables
+
+        try:
+            # Route curriculum arguments to the actual progressive trainer.
+            if progressive:
+                return super().fit_progressively(**fit_kwargs)
+
+            return super().fit(**fit_kwargs)
+        finally:
+            self._switch_train_part("")
+            self._switch_test_part("")
+            self.optimizer = self.gen_optimizer
+            self._active_trainable_variables = None
+
     @property
     def clf_vars_names(self) -> list[str]:
         """Return TensorFlow names assigned to classifier optimization.
@@ -481,6 +604,58 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.gen_optimizer = self.optimizer
         self.clf_optimizer = optimizers.deserialize(
             optimizers.serialize(self.optimizer)
+        )
+
+    def call_network(
+        self, 
+        x_t: tf.Tensor, 
+        t_batch: tf.Tensor, 
+        cond_labels: tf.Tensor, 
+        uncond_labels: tf.Tensor | None = None, 
+        scale: float | None = None, 
+        network_name: NetworkName = "raw", 
+        training: bool = False
+    ) -> tuple[tuple[object, object | None], ...]:
+        """Run only the denoiser branch used by the V2 generator phase.
+
+        V2 trains and evaluates its classifier through ``predict_class`` in the
+        discriminator phase.  Keeping the generator on ``predict_noise`` avoids
+        executing or updating the classifier branch and preserves the
+        three-pair contract expected by :class:`DiffusionModel`.
+        """
+
+        network = self.get_network(network_name)
+
+
+        def run_network(labels: tf.Tensor) -> tuple[object, object, object]:
+            """Return noise, regularizers, and latents for one label branch."""
+
+            predict_noise = getattr(network, "predict_noise", network)
+            outputs = predict_noise(
+                (x_t, t_batch, labels), 
+                full_return=True, 
+                training=training
+            )
+            if isinstance(outputs, Mapping):
+                return (
+                    outputs["noises"], 
+                    outputs.get("regs_list", []), 
+                    outputs.get("z_vals_list", [])
+                )
+
+            noises, *_, regs_list, z_vals_list = outputs
+
+            return noises, regs_list, z_vals_list
+
+
+        noises_c, regs_c, z_vals_c = run_network(cond_labels)
+        noises_u, regs_u, z_vals_u = run_network(uncond_labels) \
+                                    if self.use_cfg and scale is not None else (None, None, [])
+
+        return (
+            (noises_c, noises_u), 
+            (regs_c, regs_u), 
+            (z_vals_c, z_vals_u)
         )
 
     def apply_grads(
@@ -638,128 +813,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *prepared_inputs, 
             replay_mask
         )
-
-    def _prepare_discriminator_batch(
-        self, 
-        inputs: tuple[tf.Tensor, ...], 
-        noisified_max_timesteps: int | None
-    ) -> tuple[tuple[tf.Tensor, ...], tf.Tensor | None, tf.Tensor | None]:
-        """Separate V2 discriminator tensors, teacher target, and provenance.
-
-        Args:
-            inputs (tuple[tf.Tensor, ...]): Raw image/class data with optional
-                replay mask, or its mapped discriminator representation.
-            noisified_max_timesteps (int | None): Phase-specific noising cap.
-
-        Returns:
-            tuple: Five student tensors, optional teacher probabilities, and
-            optional replay mask.
-
-        Raises:
-            ValueError: If a mapped or raw structure has an invalid arity.
-        """
-
-        replay_mask = None
-        # Decode the exact tensor contract emitted by mapped preprocessing.
-        if self.map_preprocess and len(inputs) not in (2, 3):
-            expected_length = 5 + int(self.use_classifier_distil)
-            # Treat one final mapped tensor as replay provenance.
-            if len(inputs) == expected_length + 1:
-                inputs, replay_mask = inputs[:-1], inputs[-1]
-            # Reject mapped arities that cannot be decoded unambiguously.
-            elif len(inputs) != expected_length:
-                raise ValueError(
-                    "Mapped V2 discriminator batches must contain five "
-                    "student tensors, an optional teacher target, and an "
-                    "optional final replay mask."
-                )
-
-            prepared_inputs = inputs
-            # Extract the teacher target from mapped teacher-enabled batches.
-            if self.use_classifier_distil:
-                prepared_inputs, teacher_labels = (
-                    prepared_inputs[:-1], prepared_inputs[-1]
-                )
-            # Keep ordinary mapped batches teacher-free.
-            else:
-                teacher_labels = None
-        # Prepare raw supervised batches inside the discriminator step.
-        else:
-            raw_inputs = inputs
-            # Separate optional replay provenance from the raw input pair.
-            if len(inputs) == 3:
-                raw_inputs, replay_mask = inputs[:2], inputs[-1]
-            # Reject every raw structure outside the pair-or-triple contract.
-            elif len(inputs) != 2:
-                raise ValueError(
-                    "Raw V2 discriminator batches must contain images, "
-                    "classes, and optional replay provenance."
-                )
-
-            prepared_inputs = self.prep_clfv2_inputs(
-                raw_inputs, 
-                noisified_max_timesteps, 
-                return_x0=True
-            )
-            teacher_labels = self._predict_teacher_labels(
-                prepared_inputs[1], 
-                prepared_inputs[0], 
-                prepared_inputs[2]
-            ) if self.use_classifier_distil else None
-
-        return prepared_inputs, teacher_labels, replay_mask
-
-    def _fit_selected_part(
-        self, 
-        part_name: str, 
-        progressive: bool, 
-        fit_kwargs: dict[str, object]
-    ) -> callbacks.History:
-        """Fit one optimizer phase and always restore neutral wrapper state.
-
-        Args:
-            part_name (str): ``"generator"`` or ``"discriminator"``.
-            progressive (bool): Use the progressive curriculum trainer when
-                true, otherwise use ordinary Keras fitting.
-            fit_kwargs (dict[str, object]): Arguments for the selected fit API.
-
-        Returns:
-            tf.keras.callbacks.History: History returned by the selected fit.
-
-        Raises:
-            ValueError: If ``part_name`` is not a supported optimizer phase.
-        """
-
-        # Select the optimizer and live variable group for the requested phase.
-        if part_name == "generator":
-            optimizer = self.gen_optimizer
-            variables = self.gen_trainable_variables
-        # Select the independently cloned classifier optimizer.
-        elif part_name == "discriminator":
-            optimizer = self.clf_optimizer
-            variables = self.clf_trainable_variables
-        # Reject internal phase names that would silently skip optimization.
-        else:
-            raise ValueError(
-                "part_name must be 'generator' or 'discriminator'."
-            )
-
-        self._switch_train_part(part_name)
-        self._switch_test_part(part_name)
-        self.optimizer = optimizer
-        self._active_trainable_variables = variables
-
-        try:
-            # Route curriculum arguments to the actual progressive trainer.
-            if progressive:
-                return super().fit_progressively(**fit_kwargs)
-
-            return super().fit(**fit_kwargs)
-        finally:
-            self._switch_train_part("")
-            self._switch_test_part("")
-            self.optimizer = self.gen_optimizer
-            self._active_trainable_variables = None
 
     def fit_generator(self, **kwargs: object) -> callbacks.History:
         """Fit only the generator variable group with diffusion objectives.
@@ -919,14 +972,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             dict[str, float]: Merged metrics; collisions are phase-prefixed.
 
         Raises:
-            TypeError: If ``eval_both`` is not Boolean.
             ValueError: If ``test_part`` is invalid or no phase is selected
                 while ``eval_both=False``.
         """
-
-        # Reject truthy non-Booleans that could silently select both phases.
-        if not isinstance(eval_both, bool):
-            raise TypeError("eval_both must be boolean.")
 
         test_part = self._test_part if test_part is None else test_part
 
@@ -1083,10 +1131,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 clf_loss_mask=clf_loss_mask, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
-                ctr_train_type="uncond",
-                teacher_labels=teacher_labels,
-                replay_mask=replay_mask,
-                x0=x0,
+                ctr_train_type="uncond", 
+                teacher_labels=teacher_labels, 
+                replay_mask=replay_mask, 
+                x0=x0, 
                 training=True
             )
             (loss, clf_loss, kl_loss, 
@@ -1154,7 +1202,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
             tf.bool
         ) if clf_loss_mask is not None else None
 
-        class_outputs = self.get_network(self.test_network_name).predict_class(
+        predict_class = self.get_network(
+            self.test_network_name
+        ).predict_class
+        class_outputs = predict_class(
             (x_t, t, uncond_labels), 
             full_return=True, 
             training=False
@@ -1464,6 +1515,13 @@ def run_self_tests() -> dict[str, str]:
 
     images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
     classes = tf.constant([0, 1], dtype=tf.uint8)
+    generator_outputs = wrapper.call_network(
+        images,
+        tf.zeros((2,), dtype=tf.int32),
+        tf.constant([1, 2], dtype=tf.int32),
+        training=False,
+    )
+    assert len(generator_outputs) == 3
     clean_t, clean_x, clean_nulls, clean_classes = wrapper.prep_clfv2_inputs(
         (images, classes), None
     )
@@ -1527,6 +1585,12 @@ def run_self_tests() -> dict[str, str]:
     )
     assert capped.clf_train_noisified_max_timesteps == 2
     assert capped.clf_test_noisified_max_timesteps == 3
+    normalized_caps = make_wrapper(
+        clf_train_noisified_max_timesteps=2.9,
+        clf_test_noisified_max_timesteps=True,
+    )
+    assert normalized_caps.clf_train_noisified_max_timesteps == 2
+    assert normalized_caps.clf_test_noisified_max_timesteps == 1
     capped._switch_train_part("discriminator")
     capped._switch_test_part("discriminator")
     assert "classifier_loss" in capped.train_step((images, classes))

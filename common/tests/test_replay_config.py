@@ -177,7 +177,7 @@ class CoreConfigValidationTests(unittest.TestCase):
         self.assertEqual(Config(training={"task": "prediction"}).training.task, "prediction")
         with self.assertRaisesRegex(ValueError, "training task"):
             normalize_training_task("prediction")
-        with self.assertRaisesRegex(TypeError, "training task"):
+        with self.assertRaises(AttributeError):
             normalize_training_task(None)
 
     def test_duplicate_yaml_keys_are_rejected(self) -> None:

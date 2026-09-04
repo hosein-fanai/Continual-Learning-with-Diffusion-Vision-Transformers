@@ -8,7 +8,6 @@ from tensorflow.keras import metrics, losses
 import numpy as np
 
 from collections.abc import Callable
-from numbers import Real
 
 from common.gradients import apply_policy_gradients
 from common.keras_registry import register_canonical_keras_serializable
@@ -60,8 +59,8 @@ class VAEClassifier(VariationalAutoencoder):
                 ``[batch, data_dim]`` to class probabilities shaped
                 ``[batch, class_num]``. It is registered as a nested Keras
                 component; its trainable weights participate in optimization.
-            alpha (float): Nonnegative coefficient applied to mean categorical
-                cross-entropy. ``0`` removes that term.
+            alpha (float): Finite, nonnegative coefficient applied to mean
+                categorical cross-entropy.
             **kwargs (object): VAE options ``data_dim``, ``latent_dim``,
                 ``hiddens_dims``, ``hiddens_kwargs``, ``last_activation``,
                 ``beta``, and ``compile_args``, plus Keras model options such as
@@ -78,26 +77,16 @@ class VAEClassifier(VariationalAutoencoder):
         Raises:
             TypeError: If ``conditioned`` or ``class_num`` is included in
                 ``kwargs``, or another unsupported key is supplied.
-            ValueError: If ``alpha`` is non-finite or negative.
+            ValueError: If ``alpha`` would invalidate the training objective.
         """
 
         # Keep conditioning and class width controlled by this wrapper.
         if "conditioned" in kwargs or "class_num" in kwargs:
             raise TypeError("VAEClassifier fixes conditioned=True and class_num.")
-        # Require a callable classifier for the parallel input branch.
-        if not callable(classifier):
-            raise TypeError("classifier must be callable.")
-        # Reject booleans and nonnumeric classification-loss weights.
-        if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, Real):
-            raise TypeError("alpha must be a real number.")
-        # Keep the classification-loss coefficient finite and nonnegative.
+        alpha = float(alpha)
         if not np.isfinite(alpha) or alpha < 0.:
             raise ValueError("alpha must be finite and nonnegative.")
-
         compile_model = kwargs.pop("compile", True)
-        # Require an explicit boolean compilation switch.
-        if not isinstance(compile_model, (bool, np.bool_)):
-            raise TypeError("compile must be boolean.")
         compile_model = bool(compile_model)
         super().__init__(
             compile=False, 
@@ -107,7 +96,7 @@ class VAEClassifier(VariationalAutoencoder):
         )
 
         self.classifier = classifier
-        self.alpha = float(alpha)
+        self.alpha = alpha
 
         stable_dtype = self.dtype_policy.variable_dtype
         self.generative_loss_tracker = metrics.Mean(
@@ -568,7 +557,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert compile_args_none._is_compiled is False
 
-    for invalid_alpha in (True, "1", -0.1, float("nan"), float("inf")):
+    for invalid_alpha in (-0.1, float("nan"), float("inf")):
         try:
             VAEClassifier(
                 3,
@@ -579,10 +568,10 @@ def run_self_tests() -> dict[str, str]:
                 latent_dim=2,
                 hiddens_dims=(),
             )
-        except (TypeError, ValueError):
+        except ValueError:
             pass
         else:
-            raise AssertionError("Invalid classification coefficients must fail.")
+            raise AssertionError("Invalid classification loss weights must fail.")
 
     try:
         VAEClassifier(

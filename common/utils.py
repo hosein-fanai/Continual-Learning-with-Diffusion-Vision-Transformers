@@ -13,7 +13,6 @@ import warnings
 from pathlib import Path
 
 from collections.abc import Iterable, Mapping, Sequence
-from numbers import Integral, Real
 
 
 models_path = "./models"
@@ -117,36 +116,19 @@ def _normalize_feature_split_metadata(
     split_seed: int, 
     validation_ratio: float
 ) -> tuple[int, float]:
-    """Validate the reproducible label split stored with feature archives.
+    """Normalize the reproducible label split stored with feature archives.
 
     Args:
-        split_seed (int): Non-boolean NumPy-compatible random seed.
+        split_seed (int): NumPy-compatible random seed.
         validation_ratio (float): Fraction assigned to validation features.
 
     Returns:
         tuple[int, float]: Normalized Python seed and validation fraction.
 
-    Raises:
-        TypeError: If either value has an unsupported type.
-        ValueError: If the seed or ratio lies outside its valid interval.
     """
 
-    # Require an integral seed shared by NumPy and scikit-learn.
-    if isinstance(split_seed, bool) or not isinstance(split_seed, Integral):
-        raise TypeError("split_seed must be a non-boolean integer.")
     split_seed = int(split_seed)
-    # Restrict the seed to the unsigned interval NumPy accepts.
-    if not 0 <= split_seed < 2 ** 32:
-        raise ValueError("split_seed must be in [0, 2**32).")
-    # Require a real validation fraction rather than a truthy flag.
-    if isinstance(validation_ratio, bool) \
-    or not isinstance(validation_ratio, Real):
-        raise TypeError("validation_ratio must be a non-boolean real number.")
     validation_ratio = float(validation_ratio)
-    # Both saved training and validation partitions must remain nonempty.
-    if not np.isfinite(validation_ratio) \
-    or not 0. < validation_ratio < 1.:
-        raise ValueError("validation_ratio must lie strictly between 0 and 1.")
 
     return split_seed, validation_ratio
 
@@ -327,9 +309,8 @@ def plot_history(
 
     Raises:
         KeyError: If a requested metric is absent.
-        ValueError: If a grid size is invalid or insufficient, no metric
-            remains to plot, a selected metric range is empty, or metric
-            lengths are incompatible.
+        ValueError: If a grid is insufficient, no metric remains to plot, a
+            selected metric range is empty, or metric lengths are incompatible.
     """
 
     import matplotlib
@@ -346,10 +327,6 @@ def plot_history(
     # Plot every recorded metric when no subset is supplied.
     if metrics is None:
         metrics = list(history.keys())
-    # Require at least one subplot column.
-    if col <= 0:
-        raise ValueError("col must be positive.")
-
     plotted_metrics = []
     for metric in metrics:
         # Avoid plotting the same metric more than once.
@@ -382,17 +359,11 @@ def plot_history(
     axes = np.atleast_1d(axes).ravel()
 
     for i, metric in enumerate(plotted_metrics):
-        # Fail clearly when a requested training series is absent.
-        if metric not in history:
-            raise KeyError(f"History has no metric named {metric!r}.")
         ax = axes[i]
         epochs = range(1, len(history[metric])+1)[range_]
         show_metric_x_ticks = show_all_x_ticks and len(epochs) <= 50
 
         values = np.asarray(history[metric])[range_]
-        # Reject empty metric histories with no plottable epochs.
-        if len(values) == 0:
-            raise ValueError(f"Metric {metric!r} has no values in the selected range.")
         min_ = min(values)
         max_ = max(values)
 
@@ -537,10 +508,6 @@ def create_gif(
 
         frames.append(image.convert("RGBA"))
 
-    # Reject empty sequences before GIF encoding.
-    if not frames:
-        raise ValueError("At least one GIF frame is required.")
-
     frames[0].save(
         output_path, 
         save_all=True, 
@@ -605,8 +572,8 @@ def plot_images(
         None.
 
     Raises:
-        ValueError: If neither display nor saving is requested, a grid
-            dimension is nonpositive, or ``imgs`` has an invalid shape.
+        ValueError: If neither display nor saving is requested or ``imgs`` has
+            an invalid shape.
 
     Note:
         Titles are zero-based sample indices, not inferred class labels.
@@ -622,9 +589,6 @@ def plot_images(
     # Require either a visible display or an output file.
     if not show_images and save_path is None:
         raise ValueError("Enable image display or provide save_path.")
-    # Require a positive image-grid shape.
-    if row <= 0 or col <= 0:
-        raise ValueError("row and col must be positive.")
     imgs = np.asarray(imgs)
     # Require a nonempty rank-four batch with displayable channels.
     if imgs.ndim != 4 or len(imgs) == 0 or imgs.shape[-1] not in (1, 3, 4):
@@ -751,7 +715,6 @@ def load_samples(
         numpy.ndarray: Loaded values.
 
     Raises:
-        TypeError: If ``allow_pickle`` is not boolean.
         ValueError: If ``type_`` is unsupported, CSV contents are invalid, or a
             strict NPY load encounters an object array, or a safe bundle has
             malformed keys/object-valued members.
@@ -764,10 +727,6 @@ def load_samples(
     """
 
     path = os.fspath(path)
-
-    # Keep the trust decision explicit and reject truthy stand-ins such as 1.
-    if not isinstance(allow_pickle, bool):
-        raise TypeError("allow_pickle must be boolean.")
 
     # Parse comma-separated numeric values.
     if type_ == ".csv":

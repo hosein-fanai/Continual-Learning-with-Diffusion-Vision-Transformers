@@ -103,8 +103,8 @@ class SampleArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-object"):
                 load_samples(object_path, ".npy")
 
-    def test_invalid_bundle_and_pickle_flag_fail_before_loading(self) -> None:
-        """Reject nested object payloads and truthy non-boolean trust flags.
+    def test_invalid_bundle_and_pickle_flag_normalization(self) -> None:
+        """Reject nested objects and accept truthy pickle compatibility flags.
 
         Returns:
             None: Save/load boundary failures are asserted.
@@ -119,8 +119,10 @@ class SampleArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-object"):
                 save_samples(bundle, path, ".npy")
             self.assertEqual(path.with_suffix(".npy").read_bytes(), original_bytes)
-            with self.assertRaisesRegex(TypeError, "boolean"):
-                load_samples(path, ".npy", allow_pickle=1)
+            np.testing.assert_array_equal(
+                load_samples(path, ".npy", allow_pickle=1),
+                np.ones(1),
+            )
 
 
 # Support direct execution in addition to unittest discovery.

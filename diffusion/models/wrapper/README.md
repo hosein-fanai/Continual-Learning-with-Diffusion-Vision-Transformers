@@ -142,9 +142,10 @@ depth; omission selects a full-width ratio of `1.0` for every pair.
 or supplied latent for every pair in that same order. The immediately
 following unflatten restores the feature consumed downstream.
 
-In a multilevel transformer U-DiT, arrange all adjacent pairs as one central
-bridge after the complete encoder stack and before decoder/up-sampling
-computation. `sample_vae` enforces that the bridge is contiguous and free of
+In every transformer VAE, arrange the adjacent pair or pairs as one central
+bridge after real encoder computation and before real decoder/up-sampling
+computation. This applies to single- and multi-level bottlenecks.
+`sample_vae` enforces that the bridge is contiguous and free of
 transformer/local-mixer processing, with downsampling before it and upsampling
 after it. Block class does not define encoder versus decoder placement; depth
 relative to the bridge does. Normal training executes an encoder-feature route

@@ -57,7 +57,7 @@ class ImageUpsample(ArgumentSaverLayer):
 
     @staticmethod
     def _check_arguments(local_vars: dict[str, Any]) -> None:
-        """Validate scaling selection and positive dimensions.
+        """Validate the scaling selection.
 
         Args:
             local_vars (dict[str, Any]): Constructor arguments to validate.
@@ -76,20 +76,6 @@ class ImageUpsample(ArgumentSaverLayer):
                 "scaling_method must be interpolate, cnn_interpolate, or "
                 "cnn_transpose."
             )
-
-        for name in ("kernel_size", "strides"):
-            value = local_vars[name]
-            # Require positive integer kernel and enlargement dimensions.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
-
-        filters = local_vars["filters"]
-        # Require a positive integer output width when filters is specified.
-        if filters is not None and (
-            not isinstance(filters, int) or 
-            isinstance(filters, bool) or filters < 1
-        ):
-            raise ValueError("filters must be None or a positive integer.")
 
     def build(self, input_shape: Any) -> None:
         """Resolve the output width and create the selected learned scaler.

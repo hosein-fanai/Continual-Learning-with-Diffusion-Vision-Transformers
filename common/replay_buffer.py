@@ -20,7 +20,6 @@ from operator import index
 
 from collections.abc import Iterable, Mapping, Sequence
 from collections import deque
-from numbers import Integral, Real
 from typing import Literal
 
 from common.recovery import _array_recovery_descriptor, fingerprint_state
@@ -607,11 +606,9 @@ class ReplayBuffer(object):
                 are incompatible with this buffer.
         """
 
-        schema_version = state.get("schema_version")
+        schema_version = int(state.get("schema_version"))
         # Accept only the state schema emitted by the current serializer.
-        if isinstance(schema_version, bool) \
-        or not isinstance(schema_version, Integral) \
-        or int(schema_version) != 1:
+        if schema_version != 1:
             raise ValueError("Unsupported replay-checkpoint schema version.")
 
         # Refuse cross-capacity restoration because it changes inclusion odds.
@@ -630,12 +627,7 @@ class ReplayBuffer(object):
         if self.maxlen is not None and len(items) > self.maxlen:
             raise ValueError("Replay checkpoint exceeds the configured capacity.")
 
-        saved_items_seen = state.get("items_seen", len(items))
-        # Reject booleans and lossy numeric coercions in the stream cursor.
-        if isinstance(saved_items_seen, bool) \
-        or not isinstance(saved_items_seen, Integral):
-            raise ValueError("Replay checkpoint has a non-integral stream count.")
-        items_seen = int(saved_items_seen)
+        items_seen = int(state.get("items_seen", len(items)))
 
         # FIFO has no algorithmic stream cursor beyond its retained contents.
         if self.strategy == "fifo":
@@ -670,18 +662,9 @@ class ReplayBuffer(object):
         if len(class_order) != unique_class_count:
             raise ValueError("Replay checkpoint contains duplicate classes.")
 
-        # Class observation cursors must retain their exact integral domain.
-        if any(
-            isinstance(record["seen"], bool)
-            or not isinstance(record["seen"], Integral)
-            for record in classes
-        ):
-            raise ValueError("Replay checkpoint contains a non-integral class count.")
         # Allocation priorities originate from random.random() in [0, 1).
         if any(
-            isinstance(record["priority"], bool)
-            or not isinstance(record["priority"], Real)
-            or not np.isfinite(float(record["priority"]))
+            not np.isfinite(float(record["priority"]))
             or not 0. <= float(record["priority"]) < 1.
             for record in classes
         ):

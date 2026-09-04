@@ -115,24 +115,6 @@ def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _validate_seed(seed: int, name: str) -> int:
-    """Validate one deterministic random seed.
-
-    Args:
-        seed (int): Candidate nonnegative integer seed.
-        name (str): Field name used in validation errors.
-
-    Returns:
-        int: Validated seed.
-    """
-
-    # Reject booleans even though they are integer subclasses.
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise ValueError(f"{name} must be a nonnegative integer.")
-
-    return seed
-
-
 def _derive_stream_seed(seed: int, block_id: str) -> int:
     """Derive a stable child seed for one complete continual stream.
 
@@ -321,10 +303,7 @@ def _normalize_stream(
     if "stream_seed" not in copied:
         copied["stream_seed"] = _derive_stream_seed(experiment_seed, block_id)
 
-    copied["stream_seed"] = _validate_seed(
-        copied["stream_seed"], 
-        "stream_seed"
-    )
+    copied["stream_seed"] = int(copied["stream_seed"])
 
     return block_id, copied
 
@@ -375,7 +354,7 @@ def create_paired_block_manifest(
         dict[str, object]: Validated, hash-sealed experiment manifest.
     """
 
-    seed = _validate_seed(seed, "seed")
+    seed = int(seed)
 
     # Keep exploratory development distinct from confirmatory testing.
     if phase not in _PHASES:
@@ -521,7 +500,7 @@ def validate_experiment_manifest(
     }:
         raise ValueError("Manifest spec has unexpected fields.")
 
-    seed = _validate_seed(spec["randomization_seed"], "randomization_seed")
+    seed = int(spec["randomization_seed"])
 
     # Make the independent replication level machine-readable.
     if spec["independent_unit"] != _INDEPENDENT_UNIT \

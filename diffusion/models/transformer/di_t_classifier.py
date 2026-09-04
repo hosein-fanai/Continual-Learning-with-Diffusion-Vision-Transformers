@@ -8,11 +8,8 @@ class probabilities.  Training objectives, schedules, EMA, and sampling live in
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-import math
-
 from copy import deepcopy
 
-from numbers import Real
 from typing import Literal
 
 from . import (
@@ -116,7 +113,7 @@ class DiTClassifier(DiffusionTransformer):
         clf_upsample_ids: IdsType = [], 
         clf_upsample_kwargs: dict | None = None, 
         clf_reshaper_ids_dict: dict[int, str] = {},
-        clf_reshaper_kwargs: dict = {}, 
+        clf_reshaper_kwargs: dict | None = None, 
         clf_cls_token_regularizer_ids: IdsType = [], 
         clf_cls_token_regularizer_kwargs: dict | None = None, 
         force_global_avg_pooling: bool = False, 
@@ -278,12 +275,11 @@ class DiTClassifier(DiffusionTransformer):
         self.set_max_encoder_num()
 
         self.first_aggregated_dim = self._get_unforced_total_dim(
-            ids_set=self.feature_aggregation_ids_dict[1],  
+            ids_set=self.feature_aggregation_ids_dict[1], 
             layers_dicts=self.layers_dicts, 
             base_dim=self.dim, 
             kwargs=self.feature_aggregation_kwargs
-        ) if not self.clf_dim_forced or 1 in self.clf_connection_ids_dict \
-        else self.clf_dim
+        ) if not self.clf_dim_forced or 1 in self.clf_connection_ids_dict else self.clf_dim
         self.first_aggregated_dim = (
             self.patches_dim if self.classifier_only_cls_token else self.dim
         ) if self.aggregate_from_noises else self.first_aggregated_dim
@@ -306,7 +302,7 @@ class DiTClassifier(DiffusionTransformer):
 
         self._create_clf_embedders()
         self.cls_token = self._create_single_token(
-            self.first_aggregated_dim if self.aggregate_from_noises else self.clf_dim, 
+            self.first_aggregated_dim, # if self.aggregate_from_noises else self.clf_dim, 
             self.cls_token_pos_merger_type, 
             self.cls_token_freq_dim, 
             self.cls_token_mlp_ratio, 
@@ -314,7 +310,7 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.name_prefix}clf_depth_0_cls_token"
         ) if self.classifier_only_cls_token else self.cls_token
         self.distil_token = self._create_single_token(
-            self.first_aggregated_dim if self.aggregate_from_noises else self.clf_dim, 
+            self.first_aggregated_dim, # if self.aggregate_from_noises else self.clf_dim, 
             self.distil_token_pos_merger_type, 
             self.distil_token_freq_dim, 
             self.distil_token_mlp_ratio, 
@@ -387,43 +383,9 @@ class DiTClassifier(DiffusionTransformer):
         local_vars["depth"] = self.depth
 
         require(
-            self.use_cfg, \
+            self.use_cfg, 
             "use_cfg must be True for classification to work."
         )
-
-        for name in (
-            "aggregate_from_noises", 
-            "classifier_only_cls_token", 
-            "classifier_only_distil_token", 
-            "clf_dim_forced", 
-            "force_global_avg_pooling"
-        ):
-            require(
-                isinstance(local_vars[name], bool), 
-                f"{name} must be boolean."
-            )
-
-        require(isinstance(local_vars["clf_depth"], int) and not isinstance(
-            local_vars["clf_depth"], bool
-        ) and local_vars["clf_depth"] >= 0, \
-            "clf_depth must be a nonnegative integer.")
-        require(local_vars["clf_dim"] is None or (
-            isinstance(local_vars["clf_dim"], int)
-            and not isinstance(local_vars["clf_dim"], bool)
-            and local_vars["clf_dim"] > 0
-        ), "clf_dim must be None or a positive integer.")
-        classifier_mlp_ratio = local_vars["classifier_mlp_ratio"]
-        require(classifier_mlp_ratio is None or (
-            isinstance(classifier_mlp_ratio, int)
-            and not isinstance(classifier_mlp_ratio, bool)
-            and classifier_mlp_ratio > 0
-        ), "classifier_mlp_ratio must be None or a positive integer.")
-        dropout_rate = local_vars["dropout_rate"]
-        require(isinstance(dropout_rate, Real) and not isinstance(
-            dropout_rate, bool
-        ) and math.isfinite(float(dropout_rate)) and \
-            0.0 <= dropout_rate < 1.0, \
-            "dropout_rate must be finite and in the range [0, 1).")
 
         # Noise aggregation requires image-shaped denoiser output.
         if local_vars["aggregate_from_noises"]:
@@ -432,9 +394,11 @@ class DiTClassifier(DiffusionTransformer):
                 "aggregate_from_noises requires use_unpatchify to be True."
             )
 
-        require(1 in local_vars["feature_aggregation_ids_dict"] and \
-            "There must be at least one feature vector "\
-            "to connect to the classifier part.")
+        require(
+            1 in local_vars["feature_aggregation_ids_dict"], 
+            "There must be at least one feature vector "
+            "to connect to the classifier part."
+        )
         self._check_dict_assertions(
             local_vars, 
             "feature_aggregation_ids_dict", 
@@ -447,7 +411,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.feature_handler_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False
         )
         self._check_dict_assertions(
             local_vars, 
@@ -461,12 +425,14 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.feature_handler_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False
         )
 
-        require(-1 in local_vars["clf_connection_ids_dict"], \
-            "There must be at least one feature vector "\
-            "to extract from the classifier part.")
+        require(
+            -1 in local_vars["clf_connection_ids_dict"], 
+            "There must be at least one feature vector "
+            "to extract from the classifier part."
+        )
         self._check_dict_assertions(
             local_vars, 
             "clf_connection_ids_dict", 
@@ -532,7 +498,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.local_mixer_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False
         ) if local_vars[key:="clf_local_mixer_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
@@ -547,7 +513,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.downsample_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False
         ) if local_vars[key:="clf_downsample_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
@@ -597,25 +563,30 @@ class DiTClassifier(DiffusionTransformer):
             allowed_keys=self.cls_token_regularizer_kwargs_allowed_vals, 
             check_values=False, 
         ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
+
         # Validate the classifier-specific regularizer training modes when supplied.
         if local_vars["clf_cls_token_regularizer_kwargs"] is not None:
-            regularizer_mlp_ratio = local_vars[
-                "clf_cls_token_regularizer_kwargs"
-            ].get("mlp_ratio", None)
-            require(regularizer_mlp_ratio is None or regularizer_mlp_ratio > 0, \
-                "classifier regularizer mlp_ratio must be None or positive.")
-            require(local_vars["clf_cls_token_regularizer_kwargs"].get(
-                "train_type", "normal"
-            ) in ("normal", "distil", "both"), \
-                "classifier regularizer train_type must be normal, distil, or both.")
-            require(local_vars["clf_cls_token_regularizer_kwargs"].get(
-                "distil_type", "hard"
-            ) in ("hard", "soft"), \
-                "classifier regularizer distil_type must be hard or soft.")
+            require(
+                local_vars["clf_cls_token_regularizer_kwargs"].get(
+                    "train_type", "normal"
+                ) in ("normal", "distil", "both"), 
+                "classifier regularizer train_type must be normal, distil, or both."
+            )
+            require(
+                local_vars["clf_cls_token_regularizer_kwargs"].get(
+                    "distil_type", "hard"
+                ) in ("hard", "soft"), 
+                "classifier regularizer distil_type must be hard or soft."
+            )
 
-        require(local_vars["clf_cross_attention_plug_type"] in (
-            None, "values", "queries"
-        ), "clf_cross_attention_plug_type can only be values or queries.")
+        require(
+            local_vars["clf_cross_attention_plug_type"] in (
+                None, 
+                "values", 
+                "queries"
+            ), 
+            "clf_cross_attention_plug_type can only be values or queries."
+        )
 
     def _set_defaults(self, local_vars: dict, 
                     exclude: list[str]=["clf_dim", "clf_cond_type", 
@@ -625,8 +596,8 @@ class DiTClassifier(DiffusionTransformer):
                         "clf_upsample_ids", "clf_cls_token_type", 
                         "clf_distil_token_type", "clf_mha_key_dim", 
                         "clf_mha_value_dim", "clf_ln_mlp_ratio", 
-                        "clf_reshaper_ids_dict", 
-                        "clf_cls_token_regularizer_ids"]) -> None:
+                        "clf_reshaper_ids_dict", "clf_cls_token_regularizer_ids"
+                    ]) -> None:
         """Resolve inheritable ``clf_*`` values from main-branch attributes.
 
         Args:
@@ -659,8 +630,10 @@ class DiTClassifier(DiffusionTransformer):
 
         # A forced classifier width requires an explicit target width.
         if self.clf_dim_forced:
-            require(self.clf_dim is not None, \
-                "When clf_dim_forced is true, clf_dim cannot be None.")
+            require(
+                self.clf_dim is not None, 
+                "When clf_dim_forced is true, clf_dim cannot be None."
+            )
 
     def _handle_all_clf_ids(self) -> None:
         """Normalize every classifier and main-feature aggregation ID set.
@@ -815,13 +788,12 @@ class DiTClassifier(DiffusionTransformer):
 
         self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None and not self.clf_ln_no_adaptation else []
         self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None else []
-        self._clf_distil_token_type = self.clf_distil_token_type \
-            if self.clf_distil_token_type is not None else []
+        self._clf_distil_token_type = self.clf_distil_token_type if self.clf_distil_token_type is not None else []
 
         clf_embed_times_flag = "time" in self._clf_cls_token_type or \
-            "time" in self._clf_distil_token_type or "time" in self._clf_cond_type
+                            "time" in self._clf_distil_token_type or "time" in self._clf_cond_type
         clf_embed_labels_flag = "label" in self._clf_cls_token_type or \
-            "label" in self._clf_distil_token_type or "label" in self._clf_cond_type
+                            "label" in self._clf_distil_token_type or "label" in self._clf_cond_type
         clf_conds_merger_flag = ("time" in self._clf_cls_token_type and "label" in self._clf_cls_token_type
                                 ) or ("time" in self._clf_distil_token_type and \
                                 "label" in self._clf_distil_token_type) or \
@@ -830,13 +802,11 @@ class DiTClassifier(DiffusionTransformer):
         # Remove main-branch token dependencies used exclusively by the classifier.
         if self.classifier_only_cls_token:
             # Drop an otherwise unused main time embedder.
-            if flag1:=("time" in self._cls_token_type or \
-            "time" in self._distil_token_type) and not clf_embed_times_flag:
+            if flag1:=("time" in self._cls_token_type) and not clf_embed_times_flag:
                 self.time_embedder = None
 
             # Drop an otherwise unused main label embedder.
-            if flag2:=("label" in self._cls_token_type or \
-            "label" in self._distil_token_type) and not clf_embed_labels_flag:
+            if flag2:=("label" in self._cls_token_type) and not clf_embed_labels_flag:
                 self.label_embedder = None
 
             # Drop the main condition merger when both component embedders were removed.
@@ -845,6 +815,20 @@ class DiTClassifier(DiffusionTransformer):
 
             self.cls_token_type = None
             self._cls_token_type = []
+
+        if self.classifier_only_distil_token:
+            # Drop an otherwise unused main time embedder.
+            if flag1:=("time" in self._distil_token_type) and not clf_embed_times_flag:
+                self.time_embedder = None
+
+            # Drop an otherwise unused main label embedder.
+            if flag2:=("label" in self._distil_token_type) and not clf_embed_labels_flag:
+                self.label_embedder = None
+
+            # Drop the main condition merger when both component embedders were removed.
+            if flag1 and flag2 and not clf_conds_merger_flag:
+                self.conds_merger = None
+            
             self.distil_token_type = None
             self._distil_token_type = []
 
@@ -1059,7 +1043,7 @@ class DiTClassifier(DiffusionTransformer):
         # Build this classifier depth's flatten or unflatten reshaper.
         if key in self.clf_reshaper_ids_dict:
             layers_dict[self.R] = self._create_reshaper(
-                reshape_type=self.clf_reshaper_ids_dict[key], 
+                ids_dict=self.clf_reshaper_ids_dict, 
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, 
                 base_dim=self.clf_dim, 
@@ -1339,6 +1323,13 @@ class DiTClassifier(DiffusionTransformer):
                                             else None, 
                             training=training
                         )
+                        x = self.prepend_single_token(
+                            x, self.distil_token, 
+                            self.distil_token_type, 
+                            times=times, 
+                            labels=labels, 
+                            training=training
+                        ) if not self.classifier_only_distil_token else x
                 # Otherwise embed noise with the shared main condition components.
                     else:
                         x, (_, main_time_embeds, main_label_embeds) = self.embed_inputs(
@@ -1369,11 +1360,9 @@ class DiTClassifier(DiffusionTransformer):
                     self.clf_distil_token_type, 
                     time_embeds=time_embeds, 
                     label_embeds=label_embeds, 
-                    times=times, 
-                    labels=labels, 
+                    times=times, labels=labels, 
                     training=training
-                ) if self.classifier_only_distil_token and \
-                    self.clf_distil_token_type is not None else x
+                ) if self.classifier_only_distil_token and self.clf_distil_token_type is not None else x
                 x = self.prepend_single_token(
                     x, self.cls_token,
                     self.clf_cls_token_type,
@@ -1774,22 +1763,12 @@ class DiTClassifier(DiffusionTransformer):
                             ratio = reshaper_options.get(
                                 "latent_dim_ratio", 1.0
                             )
-                            if not (
-                                isinstance(ratio, Real) and
-                                not isinstance(ratio, bool) and
-                                math.isfinite(float(ratio)) and ratio > 0.0
-                            ):
-                                raise ValueError(
-                                    "Progressive classifier "
-                                    "latent_dim_ratio must be finite and "
-                                    "positive."
-                                )
                             self.clf_reshaper_kwargs = {
-                                **self.clf_reshaper_kwargs,
+                                **self.clf_reshaper_kwargs, 
                                 "latent_dim_ratio": [
-                                    *self.clf_reshaper_kwargs[
-                                        "latent_dim_ratio"
-                                    ],
+                                    *self.clf_reshaper_kwargs.get(
+                                        "latent_dim_ratio", []
+                                    ), 
                                     ratio
                                 ]
                             }
@@ -1813,15 +1792,6 @@ class DiTClassifier(DiffusionTransformer):
                     key-1, planned_layers
                 )
                 planned_layers.append(layers_dict)
-
-            try:
-                self._check_reshaper_kwargs(
-                    self.clf_reshaper_kwargs,
-                    self.clf_reshaper_ids_dict,
-                    prefix="classifier "
-                )
-            except AssertionError as error:
-                raise ValueError(str(error)) from error
 
             new_clf_depth = old_clf_depth + len(classifier_specs)
             # Retarget the terminal connector when it referenced the old last depth.
@@ -2677,18 +2647,6 @@ def run_self_tests() -> dict[str, str]:
 
     invalid_cases = (
         {"use_cfg": False}, 
-        {"aggregate_from_noises": "false"},
-        {"classifier_only_cls_token": 1},
-        {"classifier_only_distil_token": 0},
-        {"clf_dim_forced": "false"},
-        {"force_global_avg_pooling": 1},
-        {"clf_depth": -1},
-        {"clf_dim": 0},
-        {"classifier_mlp_ratio": 0},
-        {"classifier_mlp_ratio": 0.5},
-        {"dropout_rate": -0.1},
-        {"dropout_rate": float("nan")},
-        {"dropout_rate": 1.0},
         {"aggregate_from_noises": True, "use_unpatchify": False}, 
         {"feature_aggregation_ids_dict": {2: [0]}}, 
         {"clf_connection_ids_dict": {1: [0]}}, 
@@ -2701,13 +2659,9 @@ def run_self_tests() -> dict[str, str]:
         {"clf_downsample_kwargs": {"unknown": 1}}, 
         {"clf_upsample_kwargs": {"unknown": 1}}, 
         {"clf_reshaper_kwargs": {"unknown": 1}}, 
-        {"clf_reshaper_kwargs": {"add_kl": "yes"}},
         {"clf_reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
         {"clf_reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
-        {"clf_cls_token_regularizer_kwargs": {
-            "start": 0, "end": 1, "mlp_ratio": 0
-        }},
     )
     for overrides in invalid_cases:
         try:

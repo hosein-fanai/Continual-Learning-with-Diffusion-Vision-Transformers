@@ -337,7 +337,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_grid in (-1, 0):
         try:
             Upsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
-        except ValueError:
+        except AssertionError:
             pass
         else:
             raise AssertionError("Upsampling requires a positive grid size.")

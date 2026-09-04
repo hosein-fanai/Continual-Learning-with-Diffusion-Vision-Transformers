@@ -155,9 +155,10 @@ flatten/unflatten pair, ordered by ascending flatten depth; this
 single-bottleneck example therefore has one entry. Omitting the list selects
 full-width latents by default.
 
-For a multilevel transformer U-DiT decoded through `sample_vae(...)`, arrange
-all adjacent pairs as one central bridge after the complete encoder stack and
-before decoder/up-sampling computation. During training, a flatten-stage route
+For every transformer VAE decoded through `sample_vae(...)`, arrange all
+adjacent pairs as one central bridge after real encoder computation and before
+real decoder/up-sampling computation. This applies to both single-level and
+multi-level bottlenecks. During training, a flatten-stage route
 can select its encoder feature; sampling bypasses that route to inject the
 matching latent. Decoder routes must then consume the corresponding stochastic
 unflattened features instead of reaching around the bridge to pre-latent

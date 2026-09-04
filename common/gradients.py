@@ -21,9 +21,10 @@ def apply_policy_gradients(
     TensorFlow's mixed-float16 ``Model.compile`` wraps an optimizer in
     :class:`tf.keras.mixed_precision.LossScaleOptimizer`.  Custom training
     loops must then scale the loss before differentiation and unscale the
-    resulting gradients exactly once.  Ordinary optimizers retain the direct
-    differentiation path.  Variables disconnected from ``loss`` are omitted
-    rather than forwarding ``None`` gradients to an optimizer.
+    resulting gradients exactly once. Ordinary optimizers retain the direct
+    differentiation path. Partially disconnected variables are forwarded with
+    ``None`` gradients so Keras emits its standard warning, while the returned
+    list contains only pairs that were actually applied.
 
     Args:
         tape (tf.GradientTape): Unconsumed tape that recorded ``loss``.
@@ -34,8 +35,12 @@ def apply_policy_gradients(
 
     Returns:
         list[tuple[tf.Tensor | tf.IndexedSlices, tf.Variable]]: Non-``None``
-        gradient-variable pairs that were applied, or an empty list when no
-        variable is connected to ``loss``.
+        gradient-variable pairs that were applied. An explicitly empty
+        variable selection remains a no-op.
+
+    Raises:
+        ValueError: If variables were selected but the objective is completely
+            disconnected from them.
     """
 
     selected_variables = list(variables)
@@ -61,8 +66,17 @@ def apply_policy_gradients(
     if uses_loss_scaling:
         gradients = optimizer.get_unscaled_gradients(gradients)
 
-    # Let the None-valued grads get into the optimizer, so Keras shows a warning (good for noticing mistakes).
-    pairs = zip(gradients, selected_variables)
+    pairs = [
+        (gradient, variable)
+        for gradient, variable in 
+        zip(gradients, selected_variables)
+        if gradient is not None
+    ]
+    if not pairs:
+        raise ValueError(
+            "The loss is disconnected from every selected variable."
+        )
+
     optimizer.apply_gradients(pairs)
 
     return pairs

@@ -489,8 +489,8 @@ class DtypeModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cover every destination"):
             copy_model(previous, expanded, allow_truncate=True)
 
-    def test_stale_loaded_and_teacher_policies_are_rejected(self) -> None:
-        """Fail before using float32 serialized models in a mixed experiment.
+    def test_stale_loaded_and_teacher_policies_are_left_to_tensorflow(self) -> None:
+        """Let TensorFlow cast restored models across runtime policies.
 
         Args:
             None.
@@ -511,13 +511,13 @@ class DtypeModelTests(unittest.TestCase):
             model_path = Path(directory) / "stale_classifier"
             stale_classifier.save(str(model_path), include_optimizer=False)
             configure_runtime(22, "mixed_float16")
-            with self.assertRaisesRegex(ValueError, "incompatible with dtype policy"):
-                _get_classifier_model(
-                    class_num=2,
-                    model_type="hp-tuned",
-                    model_path=str(model_path),
-                    verbose=0,
-                )
+            loaded_classifier = _get_classifier_model(
+                class_num=2,
+                model_type="hp-tuned",
+                model_path=str(model_path),
+                verbose=0,
+            )
+            self.assertEqual(loaded_classifier.output_shape[-1], 2)
 
         student = DiffusionClassifier(
             network=_make_dit_network(),
@@ -526,8 +526,8 @@ class DtypeModelTests(unittest.TestCase):
             test_steps=2,
             seed=22,
         )
-        with self.assertRaisesRegex(ValueError, "teacher_network"):
-            student.set_teacher_network(stale_teacher)
+        student.set_teacher_network(stale_teacher)
+        self.assertIs(student.teacher_network, stale_teacher)
 
     def test_data_and_replay_use_policy_variable_dtype(self) -> None:
         """Prepare normalized/one-hot/replay arrays in float64 policy dtype.

@@ -3,12 +3,9 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-import math
-
 from copy import deepcopy
 
 from collections.abc import Mapping
-from numbers import Real
 
 from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
@@ -181,7 +178,7 @@ class UNetClassifier(UNet):
             self.build()
 
     def _check_classifier_arguments(self, local_vars: dict) -> None:
-        """Validate dimensions, feature IDs, and classifier-only options.
+        """Validate feature routing and classifier bottleneck structure.
 
         Args:
             local_vars (dict[str, object]): Classifier constructor namespace.
@@ -190,99 +187,47 @@ class UNetClassifier(UNet):
             None: Valid inputs return normally; invalid inputs raise ValueError.
         """
 
-        # Require an explicit boolean for noise-based classification.
-        if not isinstance(local_vars["aggregate_from_noises"], bool):
-            raise ValueError("aggregate_from_noises must be boolean.")
-        # Require an explicit boolean for classifier-only token ownership.
-        if not isinstance(local_vars["classifier_only_cls_token"], bool):
-            raise ValueError("classifier_only_cls_token must be boolean.")
-        # Require an explicit boolean for classifier-only distillation ownership.
-        if not isinstance(local_vars["classifier_only_distil_token"], bool):
-            raise ValueError("classifier_only_distil_token must be boolean.")
-        # Require an explicit boolean for the classifier pooling policy.
-        if not isinstance(local_vars["force_global_avg_pooling"], bool):
-            raise ValueError("force_global_avg_pooling must be boolean.")
-
-        for name in ("clf_depth", "clf_block_depth"):
-            value = local_vars[name]
-            minimum = 0 if name == "clf_depth" else 1
-            # Validate classifier counts and depth as bounded integers.
-            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
-                raise ValueError(f"{name} must be an integer greater than or equal to {minimum}.")
-
-        clf_dim = local_vars["clf_dim"]
-        # Require an optional classifier width to be a positive integer.
-        if clf_dim is not None and (
-            not isinstance(clf_dim, int) or isinstance(clf_dim, bool) or clf_dim < 1
-        ):
-            raise ValueError("clf_dim must be None or a positive integer.")
-
-        mlp_ratio = local_vars["classifier_mlp_ratio"]
-        # Require an optional classifier MLP ratio to be positive and numeric.
-        if mlp_ratio is not None and (
-            not isinstance(mlp_ratio, (int, float))
-            or isinstance(mlp_ratio, bool)
-            or mlp_ratio <= 0.0
-        ):
-            raise ValueError("classifier_mlp_ratio must be None or positive.")
-        # Keep classifier dropout in the half-open unit interval.
-        if not 0.0 <= local_vars["dropout_rate"] < 1.0:
-            raise ValueError("dropout_rate must be in the range [0, 1).")
-
         aggregation_ids = local_vars["feature_aggregation_ids_dict"]
         # Require an initial feature route for classifier depth one.
-        if not isinstance(aggregation_ids, dict) or 1 not in aggregation_ids:
+        if 1 not in aggregation_ids:
             raise ValueError("feature_aggregation_ids_dict must contain key 1.")
         max_classifier_key = max(1, local_vars["clf_depth"])
         for key, ids in aggregation_ids.items():
             # Restrict aggregation keys to valid classifier depths.
-            if not isinstance(key, int) or isinstance(key, bool) \
-            or not 1 <= key <= max_classifier_key:
+            if not 1 <= key <= max_classifier_key:
                 raise ValueError("Classifier aggregation depths are out of range.")
             # Require each aggregation stage to select at least one feature.
-            if not isinstance(ids, (list, tuple)) or len(ids) == 0:
+            if len(ids) == 0:
                 raise ValueError("Every classifier aggregation needs feature IDs.")
             for feature_id in ids:
                 # Preserve None as the sentinel for all compatible features.
                 if feature_id is None:
                     continue
                 # Restrict explicit feature IDs to the encoder's relative-ID range.
-                if not isinstance(feature_id, int) or isinstance(feature_id, bool) \
-                or not -(self.depth + 1) <= feature_id <= self.depth:
+                if not -(self.depth + 1) <= feature_id <= self.depth:
                     raise ValueError("A classifier feature ID is out of range.")
 
         allowed_reshaper_keys = {"add_kl", "latent_dim_ratio"}
-        # Reject unknown or non-mapping classifier reshaper options.
-        if not isinstance(local_vars["clf_reshaper_kwargs"], dict) \
-        or not set(local_vars["clf_reshaper_kwargs"]) <= allowed_reshaper_keys:
+        # Reject unknown classifier reshaper options.
+        if not set(local_vars["clf_reshaper_kwargs"]) <= allowed_reshaper_keys:
             raise ValueError(
                 "clf_reshaper_kwargs accepts only add_kl and latent_dim_ratio."
-            )
+        )
         add_kl = local_vars["clf_reshaper_kwargs"].get("add_kl", False)
-        if "latent_dim_ratio" not in local_vars["clf_reshaper_kwargs"]:
+        latent_dim_ratios = local_vars["clf_reshaper_kwargs"].get(
+            "latent_dim_ratio"
+        )
+        if latent_dim_ratios is None or len(latent_dim_ratios) == 0:
             local_vars["clf_reshaper_kwargs"]["latent_dim_ratio"] = (
                 [1.0] if add_kl else []
             )
         latent_dim_ratios = local_vars["clf_reshaper_kwargs"][
             "latent_dim_ratio"
         ]
-        # Require a boolean classifier KL switch.
-        if not isinstance(add_kl, bool):
-            raise ValueError("Classifier reshaper add_kl must be boolean.")
-        if not isinstance(latent_dim_ratios, list):
-            raise ValueError("Classifier latent_dim_ratio must be a list.")
         if len(latent_dim_ratios) != int(add_kl):
             raise ValueError(
                 "Classifier latent_dim_ratio must contain one value for its "
                 "terminal flatten stage when add_kl=True."
-            )
-        if any(
-            not isinstance(ratio, Real) or isinstance(ratio, bool) or
-            not math.isfinite(float(ratio)) or ratio <= 0.0
-            for ratio in latent_dim_ratios
-        ):
-            raise ValueError(
-                "Classifier latent_dim_ratio values must be finite and positive."
             )
 
     def _create_clf_regularizer(self, suffix: str) -> layers.Layer:
@@ -499,8 +444,7 @@ class UNetClassifier(UNet):
             max_encoder_num = self.depth if self.aggregate_from_noises \
                 else max(feature_ids)
         # Require an explicit encoder limit to be a valid network depth.
-        if not isinstance(max_encoder_num, int) or isinstance(max_encoder_num, bool) \
-        or not 0 <= max_encoder_num <= self.depth:
+        if not 0 <= max_encoder_num <= self.depth:
             raise ValueError("max_encoder_num must be in the range [0, depth].")
         self.max_encoder_num = max_encoder_num
 
@@ -927,11 +871,9 @@ class UNetClassifier(UNet):
         # Retain enabled layer names from a mapped depth specification.
         elif isinstance(spec, Mapping):
             names = {name for name, enabled in spec.items() if enabled is not False}
-        # Reject unsupported classifier depth specification types.
+        # Let any other iterable use the same name validation below.
         else:
-            raise ValueError(
-                "A classifier depth must be a layer name, collection, or mapping."
-            )
+            names = set(spec)
 
         # Reject empty specifications and unknown classifier layer names.
         if not names or not names <= allowed_names:
@@ -1176,6 +1118,13 @@ def run_self_tests() -> dict[str, str]:
     variational_output = variational(inputs, full_return=True, training=False)
     assert variational_output["clf_z_vals_list"][0][0].shape == (2, 1)
     assert variational_output["clf_z_vals_list"][0][1].shape == (2, 1)
+    default_variational = UNetClassifier(
+        **common,
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []},
+    )
+    assert default_variational.clf_reshaper_kwargs[
+        "latent_dim_ratio"
+    ] == [1.0]
 
     restored = UNetClassifier.from_config(model.get_config())
     assert restored(inputs)["classes"].shape == (2, 2)

@@ -3,8 +3,6 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
-from math import isqrt
-
 from copy import deepcopy
 
 from common.validation import require
@@ -63,6 +61,7 @@ class DiTDecoder(DiffusionTransformer):
         ] = {}, 
         cross_attention_aggregation_kwargs: dict = {}, 
         build: bool = True, 
+        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None,
         **kwargs: object
     ) -> None:
         """Initialize decoder configuration and optionally build the model.
@@ -78,6 +77,10 @@ class DiTDecoder(DiffusionTransformer):
                 encoder depth. ``None`` creates one final-feature entry from
                 ``encoder_output_dim``. The list index is the ID used by the
                 two encoder aggregation dictionaries.
+            encoder_feature_is_flat (list[bool] | None): Explicit rank state
+                for every encoder feature. ``None`` preserves the legacy rule
+                that a missing grid denotes a rank-2 feature; explicit
+                ``False`` distinguishes non-square rank-3 token sequences.
             shift_inputs (bool): Right-shift decoder patch tokens by prepending
                 the shared learned BOS token; true by default for
                 autoregressive teacher forcing.
@@ -124,12 +127,23 @@ class DiTDecoder(DiffusionTransformer):
             None: Decoder layers and configuration are initialized in place.
         """
 
+        encoder_output_grid_size = int(encoder_output_grid_size)
+        encoder_output_dim = int(encoder_output_dim)
         raw_feature_ids = deepcopy(feature_aggregation_ids_dict)
         raw_cross_ids = deepcopy(cross_attention_aggregation_ids_dict)
-        feature_dims = list(encoder_feature_dims) if \
-            encoder_feature_dims is not None else [encoder_output_dim]
-        feature_grids = list(encoder_feature_grid_sizes) if \
-            encoder_feature_grid_sizes is not None else [encoder_output_grid_size]
+        feature_dims = [
+            int(dim) for dim in encoder_feature_dims
+        ] if encoder_feature_dims is not None else [encoder_output_dim]
+        feature_grids = [
+            None if grid is None else int(grid)
+            for grid in encoder_feature_grid_sizes
+        ] if encoder_feature_grid_sizes is not None else [
+            encoder_output_grid_size
+        ]
+        feature_is_flat = list(encoder_feature_is_flat) if \
+            encoder_feature_is_flat is not None else [
+                grid is None for grid in feature_grids
+            ]
 
         # The base constructor dynamically calls the decoder factory, so these
         # values must exist before ``DiffusionTransformer.__init__`` creates
@@ -138,6 +152,7 @@ class DiTDecoder(DiffusionTransformer):
         object.__setattr__(self, "encoder_output_dim", encoder_output_dim)
         object.__setattr__(self, "encoder_feature_grid_sizes", feature_grids)
         object.__setattr__(self, "encoder_feature_dims", feature_dims)
+        object.__setattr__(self, "encoder_feature_is_flat", feature_is_flat)
         object.__setattr__(self, "decoder_separate_cond", decoder_separate_cond)
         object.__setattr__(self, "use_causal_mask", use_causal_mask)
         object.__setattr__(self, "feature_aggregation_ids_dict", raw_feature_ids)
@@ -158,6 +173,7 @@ class DiTDecoder(DiffusionTransformer):
             "encoder_output_dim": encoder_output_dim, 
             "encoder_feature_grid_sizes": deepcopy(feature_grids), 
             "encoder_feature_dims": deepcopy(feature_dims), 
+            "encoder_feature_is_flat": deepcopy(feature_is_flat),
             "decoder_separate_cond": decoder_separate_cond, 
             "use_causal_mask": use_causal_mask, 
             "feature_aggregation_ids_dict": raw_feature_ids, 
@@ -211,28 +227,50 @@ class DiTDecoder(DiffusionTransformer):
             base_local_vars = dict(local_vars)
             base_local_vars["cls_token_regularizer_ids"] = [None]
         super()._check_assertions(base_local_vars)
-        require(self.encoder_output_grid_size > 0)
-        require(self.encoder_output_dim > 0)
         require(len(self.encoder_feature_dims) > 0)
+        require(
+            self.encoder_output_grid_size > 0,
+            "encoder_output_grid_size must be positive."
+        )
+        require(
+            self.encoder_output_dim > 0,
+            "encoder_output_dim must be positive."
+        )
+        require(
+            all(dim > 0 for dim in self.encoder_feature_dims),
+            "encoder feature dimensions must be positive."
+        )
+        require(
+            all(
+                grid is None or grid > 0
+                for grid in self.encoder_feature_grid_sizes
+            ),
+            "encoder feature grid sizes must be positive when supplied."
+        )
         require(len(self.encoder_feature_dims) == len(
             self.encoder_feature_grid_sizes
         ), "encoder feature dimensions and grid sizes must have equal length.")
-        require(all(int(dim) == dim and dim > 0 for dim in self.encoder_feature_dims))
+        require(len(self.encoder_feature_dims) == len(
+            self.encoder_feature_is_flat
+        ), "encoder feature dimensions and rank states must have equal length.")
         require(all(
-            grid is None or (int(grid) == grid and grid > 0)
-            for grid in self.encoder_feature_grid_sizes
-        ))
+            not is_flat or grid is None
+            for grid, is_flat in zip(
+                self.encoder_feature_grid_sizes,
+                self.encoder_feature_is_flat,
+            )
+        ), "flat encoder features cannot have a spatial grid.")
         require(self.encoder_feature_dims[-1] == self.encoder_output_dim)
         require(self.encoder_feature_grid_sizes[-1] == self.encoder_output_grid_size)
+        require(not self.encoder_feature_is_flat[-1])
 
         for mapping_name in (
             "feature_aggregation_ids_dict", 
             "cross_attention_aggregation_ids_dict", 
         ):
             mapping = getattr(self, mapping_name)
-            require(isinstance(mapping, dict), f"{mapping_name} must be a dictionary.")
             require(all(
-                isinstance(key, int) and 1 <= key <= local_vars["depth"]
+                1 <= key <= local_vars["depth"]
                 for key in mapping
             ), f"keys in {mapping_name} must be decoder depths in [1, depth].")
 
@@ -297,139 +335,12 @@ class DiTDecoder(DiffusionTransformer):
                 for key, ids in getattr(self, mapping_name).items()
             })
 
-    def _get_encoder_total_dim(self, ids: list[int], kwargs: dict) -> int:
-        """Return the width produced by selected encoder features.
-
-        Args:
-            ids (list[int]): Absolute encoder feature IDs.
-            kwargs (dict[str, object]): Feature-handler merge options.
-
-        Returns:
-            int: Concatenated width or the common additive width.
-        """
-
-        dims = [self.encoder_feature_dims[index] for index in ids]
-        # Report zero width when no encoder features were selected.
-        if not dims:
-            return 0
-        # Sum feature widths only when concatenation uses the channel axis.
-        if kwargs.get("connect_type", "concat") == "concat":
-            connect_axis = kwargs.get("connect_axis", -1)
-            grids = [self.encoder_feature_grid_sizes[index] for index in ids]
-            # Channel concatenation combines all selected widths.
-            if self._uses_channel_axis(connect_axis, grids):
-                return sum(dims)
-            require(len(set(dims)) == 1, (
-                "Non-channel concatenation requires equal feature dimensions."
-            ))
-            return dims[0]
-
-        require(len(set(dims)) == 1, (
-            "In connect_type == add, all encoder feature dimensions must be equal."
-        ))
-
-        return dims[0]
-
-    @staticmethod
-    def _uses_channel_axis(
-        connect_axis: int, 
-        grid_sizes: list[int | None]
-    ) -> bool:
-        """Interpret a merge axis for rank-2 or rank-3 features.
-
-        Args:
-            connect_axis (int): Positive or negative concatenation axis.
-            grid_sizes (list[int | None]): ``None`` for flat rank-2 features;
-                integers for spatial rank-3 token features.
-
-        Returns:
-            bool: True when concatenation grows the feature width.
-
-        Raises:
-            AssertionError: If selected features mix ranks or the axis is not
-                valid for their shared rank.
-        """
-
-        has_flat = any(grid is None for grid in grid_sizes)
-        # Prevent flat and spatial encoder features from sharing one merge.
-        if has_flat:
-            require(all(grid is None for grid in grid_sizes), (
-                "Feature concatenation requires matching tensor ranks."
-            ))
-            require(connect_axis in (-1, 1), (
-                "Flat features support concatenation only on their width axis."
-            ))
-            return True
-        require(connect_axis in (-2, -1, 1, 2), (
-            "Token features support token or channel concatenation axes."
-        ))
-
-        return connect_axis in (-1, 2)
-
-    def _get_encoder_grid_size(
-        self, 
-        ids: list[int], 
-        kwargs: dict, 
-        second_grid_size: int | None = None, 
-        include_second: bool = False
-    ) -> int | None:
-        """Infer the spatial grid after an encoder-feature merge.
-
-        Args:
-            ids (list[int]): Absolute encoder feature IDs.
-            kwargs (dict[str, object]): Feature-handler merge options.
-            second_grid_size (int | None): Optional decoder stream grid.
-            include_second (bool): Whether a decoder stream is appended.
-                This distinguishes an absent stream from a flat stream, whose
-                grid is also ``None``.
-
-        Returns:
-            int | None: Square grid side, or ``None`` for a flat/non-square
-            result.
-        """
-
-        grids = [self.encoder_feature_grid_sizes[index] for index in ids]
-        # Include the current decoder feature in grid compatibility checks.
-        if include_second:
-            grids.append(second_grid_size)
-        # Return no grid when the handler has no feature inputs.
-        if not grids:
-            return None
-        connect_type = kwargs.get("connect_type", "concat")
-        # Determine whether concatenation preserves the token grid.
-        if connect_type == "concat":
-            channel_axis = self._uses_channel_axis(
-                kwargs.get("connect_axis", -1), grids
-            )
-        # Addition always requires features aligned on the same grid.
-        else:
-            channel_axis = True
-        # Require all added flat/spatial features to have matching tensor rank.
-            if any(grid is None for grid in grids):
-                require(all(grid is None for grid in grids), (
-                    "Feature addition requires matching tensor ranks."
-                ))
-        # A merge of flat features has no spatial grid.
-        if any(grid is None for grid in grids):
-            return None
-
-        # Infer a square output grid for token-axis concatenation.
-        if connect_type == "concat" and not channel_axis:
-            token_count = sum(grid * grid for grid in grids)
-            root = isqrt(token_count)
-            return root if root * root == token_count else None
-        require(len(set(grids)) == 1, (
-            "Encoder and decoder features must have matching token grids for "
-            "this merge axis."
-        ))
-
-        return grids[0]
-
     def _create_encoder_feature_handler(
         self, 
         ids: list[int], 
         increased_dim: int = 0, 
         second_grid_size: int | None = None, 
+        second_is_flat: bool = False,
         output_dim_flag: bool = True, 
         kwargs: dict | None = None, 
         name: str | None = None
@@ -440,6 +351,7 @@ class DiTDecoder(DiffusionTransformer):
             ids (list[int]): Encoder feature IDs.
             increased_dim (int): Width of an appended decoder-side tensor.
             second_grid_size (int | None): Grid of that decoder tensor.
+            second_is_flat (bool): Whether that decoder tensor is rank 2.
             output_dim_flag (bool): Allow automatic projection back to
                 ``self.dim``.
             kwargs (dict | None): Valid ``FeatureHandler`` overrides.
@@ -450,35 +362,16 @@ class DiTDecoder(DiffusionTransformer):
         """
 
         kwargs = {} if kwargs is None else kwargs
-        selected_dim = self._get_encoder_total_dim(ids, kwargs)
+        dims = [self.encoder_feature_dims[index] for index in ids]
         grids = [self.encoder_feature_grid_sizes[index] for index in ids]
-        # Include the current decoder feature in merge-shape checks.
+        flat_states = [self.encoder_feature_is_flat[index] for index in ids]
         if increased_dim:
+            dims.append(increased_dim)
             grids.append(second_grid_size)
-        # Compute output width according to the concatenation axis.
-        if kwargs.get("connect_type", "concat") == "concat":
-            connect_axis = kwargs.get("connect_axis", -1)
-            # Channel concatenation adds encoder and decoder widths.
-            if self._uses_channel_axis(connect_axis, grids):
-                merged_dim = selected_dim + increased_dim
-            # Token-axis concatenation preserves one common feature width.
-            else:
-                # Require matching widths when appending decoder tokens.
-                if increased_dim:
-                    require(selected_dim == increased_dim, (
-                        "Non-channel concatenation requires equal encoder and "
-                        "decoder dimensions."
-                    ))
-                merged_dim = selected_dim
-        # Elementwise addition preserves one common feature width.
-        else:
-            # Require matching encoder and decoder widths for addition.
-            if increased_dim:
-                require(selected_dim == increased_dim, (
-                    "In connect_type == add, encoder and decoder dimensions "
-                    "must be equal."
-                ))
-            merged_dim = selected_dim
+            flat_states.append(second_is_flat)
+        merged_dim, grid_size, output_is_flat = self._merge_feature_metadata(
+            dims, grids, flat_states, kwargs
+        )
         options = {
             "ids": ids, 
             "ln_dim": merged_dim, 
@@ -486,16 +379,13 @@ class DiTDecoder(DiffusionTransformer):
                 and merged_dim > self.dim else None, 
             "ln_mlp_ratio": self.ln_mlp_ratio, 
             "ln_no_adaptation": self.ln_no_adaptation, 
-            "grid_size": self._get_encoder_grid_size(
-                ids, kwargs, second_grid_size,
-                include_second=bool(increased_dim)
-            ),
+            "grid_size": grid_size,
             "name": name, 
         }
         options.update(kwargs)
         handler = FeatureHandler(**options)
         handler.output_grid_size = handler.grid_size
-        handler.output_is_flat = all(grid is None for grid in grids)
+        handler.output_is_flat = output_is_flat
 
         return handler
 
@@ -504,15 +394,18 @@ class DiTDecoder(DiffusionTransformer):
         ids_set: list[int], 
         layers_dicts: list[dict], 
         base_dim: int, 
-        base_grid_size: int,
+        base_grid_size: int | None,
         dim_forced: bool, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
         kwargs: dict, 
         zero_index_base_dim: int | None = None, 
-        increased_dim: int = 0, 
+        base_is_flat: bool = False,
+        increased_dim: int = 0,
         increased_grid_size: int | None = None,
+        increased_is_flat: bool = False,
         output_dim_flag: bool = True, 
+        prepended_tokens_num: int | None = None,
         name: str | None = None, 
     ) -> FeatureHandler:
         """Create an internal connector with accurate width/grid metadata.
@@ -521,87 +414,44 @@ class DiTDecoder(DiffusionTransformer):
             ids_set (list[int]): Decoder feature depths to select.
             layers_dicts (list[dict]): Previously created decoder stages.
             base_dim (int): Forced output width and depth-zero width.
-            base_grid_size (int): Decoder depth-zero square token-grid side.
+            base_grid_size (int | None): Decoder depth-zero grid metadata.
             dim_forced (bool): Project widened channel concatenation back to
                 ``base_dim``.
             ln_mlp_ratio (float | None): Adaptive-normalization MLP ratio.
             ln_no_adaptation (bool): Disable condition adaptation when true.
             kwargs (dict[str, object]): ``FeatureHandler`` options.
             zero_index_base_dim (int | None): Optional depth-zero width.
+            base_is_flat (bool): Whether decoder depth zero is rank 2.
             increased_dim (int): Width of an appended secondary tensor.
             increased_grid_size (int | None): Grid of the secondary tensor.
+            increased_is_flat (bool): Whether the secondary tensor is rank 2.
             output_dim_flag (bool): Permit automatic forced projection.
+            prepended_tokens_num (int | None): Prefix-token count for the
+                selected feature branch.
             name (str | None): Keras layer name.
 
         Returns:
             FeatureHandler: Connector with ``output_grid_size`` metadata.
         """
 
-        source_base_dim = base_dim if zero_index_base_dim is None \
-            else zero_index_base_dim
-        dims = [
-            source_base_dim if index == 0 else self._get_last_output_dim(
-                index - 1, layers_dicts, source_base_dim
-            )
-            for index in ids_set
-        ]
-        grids = [
-            base_grid_size if index == 0 else self._get_last_grid_size(
-                index - 1, layers_dicts, base_grid_size
-            )
-            for index in ids_set
-        ]
-        # Include the current decoder grid when its feature width is present.
-        if increased_dim:
-            grids.append(increased_grid_size)
-        connect_type = kwargs.get("connect_type", "concat")
-        connect_axis = kwargs.get("connect_axis", -1)
-        channel_axis = self._uses_channel_axis(connect_axis, grids) \
-            if connect_type == "concat" else True
-        # Channel concatenation sums every participating feature width.
-        if connect_type == "concat" and channel_axis:
-            merged_dim = sum(dims) + increased_dim
-        # Addition or token concatenation requires one shared feature width.
-        else:
-            all_dims = dims + ([increased_dim] if increased_dim else [])
-            require(not all_dims or len(set(all_dims)) == 1, (
-                "Token concatenation/addition requires equal feature dimensions."
-            ))
-            merged_dim = all_dims[0] if all_dims else 0
-
-        # Token-axis concatenation may change the square token grid.
-        if connect_type == "concat" and not channel_axis:
-            output_grid_size = None
-            # Infer a square grid when every participating input is spatial.
-            if grids and all(grid is not None for grid in grids):
-                token_count = sum(grid * grid for grid in grids)
-                root = isqrt(token_count)
-                output_grid_size = root if root * root == token_count else None
-        # Channel concatenation and addition require equal spatial grids.
-        else:
-            require(not grids or len(set(grids)) == 1, (
-                "Channel concatenation/addition requires equal token grids."
-            ))
-            output_grid_size = grids[0] if grids else None
-
-        options = {
-            "ids": ids_set, 
-            "ln_dim": merged_dim, 
-            "mlp_output_dim": base_dim if dim_forced and output_dim_flag
-                and merged_dim > base_dim else None, 
-            "ln_mlp_ratio": ln_mlp_ratio, 
-            "ln_no_adaptation": ln_no_adaptation, 
-            "grid_size": output_grid_size,
-            "name": name, 
-        }
-        options.update(kwargs)
-        handler = FeatureHandler(**options)
-        handler.output_grid_size = handler.grid_size
-        handler.output_is_flat = bool(grids) and all(
-            grid is None for grid in grids
+        return super()._create_feature_handler(
+            ids_set=ids_set,
+            layers_dicts=layers_dicts,
+            base_dim=base_dim,
+            base_grid_size=base_grid_size,
+            dim_forced=dim_forced,
+            ln_mlp_ratio=ln_mlp_ratio,
+            ln_no_adaptation=ln_no_adaptation,
+            kwargs=kwargs,
+            zero_index_base_dim=zero_index_base_dim,
+            base_is_flat=base_is_flat,
+            increased_dim=increased_dim,
+            increased_grid_size=increased_grid_size,
+            increased_is_flat=increased_is_flat,
+            output_dim_flag=output_dim_flag,
+            prepended_tokens_num=prepended_tokens_num,
+            name=name,
         )
-
-        return handler
 
     def _get_layers_dict_last_output_dim(
         self, 
@@ -618,31 +468,17 @@ class DiTDecoder(DiffusionTransformer):
             int | None: Last known feature width.
         """
 
-        output_dim = layers_dict[self.FA].output_dim if self.FA in layers_dict \
-            else None
-        inherited = DiffusionTransformer._get_layers_dict_last_output_dim(
-            self, 
-            layers_dict, 
-            skip_reshaper
+        return super()._get_layers_dict_last_output_dim(
+            layers_dict, skip_reshaper
         )
-        # Treat a terminal flat handler as nonspatial when no later layer restores a grid.
-        if skip_reshaper and not any(
-            key in layers_dict for key in (self.VTB, self.LM, self.DS, self.US)
-        ):
-            handler = layers_dict.get(self.FC, layers_dict.get(self.FA))
-            # Suppress inherited grid metadata for flat handler output.
-            if handler is not None and handler.output_is_flat:
-                inherited = None
-                output_dim = None
-    
-        return inherited if inherited is not None else output_dim
 
     def _get_last_grid_size(
         self, 
         i: int, 
         layers_dicts: list[dict], 
-        base_grid_size: int, 
-        skip_reshaper: bool = False, 
+        base_grid_size: int | None,
+        skip_reshaper: bool = False,
+        base_is_flat: bool = False,
     ) -> int | None:
         """Resolve decoder grid size, including encoder aggregation.
 
@@ -656,50 +492,12 @@ class DiTDecoder(DiffusionTransformer):
             int | None: Most recent spatial grid side.
         """
 
-        # Return the decoder's patch grid before any decoder depth executes.
-        if i == -1:
-            return base_grid_size
-
-        grid_size = None
-        grid_was_set = False
-        # Inspect the requested decoder stage when it exists.
-        if i < len(layers_dicts):
-            stage = layers_dicts[i]
-            # Read grid metadata from an encoder feature aggregator.
-            if self.FA in stage:
-                handler = stage[self.FA]
-                # Preserve a handler grid unless deliberately routing around a flat output.
-                if not skip_reshaper or not handler.output_is_flat:
-                    grid_size = handler.output_grid_size
-                    grid_was_set = True
-            # Read grid metadata from a decoder feature connector.
-            if self.FC in stage:
-                handler = stage[self.FC]
-                # Preserve a connector grid unless deliberately routing around a flat output.
-                if not skip_reshaper or not handler.output_is_flat:
-                    grid_size = handler.output_grid_size
-                    grid_was_set = True
-            # Transformer blocks preserve or adopt their recorded query grid.
-            if self.VTB in stage:
-                grid_size = stage[self.VTB].grid_size
-                grid_was_set = True
-            for key in (self.LM, self.DS, self.US):
-                # Let spatial mixers and scalers update the current grid.
-                if key in stage:
-                    grid_size = stage[key].output_grid_size
-                    grid_was_set = True
-            # Derive spatial or flat metadata from a non-skipped reshaper.
-            if self.R in stage and not skip_reshaper:
-                output_shape = stage[self.R].output_shape[0]
-                grid_size = isqrt(output_shape[1]) if len(output_shape) == 3 \
-                    else None
-                grid_was_set = True
-    
-        return grid_size if grid_was_set else self._get_last_grid_size(
-            i - 1, 
-            layers_dicts, 
-            base_grid_size, 
-            skip_reshaper
+        return super()._get_last_grid_size(
+            i,
+            layers_dicts,
+            base_grid_size,
+            skip_reshaper=skip_reshaper,
+            base_is_flat=base_is_flat,
         )
 
     def _create_layers_dict(self, i: int, layers_dicts: list[dict]) -> dict:
@@ -717,7 +515,9 @@ class DiTDecoder(DiffusionTransformer):
         stage = {}
         key = i + 1
         previous_dim = self._get_last_output_dim(i - 1, layers_dicts, self.dim)
-        previous_grid = self._get_last_grid_size(i - 1, layers_dicts, self.grid_size)
+        previous_grid, previous_is_flat = self._get_last_shape_metadata(
+            i - 1, layers_dicts, self.grid_size
+        )
 
         # Build the encoder aggregator and append decoder features unless separately connected.
         if key in self.feature_aggregation_ids_dict:
@@ -726,6 +526,7 @@ class DiTDecoder(DiffusionTransformer):
                 self.feature_aggregation_ids_dict[key],
                 increased_dim=previous_dim if append_current else 0,
                 second_grid_size=previous_grid if append_current else None,
+                second_is_flat=previous_is_flat if append_current else False,
                 output_dim_flag=key not in self.connection_ids_dict,
                 kwargs=self.feature_aggregation_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.FA[2:]}",
@@ -745,6 +546,8 @@ class DiTDecoder(DiffusionTransformer):
                     if self.FA in stage else 0,
                 increased_grid_size=stage[self.FA].output_grid_size
                     if self.FA in stage else None,
+                increased_is_flat=stage[self.FA].output_is_flat
+                    if self.FA in stage else False,
                 kwargs=self.connection_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}",
             )
@@ -772,6 +575,8 @@ class DiTDecoder(DiffusionTransformer):
                     if self.CAA in stage else 0,
                 increased_grid_size=stage[self.CAA].output_grid_size
                     if self.CAA in stage else None,
+                increased_is_flat=stage[self.CAA].output_is_flat
+                    if self.CAA in stage else False,
                 kwargs=self.cross_attention_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}",
             )
@@ -815,8 +620,6 @@ class DiTDecoder(DiffusionTransformer):
                 drop_per_sample=self.drop_per_sample,
                 use_decoder=key in self.use_decoder_ids,
                 name_prefix=f"{self.name_prefix}depth_{key}_",
-                mha_query_grid_size=query_grid
-                    if self.cross_attention_plug_type == "queries" else None,
             )
 
         # Build this decoder depth's local mixer.
@@ -1066,13 +869,13 @@ class DiTDecoder(DiffusionTransformer):
         )
         encoder_features = tuple(
             layers.Input(
-                shape=(None, dim) if grid is not None else (dim,), 
+                shape=(dim,) if is_flat else (None, dim),
                 dtype=self.compute_dtype,
                 name=f"encoder_feature_{index}", 
             )
-            for index, (dim, grid) in enumerate(zip(
+            for index, (dim, is_flat) in enumerate(zip(
                 self.encoder_feature_dims, 
-                self.encoder_feature_grid_sizes, 
+                self.encoder_feature_is_flat,
             ))
         )
         self.inputs = decoder_inputs + (encoder_cond,) + encoder_features
@@ -1162,9 +965,8 @@ class DiTDecoder(DiffusionTransformer):
                 flatten_id > min_depth and (
                     max_depth < 0 or flatten_id <= max_depth
                 )
-                for flatten_id in self._get_flatten_ids(
-                    self.reshaper_ids_dict
-                )
+                for flatten_id, reshape_type in self.reshaper_ids_dict.items()
+                if reshape_type == "flatten"
             )
             if len(latent_inputs) != expected_latents:
                 raise ValueError(
@@ -1489,7 +1291,8 @@ class DiTDecoder(DiffusionTransformer):
         encoder_feature_dims: list[int] | tuple[int, ...], 
         encoder_feature_grid_sizes: list[int | None] | tuple[
             int | None, ...
-        ], 
+        ],
+        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None,
     ) -> None:
         """Extend encoder metadata after progressive encoder growth.
 
@@ -1501,9 +1304,12 @@ class DiTDecoder(DiffusionTransformer):
             encoder_feature_dims (list[int]): Positive feature widths for all
                 encoder depths, including depth 0.
             encoder_feature_grid_sizes (list[int | None]): Matching spatial
-                grid sides. ``None`` denotes a flat feature; the final entry
-                must be spatial. Its width must stay stable for existing
-                attention projections, while its token grid may change.
+                grid sides. ``None`` may denote a flat feature or non-square
+                tokens; the final entry must be spatial. Its width must stay
+                stable for existing attention projections, while its token
+                grid may change.
+            encoder_feature_is_flat (list[bool] | None): Matching explicit
+                rank states. ``None`` uses the legacy grid-based inference.
 
         Returns:
             None: Metadata and serialized constructor state are updated.
@@ -1514,24 +1320,26 @@ class DiTDecoder(DiffusionTransformer):
                 feature.
         """
 
-        dims = list(encoder_feature_dims)
-        grids = list(encoder_feature_grid_sizes)
+        dims = [int(dim) for dim in encoder_feature_dims]
+        grids = [
+            None if grid is None else int(grid)
+            for grid in encoder_feature_grid_sizes
+        ]
+        flat_states = list(encoder_feature_is_flat) if \
+            encoder_feature_is_flat is not None else [
+                grid is None for grid in grids
+            ]
         # Require nonempty, aligned encoder width and grid metadata.
-        if not dims or len(dims) != len(grids):
+        if not dims or len(dims) != len(grids) or len(dims) != len(flat_states):
             raise ValueError(
-                "encoder feature dimensions and grid sizes must be non-empty "
-                "and have equal length."
+                "encoder feature dimensions, grids, and rank states must be "
+                "non-empty and have equal length."
             )
-        # Require every encoder feature width to be a positive integer.
-        if any(int(dim) != dim or dim <= 0 for dim in dims):
-            raise ValueError("encoder feature dimensions must be positive integers.")
-        # Require each spatial grid to be positive when present.
-        if any(
-            grid is not None and (int(grid) != grid or grid <= 0)
-            for grid in grids
+        if any(dim < 1 for dim in dims) or any(
+            grid is not None and grid < 1 for grid in grids
         ):
             raise ValueError(
-                "encoder feature grid sizes must be positive integers or None."
+                "encoder feature dimensions and supplied grids must be positive."
             )
         # Progressive metadata may extend but never remove existing features.
         if len(dims) < len(self.encoder_feature_dims):
@@ -1539,10 +1347,11 @@ class DiTDecoder(DiffusionTransformer):
         old_count = len(self.encoder_feature_dims)
         # Preserve metadata for every previously registered encoder feature.
         if dims[:old_count] != self.encoder_feature_dims or \
-        grids[:old_count] != self.encoder_feature_grid_sizes:
+        grids[:old_count] != self.encoder_feature_grid_sizes or \
+        flat_states[:old_count] != self.encoder_feature_is_flat:
             raise ValueError("existing encoder feature metadata is immutable.")
         # Keep the final encoder output spatial for decoder conditioning.
-        if grids[-1] is None:
+        if grids[-1] is None or flat_states[-1]:
             raise ValueError("the final encoder feature must have a spatial grid.")
         # Keep progressive encoder output width compatible with decoder construction.
         if dims[-1] != self.encoder_output_dim:
@@ -1553,11 +1362,13 @@ class DiTDecoder(DiffusionTransformer):
 
         self.encoder_feature_dims = dims
         self.encoder_feature_grid_sizes = grids
+        self.encoder_feature_is_flat = flat_states
         self.encoder_output_dim = dims[-1]
         self.encoder_output_grid_size = grids[-1]
         self._init_config.update({
             "encoder_feature_dims": deepcopy(dims), 
             "encoder_feature_grid_sizes": deepcopy(grids), 
+            "encoder_feature_is_flat": deepcopy(flat_states),
             "encoder_output_dim": self.encoder_output_dim, 
             "encoder_output_grid_size": self.encoder_output_grid_size, 
             "feature_aggregation_ids_dict": deepcopy(
@@ -1836,10 +1647,39 @@ def run_self_tests() -> dict[str, str]:
         (images, times, labels), encoder_cond, encoder_features,
     )["noises"]
     assert connector_tokens.layers_dicts[0][connector_tokens.FC].output_dim == 4
+    assert connector_tokens.layers_dicts[0][
+        connector_tokens.FC
+    ].output_is_flat is False
     assert connector_tokens._get_last_grid_size(
         0, connector_tokens.layers_dicts, connector_tokens.grid_size
     ) is None
     assert connector_output.shape == (2, 8, 4)
+
+    non_square_tokens = DiTDecoder(
+        depth=1,
+        vit_block_ids=[],
+        use_decoder_ids=[],
+        feature_aggregation_ids_dict={1: [0]},
+        feature_aggregation_kwargs={"connect_axis": 1},
+        use_unpatchify=False,
+        encoder_feature_grid_sizes=[None, 2],
+        encoder_feature_dims=[4, 4],
+        encoder_feature_is_flat=[False, False],
+        **{key: value for key, value in common.items() if key not in (
+            "encoder_feature_grid_sizes", "encoder_feature_dims"
+        )},
+    )
+    non_square_handler = non_square_tokens.layers_dicts[0][
+        non_square_tokens.FA
+    ]
+    assert non_square_handler.grid_size is None
+    assert non_square_handler.output_is_flat is False
+    non_square_output = non_square_tokens(
+        (images, times, labels),
+        encoder_cond,
+        [tf.ones((2, 6, 4)), encoder_features[-1]],
+    )["noises"]
+    assert non_square_output.shape == (2, 10, 4)
 
     try:
         DiTDecoder(

@@ -121,18 +121,51 @@ eta 0. Final visualization settings remain reporting choices rather than HPO
 parameters.
 
 `swap_noise_image=True` is an immutable wrapper override for direct x0/VAE
-prediction. These studies fix `image_loss_coef=0`, tune a positive
-`kl_loss_coef` unless the override supplies one, and optimize reconstruction
-plus weighted main-latent KL. They do not request denoising GIFs. The immutable
-main-network topology must also be sampleable: DiT, DiT encoder-decoder, and
-DiT encoder-decoder-classifier studies require
-`model_overrides={"vit_block_ids": [1], "reshaper_ids_dict": {1: "flatten",
-2: "unflatten"}, "reshaper_kwargs": {"add_kl": True}}`; U-Net and U-Net
-classifier studies require
+prediction. These studies fix `image_loss_coef=0`, tune `kl_loss_coef` unless
+the override supplies one, and optimize reconstruction plus weighted
+main-latent KL. HPO validates the variational structure and ratio-list
+cardinality but passes a fixed KL coefficient through unchanged. These studies
+do not request denoising GIFs. DiT, DiT encoder-decoder, and DiT
+encoder-decoder-classifier studies require an immutable main-network topology;
+a single-level example is
+`model_overrides={"vit_block_ids": [1, 4], "use_decoder_ids": [4],
+"reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, "reshaper_kwargs":
+{"add_kl": True}}`; U-Net and U-Net classifier studies require
 `model_overrides={"reshaper_kwargs": {"add_kl": True}}`. Standalone
 `dit_classifier` and `dit_decoder` x0 studies are rejected because their raw
 call contracts cannot resume main-latent decoding. Noise distillation is also
 incompatible with x0 prediction.
+
+An x0 DiT depth is fixed by `model_overrides["depth"]`, when supplied, or
+derived from the greatest positive stage ID in the fixed topology. An explicit
+depth must cover every referenced stage, and neither form creates a sampled
+2--6 depth parameter. Every topology contains actual encoder computation
+(`vit`, local mixer, or downsampling) before its bridge and decoder computation
+(`vit`, local mixer, or upsampling) after it. Transformer/local-mixer stages
+stay out of the bridge, all downsampling precedes it, and all upsampling and
+decoder blocks follow it. Multiple adjacent pairs must additionally form one
+uninterrupted central bridge. This is the minimal Copy35-style routing pattern
+(depth derives to 15):
+
+```python
+model_overrides = {
+    "vit_block_ids": [1, 3, 5, 13, 15],
+    "use_decoder_ids": [13, 15],
+    "connection_ids_dict": {8: [3], 10: [1], 12: [7]},
+    "cross_attention_ids_dict": {13: [9], 15: [11]},
+    "downsample_ids": [2, 4],
+    "reshaper_ids_dict": {
+        6: "flatten", 7: "unflatten",
+        8: "flatten", 9: "unflatten",
+        10: "flatten", 11: "unflatten",
+    },
+    "reshaper_kwargs": {
+        "add_kl": True,
+        "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256],
+    },
+    "upsample_ids": [12, 14],
+}
+```
 
 DiT classifier studies focus `classifier_architecture` on `linear`,
 `connection`, and `u_shape`. On grids divisible by four, `u_vae` and
@@ -142,6 +175,10 @@ downsampling operations precede a central variational bridge, every
 flatten/unflatten pair occurs inside that bridge, and all decoder blocks and
 upsampling operations follow it. This makes the encoder/latent/decoder
 boundary and the occurrence order used by the ratio list unambiguous.
+All-depth feature aggregation always projects the concatenated main features
+to the configured classifier width before entering any of these templates.
+The multilevel template also retains the mandatory terminal `-1: [-1]`
+classifier connection used to feed its final depth to the classification head.
 
 `reshaper_kwargs["latent_dim_ratio"]` is always a list in flatten occurrence
 order, with exactly one member per flatten/unflatten pair. HPO samples an

@@ -13,7 +13,6 @@ import numpy as np
 from importlib import import_module
 
 from collections.abc import Mapping
-from numbers import Integral, Real
 from typing import Literal, Sequence, get_args
 
 from . import (
@@ -25,7 +24,7 @@ from . import (
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
-from common.runtime import derive_seed, validate_model_dtype_policy
+from common.runtime import derive_seed, effective_seed
 from common.validation import require
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
@@ -295,7 +294,7 @@ class DiffusionModel(ArgumentSaverModel):
                                             else int(self.test_noisified_max_timesteps)
         self.map_num_parallel_calls = tf.data.AUTOTUNE if self.map_num_parallel_calls is None \
                                     else int(self.map_num_parallel_calls)
-        self.seed = self._normalize_seed(self.seed)
+        self.seed = effective_seed(None, self.seed)
 
         self._preprocess_training = None
         self._map_preprocess_without_teacher = bool(self.map_preprocess)
@@ -660,6 +659,13 @@ class DiffusionModel(ArgumentSaverModel):
         data = y if y is not None else x
         # Scan only labels, and refuse a dataset known to repeat forever.
         if isinstance(data, tf.data.Dataset):
+            cardinality = int(
+                tf.data.experimental.cardinality(data).numpy()
+            )
+            if cardinality == int(tf.data.INFINITE_CARDINALITY):
+                raise ValueError(
+                    "Dynamic class discovery requires a finite dataset."
+                )
             labels = set()
             for batch in data:
                 labels.update(
@@ -779,69 +785,26 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor: Nonempty int32 vector whose IDs are valid for network.
 
         Raises:
-            TypeError: If labels cannot form an integer tensor.
             ValueError: If labels are not a vector or contain an invalid ID.
         """
 
-        try:
-            labels = tf.convert_to_tensor(labels)
-        except (TypeError, ValueError) as error:
-            raise TypeError("labels must be an integer tensor or sequence.") \
-                from error
-        # Network condition IDs must use an integer, non-Boolean dtype.
-        if not labels.dtype.is_integer or labels.dtype == tf.bool:
-            raise TypeError("labels must have an integer dtype.")
-        # Reject a statically known non-vector label structure early.
-        if labels.shape.rank is not None and labels.shape.rank != 1:
-            raise ValueError(
-                "labels must be a one-dimensional tensor or sequence."
-            )
-        # Require at least one requested sample when static shape is available.
-        if labels.shape.rank == 1 and labels.shape[0] == 0:
-            raise ValueError("labels must contain at least one condition ID.")
-
-        num_labels = getattr(network, "num_labels", None)
-        # Sampling requires a finite, positive network condition vocabulary.
-        if isinstance(num_labels, bool) or not isinstance(num_labels, Integral) \
-        or num_labels < 1:
-            raise ValueError(
-                "The selected network must expose a positive num_labels."
-            )
-
-        static_labels = tf.get_static_value(labels)
-        # Report statically visible out-of-vocabulary labels before graph tracing.
-        if static_labels is not None and (
-        np.any(static_labels < 0) or 
-        np.any(static_labels >= num_labels)):
-            raise ValueError(
-                f"labels must contain network IDs in [0, {num_labels})."
-            )
-
-        label_assertions = (
-            tf.debugging.assert_rank(
-                labels, 1, 
-                message="labels must be one-dimensional."
-            ), 
-            tf.debugging.assert_positive(
-                tf.size(labels), 
-                message="labels must not be empty."
-            ),
-            tf.debugging.assert_greater_equal(
-                labels, 
-                tf.cast(0, labels.dtype), 
-                message="label IDs must be nonnegative."
-            ),
-            tf.debugging.assert_less(
-                labels, 
-                tf.cast(num_labels, labels.dtype), 
-                message="label IDs exceed the selected network vocabulary."
-            )
+        labels = tf.convert_to_tensor(
+            labels, 
+            dtype=tf.int32
         )
+        num_labels = network.num_labels
+
         with tf.control_dependencies([
-            assertion for assertion in label_assertions
+            assertion for assertion in (
+                tf.debugging.assert_less(
+                    labels,
+                    tf.cast(num_labels, labels.dtype),
+                    message="label IDs exceed the selected network vocabulary."
+                ),
+            )
             if assertion is not None
         ]):
-            return tf.cast(tf.identity(labels), tf.int32)
+            return tf.identity(labels)
 
     def _mask_unknown_teacher_labels(
         self, 
@@ -862,41 +825,6 @@ class DiffusionModel(ArgumentSaverModel):
             labels, 
             tf.zeros_like(labels)
         )
-
-    @staticmethod
-    def _normalize_seed(
-        seed: int | None, 
-        name: str = "seed"
-    ) -> int | None:
-        """Validate and normalize a TensorFlow/NumPy-compatible seed.
-
-        Args:
-            seed (int | None): Optional non-Boolean integral seed.
-            name (str): Public argument name used in error messages.
-
-        Returns:
-            int | None: A plain Python integer in ``[0, 2**32)``, or None.
-
-        Raises:
-            TypeError: If the value is not an integer or None.
-            ValueError: If the integer is outside the shared runtime range.
-        """
-
-        # Preserve None as the explicit request for advancing runtime randomness.
-        if seed is None:
-            return None
-
-        # Reject Booleans and non-integral seeds before normalizing NumPy scalars.
-        if isinstance(seed, bool) or not isinstance(seed, Integral):
-            raise TypeError(f"{name} must be a non-Boolean integer or None.")
-
-        seed = int(seed)
-
-        # Keep seeds inside the unsigned range shared by runtime seed helpers.
-        if not 0 <= seed < 2 ** 32:
-            raise ValueError(f"{name} must be in [0, 2**32).")
-
-        return seed
 
     @property
     def current_timesteps_bounds(self) -> tuple[int, int]:
@@ -924,9 +852,9 @@ class DiffusionModel(ArgumentSaverModel):
         """Return Keras metric trackers reset between fit/evaluate epochs.
 
         Returns:
-            list[tf.keras.metrics.Metric]: Total, noise, split-noise, image, 
-            KL, class-token regularizer loss trackers and regularizer
-            accuracy tracker. They exist after :meth:`compile`.
+            list[tf.keras.metrics.Metric]: Total, noise, optional split-noise,
+            distillation, image, KL, class-token regularizer loss trackers and
+            regularizer accuracy tracker. They exist after :meth:`compile`.
         """
 
         return [
@@ -1003,7 +931,7 @@ class DiffusionModel(ArgumentSaverModel):
             dtype=stable_dtype
         )
         self.noise_loss_tracker = metrics.Mean(
-            name="total_noise_loss" if self.show_separate_noise_losses \
+            name="total_noise_loss" if self.show_separate_noise_losses 
                 else "noise_loss", 
             dtype=stable_dtype
         )
@@ -1078,12 +1006,6 @@ class DiffusionModel(ArgumentSaverModel):
         try:
             # Prepare dataset batches in the input pipeline when requested.
             if self.map_preprocess:
-                # Restrict mapped preprocessing to the dataset API it targets.
-                if not isinstance(x, tf.data.Dataset):
-                    raise TypeError(
-                        "map_preprocess=True requires x to be a tf.data.Dataset."
-                    )
-
                 self._preprocess_training = True
                 x = x.map(
                     self.prep_inputs_map, 
@@ -1093,13 +1015,6 @@ class DiffusionModel(ArgumentSaverModel):
                 validation_data = kwargs.get("validation_data")
                 # Apply the equivalent clean-input preparation to validation.
                 if validation_data is not None:
-                    # Require validation to use the same dataset input contract.
-                    if not isinstance(validation_data, tf.data.Dataset):
-                        raise TypeError(
-                            "map_preprocess=True requires validation_data "
-                            "to be a tf.data.Dataset."
-                        )
-
                     train_t_min = self._active_min_timestep
                     train_t_max = self._active_max_timestep
                     self.set_timestep_bounds(
@@ -1172,18 +1087,11 @@ class DiffusionModel(ArgumentSaverModel):
         try:
             # Prepare evaluation batches in the CPU input pipeline on request.
             if self.map_preprocess:
-                # Restrict mapped evaluation to TensorFlow datasets.
-                if not isinstance(x, tf.data.Dataset):
-                    raise TypeError(
-                        "map_preprocess=True requires x to be a tf.data.Dataset."
-                    )
-
                 # Keras calls this override for validation inside ``fit``. Its
                 # validation dataset was already prepared above, so do not map
                 # the resulting seven/eight-tensor element a second time.
-                element_spec = x.element_spec
                 already_prepared = self._is_prepared_dataset_spec(
-                    element_spec
+                    x.element_spec
                 )
                 # Map only raw two-tensor image/label dataset elements.
                 if not already_prepared:
@@ -1738,12 +1646,6 @@ class DiffusionModel(ArgumentSaverModel):
             # Prepare each progressive dataset under its current stage state.
             if self.map_preprocess:
                 stage_x = stage_fit_kwargs.get("x")
-                # Require a dataset before installing the mapping operation.
-                if not isinstance(stage_x, tf.data.Dataset):
-                    raise TypeError(
-                        "map_preprocess=True requires x to be a tf.data.Dataset."
-                    )
-
                 self._preprocess_training = True
                 stage_fit_kwargs["x"] = stage_x.map(
                     self.prep_inputs_map, 
@@ -1753,13 +1655,6 @@ class DiffusionModel(ArgumentSaverModel):
                 validation_data = stage_fit_kwargs.get("validation_data")
                 # Prepare an optional stage validation dataset consistently.
                 if validation_data is not None:
-                    # Require validation to satisfy the mapped dataset contract.
-                    if not isinstance(validation_data, tf.data.Dataset):
-                        raise TypeError(
-                            "map_preprocess=True requires validation_data "
-                            "to be a tf.data.Dataset."
-                        )
-
                     stage_t_min = self._active_min_timestep
                     stage_t_max = self._active_max_timestep
                     self.set_timestep_bounds(
@@ -1930,22 +1825,10 @@ class DiffusionModel(ArgumentSaverModel):
                 ``0 <= min < max <= timesteps``.
         """
 
-        min_timesteps = 0 if min_timesteps is None else min_timesteps
-        max_timesteps = 0 if max_timesteps is None else max_timesteps
+        min_timesteps = int(0 if min_timesteps is None else min_timesteps)
+        max_timesteps = int(0 if max_timesteps is None else max_timesteps)
         max_timesteps = self.timesteps if max_timesteps == -1 else max_timesteps
 
-        require(
-            isinstance(min_timesteps, Integral) and 
-            not isinstance(min_timesteps, bool), 
-            "min_timesteps must be an integer."
-        )
-        require(
-            isinstance(max_timesteps, Integral) and 
-            not isinstance(max_timesteps, bool), 
-            "max_timesteps must be an integer."
-        )
-        min_timesteps = int(min_timesteps)
-        max_timesteps = int(max_timesteps)
         require(
             (min_timesteps == 0 and max_timesteps == 0) or
             0 <= min_timesteps < max_timesteps <= self.timesteps, 
@@ -2051,12 +1934,6 @@ class DiffusionModel(ArgumentSaverModel):
             )
             teacher_network = raw_teacher
 
-        if teacher_network is not None:
-            validate_model_dtype_policy(
-                teacher_network, 
-                self.dtype_policy, 
-                role="teacher_network"
-            )
         if teacher_network is not None and (
             teacher_network is self.network
             or teacher_network is self.ema_network
@@ -2231,25 +2108,31 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             tf.Tensor: Noisy images ``x_t = sqrt(alpha_bar_t)*x0 +
-            sqrt(1-alpha_bar_t)*noise`` with the same shape/dtype as ``x0``.
+            sqrt(1-alpha_bar_t)*noise`` with the same shape as ``x0``. A
+            floating input preserves its dtype; other inputs use the model's
+            compute dtype.
 
-        Raises:
-            TypeError: If ``x0`` does not have a floating dtype.
         """
 
-        # Reject integer images because forward diffusion requires real arithmetic.
-        if not x0.dtype.is_floating:
-            raise TypeError("x0 must have a floating dtype.")
-
+        x0 = tf.convert_to_tensor(x0)
+        output_dtype = x0.dtype if x0.dtype.is_floating else tf.as_dtype(
+            self.compute_dtype
+        )
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+
         a, b = self.get_noise_and_signal_rates(t)
         a = tf.reshape(a, (-1, 1, 1, 1))
         b = tf.reshape(b, (-1, 1, 1, 1))
+
         stable_x0 = tf.cast(x0, stable_dtype)
         stable_noises = tf.cast(noises, stable_dtype)
-        noisy = a * stable_x0 + b * stable_noises
 
-        return tf.cast(noisy, x0.dtype)
+        noisy = tf.cast(
+            a * stable_x0 + b * stable_noises, 
+            output_dtype
+        )
+
+        return noisy
 
     def noisify(
         self, 
@@ -2273,20 +2156,22 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, tf.Tensor]: Noisy images ``x_t``, sampled
-            standard-normal noise, and int32 timesteps, with image tensors
-            matching ``x0`` shape and floating dtype.
+            standard-normal noise, and int32 timestep IDs. Image tensors match
+            ``x0`` after nonfloating inputs are converted to the compute dtype.
 
-        Raises:
-            TypeError: If ``x0`` does not have a floating dtype.
         """
 
-        # Generate noise only for floating-point clean images.
-        if not x0.dtype.is_floating:
-            raise TypeError("x0 must have a floating dtype.")
-
-        min_timesteps = self._active_min_timestep if min_timesteps is None else min_timesteps
-        max_timesteps = self._active_max_timestep if max_timesteps is None else max_timesteps
-        seed = self._normalize_seed(
+        x0 = tf.convert_to_tensor(x0)
+        min_timesteps = int(
+            self._active_min_timestep
+            if min_timesteps is None else min_timesteps
+        )
+        max_timesteps = int(
+            self._active_max_timestep
+            if max_timesteps is None else max_timesteps
+        )
+        seed = effective_seed(
+            None, 
             self.seed if seed is None else seed, 
             "noisify seed"
         )
@@ -2295,20 +2180,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Draw timesteps only when the caller did not supply explicit IDs.
         if t is None:
-            # Reject invalid lower bounds before TensorFlow reports an RNG error.
-            if isinstance(min_timesteps, bool) or not isinstance(
-                min_timesteps, Integral
-            ):
-                raise TypeError("min_timesteps must be an integer.")
-            # Reject invalid upper bounds before TensorFlow reports an RNG error.
-            if isinstance(max_timesteps, bool) or not isinstance(
-                max_timesteps, Integral
-            ):
-                raise TypeError("max_timesteps must be an integer.")
-
-            min_timesteps = int(min_timesteps)
-            max_timesteps = int(max_timesteps)
-
             if min_timesteps == 0 and max_timesteps == 0:
                 return (
                     x0, 
@@ -2331,10 +2202,8 @@ class DiffusionModel(ArgumentSaverModel):
                 dtype=tf.int32, 
                 seed=seed
             )
-        # Validate caller-supplied timestep IDs before forward noising.
         else:
-            t = tf.convert_to_tensor(t)
-            t = tf.cast(tf.identity(t), tf.int32)
+            t = tf.convert_to_tensor(t, dtype=tf.int32)
 
         noises = tf.random.normal(
             x_shape, 
@@ -2436,8 +2305,7 @@ class DiffusionModel(ArgumentSaverModel):
         }
 
         for w, ew in zip(self.network.weights, self.ema_network.weights):
-            selected = selected_ids is None or \
-                id(w) in selected_ids or (
+            selected = selected_ids is None or id(w) in selected_ids or (
                     not w.trainable and 
                     w.name.rsplit("/", 1)[0] in selected_scopes
                 )
@@ -2987,8 +2855,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         eps_c, regs_list_c, z_vals_list_c = run_network(cond_labels)
         eps_u, regs_list_u, z_vals_list_u = run_network(uncond_labels) \
-                                    if self.use_cfg and scale is not None \
-                                    else (None, None, [])
+                                            if self.use_cfg and scale is not None \
+                                            else (None, None, [])
 
         return ((eps_c, eps_u), 
                 (regs_list_c, regs_list_u), 
@@ -3042,11 +2910,13 @@ class DiffusionModel(ArgumentSaverModel):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         stable_x_t = tf.cast(x_t, stable_dtype)
         stable_eps = tf.cast(eps, stable_dtype)
-        x0 = (
+        x0 = tf.cast((
             stable_x_t - sqrt_one_minus_a_t * stable_eps
-        ) / sqrt_a_t
+            ) / sqrt_a_t, 
+            x_t.dtype
+        ) if not self.swap_noise_image else eps
 
-        return tf.cast(x0, x_t.dtype), eps
+        return x0, eps
 
     def forward( # call function
         self, 
@@ -3094,7 +2964,6 @@ class DiffusionModel(ArgumentSaverModel):
             network_name, 
             training
         )
-
         x0, eps = self.denoise(
             x_t, 
             t, 
@@ -3408,7 +3277,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         Raises:
             ValueError: If no flatten reshaper exists, it is not KL-enabled,
-                a multilevel transformer bridge is not centrally placed,
+                a transformer bridge is not centrally placed,
                 a latent has no route to the output, latent inputs are
                 incompatible, or a decoder route bypasses the variational
                 bridge.
@@ -3431,39 +3300,6 @@ class DiffusionModel(ArgumentSaverModel):
             raise ValueError(
                 "sample_vae requires add_kl=True in reshaper_kwargs."
             )
-
-        for ids_dict in (
-            network.connection_ids_dict, 
-            network.cross_attention_ids_dict
-        ):
-            for depth, ids in ids_dict.items():
-                # A route co-located with a flatten stage is an encoder-side
-                # posterior builder and is bypassed when that latent is injected.
-                if network.reshaper_ids_dict.get(depth) == "flatten":
-                    continue
-                # Reject actual decoder routes around the stochastic bridge.
-                if depth > z_id and any(id_ < z_id for id_ in ids):
-                    raise ValueError(
-                        "VAE decoder connections cannot use features before "
-                        "the first flatten reshaper unless the target is "
-                        "itself a flatten stage."
-                    )
-
-        # A standalone DiTDecoder receives no encoder feature tensors from
-        # sample_vae. Posterior-building aggregators on flatten stages are
-        # skipped, but any later aggregation would consume unavailable state.
-        if isinstance(network, DiTDecoder):
-            for mapping_name in (
-                "feature_aggregation_ids_dict", 
-                "cross_attention_aggregation_ids_dict"
-            ):
-                for depth, ids in getattr(network, mapping_name).items():
-                    if depth > z_id and ids and \
-                    network.reshaper_ids_dict.get(depth) != "flatten":
-                        raise ValueError(
-                            "sample_vae cannot use decoder encoder-feature "
-                            "aggregation after the variational boundary."
-                        )
 
         reshapers = [
             network.layers_dicts[flatten_id - 1][network.R]
@@ -3490,7 +3326,8 @@ class DiffusionModel(ArgumentSaverModel):
             default_labels if labels is None else labels
         )
         n = tf.shape(labels)[0]
-        seed = self._normalize_seed(
+        seed = effective_seed(
+            None, 
             self.seed if seed is None else seed, 
             "sample seed"
         )
@@ -3517,10 +3354,13 @@ class DiffusionModel(ArgumentSaverModel):
             ]
         # A single boundary retains the historical tensor/list input API.
         elif len(flatten_ids) == 1:
-            if isinstance(z, (list, tuple)):
-                z_vals_list = list(z)
-            else:
-                z_vals_list = [z]
+            # Unwrap an explicit one-item per-pair tensor container. A regular
+            # nested Python list is instead one rank-2 latent batch; splitting
+            # it here would silently keep only its first sample during ``zip``.
+            z_vals_list = [z[0]] if isinstance(z, (list, tuple)) and \
+            len(z) == 1 and (
+                tf.is_tensor(z[0]) or isinstance(z[0], np.ndarray)
+            ) else [z]
         else:
             if not isinstance(z, (list, tuple)) or len(z) != len(flatten_ids):
                 raise ValueError(
@@ -3530,10 +3370,13 @@ class DiffusionModel(ArgumentSaverModel):
             z_vals_list = list(z)
 
         projected_z_vals_list = []
-        for latent, z_projector in zip(z_vals_list, z_projectors):
-            latent = tf.convert_to_tensor(latent)
-            latent = tf.cast(tf.identity(latent), stable_dtype)
-
+        for latent, z_projector in zip(
+            z_vals_list, z_projectors
+        ):
+            latent = tf.convert_to_tensor(
+                latent, 
+                dtype=stable_dtype
+            )
             projected_z_vals_list.append(
                 z_projector(latent, training=False)
                 if z_projector is not None else latent
@@ -3590,8 +3433,8 @@ class DiffusionModel(ArgumentSaverModel):
                 passed to ``sample_vae`` as ``z`` and may contain one latent
                 tensor per flatten/unflatten pair.
             steps (int | None): Number of evenly spaced reverse evaluations;
-                None uses ``test_steps``.  Must be an integer in
-                ``[2, timesteps]``.
+                None uses ``test_steps``. The integer-normalized value must be
+                in ``[2, timesteps]``.
             scale (float | None): CFG scale; None uses ``test_cfg_scale``.  0
                 follows the unconditional prediction, 1 the conditional one,
                 and values above 1 extrapolate toward the condition.
@@ -3641,7 +3484,8 @@ class DiffusionModel(ArgumentSaverModel):
             default_labels if labels is None else labels,
         )
         n = tf.shape(labels)[0]
-        seed = self._normalize_seed(
+        seed = effective_seed(
+            None, 
             self.seed if seed is None else seed, 
             "sample seed"
         )
@@ -3655,70 +3499,22 @@ class DiffusionModel(ArgumentSaverModel):
                     self._current_resolution, 
                     self._current_resolution, 
                     self.channels
-                )),
+                )), 
                 dtype=stable_dtype, 
                 seed=seed
             )
         # Normalize and validate a caller-supplied reverse-process state.
         else:
-            try:
-                x_t = tf.convert_to_tensor(x_t)
-            except (TypeError, ValueError) as error:
-                raise TypeError("x_t must be a floating image tensor.") from error
-            # Reverse diffusion requires real-valued image states.
-            if not x_t.dtype.is_floating:
-                raise TypeError("x_t must have a floating dtype.")
-            # Sampling operates on NHWC image batches.
-            if x_t.shape.rank is not None and x_t.shape.rank != 4:
-                raise ValueError("x_t must be a rank-4 image tensor.")
-            expected_tail = (
-                self._current_resolution, 
-                self._current_resolution, 
-                self.channels
-            )
-            # Validate every statically known image dimension before tracing.
-            if x_t.shape.rank == 4:
-                for axis, (actual, expected) in enumerate(
-                    zip(x_t.shape[1:], expected_tail), start=1
-                ):
-                    # Reject a statically incompatible spatial or channel axis.
-                    if actual is not None and int(actual) != expected:
-                        raise ValueError(
-                            f"x_t axis {axis} must have size {expected}, "
-                            f"got {actual}."
-                        )
-                # Reject a statically incompatible sample count early.
-                if x_t.shape[0] is not None and labels.shape[0] is not None \
-                and int(x_t.shape[0]) != int(labels.shape[0]):
-                    raise ValueError("x_t batch size must match labels.")
-            x_t_assertions = (
-                tf.debugging.assert_rank(
-                    x_t, 4, message="x_t must be a rank-4 image tensor."
-                ),
-                tf.debugging.assert_equal(
-                    tf.shape(x_t)[0], n,
-                    message="x_t batch size must match labels.",
-                ),
-                tf.debugging.assert_equal(
-                    tf.shape(x_t)[1:],
-                    tf.constant(expected_tail, dtype=tf.int32),
-                    message="x_t spatial/channel shape is incompatible.",
-                ),
-            )
-            with tf.control_dependencies([
-                assertion for assertion in x_t_assertions
-                if assertion is not None
-            ]):
-                x_t = tf.cast(tf.identity(x_t), stable_dtype)
+            x_t = tf.cast(x_t, stable_dtype)
 
-        steps = self.test_steps if steps is None else steps
-        scale = self.test_cfg_scale if scale is None else scale
-        eta = self.test_eta if eta is None else eta
+        steps = int(self.test_steps if steps is None else steps)
+        scale = float(self.test_cfg_scale if scale is None else scale)
+        eta = float(self.test_eta if eta is None else eta)
 
         # Validate the requested number of reverse steps against the schedule.
-        if not 2 <= int(steps) <= self.timesteps:
+        if not 2 <= steps <= self.timesteps:
             raise ValueError(
-                f"steps must be an integer in [2, {self.timesteps}], got {steps!r}."
+                f"steps must be in [2, {self.timesteps}], got {steps!r}."
             )
         # Validate stochasticity as a finite scalar in the documented range.
         if not 0. <= float(eta) <= 1.:
@@ -3726,16 +3522,16 @@ class DiffusionModel(ArgumentSaverModel):
                 f"eta must be a finite number in [0, 1], got {eta!r}."
             )
 
-        steps = int(steps)
-        eta = float(eta)
-        scale = float(scale)
         ts = np.linspace(
             0, self.timesteps-1, 
             num=steps, 
             dtype="int32"
         )[::-1]
         cond_labels = labels
-        uncond_labels = tf.zeros_like(labels, dtype=tf.int32)
+        uncond_labels = tf.zeros_like(
+            labels, 
+            dtype=tf.int32
+        )
         
         steps = len(ts)
         x0s, x_ts = [], []
@@ -3778,13 +3574,14 @@ class DiffusionModel(ArgumentSaverModel):
                         (1. - alpha_bar_t_next) / (1. - alpha_bar_t)
                     ) * tf.sqrt(
                         1. - alpha_bar_t / alpha_bar_t_next
-                    ),
+                    ), 
                     dtype=stable_dtype
                 )
                 eps_coeff = tf.cast(
                     tf.sqrt(tf.maximum(
-                            1. - alpha_bar_t_next - sigma_t ** 2, 0.0
-                    )),
+                        1. - alpha_bar_t_next - sigma_t ** 2, 
+                        0.
+                    )), 
                     dtype=stable_dtype
                 )
 
@@ -3794,8 +3591,8 @@ class DiffusionModel(ArgumentSaverModel):
                 # Add stochastic DDIM noise when eta is positive.
                 if eta > 0.:
                     x_t += sigma_t * tf.random.normal(
-                        tf.shape(x_t),
-                        dtype=stable_dtype,
+                        tf.shape(x_t), 
+                        dtype=stable_dtype, 
                         seed=seed
                     )
 
@@ -3945,6 +3742,17 @@ def run_self_tests() -> dict[str, str]:
             "start": 0, "end": 1, "mlp_ratio": 2.0
         },
     ))
+    repeated_dynamic_data = tf.data.Dataset.from_tensor_slices(
+        (tf.zeros((1, 4, 4, 1), tf.float32), tf.constant([3], tf.int32))
+    ).batch(1).repeat()
+    try:
+        dynamic_wrapper._check_new_labels(
+            x=repeated_dynamic_data, verbose=False
+        )
+    except ValueError as error:
+        assert "finite dataset" in str(error)
+    else:
+        raise AssertionError("Infinite dynamic-label scans must fail")
     dynamic_wrapper._check_new_labels(y=np.array([3]), verbose=False)
     ema_regularizer = dynamic_wrapper.ema_network.labels_embed_reg
     ema_hidden_before = [
@@ -4178,12 +3986,20 @@ def run_self_tests() -> dict[str, str]:
         float64_images, t=fixed_t, seed=19
     )
     assert float64_sample.dtype == float64_noise.dtype == tf.float64
-    try:
-        wrapper.noisify(tf.ones((1, 4, 4, 1), dtype=tf.int32), t=fixed_t[:1])
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("Integer clean images must fail clearly")
+    integer_images = tf.ones((1, 4, 4, 1), dtype=tf.int32)
+    integer_sample, integer_noise, normalized_t = wrapper.noisify(
+        integer_images, t=tf.constant([1.9]), seed=19
+    )
+    assert integer_sample.dtype == integer_noise.dtype == tf.as_dtype(
+        wrapper.compute_dtype
+    )
+    tf.debugging.assert_equal(normalized_t, tf.constant([1], tf.int32))
+    integer_q_sample = wrapper.q_sample(
+        integer_images,
+        tf.constant([1], tf.int32),
+        tf.ones_like(integer_images),
+    )
+    assert integer_q_sample.dtype == tf.as_dtype(wrapper.compute_dtype)
     x_t, noises, returned_t = wrapper.noisify(images, t=fixed_t, seed=19)
     assert x_t.shape == noises.shape == images.shape
     tf.debugging.assert_equal(returned_t, fixed_t)
@@ -4194,12 +4010,10 @@ def run_self_tests() -> dict[str, str]:
     assert bool(tf.reduce_all((1 <= random_t) & (random_t < 3)))
     for invalid_noisify_kwargs in (
         {"min_timesteps": 2, "max_timesteps": 2},
-        {"min_timesteps": True, "max_timesteps": 2},
         {"t": tf.constant([[0], [1]], dtype=tf.int32)},
         {"t": tf.constant([0], dtype=tf.int32)},
         {"t": tf.constant([-1, 0], dtype=tf.int32)},
         {"t": tf.constant([0, 4], dtype=tf.int32)},
-        {"t": tf.constant([0.0, 1.0])},
     ):
         try:
             wrapper.noisify(images, seed=19, **invalid_noisify_kwargs)
@@ -4459,6 +4273,14 @@ def run_self_tests() -> dict[str, str]:
     summary_lines = []
     wrapper.summary(print_fn=summary_lines.append)
     assert any("Total params" in line for line in summary_lines)
+    tf.debugging.assert_equal(
+        wrapper._prepare_sampling_labels(wrapper.network, [1.9]),
+        tf.constant([1], tf.int32),
+    )
+    tf.debugging.assert_equal(
+        wrapper._prepare_sampling_labels(wrapper.network, [True]),
+        tf.constant([1], tf.int32),
+    )
 
     raw_sample = wrapper.sample(
         network_name="raw", labels=[1, 2], steps=2, eta=0.0, seed=29
@@ -4499,7 +4321,6 @@ def run_self_tests() -> dict[str, str]:
         {"steps": 2, "eta": -0.1},
         {"steps": 2, "eta": 1.1},
         {"steps": 2, "scale": float("inf")},
-        {"steps": 2, "return_x_ts": 1},
     ):
         try:
             wrapper.sample(
@@ -4517,12 +4338,10 @@ def run_self_tests() -> dict[str, str]:
     invalid_sampling_inputs = (
         {"labels": []},
         {"labels": [[1]]},
-        {"labels": [1.0]},
         {"labels": [-1]},
         {"labels": [wrapper.network.num_labels]},
         {"labels": [1], "x_t": tf.zeros((2, 4, 4, 1))},
         {"labels": [1], "x_t": tf.zeros((1, 2, 4, 1))},
-        {"labels": [1], "x_t": tf.zeros((1, 4, 4, 1), tf.int32)},
     )
     for invalid_inputs in invalid_sampling_inputs:
         try:
@@ -4563,15 +4382,15 @@ def run_self_tests() -> dict[str, str]:
                 used to exercise the VAE bypass validator.
 
         Returns:
-            DiffusionTransformer: A two-depth flatten/unflatten network.
+            DiffusionTransformer: A central flatten/unflatten network.
         """
 
         return make_network(
-            depth=2, 
-            vit_block_ids=[1], 
+            depth=4,
+            vit_block_ids=[1, 4],
             cls_token_type="new_weight", 
             cls_token_regularizer_ids=[None], 
-            reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+            reshaper_ids_dict={2: "flatten", 3: "unflatten"},
             reshaper_kwargs={
                 "add_kl": add_kl, 
                 "latent_dim_ratio": [latent_dim_ratio],
@@ -4615,7 +4434,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert vae_images.shape == (2, 4, 4, 1)
     assert bool(tf.reduce_all((0.0 <= vae_images) & (vae_images <= 1.0)))
-    full_reshaper = variational_cond.network.layers_dicts[0][
+    full_reshaper = variational_cond.network.layers_dicts[1][
         variational_cond.network.R
     ]
     full_latent_width = int(full_reshaper.output_shape[1][-1])
@@ -4633,10 +4452,18 @@ def run_self_tests() -> dict[str, str]:
         supplied_sequence_images,
         supplied_vae_images,
     )
+    supplied_nested_images = variational_cond.sample_vae(
+        network_name="raw",
+        labels=tensor_vae_labels,
+        z=supplied_full_latent.numpy().tolist(),
+    )
+    tf.debugging.assert_near(
+        supplied_nested_images,
+        supplied_vae_images,
+    )
     for invalid_z in (
         tf.zeros((1, full_latent_width), dtype=tf.float32),
         tf.zeros((2, full_latent_width + 1), dtype=tf.float32),
-        tf.zeros((2, full_latent_width), dtype=tf.int32),
         tf.zeros((2, 1, full_latent_width), dtype=tf.float32),
     ):
         try:
@@ -4648,7 +4475,9 @@ def run_self_tests() -> dict[str, str]:
         except (TypeError, ValueError, tf.errors.InvalidArgumentError):
             pass
         else:
-            raise AssertionError("Invalid VAE sampling latents must fail")
+            raise AssertionError(
+                f"Invalid VAE sampling latent accepted: {invalid_z.shape}"
+            )
     list_vae_images = variational_cond.sample_vae(
         network_name="raw", labels=[1, 2], seed=53
     )
@@ -4676,7 +4505,7 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", labels=tensor_vae_labels, seed=53
     )
     assert random_projected_images.shape == (2, 4, 4, 1)
-    projected_reshaper = projected_vae.network.layers_dicts[0][
+    projected_reshaper = projected_vae.network.layers_dicts[1][
         projected_vae.network.R
     ]
     projected_latent_width = int(projected_reshaper.output_shape[1][-1])
@@ -4798,11 +4627,11 @@ def run_self_tests() -> dict[str, str]:
         "channels": 1,
         "patch_size": 2,
         "dim": 4,
-        "depth": 2,
+        "depth": 4,
         "mha_num_heads": 1,
         "vit_block_mlp_ratio": 1.0,
-        "vit_block_ids": [],
-        "reshaper_ids_dict": {1: "flatten", 2: "unflatten"},
+        "vit_block_ids": [1, 4],
+        "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
         "reshaper_kwargs": {
             "add_kl": True,
             "latent_dim_ratio": [1.0],
@@ -4819,7 +4648,7 @@ def run_self_tests() -> dict[str, str]:
     )
     try:
         DiffusionModel._validate_sample_vae_topology(
-            dead_single_combined, [1]
+            dead_single_combined, [2]
         )
     except ValueError as error:
         assert "must reach the sampled output" in str(error)
@@ -4840,7 +4669,7 @@ def run_self_tests() -> dict[str, str]:
     )
     try:
         DiffusionModel._validate_sample_vae_topology(
-            bypass_single_combined, [1]
+            bypass_single_combined, [2]
         )
     except ValueError as error:
         assert "before the first flatten" in str(error)
@@ -4885,7 +4714,7 @@ def run_self_tests() -> dict[str, str]:
     bypass_vae = make_wrapper(
         network=make_variational_network(
             build=False,
-            connection_ids_dict={2: [0]},
+            connection_ids_dict={4: [0]},
         ),
         use_ema=False,
         test_network_name="raw",
@@ -5253,7 +5082,7 @@ def run_self_tests() -> dict[str, str]:
 
     swap = make_wrapper(swap_noise_image=True)
     swap_prepared = swap.prep_inputs((images, classes), seed=31)
-    tf.debugging.assert_near(swap_prepared[1], swap_prepared[3])
+    tf.debugging.assert_near(swap_prepared[1], swap_prepared[0])
     try:
         swap.sample(network_name="raw", labels=[1])
     except ValueError as error:
@@ -5262,7 +5091,6 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("swap_noise_image must route through VAE sampling")
 
     invalid_cases = (
-        {"use_ema": 1},
         {"test_network_name": "unknown"},
         {"ema_decay": -0.1}, 
         {"ema_decay": 1.0}, 
@@ -5273,8 +5101,6 @@ def run_self_tests() -> dict[str, str]:
         {"test_eta": -0.1}, 
         {"test_eta": 1.1}, 
         {"test_eta": float("nan")},
-        {"map_num_parallel_calls": False},
-        {"map_num_parallel_calls": 0},
         {"train_noisified_min_timesteps": -1},
         {"test_noisified_min_timesteps": 3,
          "test_noisified_max_timesteps": 2},
@@ -5286,10 +5112,6 @@ def run_self_tests() -> dict[str, str]:
         {"test_cfg_scale": float("nan")},
         {"noise_loss_coef": -1.0},
         {"image_loss_coef": float("nan")},
-        {"modify_first_t": 1},
-        {"resize_antialias": 1},
-        {"swap_noise_image": 0},
-        {"show_separate_noise_losses": 1},
         {"kl_train_type": "unknown"},
         {"kl_train_type": "uncond", "train_cfg_scale": None},
         {"ctr_train_type": "unknown"}, 
@@ -5306,20 +5128,13 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError(f"Expected invalid wrapper config: {overrides}")
 
-    for invalid_seed in (True, -1, 2 ** 32, 1.5):
+    for invalid_seed in (-1, 2 ** 32):
         try:
             DiffusionModel(network=make_network(), test_steps=2, seed=invalid_seed)
         except (TypeError, ValueError):
             pass
         else:
             raise AssertionError("Invalid wrapper seeds must fail")
-
-    try:
-        DiffusionModel(network=object(), test_steps=2)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("A non-diffusion network must fail clearly")
 
     tf.keras.backend.clear_session()
     return {"DiffusionModel": "passed"}

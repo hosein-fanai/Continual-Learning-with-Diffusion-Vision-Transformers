@@ -180,46 +180,29 @@ def _validate_config(config: ScheduleConfig) -> None:
         None: Valid configurations complete without a value.
 
     Raises:
-        TypeError: If ``config`` is not a :class:`ScheduleConfig`.
-        ValueError: If an enum, count, bound, endpoint, or curve parameter is
-            invalid or non-finite.
+        ValueError: If a count, bound, endpoint, or curve parameter is
+            invalid or nonfinite.
     """
 
-    # Require the validated scheduler configuration container.
-    if not isinstance(config, ScheduleConfig):
-        raise TypeError("config must be a ScheduleConfig.")
-    # Reject schedule identifiers outside the supported enum.
-    if not isinstance(config.kind, ScheduleKind):
-        raise ValueError(f"Unsupported schedule kind: {config.kind}")
-    # Require at least two discrete steps and exclude Boolean integers.
-    if not isinstance(config.num_steps, int) or isinstance(config.num_steps, bool) \
-    or config.num_steps < 2:
-        raise ValueError("num_steps must be an integer >= 2.")
+    # Require at least two discrete steps.
+    if config.num_steps < 2:
+        raise ValueError("num_steps must be at least 2.")
 
     numeric_values = (
-        config.beta_start, 
-        config.beta_end, 
-        config.cosine_s, 
-        config.min_sqrt_alpha_bar, 
-        config.max_sqrt_alpha_bar, 
-        config.sigma_min, 
-        config.sigma_max, 
-        config.rho, 
-        config.snr_shift, 
-        config.logistic_k, 
-        config.clip_min, 
-        config.clip_max
+        config.beta_start, config.beta_end, config.cosine_s,
+        config.min_sqrt_alpha_bar, config.max_sqrt_alpha_bar,
+        config.sigma_min, config.sigma_max, config.rho,
+        config.snr_shift, config.logistic_k, config.clip_min, config.clip_max,
     )
-    # Reject non-finite parameters before schedule arithmetic.
     if not np.all(np.isfinite(numeric_values)):
         raise ValueError("All numeric schedule parameters must be finite.")
+
     # Keep numerical beta clamps strictly inside the probability interval.
     if not 0.0 < config.clip_min < config.clip_max < 1.0:
         raise ValueError("Expected 0 < clip_min < clip_max < 1.")
     # Require an ordered, probabilistically valid beta range.
     if not 0.0 < config.beta_start <= config.beta_end < 1.0:
         raise ValueError("Expected 0 < beta_start <= beta_end < 1.")
-    # Prevent a negative time offset in cosine schedules.
     if config.cosine_s < 0.0:
         raise ValueError("cosine_s must be non-negative.")
     # Require ordered clipped-cosine signal bounds inside (0, 1).
@@ -282,7 +265,7 @@ def betas_to_alpha_bar(betas: np.ndarray) -> np.ndarray:
     """
 
     betas = _as_float64(betas)
-    # Require a non-empty finite one-dimensional beta sequence.
+    # Reject NaN/Inf because range comparisons do not catch them.
     if betas.ndim != 1 or betas.size == 0 or not np.all(np.isfinite(betas)):
         raise ValueError("betas must be a non-empty finite one-dimensional array.")
     # Keep every discrete noise variance strictly between zero and one.
@@ -328,7 +311,7 @@ def alpha_bar_to_betas(
     """
 
     alpha_bar = _as_float64(alpha_bar)
-    # Require a non-empty finite one-dimensional cumulative signal curve.
+    # Reject NaN/Inf before clipping, which preserves nonfinite entries.
     if alpha_bar.ndim != 1 or alpha_bar.size == 0 \
     or not np.all(np.isfinite(alpha_bar)):
         raise ValueError(
@@ -403,8 +386,9 @@ def sigmas_to_betas(
     """
 
     sigmas = _as_float64(sigmas)
-    # Require a non-empty finite one-dimensional sigma sequence.
-    if sigmas.ndim != 1 or sigmas.size == 0 or not np.all(np.isfinite(sigmas)):
+    # Reject NaN/Inf because ordering comparisons do not catch them.
+    if sigmas.ndim != 1 or sigmas.size == 0 \
+    or not np.all(np.isfinite(sigmas)):
         raise ValueError("sigmas must be a non-empty finite one-dimensional array.")
     # Require non-negative noise scales that do not decrease over time.
     if np.any(sigmas < 0.0) or np.any(np.diff(sigmas) < 0.0):
@@ -903,8 +887,7 @@ def save_schedule_plots(
     Raises:
         TypeError: If a schedule override is unknown or conflicts with an
             explicit argument.
-        ValueError: If ``dpi``, ``metrics``, or any schedule configuration is
-            invalid.
+        ValueError: If ``metrics`` or a schedule configuration is invalid.
         OSError: If the output directory or an image file cannot be written.
         ImportError: If Matplotlib is unavailable.
 
@@ -916,10 +899,6 @@ def save_schedule_plots(
         y-axes; native sigma uses a symmetric-log y-axis so its exact zero is
         visible.
     """
-
-    # Require a meaningful integer raster resolution.
-    if not isinstance(dpi, int) or isinstance(dpi, bool) or dpi <= 0:
-        raise ValueError("dpi must be a positive integer.")
 
     metric_specs = (
         (
@@ -1431,6 +1410,13 @@ def run_self_tests() -> dict[str, str]:
         sigmas_to_betas(np.array([0.8, 0.2]))
     with np.testing.assert_raises(ValueError):
         sigmas_to_betas(np.array([-0.1, 0.2]))
+    for converter, values in (
+        (betas_to_alpha_bar, np.array([0.1, np.nan])),
+        (alpha_bar_to_betas, np.array([0.9, np.nan])),
+        (sigmas_to_betas, np.array([0.1, np.inf])),
+    ):
+        with np.testing.assert_raises(ValueError):
+            converter(values)
 
     base_alpha = np.array([0.2, 0.5, 0.8], dtype=np.float64)
     assert _apply_snr_shift(base_alpha, 0.0) is base_alpha
@@ -1457,7 +1443,8 @@ def run_self_tests() -> dict[str, str]:
     for invalid_config in (
         ScheduleConfig(num_steps=0),
         ScheduleConfig(num_steps=1),
-        ScheduleConfig(num_steps=2.5),
+        ScheduleConfig(cosine_s=-0.1),
+        ScheduleConfig(snr_shift=float("nan")),
         ScheduleConfig(beta_start=0.1, beta_end=0.01),
         ScheduleConfig(sigma_min=0.0),
         ScheduleConfig(rho=0.0),

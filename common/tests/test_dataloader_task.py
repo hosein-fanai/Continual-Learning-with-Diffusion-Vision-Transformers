@@ -28,8 +28,8 @@ class DatasetTaskValidationTests(unittest.TestCase):
 
         load_mnist.assert_not_called()
 
-    def test_mutated_config_and_hpo_tasks_keep_public_type_errors(self) -> None:
-        """Every task-bearing entry point must reject non-string mutation.
+    def test_mutated_config_and_hpo_tasks_use_native_type_errors(self) -> None:
+        """Every task-bearing entry point lets string operations reject mutation.
 
         Returns:
             None.
@@ -41,10 +41,10 @@ class DatasetTaskValidationTests(unittest.TestCase):
         with patch("common.dataloader.load_mnist") as load_mnist:
             for entry_point in (get_datasets, get_model, continually_learn):
                 with self.subTest(entry_point=entry_point.__name__):
-                    with self.assertRaisesRegex(TypeError, "task must be a string"):
+                    with self.assertRaises(AttributeError):
                         entry_point(config)
 
         load_mnist.assert_not_called()
 
-        with self.assertRaisesRegex(TypeError, "task must be a string"):
+        with self.assertRaises(AttributeError):
             run_hpo(None, "cnn", n_trials=1)

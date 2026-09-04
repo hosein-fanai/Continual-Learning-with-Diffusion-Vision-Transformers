@@ -50,8 +50,8 @@ class VisionTransformerBlock(BaseLayer):
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
             ``trainable``. ``use_layer_norm``, ``ln_dim``, ``mlp_ratio``, and
             ``mlp_activation_func`` are set explicitly here. Serialized
-            ``use_layer_norm=True`` and ``ln_dim=dim`` values are accepted,
-            while conflicting values are rejected. ``ln_no_adaptation=True``
+            ``use_layer_norm`` is ignored and fixed to true; ``ln_dim=dim`` is
+            accepted while conflicting widths are rejected. ``ln_no_adaptation=True``
             replaces zero gates with scalar-one gates and makes the initial
             block non-identity.
 
@@ -108,16 +108,8 @@ class VisionTransformerBlock(BaseLayer):
             ``None``.
         """
 
-        temp_val = (
-            kwargs.pop("use_layer_norm", True), 
-            kwargs.pop("ln_dim", dim)
-        )
-        # Preserve the block's mandatory adaptive-normalization setting.
-        if temp_val[0] is not True:
-            raise ValueError("VisionTransformerBlock requires use_layer_norm=True.")
-        # Keep the serialized normalization width consistent with ``dim``.
-        if temp_val[1] != dim:
-            raise ValueError("ln_dim must equal dim for VisionTransformerBlock.")
+        kwargs.pop("use_layer_norm", None)
+        kwargs.pop("ln_dim", None)
         super().__init__(
             use_layer_norm=True, 
             ln_dim=dim, 

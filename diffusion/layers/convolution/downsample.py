@@ -70,7 +70,7 @@ class ImageDownsample(ArgumentSaverLayer):
 
     @staticmethod
     def _check_arguments(local_vars: dict[str, Any]) -> None:
-        """Validate the scaling method and dimensions.
+        """Validate the scaling method.
 
         Args:
             local_vars (dict[str, Any]): Constructor arguments to validate.
@@ -88,18 +88,6 @@ class ImageDownsample(ArgumentSaverLayer):
             raise ValueError(
                 "scaling_method must be avg_pooling, max_pooling, or cnn_stride."
             )
-        for name in ("kernel_size", "strides"):
-            value = local_vars[name]
-            # Require positive integer convolution and stride dimensions.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
-        filters = local_vars["filters"]
-        # Require a positive integer output width when filters is specified.
-        if filters is not None and (
-            not isinstance(filters, int) or 
-            isinstance(filters, bool) or filters < 1
-        ):
-            raise ValueError("filters must be None or a positive integer.")
 
     def build(self, input_shape: Any) -> None:
         """Resolve an omitted output width and create learned projections.

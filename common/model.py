@@ -19,8 +19,7 @@ from common.dataloader import get_dataset_spec
 from common.runtime import (
     configure_runtime, 
     derive_seed, 
-    effective_seed, 
-    validate_model_dtype_policy
+    effective_seed
 )
 
 
@@ -411,10 +410,6 @@ def _get_classifier_model(
     # Restore the requested hyperparameter-tuned classifier.
     elif model_type == "hp-tuned":
         loaded_model = models.load_model(model_path)
-        validate_model_dtype_policy(
-            loaded_model,
-            role="hp-tuned classifier"
-        )
 
         # Rebuild only optimizer configuration for the changed variable topology.
         if use_loaded_opt:
@@ -669,8 +664,8 @@ def get_model(
             otherwise the returned classifier.
 
     Raises:
-        TypeError: If positional/direct options conflict, a model option is
-            unsupported, or ``pad`` is not a non-boolean integer.
+        TypeError: If positional/direct options conflict or a model option is
+            unsupported.
         ValueError: If a model, wrapper, optimizer, schedule, or architecture
             selection is unsupported, lacks required dataset sizing, or
             ``pad`` is negative/incompatible with the selected input type.
@@ -687,10 +682,6 @@ def get_model(
     # Convert compatible configuration mappings to typed configuration.
     if isinstance(config, dict):
         config = Config(**config)
-
-    # Reject unsupported configuration root types.
-    if config is not None and not isinstance(config, Config):
-        raise TypeError("config must be a Config, mapping, integer class count, or None.")
 
     # Validate the task before runtime policy changes or model imports/builds.
     task = normalize_training_task(

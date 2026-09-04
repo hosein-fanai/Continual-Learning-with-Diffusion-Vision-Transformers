@@ -400,14 +400,10 @@ def train_model(
             series for continual bundles.
 
     Raises:
-        TypeError: If required inputs or an artifact path are missing.
+        TypeError: If a required artifact path is missing.
         ValueError: If configured fit controls conflict or progressive fitting
             targets an unsupported model.
     """
-
-    # Require both a model and training input for orchestration.
-    if model is None or trainset is None:
-        raise TypeError("model and trainset are required.")
 
     training_options = _resolve_training_options(config, model, kwargs)
     show_images = training_options["show_images"]
@@ -1297,13 +1293,9 @@ def report(
         dict[str, object]: Standard, diffusion, or continual evaluation metrics.
 
     Raises:
-        TypeError: If required inputs or an artifact path are missing.
+        TypeError: If a required artifact path is missing.
         ValueError: If reporting controls conflict with the selected model.
     """
-
-    # Require completed training inputs before producing a report.
-    if history is None or model is None or trainset is None:
-        raise TypeError("history, model, and trainset are required.")
 
     reporting_options = _resolve_reporting_options(config, kwargs)
     results_path = reporting_options["results_path"]

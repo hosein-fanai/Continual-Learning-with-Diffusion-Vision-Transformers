@@ -34,7 +34,6 @@ import uuid
 import re
 
 from collections.abc import Mapping, Sequence
-from numbers import Real
 from typing import Any
 
 from common.config import (
@@ -469,11 +468,10 @@ class _TrialView:
                 1 if name in ("batch_size", "replay_candidate_multiplier")
                 else 0
             )
+            choices = [int(value) for value in choices]
             if any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, np.integer))
-                or int(value) < minimum
-                or (name == "train_num" and int(value) == 0)
+                value < minimum
+                or (name == "train_num" and value == 0)
                 for value in choices
             ):
                 raise ValueError(
@@ -481,10 +479,9 @@ class _TrialView:
                 )
         elif override is not None and re.fullmatch(r"test_steps_t\d+", name):
             timesteps = int(name.rsplit("t", 1)[1])
+            choices = [int(value) for value in choices]
             if any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, np.integer))
-                or not 1 <= int(value) <= timesteps
+                not 1 <= value <= timesteps
                 for value in choices
             ):
                 raise ValueError(
@@ -832,6 +829,72 @@ def _suggest_diffusion_wrapper(
     return timesteps, wrapper_kwargs
 
 
+def _fixed_dit_hpo_depth(
+    model_overrides: Mapping[str, object] | None,
+) -> int:
+    """Resolve the immutable depth required by an x0 DiT topology.
+
+    Positive stage IDs determine the smallest constructible depth.  A caller
+    may provide a larger explicit ``depth``, but x0 HPO never samples depth
+    independently from its fixed routing and reshaper graph.
+
+    Args:
+        model_overrides (Mapping[str, object] | None): Fixed DiT topology.
+
+    Returns:
+        int: Explicit or topology-derived transformer depth.
+
+    Raises:
+        ValueError: If no absolute stage can determine depth, or an explicit
+            depth is smaller than a referenced stage.
+    """
+
+    overrides = dict(model_overrides or {})
+    topology_ids: list[object] = []
+    for name in (
+        "vit_block_ids", "use_decoder_ids", "local_mixer_ids",
+        "downsample_ids", "upsample_ids", "cls_token_regularizer_ids",
+    ):
+        topology_ids.extend(overrides.get(name, ()))
+
+    for name in (
+        "connection_ids_dict", "cross_attention_ids_dict",
+        "vit_block_mlp_output_dims", "reshaper_ids_dict",
+    ):
+        values = overrides.get(name, {})
+        topology_ids.extend(values)
+        if name in ("connection_ids_dict", "cross_attention_ids_dict"):
+            for sources in values.values():
+                topology_ids.extend(sources)
+
+    for name in (
+        "feature_aggregation_ids_dict",
+        "cross_attention_aggregation_ids_dict",
+    ):
+        for sources in overrides.get(name, {}).values():
+            topology_ids.extend(sources)
+
+    required_depth = max((
+        depth for depth in topology_ids
+        if depth is not None and depth > 0
+    ), default=0)
+    configured_depth = overrides.get("depth")
+    if configured_depth is None:
+        if required_depth == 0:
+            raise ValueError(
+                "DiT x0 HPO needs an explicit depth when its fixed topology "
+                "contains no positive stage IDs."
+            )
+        return required_depth
+
+    if configured_depth < required_depth:
+        raise ValueError(
+            "DiT x0 HPO depth must cover every fixed topology stage; "
+            f"expected at least {required_depth}, got {configured_depth}."
+        )
+    return configured_depth
+
+
 def _validate_swap_noise_hpo(
     model_name: str,
     model_overrides: Mapping[str, object] | None,
@@ -841,7 +904,7 @@ def _validate_swap_noise_hpo(
 
     Returns:
         tuple[bool, float | None]: Whether x0 prediction is active and an
-        optional fixed positive KL coefficient.
+        optional fixed KL coefficient.
     """
 
     wrapper = dict(wrapper_overrides or {})
@@ -863,17 +926,6 @@ def _validate_swap_noise_hpo(
         if not isinstance(latent_dim_ratios, list):
             raise ValueError(
                 "reshaper_kwargs latent_dim_ratio must be a list."
-            )
-        if any(
-            not isinstance(ratio, Real)
-            or isinstance(ratio, (bool, np.bool_))
-            or not math.isfinite(float(ratio))
-            or ratio <= 0.0
-            for ratio in latent_dim_ratios
-        ):
-            raise ValueError(
-                "reshaper_kwargs latent_dim_ratio entries must be finite "
-                "positive real numbers."
             )
 
     if model_name in ("unet", "unet_classifier"):
@@ -907,12 +959,88 @@ def _validate_swap_noise_hpo(
                 "entry per ascending flatten/unflatten pair; expected "
                 f"{len(flatten_ids)}, got {len(latent_dim_ratios)}."
             )
+        fixed_depth = _fixed_dit_hpo_depth(overrides)
         if len(flatten_ids) > 1 and sorted(reshapers) != list(range(
             flatten_ids[0], flatten_ids[-1] + 2
         )):
             raise ValueError(
                 "Multilevel DiT x0 HPO reshaper pairs must form one "
                 "contiguous central bridge."
+            )
+
+        first_bridge_depth = flatten_ids[0]
+        last_bridge_depth = flatten_ids[-1] + 1
+        if first_bridge_depth <= 1 or fixed_depth <= last_bridge_depth:
+            raise ValueError(
+                "DiT x0 HPO requires at least one stage before and after its "
+                "central bridge."
+            )
+
+        def resolved_stage_ids(name: str, required: bool = False) -> list[int]:
+            """Resolve one explicit stage-selection list for ordering."""
+
+            if required and name not in overrides:
+                raise ValueError(
+                    "DiT x0 HPO requires explicit "
+                    f"{name}; the constructor default crosses the central "
+                    "bridge."
+                )
+            values = overrides.get(name, [])
+            if any(value is None for value in values):
+                raise ValueError(
+                    f"DiT x0 HPO {name} must contain explicit stage IDs."
+                )
+            resolved = [
+                value + fixed_depth + 1 if value < 0 else value
+                for value in values
+            ]
+            if any(not 1 <= value <= fixed_depth for value in resolved):
+                raise ValueError(
+                    f"DiT x0 HPO {name} contains an out-of-range stage ID."
+                )
+            return resolved
+
+        vit_block_ids = resolved_stage_ids("vit_block_ids", required=True)
+        local_mixer_ids = resolved_stage_ids("local_mixer_ids")
+        downsample_ids = resolved_stage_ids("downsample_ids")
+        upsample_ids = resolved_stage_ids("upsample_ids")
+        use_decoder_ids = resolved_stage_ids("use_decoder_ids")
+        if any(
+            first_bridge_depth <= depth <= last_bridge_depth
+            for depth in (*vit_block_ids, *local_mixer_ids)
+        ):
+            raise ValueError(
+                "DiT x0 HPO transformer/local-mixer stages cannot occur "
+                "inside the central bridge."
+            )
+        if any(depth >= first_bridge_depth for depth in downsample_ids):
+            raise ValueError(
+                "DiT x0 HPO downsample stages must precede the central bridge."
+            )
+        if any(depth <= last_bridge_depth for depth in upsample_ids):
+            raise ValueError(
+                "DiT x0 HPO upsample stages must follow the central bridge."
+            )
+        if not any(
+            depth < first_bridge_depth
+            for depth in (*vit_block_ids, *local_mixer_ids, *downsample_ids)
+        ) or not any(
+            depth > last_bridge_depth
+            for depth in (*vit_block_ids, *local_mixer_ids, *upsample_ids)
+        ):
+            raise ValueError(
+                "DiT x0 HPO requires actual encoder and decoder computation "
+                "before and after its central bridge."
+            )
+        if any(depth <= last_bridge_depth for depth in use_decoder_ids) \
+        or not set(use_decoder_ids).issubset(vit_block_ids) \
+        or any(
+            depth > last_bridge_depth and depth not in use_decoder_ids
+            for depth in vit_block_ids
+        ):
+            raise ValueError(
+                "DiT x0 HPO encoder blocks must precede the central bridge "
+                "and decoder blocks must follow it."
             )
         first_flatten = flatten_ids[0]
         for route_name in (
@@ -938,27 +1066,14 @@ def _validate_swap_noise_hpo(
 
     fixed_kl_loss_coef = wrapper.get("kl_loss_coef")
     if fixed_kl_loss_coef is not None:
-        if isinstance(fixed_kl_loss_coef, (bool, np.bool_)):
-            raise ValueError("x0 kl_loss_coef must be finite and positive.")
-        try:
-            fixed_kl_loss_coef = float(fixed_kl_loss_coef)
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "x0 kl_loss_coef must be finite and positive."
-            ) from error
-        if not math.isfinite(fixed_kl_loss_coef) or fixed_kl_loss_coef <= 0.:
+        fixed_kl_loss_coef = float(fixed_kl_loss_coef)
+        if not math.isfinite(fixed_kl_loss_coef) \
+        or fixed_kl_loss_coef <= 0.:
             raise ValueError("x0 kl_loss_coef must be finite and positive.")
 
-    if "noise_loss_coef" in wrapper:
-        noise_loss_coef = wrapper["noise_loss_coef"]
-        if isinstance(noise_loss_coef, (bool, np.bool_)):
-            raise ValueError("x0 noise_loss_coef must remain 1.0.")
-        try:
-            noise_loss_coef = float(noise_loss_coef)
-        except (TypeError, ValueError) as error:
-            raise ValueError("x0 noise_loss_coef must remain 1.0.") from error
-        if noise_loss_coef != 1.:
-            raise ValueError("x0 noise_loss_coef must remain 1.0.")
+    if "noise_loss_coef" in wrapper \
+    and wrapper["noise_loss_coef"] != 1.:
+        raise ValueError("x0 noise_loss_coef must remain 1.0.")
 
     return True, fixed_kl_loss_coef
 
@@ -968,6 +1083,7 @@ def _suggest_dit(
     image_size: int, 
     model_name: str,
     allow_u_shape: bool = True,
+    fixed_depth: int | None = None,
 ) -> dict[str, object]:
     """Suggest a shape-compatible transformer architecture.
 
@@ -977,6 +1093,8 @@ def _suggest_dit(
         model_name (str): Selected DiT-family name.
         allow_u_shape (bool): Include the compact U-DiT template when its
             spatial grid is compatible.
+        fixed_depth (int | None): Immutable topology-derived depth. ``None``
+            retains the ordinary depth search.
 
     Returns:
         dict[str, object]: Raw-network constructor options.
@@ -1009,7 +1127,8 @@ def _suggest_dit(
 
     # Tune encoder and decoder depths independently for joint DiT models.
     if model_name in ("dit_encoder_decoder", "dit_encoder_decoder_classifier"):
-        kwargs["depth"] = trial.suggest_categorical("encoder_depth", [2, 4, 6])
+        kwargs["depth"] = fixed_depth if fixed_depth is not None \
+            else trial.suggest_categorical("encoder_depth", [2, 4, 6])
         use_refiner_cnn = kwargs.pop("use_refiner_cnn")
         kwargs["decoder_kwargs"] = {
             "depth": trial.suggest_categorical("decoder_depth", [1, 2, 4]), 
@@ -1020,7 +1139,8 @@ def _suggest_dit(
         }
     # Tune decoder depth for a standalone DiT decoder.
     elif model_name == "dit_decoder":
-        kwargs["depth"] = trial.suggest_categorical("decoder_depth", [1, 2, 4])
+        kwargs["depth"] = fixed_depth if fixed_depth is not None \
+            else trial.suggest_categorical("decoder_depth", [1, 2, 4])
         kwargs.update({
             "decoder_separate_cond": True, 
             "shift_inputs": False, 
@@ -1031,7 +1151,7 @@ def _suggest_dit(
     elif model_name == "diffusion_transformer":
         patch_grid = image_size // kwargs["patch_size"]
         architecture_choices = ["plain"]
-        if allow_u_shape and patch_grid % 4 == 0:
+        if fixed_depth is None and allow_u_shape and patch_grid % 4 == 0:
             architecture_choices.append("u_skip")
         architecture_parameter = (
             "dit_architecture_grid4" if patch_grid % 4 == 0
@@ -1044,9 +1164,8 @@ def _suggest_dit(
         if callable(set_user_attr):
             set_user_attr("dit_architecture", architecture)
         if architecture == "plain":
-            kwargs["depth"] = trial.suggest_categorical(
-                "depth", [2, 3, 4, 5, 6]
-            )
+            kwargs["depth"] = fixed_depth if fixed_depth is not None else \
+                trial.suggest_categorical("depth", [2, 3, 4, 5, 6])
         else:
             resampling_pos = trial.suggest_categorical(
                 "resampling_pos_embed_type", ["2d_sincos", "new_weight"]
@@ -1078,9 +1197,8 @@ def _suggest_dit(
             })
     # Tune a single shared depth for the remaining transformer families.
     else:
-        kwargs["depth"] = trial.suggest_categorical(
-            "depth", [2, 3, 4, 5, 6]
-        )
+        kwargs["depth"] = fixed_depth if fixed_depth is not None else \
+            trial.suggest_categorical("depth", [2, 3, 4, 5, 6])
 
     return kwargs
 
@@ -1434,7 +1552,7 @@ def _suggest_joint(
                     ),
                 },
                 "clf_connection_ids_dict": {
-                    8: [3], 10: [1], 12: [7]
+                    8: [3], 10: [1], 12: [7], -1: [-1]
                 },
                 "clf_upsample_ids": [12, 14],
                 "clf_upsample_kwargs": {
@@ -1453,9 +1571,7 @@ def _suggest_joint(
         if feature_aggregation == "all":
             kwargs.update({
                 "clf_dim": kwargs["dim"], 
-                "clf_dim_forced": classifier_architecture not in (
-                    "u_vae", "u_multilevel_vae"
-                ),
+                "clf_dim_forced": True,
             })
 
         # Tune a dedicated classifier token only when the branch uses one.
@@ -1992,12 +2108,9 @@ def _feature_archive_signature(
             arrays,
         ):
             if array.ndim != 2 or array.shape[0] == 0 \
-            or array.shape[1] != 2048 or not (
-                np.issubdtype(array.dtype, np.integer)
-                or np.issubdtype(array.dtype, np.floating)
-            ):
+            or array.shape[1] != 2048:
                 raise ValueError(
-                    f"{split_name} features must be a nonempty real numeric "
+                    f"{split_name} features must be a nonempty "
                     "[samples, 2048] array."
                 )
         split_shapes = [list(array.shape) for array in arrays]
@@ -2571,6 +2684,7 @@ def _build_trial_config(
             overrides=search_space_overrides,
         )
     fit_kwargs = dict(fit_kwargs or {})
+    fixed_model_overrides = dict(model_overrides or {})
     fixed_wrapper_overrides = dict(wrapper_overrides or {})
     if fixed_wrapper_overrides and model_name not in _DIFFUSION_MODELS:
         raise ValueError("wrapper_overrides requires a diffusion model family.")
@@ -2582,9 +2696,15 @@ def _build_trial_config(
         )
     swap_noise_image, fixed_kl_loss_coef = _validate_swap_noise_hpo(
         model_name,
-        model_overrides,
+        fixed_model_overrides,
         fixed_wrapper_overrides,
     )
+    fixed_dit_depth = _fixed_dit_hpo_depth(fixed_model_overrides) if (
+        swap_noise_image and (
+            model_name.startswith("dit")
+            or model_name == "diffusion_transformer"
+        )
+    ) else None
     fixed_wrapper_overrides.pop("swap_noise_image", None)
     if swap_noise_image:
         fixed_wrapper_overrides.pop("kl_loss_coef", None)
@@ -2733,6 +2853,7 @@ def _build_trial_config(
             image_size,
             model_name,
             allow_u_shape=not swap_noise_image,
+            fixed_depth=fixed_dit_depth,
         )
         model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
     # Tune U-Net diffusion schedules and wrapper behavior.
@@ -3044,7 +3165,10 @@ def _build_trial_config(
                 }
             }
 
-    for name, value in dict(model_overrides or {}).items():
+    for name, value in fixed_model_overrides.items():
+        # The x0 topology resolver already installed this compatible fixed depth.
+        if name == "depth" and fixed_dit_depth is not None:
+            continue
         if name in model_kwargs:
             if isinstance(model_kwargs[name], Mapping) \
             and isinstance(value, Mapping):
@@ -3755,6 +3879,8 @@ def run_hpo(
             "Optuna is required for HPO. "
             "Install the project requirements."
         ) from error
+    if epochs <= 0:
+        raise ValueError("epochs must be positive.")
 
     model_name = model_name.lower()
     fit_kwargs = dict(fit_kwargs or {})
@@ -3852,10 +3978,6 @@ def run_hpo(
             "Teacher-free use_distillation requires a continual diffusion "
             "study."
         )
-    # Require positive trial and epoch budgets.
-    if n_trials <= 0 or epochs <= 0:
-        raise ValueError("n_trials and epochs must be positive.")
-
     available_class_num, _, _ = get_dataset_spec(dataset_name)
     schedule_requested = class_num is not None or class_order is not None \
         or task_groups is not None or task_size != 1 \

@@ -10,7 +10,6 @@ from __future__ import annotations
 import numpy as np
 
 from collections.abc import Sequence
-from numbers import Integral, Real
 
 
 def _label_ids(labels: np.ndarray | Sequence[int]) -> np.ndarray:
@@ -24,7 +23,7 @@ def _label_ids(labels: np.ndarray | Sequence[int]) -> np.ndarray:
         numpy.ndarray: Integer label IDs with shape ``[samples]``.
 
     Raises:
-        ValueError: If labels are not rank one/two or contain nonintegral IDs.
+        ValueError: If labels are not rank one/two or contain nonfinite IDs.
     """
 
     values = np.asarray(labels)
@@ -39,9 +38,8 @@ def _label_ids(labels: np.ndarray | Sequence[int]) -> np.ndarray:
     elif values.ndim != 1:
         raise ValueError("labels must be sparse rank-one or one-hot rank-two.")
 
-    # Require integer-valued sparse labels before casting them.
-    if not np.all(np.isfinite(values)) or not np.all(values == np.floor(values)):
-        raise ValueError("labels must contain finite integer class IDs.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("labels must contain finite class IDs.")
 
     return values.astype("int64", copy=False)
 
@@ -101,18 +99,16 @@ def calibration_metrics(
         ``ece`` averaged over independent examples.
 
     Raises:
-        TypeError: If ``bins`` is not a non-boolean integer.
         ValueError: If inputs are empty, misaligned, or outside their domains.
     """
 
     probs = _probability_matrix(probabilities)
     targets = _label_ids(labels)
 
-    # Reject nonintegral bin counts explicitly rather than truncating them.
-    if isinstance(bins, bool) or not isinstance(bins, Integral):
-        raise TypeError("bins must be a non-boolean integer.")
+    bins = int(bins)
+    epsilon = float(epsilon)
     # Keep ECE binning and logarithms mathematically defined.
-    if int(bins) < 1 or not isinstance(epsilon, Real) or float(epsilon) <= 0.:
+    if bins < 1 or epsilon <= 0.:
         raise ValueError("bins and epsilon must be positive.")
     # Require a nonempty one-to-one probability/target alignment.
     if len(probs) == 0 or len(targets) != len(probs):
@@ -125,15 +121,15 @@ def calibration_metrics(
     predictions = np.argmax(probs, axis=1)
     confidence = np.max(probs, axis=1)
     correct = (predictions == targets).astype("float64")
-    clipped = np.clip(probs, float(epsilon), 1.)
+    clipped = np.clip(probs, epsilon, 1.)
     entropy = -np.sum(probs * np.log(clipped), axis=1)
     nll = -np.log(clipped[rows, targets])
     onehot = np.eye(probs.shape[1], dtype="float64")[targets]
     brier = np.sum(np.square(probs - onehot), axis=1)
 
-    bin_ids = np.minimum((confidence * int(bins)).astype("int64"), int(bins) - 1)
+    bin_ids = np.minimum((confidence * bins).astype("int64"), bins - 1)
     ece = 0.
-    for bin_id in range(int(bins)):
+    for bin_id in range(bins):
         mask = bin_ids == bin_id
         # Add only occupied bins to avoid means over empty arrays.
         if np.any(mask):
@@ -316,20 +312,16 @@ def select_replay_candidates(
         selected integer labels, and gate-allocation diagnostics.
 
     Raises:
-        TypeError: If ``budget`` is not a non-boolean integer.
         ValueError: If inputs or strategy parameters are invalid.
     """
 
     x = np.asarray(samples)
     y = _label_ids(labels)
-    # Reject booleans/nonintegral replay budgets without silent coercion.
-    if isinstance(budget, bool) or not isinstance(budget, Integral):
-        raise TypeError("budget must be a non-boolean integer.")
-
     budget = int(budget)
+    surprise_weight = float(surprise_weight)
     # Require aligned inputs and valid score interpolation.
-    if budget < 0 or len(x) != len(y) or not isinstance(surprise_weight, Real) \
-    or not 0. <= float(surprise_weight) <= 1.:
+    if budget < 0 or len(x) != len(y) \
+    or not 0. <= surprise_weight <= 1.:
         raise ValueError("candidate inputs, budget, or surprise_weight are invalid.")
 
     strategy = str(strategy).lower()
@@ -463,7 +455,6 @@ def replay_quality_metrics(
         optional calibration/consistency, and optional centroid drift.
 
     Raises:
-        TypeError: If ``max_diversity_samples`` is not an integer.
         ValueError: If replay inputs, expected classes, or prior pairs conflict.
     """
 
@@ -471,11 +462,9 @@ def replay_quality_metrics(
     y = _label_ids(labels)
     expected = sorted({int(class_id) for class_id in expected_classes})
 
-    # Enforce an explicit bounded quadratic diagnostic budget.
-    if isinstance(max_diversity_samples, bool) or not isinstance(max_diversity_samples, Integral):
-        raise TypeError("max_diversity_samples must be a non-boolean integer.")
+    max_diversity_samples = int(max_diversity_samples)
     # Require aligned replay and a positive diversity cap.
-    if len(x) != len(y) or int(max_diversity_samples) < 1:
+    if len(x) != len(y) or max_diversity_samples < 1:
         raise ValueError("samples/labels must align and diversity cap must be positive.")
 
     present = sorted(np.unique(y).tolist()) if len(y) else []

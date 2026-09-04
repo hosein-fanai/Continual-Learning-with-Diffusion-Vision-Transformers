@@ -271,6 +271,34 @@ class ContinualIntegrationTests(unittest.TestCase):
                 seed=9,
             ),
         )
+        self.assertEqual(
+            resolve_continual_schedule(
+                6,
+                task_size=2,
+                class_order_mode="random",
+                seed=1.9,
+            ),
+            resolve_continual_schedule(
+                6,
+                task_size=2,
+                class_order_mode="random",
+                seed=1,
+            ),
+        )
+        self.assertEqual(
+            resolve_continual_schedule(
+                6,
+                task_size=2,
+                class_order_mode="random",
+                seed="7",
+            ),
+            resolve_continual_schedule(
+                6,
+                task_size=2,
+                class_order_mode="random",
+                seed=7,
+            ),
+        )
         task_random = resolve_continual_schedule(
             6,
             task_size=2,

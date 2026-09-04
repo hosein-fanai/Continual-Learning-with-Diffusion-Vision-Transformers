@@ -225,8 +225,8 @@ class ReplayStrategyTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "pair"):
             replay.append("not-a-pair")
 
-    def test_restore_rejects_impossible_balanced_state(self) -> None:
-        """Reject serialized counts and contents no insertion path can produce.
+    def test_restore_normalizes_counts_and_rejects_impossible_state(self) -> None:
+        """Normalize counters and reject contents no insertion path can produce.
 
         Returns:
             None.
@@ -240,12 +240,14 @@ class ReplayStrategyTests(unittest.TestCase):
         )
         valid_state = source.state_dict()
 
-        malformed_count = deepcopy(valid_state)
-        malformed_count["classes"][0]["seen"] = 1.5
-        with self.assertRaisesRegex(ValueError, "non-integral class count"):
-            ReplayBuffer(4, strategy="class_balanced").load_state_dict(
-                malformed_count
-            )
+        normalized_count = deepcopy(valid_state)
+        normalized_count["classes"][0]["seen"] += 0.5
+        normalized_target = ReplayBuffer(4, strategy="class_balanced")
+        normalized_target.load_state_dict(normalized_count)
+        self.assertEqual(
+            normalized_target.state_dict()["classes"][0]["seen"],
+            valid_state["classes"][0]["seen"],
+        )
 
         impossible_quota = deepcopy(valid_state)
         zero_item = next(

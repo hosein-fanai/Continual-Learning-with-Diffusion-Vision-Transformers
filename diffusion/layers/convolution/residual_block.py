@@ -73,7 +73,6 @@ class ResidualConvBlock(ArgumentSaverLayer):
         """
 
         super().__init__(**kwargs)
-        self._check_arguments(locals())
         self._save_init_args(locals())
         derive_seed(seed, "residual_conv_block", "validation")
 
@@ -115,36 +114,6 @@ class ResidualConvBlock(ArgumentSaverLayer):
             name=f"{self.name}/condition_projector"
         )
         self.residual_projector = None
-
-    @staticmethod
-    def _check_arguments(local_vars: dict[str, Any]) -> None:
-        """Validate dimensions and probabilities used by the block.
-
-        Args:
-            local_vars (dict[str, Any]): Constructor arguments to validate.
-
-        Returns:
-            None: Valid arguments complete without a value.
-        """
-
-        for name in ("filters", "kernel_size"):
-            value = local_vars[name]
-            # Require positive integer convolution dimensions.
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer.")
-
-        condition_dim = local_vars["condition_dim"]
-        # Validate an explicitly configured conditioning width.
-        if condition_dim is not None and (
-            not isinstance(condition_dim, int)
-            or isinstance(condition_dim, bool)
-            or condition_dim < 1
-        ):
-            raise ValueError("condition_dim must be None or a positive integer.")
-
-        # Keep spatial dropout within its valid half-open probability range.
-        if not 0.0 <= local_vars["dropout_rate"] < 1.0:
-            raise ValueError("dropout_rate must be in the range [0, 1).")
 
     def build(self, input_shape: Any) -> None:
         """Create the residual projection when input channels differ.
@@ -272,10 +241,8 @@ class ResidualConvStack(ArgumentSaverLayer):
         seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
 
-        # Require a positive integer number of residual blocks.
-        if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
-            raise ValueError("depth must be a positive integer.")
-        ResidualConvBlock._check_arguments(locals())
+        if depth < 1:
+            raise ValueError("ResidualConvStack depth must be positive.")
         self._save_init_args(locals())
 
         self.output_dim = self.filters
@@ -353,6 +320,13 @@ def run_self_tests() -> dict[str, str]:
         training=False
     ).shape == y.shape
 
+    try:
+        ResidualConvStack(filters=6, depth=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An empty residual stack must not lie about width.")
+
     stack = ResidualConvStack(
         filters=6, 
         depth=2, 
@@ -365,18 +339,6 @@ def run_self_tests() -> dict[str, str]:
         loss = tf.reduce_sum(stack_output)
     assert stack_output.shape == (2, 8, 8, 6)
     assert tape.gradient(loss, x) is not None
-
-    for invalid_kwargs in (
-        {"filters": 0}, 
-        {"filters": 4, "kernel_size": 0}, 
-        {"filters": 4, "dropout_rate": 1.0}, 
-    ):
-        try:
-            ResidualConvBlock(**invalid_kwargs)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("Invalid residual block arguments must fail.")
 
     return {
         "ResidualConvBlock": "passed", 

@@ -3,8 +3,6 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
-from math import isqrt
-
 from copy import deepcopy
 
 from common.runtime import derive_seed
@@ -137,7 +135,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         decoder_config.setdefault("dtype", self.dtype_policy.name)
         decoder_config.setdefault("seed", derive_seed(self.seed, "decoder"))
         decoder_config.setdefault("shift_inputs", False)
-        encoder_feature_dims, encoder_feature_grids = \
+        encoder_feature_dims, encoder_feature_grids, encoder_feature_is_flat = \
             self._get_encoder_feature_metadata()
         # Require a spatial final encoder feature for decoder initialization.
         if encoder_feature_grids[-1] is None:
@@ -147,6 +145,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         inferred_metadata = {
             "encoder_feature_dims": encoder_feature_dims, 
             "encoder_feature_grid_sizes": encoder_feature_grids, 
+            "encoder_feature_is_flat": encoder_feature_is_flat,
             "encoder_output_grid_size": encoder_feature_grids[-1], 
             "encoder_output_dim": encoder_feature_dims[-1], 
         }
@@ -190,36 +189,41 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
     def _get_encoder_feature_metadata(
         self, 
-    ) -> tuple[list[int], list[int | None]]:
+    ) -> tuple[list[int], list[int | None], list[bool]]:
         """Describe every depth-indexed encoder feature for the decoder.
 
         Returns:
-            tuple[list[int], list[int | None]]: Feature widths and matching
-            spatial grid sides for depth 0 through ``self.depth``.
+            tuple[list[int], list[int | None], list[bool]]: Feature widths,
+            spatial grid sides, and explicit rank states for depth 0 through
+            ``self.depth``.
         """
 
         dims = [self.dim]
         grids = [self.grid_size]
+        flat_states = [False]
         for index in range(self.depth):
             dims.append(self._get_last_output_dim(
                 index, 
                 self.layers_dicts, 
                 self.dim
             ))
-            grids.append(self._get_last_grid_size(
+            grid_size, is_flat = self._get_last_shape_metadata(
                 index, 
                 self.layers_dicts, 
                 self.grid_size
-            ))
+            )
+            grids.append(grid_size)
+            flat_states.append(is_flat)
 
-        return dims, grids
+        return dims, grids, flat_states
 
     def _get_last_grid_size(
         self, 
         i: int, 
         layers_dicts: list[dict], 
-        base_grid_size: int, 
-        skip_reshaper: bool = False
+        base_grid_size: int | None,
+        skip_reshaper: bool = False,
+        base_is_flat: bool = False,
     ) -> int | None:
         """Resolve spatial state without losing explicit flat representations.
 
@@ -234,41 +238,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
             reshaper until a later unflatten/spatial layer restores a grid.
         """
 
-        # Return the patch grid before any encoder depth executes.
-        if i == -1:
-            return base_grid_size
-
-        grid_size = None
-        grid_was_set = False
-        # Inspect the requested encoder stage when it exists.
-        if i < len(layers_dicts):
-            stage = layers_dicts[i]
-            # Feature connectors may switch back to a saved encoder scale.
-            if self.FC in stage:
-                grid_size = stage[self.FC].grid_size
-                grid_was_set = True
-            # Attention preserves the primary/query grid recorded at build time.
-            if self.VTB in stage:
-                grid_size = stage[self.VTB].grid_size
-                grid_was_set = True
-            for key in (self.LM, self.DS, self.US):
-                # Let spatial mixers and scalers update the encoder grid.
-                if key in stage:
-                    grid_size = stage[key].output_grid_size
-                    grid_was_set = True
-
-            # Derive spatial or flat metadata from a non-skipped reshaper.
-            if self.R in stage and not skip_reshaper:
-                output_shape = stage[self.R].output_shape[0]
-                grid_size = isqrt(output_shape[1]) \
-                    if len(output_shape) == 3 else None
-                grid_was_set = True
-
-        return grid_size if grid_was_set else self._get_last_grid_size(
-            i - 1, 
-            layers_dicts, 
-            base_grid_size, 
-            skip_reshaper
+        return super()._get_last_grid_size(
+            i,
+            layers_dicts,
+            base_grid_size,
+            skip_reshaper=skip_reshaper,
+            base_is_flat=base_is_flat,
         )
 
     def _validate_decoder_output(self) -> None:
@@ -745,8 +720,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         network_growth = DiffusionTransformer.add_depths(
             self, network_spec
         )["network"]
-        dims, grids = self._get_encoder_feature_metadata()
-        self.decoder.set_encoder_feature_metadata(dims, grids)
+        dims, grids, flat_states = self._get_encoder_feature_metadata()
+        self.decoder.set_encoder_feature_metadata(dims, grids, flat_states)
         decoder_growth = self.decoder.add_depths(decoder_spec)["network"]
         self._validate_decoder_output()
         self.decoder_kwargs = deepcopy(self.decoder.get_config())
@@ -833,10 +808,6 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 (decoder_resolution, self.decoder.patch_size)
             )
         for branch_resolution, patch_size in resolutions_and_patches:
-            require(int(branch_resolution) == branch_resolution, \
-                "resolution must be an integer.")
-            require(branch_resolution > 0, \
-                "resolution must be positive.")
             require(branch_resolution % patch_size == 0, \
                 "resolution must be divisible by both patch sizes.")
 
@@ -885,6 +856,7 @@ def run_self_tests() -> dict[str, str]:
     assert model.use_unpatchify is False and model.decoder.use_unpatchify
     assert model.decoder.encoder_feature_dims == [4, 4]
     assert model.decoder.encoder_feature_grid_sizes == [2, 2]
+    assert model.decoder.encoder_feature_is_flat == [False, False]
 
     images = tf.reshape(tf.range(32, dtype=tf.float32), (2, 4, 4, 1)) / 32
     teacher = tf.reverse(images, axis=[1])
@@ -971,15 +943,20 @@ def run_self_tests() -> dict[str, str]:
         channels=1, 
         patch_size=2, 
         dim=4, 
-        depth=2, 
+        depth=4,
         mha_num_heads=1, 
         vit_block_mlp_ratio=1.0, 
-        vit_block_ids=[], 
-        reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+        vit_block_ids=[1, 4],
+        reshaper_ids_dict={2: "flatten", 3: "unflatten"},
         reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
         build=False, 
     )
-    assert vae_network.decoder.encoder_feature_grid_sizes == [2, None, 2]
+    assert vae_network.decoder.encoder_feature_grid_sizes == [
+        2, 2, None, 2, 2
+    ]
+    assert vae_network.decoder.encoder_feature_is_flat == [
+        False, False, True, False, False
+    ]
     vae_wrapper = DiffusionModel(
         network=vae_network, 
         use_ema=False, 

@@ -203,7 +203,7 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         add_kl: bool, 
         latent_dim_ratio: float
     ) -> None:
-        """Validate static dimensions and the supported reshape direction.
+        """Validate the reshape direction and preserve a usable KL width.
 
         Args:
             reshape_type (str): Candidate reshape direction.
@@ -218,21 +218,6 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         # Restrict reshaping to the two supported directions.
         if reshape_type not in ("flatten", "unflatten"):
             raise ValueError("reshape_type must be flatten or unflatten.")
-        # Require a non-empty source shape containing positive integers.
-        if len(source_shape) == 0 or any(
-            not isinstance(dim, int) or isinstance(dim, bool) or dim < 1
-            for dim in source_shape
-        ):
-            raise ValueError("source_shape must contain positive integers.")
-        # Require an explicit boolean variational-mode flag.
-        if not isinstance(add_kl, bool):
-            raise ValueError("add_kl must be boolean.")
-        # Require a finite positive numeric latent-width ratio.
-        if not isinstance(latent_dim_ratio, (int, float)) \
-        or isinstance(latent_dim_ratio, bool) \
-        or not math.isfinite(latent_dim_ratio) \
-        or latent_dim_ratio <= 0.0:
-            raise ValueError("latent_dim_ratio must be finite and positive.")
         # Reject KL ratios that would round the latent width down to zero.
         if add_kl and reshape_type == "flatten" \
         and int(math.prod(source_shape) * latent_dim_ratio) < 1:

@@ -196,11 +196,6 @@ class BaseLayer(ArgumentSaverLayer):
             self.prev_output_dim = None
             self.output_dim = None
             return None
-        # Require a positive integer width for any concrete MLP input.
-        if not isinstance(prev_output_dim, int) or isinstance(prev_output_dim, bool) \
-        or prev_output_dim < 1:
-            raise ValueError("prev_output_dim must be a positive integer or None.")
-
         self.prev_output_dim = prev_output_dim
         # Build the requested output projection when an output width is set.
         if mlp_output_dim is not None:

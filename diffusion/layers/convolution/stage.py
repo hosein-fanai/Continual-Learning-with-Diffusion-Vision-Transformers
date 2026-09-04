@@ -40,17 +40,10 @@ class LayerDict(ArgumentSaverLayer):
 
         super().__init__(**kwargs)
         source = {} if layers_dict is None else dict(layers_dict)
-        # Require every layer key to be a non-empty string.
-        if any(not isinstance(key, str) or not key for key in source):
-            raise ValueError("LayerDict keys must be non-empty strings.")
-
         for key, value in source.items():
             # Recreate layers supplied by the inherited from_config method.
             if isinstance(value, Mapping):
                 source[key] = tf.keras.layers.deserialize(dict(value))
-            # Require every remaining stored value to be a Keras layer.
-            elif not isinstance(value, layers.Layer):
-                raise TypeError("LayerDict values must be Keras layers or models.")
 
         order = list(source) if execution_order is None else list(execution_order)
         # Require the execution order to contain each key exactly once.
@@ -108,13 +101,6 @@ class LayerDict(ArgumentSaverLayer):
         Returns:
             None: The container is updated in place.
         """
-
-        # Require a non-empty string for each newly assigned key.
-        if not isinstance(key, str) or not key:
-            raise ValueError("LayerDict keys must be non-empty strings.")
-        # Preserve Keras tracking by accepting layer values only.
-        if not isinstance(value, layers.Layer):
-            raise TypeError("LayerDict values must be Keras layers or models.")
 
         # Reuse the existing trackable attribute when replacing a key.
         if key in self._layers_dict:

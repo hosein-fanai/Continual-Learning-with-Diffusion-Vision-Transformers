@@ -6,7 +6,6 @@ import tensorflow as tf
 from tensorflow.keras import callbacks
 
 from collections.abc import Callable
-from numbers import Integral
 
 from common.runtime import derive_seed
 
@@ -38,7 +37,7 @@ class DecoderAccuracyCallback(callbacks.Callback):
             classifier (tf.keras.Model | Callable): Callable accepting
                 ``(x_gen, training=False)`` and returning scores shaped
                 ``[samples, classes]``.
-            samples_per_class (int): Non-boolean positive number of generations
+            samples_per_class (int): Number of generations
                 requested for each class previously seen by the attached VAE.
             seed (int | None): Optional experiment seed. A stable epoch-specific
                 child seed is passed to the VAE so callback sampling is
@@ -47,25 +46,9 @@ class DecoderAccuracyCallback(callbacks.Callback):
 
         Returns:
             None.
-
-        Raises:
-            TypeError: If the classifier is not callable or the sample count is
-                not a non-boolean integer.
-            ValueError: If the sample count is not positive.
         """
 
         super().__init__()
-
-        # Require a callable classifier for generated-sample evaluation.
-        if not callable(classifier):
-            raise TypeError("classifier must be callable.")
-        # Reject booleans and non-integral generation counts.
-        if isinstance(samples_per_class, bool) \
-        or not isinstance(samples_per_class, Integral):
-            raise TypeError("samples_per_class must be a non-boolean integer.")
-        # Require at least one generated sample per class.
-        if samples_per_class <= 0:
-            raise ValueError("samples_per_class must be positive.")
 
         self.samples_per_class = int(samples_per_class)
         self.classifier = classifier
@@ -299,7 +282,7 @@ def run_self_tests() -> dict[str, str]:
         """Return a correctly shaped empty generated batch.
 
         Args:
-            samples_per_class (int): Requested positive count; unused.
+            samples_per_class (int): Requested count; unused.
             onehot_y_output (bool): Requested label encoding flag.
             seed (int | None): Optional callback seed; unused.
 
@@ -315,13 +298,6 @@ def run_self_tests() -> dict[str, str]:
             tf.zeros((0,), tf.int64))
 
 
-    try:
-        DecoderAccuracyCallback(perfect_classifier, 0)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("A zero generation count must fail at construction.")
-
     empty_callback = DecoderAccuracyCallback(perfect_classifier, 1)
     empty_callback.set_model(SimpleNamespace(generate=generate_empty))
     try:
@@ -330,14 +306,6 @@ def run_self_tests() -> dict[str, str]:
         pass
     else:
         raise AssertionError("An empty generated batch must fail clearly.")
-
-    for invalid_count in (True, 1.5):
-        try:
-            DecoderAccuracyCallback(perfect_classifier, invalid_count)
-        except TypeError:
-            pass
-        else:
-            raise AssertionError("Callback sample counts must be integers.")
 
 
     def generate_bad_labels(

@@ -61,7 +61,7 @@ def _pad_images(
 
     Args:
         x (numpy.ndarray): Images shaped ``[N, H, W]`` or ``[N, H, W, C]``.
-        pad (int): Non-boolean, nonnegative padding width.
+        pad (int): Nonnegative padding width after integer normalization.
         value (float | int): Constant border value in the array's current
             preprocessing space.
 
@@ -103,12 +103,8 @@ def _limit_samples(
         tuple[numpy.ndarray, numpy.ndarray]: Aligned limited samples and labels.
 
     Raises:
-        ValueError: If the limit is nonpositive or cannot retain every class.
+        ValueError: If the limit cannot retain every represented class.
     """
-
-    # Require a positive limit whenever limiting is enabled.
-    if max_samples is not None and max_samples <= 0:
-        raise ValueError("max_samples must be positive when provided.")
 
     # Preserve all rows when they already fit within the limit.
     if max_samples is None or len(x) <= max_samples:
@@ -736,8 +732,7 @@ def get_dataset(
         ``(inputs, labels, metadata)`` triples.
 
     Raises:
-        ValueError: If ``pad`` is negative, ``batch_size`` is not positive, or
-            metadata is supplied without labels.
+        ValueError: If metadata is supplied without labels.
     """
 
     from tensorflow.keras import layers
@@ -745,13 +740,6 @@ def get_dataset(
 
     num_parallel_calls = tf.data.AUTOTUNE if num_parallel_calls is None \
                         else num_parallel_calls
-
-    # Keep spatial padding nonnegative.
-    if pad < 0:
-        raise ValueError("pad must be nonnegative.")
-    # Require a positive number of examples per batch.
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive.")
 
     # Add the channel dimension expected by image models.
     if len(x.shape) == 3:
@@ -955,9 +943,8 @@ def get_datasets(
         standardization.
 
     Raises:
-        TypeError: If ``task`` is not a string.
-        ValueError: If ``task`` is unsupported, or if ``pad`` is negative or
-            incompatible with saved features or a pretrained image model.
+        ValueError: If ``task`` is unsupported, or if ``pad`` is incompatible
+            with saved features or a pretrained image model.
     """
 
     options = _resolve_dataset_options(config, kwargs)
@@ -977,10 +964,6 @@ def get_datasets(
     use_valset = options["use_valset"]
     seed = options["seed"]
     task = options["task"]
-
-    # Keep spatial padding nonnegative.
-    if pad < 0:
-        raise ValueError("pad must be nonnegative.")
 
     dataset_name = dataset_name.lower()
 

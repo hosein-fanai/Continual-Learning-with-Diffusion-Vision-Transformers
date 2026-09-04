@@ -5,7 +5,7 @@ from tensorflow.keras import metrics
 
 import numpy as np
 
-from typing import Any, TypeAlias, Literal
+from typing import Any, TypeAlias, Literal, get_args
 
 from common.runtime import derive_seed, effective_seed
 
@@ -119,11 +119,10 @@ class EnsembleAccuracy(metrics.Metric):
             ``None``.
         """
 
-        wrapper_policy = getattr(diffusion_clf, "dtype_policy", None)
         kwargs.setdefault(
             "dtype", 
             getattr(
-                wrapper_policy, 
+                getattr(diffusion_clf, "dtype_policy", None), 
                 "variable_dtype", 
                 tf.keras.mixed_precision.global_policy().variable_dtype
             ),
@@ -133,44 +132,10 @@ class EnsembleAccuracy(metrics.Metric):
             **kwargs
         )
 
-        if network_name not in ("ema", "raw"):
-            raise ValueError("network_name must be 'ema' or 'raw'.")
-        required = (
-            "timesteps", "noisify", "q_sample", 
-            "network", "ema_network", "get_network"
-        )
-        missing = [name for name in required if not hasattr(diffusion_clf, name)]
-        # Require the wrapper protocol attributes used by this metric.
-        if missing:
-            raise TypeError(
-                "diffusion_clf is missing required attributes: " + ", ".join(missing)
+        if network_name not in get_args(NetworkName):
+            raise ValueError(
+                f"network_name must be {get_args(NetworkName)}."
             )
-        # Require a callable forward-noising operation.
-        if not callable(diffusion_clf.noisify):
-            raise TypeError("diffusion_clf.noisify must be callable.")
-        # Stateless seeded evaluation injects noise through forward diffusion.
-        if not callable(diffusion_clf.q_sample):
-            raise TypeError("diffusion_clf.q_sample must be callable.")
-        # Network selection is part of the wrapper protocol as well.
-        if not callable(diffusion_clf.get_network):
-            raise TypeError("diffusion_clf.get_network must be callable.")
-        # SNR weighting uses the wrapper's existing schedule-rate lookup.
-        if weighted and not callable(
-            getattr(diffusion_clf, "get_noise_and_signal_rates", None)
-        ):
-            raise TypeError(
-                "Weighted evaluation requires callable "
-                "diffusion_clf.get_noise_and_signal_rates."
-            )
-        if max_t < 1 or max_t != int(max_t):
-            raise ValueError("max_t must be a positive integer.")
-        if t_chunk_size < 1 or t_chunk_size != int(t_chunk_size):
-            raise ValueError("t_chunk_size must be a positive integer.")
-        if any(
-            coef < 0. or not np.isfinite(coef)
-            for coef in (clf_acc_coef, clf_distil_acc_coef, ctr_acc_coef)
-        ):
-            raise ValueError("Accuracy coefficients must be finite and nonnegative.")
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
@@ -193,7 +158,6 @@ class EnsembleAccuracy(metrics.Metric):
             getattr(diffusion_clf, "seed", None) 
             if seed is None else seed
         ))
-
         self.tracker = metrics.SparseCategoricalAccuracy(
             name="tracker", 
             dtype=self.dtype
@@ -211,21 +175,13 @@ class EnsembleAccuracy(metrics.Metric):
                 "compute_type can either be chunked or batched."
             )
 
-        minimum_classes = 0 if getattr(
-            self.network, "dynamic_num_classes", False
-        ) else 1
-        # Require the selected network's class-prediction interface.
-        if self.network is None or not callable(
-            getattr(self.network, "predict_class", None)
-        ) or self.network.num_classes < minimum_classes:
-            raise TypeError(
-                "The selected network must expose a valid "
-                "num_classes and callable predict_class."
-            )
         if self.separate_probas and (
             not getattr(self.network, "use_cfg", False)
-            or getattr(self.network, "num_labels", None)
-                != self.network.num_classes + 1
+            or getattr(
+                self.network, 
+                "num_labels", 
+                None
+            ) != self.network.num_classes + 1
         ):
             raise ValueError(
                 "separate_probas requires one CFG null label "
@@ -280,9 +236,6 @@ class EnsembleAccuracy(metrics.Metric):
                 "network.predict_class(full_return=True) must "
                 "return at least five classifier outputs."
             )
-        # Require tensor predictions from the primary classifier head.
-        if not tf.is_tensor(outputs[0]):
-            raise TypeError("The primary class prediction must be a tensor.")
 
         classes_pred = tf.cast(outputs[0], self.dtype)
         total_pred = classes_pred * self.clf_acc_coef
@@ -333,8 +286,8 @@ class EnsembleAccuracy(metrics.Metric):
             ))
             # The null row scores every class; real label j scores class j - 1.
             total_pred = (
-                total_pred[:, 0, :]
-                + tf.linalg.diag_part(total_pred[:, 1:, :])
+                total_pred[:, 0, :] + 
+                tf.linalg.diag_part(total_pred[:, 1:, :])
             )
 
         return total_pred
@@ -369,8 +322,8 @@ class EnsembleAccuracy(metrics.Metric):
             stable_dtype,
         )
         log_snr = (
-            tf.math.log(tf.maximum(signal_power, epsilon))
-            - tf.math.log(tf.maximum(noise_power, epsilon))
+            tf.math.log(tf.maximum(signal_power, epsilon)) - 
+            tf.math.log(tf.maximum(noise_power, epsilon))
         )
 
         return tf.cast(tf.nn.softmax(log_snr), self.dtype)
@@ -1198,11 +1151,6 @@ def run_self_tests() -> dict[str, str]:
 
     for invalid_kwargs in (
         {"max_t": 0},
-        {"max_t": -1},
-        {"max_t": 2.9},
-        {"max_t": 2, "t_chunk_size": 0},
-        {"max_t": 2, "t_chunk_size": -1},
-        {"max_t": 4, "t_chunk_size": 2.9},
         {"max_t": 1, "clf_acc_coef": -1.0},
         {"max_t": 1, "clf_distil_acc_coef": float("inf")},
         {
@@ -1217,9 +1165,9 @@ def run_self_tests() -> dict[str, str]:
         except ValueError:
             pass
         else:
-            raise AssertionError("Invalid metric options must fail.")
+            raise AssertionError("Invalid ensemble math must fail.")
 
-    for invalid_seed in (True, -1, 2 ** 32, 1.5):
+    for invalid_seed in (-1, 2 ** 32):
         try:
             EnsembleAccuracy(wrapper, max_t=1, seed=invalid_seed)
         except (TypeError, ValueError):
@@ -1367,19 +1315,6 @@ def run_self_tests() -> dict[str, str]:
     assert bool(tf.reduce_all(
         zero_noise_prediction[:, 0] > zero_noise_prediction[:, 1]
     ))
-
-    invalid_wrapper = SimpleNamespace(
-        timesteps=8,
-        network=raw_network,
-        ema_network=ema_network,
-        noisify=None,
-    )
-    try:
-        EnsembleAccuracy(invalid_wrapper, max_t=1)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("The wrapper noising operation must be callable.")
 
     return {"EnsembleAccuracy": "passed"}
 

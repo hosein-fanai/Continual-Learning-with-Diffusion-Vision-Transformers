@@ -9,11 +9,8 @@ the diffusion schedule, noising, losses, optimization, EMA, and sampling.
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-import math
-
 from copy import deepcopy
 
-from numbers import Real
 from typing import Literal, get_args
 
 from . import CondType, TokenType, IdsType, IdsDictType
@@ -522,47 +519,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             the instance for classifier-branch validation.
         """
 
-        require(isinstance(local_vars["image_size"], int) and \
-            not isinstance(local_vars["image_size"], bool) and \
-            local_vars["image_size"] > 0, \
-            "image_size must be a positive integer.")
-        require(isinstance(local_vars["patch_size"], int) and \
-            not isinstance(local_vars["patch_size"], bool) and \
-            local_vars["patch_size"] > 0, \
-            "patch_size must be a positive integer.")
         require(local_vars["image_size"] % local_vars["patch_size"] == 0, \
             "image_size must be divisible by patch_size.")
-        require(isinstance(local_vars["dim"], int) and \
-            not isinstance(local_vars["dim"], bool) and local_vars["dim"] > 0, \
-            "dim must be a positive integer.")
-        require(isinstance(local_vars["depth"], int) and \
-            not isinstance(local_vars["depth"], bool) and local_vars["depth"] >= 0, \
-            "depth must be a nonnegative integer.")
-        require(isinstance(local_vars["timesteps"], int) and \
-            not isinstance(local_vars["timesteps"], bool) and local_vars["timesteps"] >= 2, \
-            "timesteps must be an integer greater than or equal to 2.")
-        require(local_vars["num_classes"] is None or (
-            isinstance(local_vars["num_classes"], int) and
-            not isinstance(local_vars["num_classes"], bool) and
-            local_vars["num_classes"] > 0
-        ), "num_classes must be None or a positive integer.")
         require(local_vars["num_classes"] is not None or local_vars["use_cfg"], \
             "num_classes=None requires use_cfg=True.")
-        require(isinstance(local_vars["channels"], int) and \
-            not isinstance(local_vars["channels"], bool) and local_vars["channels"] > 0, \
-            "channels must be a positive integer.")
-        require(isinstance(local_vars["mha_num_heads"], int) and \
-            not isinstance(local_vars["mha_num_heads"], bool) and \
-            local_vars["mha_num_heads"] > 0, \
-            "mha_num_heads must be a positive integer.")
         effective_cond_dim = (
             local_vars["dim"]
             if local_vars["cond_dim"] is None
             else local_vars["cond_dim"]
         )
-        require(isinstance(effective_cond_dim, int) and \
-            not isinstance(effective_cond_dim, bool) and effective_cond_dim > 0, \
-            "cond_dim must be None or a positive integer.")
 
         # Additive patch conditioning requires equal token and condition widths.
         if local_vars["patches_conds_merger_type"] == "add":
@@ -704,23 +669,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "reshaper_ids_dict", 
             id_less_than_key=False, 
             check_values=False, 
-            none_is_filler=False, 
-        )
-        self._check_dict_assertions(
-            local_vars, 
-            "reshaper_kwargs", 
-            check_items_num=False, 
-            id_less_than_key=False, 
-            allowed_keys=(reshaper_kwargs_allowed_vals:=(
-                "add_kl", "latent_dim_ratio"
-            )), 
-            check_values=False, 
-        ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
-        self._check_dict_assertions(
-            local_vars, 
-            "reshaper_ids_dict", 
-            check_values=False, 
-            id_less_than_key=False, 
             none_is_filler=False
         )
         self._check_dict_assertions(
@@ -729,8 +677,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=(reshaper_kwargs_allowed_vals:=(
-                "add_kl", 
-                "latent_dim_ratio"
+                "add_kl", "latent_dim_ratio"
             )), 
             check_values=False
         ); self.reshaper_kwargs_allowed_vals = reshaper_kwargs_allowed_vals
@@ -1831,7 +1778,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
     def _create_reshaper(
         self, 
-        reshape_type: str, 
+        ids_dict: dict[int, str], 
         i: int, 
         layers_dicts: list[dict], 
         layers_dict: dict, 
@@ -1867,6 +1814,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ValueError: If ``reshape_type`` is not ``"flatten"`` or
                 ``"unflatten"``.
         """
+
+        key = i+1
+        reshape_type = ids_dict[key]
 
         grid_size = self._get_current_grid_size(
             i=i, 
@@ -1969,9 +1919,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Add a variational latent projection only on KL-enabled flatten stages.
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
             id_ = sorted(
-                depth for depth, reshape_type in self.reshaper_ids_dict.items()
-                if reshape_type == "flatten"
-            ).index(i+1)
+                depth for depth, r_type 
+                in ids_dict.items()
+                if r_type == "flatten"
+            ).index(key)
             latent_dim_ratio_list = kwargs.get("latent_dim_ratio", [])
             latent_dim_ratio = latent_dim_ratio_list[id_] if len(
                 latent_dim_ratio_list
@@ -2221,7 +2172,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Build this depth's flatten or unflatten reshaper when configured.
         if key in self.reshaper_ids_dict:
             layers_dict[self.R] = self._create_reshaper(
-                reshape_type=self.reshaper_ids_dict[key], 
+                ids_dict=self.reshaper_ids_dict, 
                 i=i, layers_dicts=layers_dicts, 
                 layers_dict=layers_dict, 
                 base_dim=self.dim, 
@@ -2677,13 +2628,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         x = self.patch_embedder(
             images, 
-            output_grid_size=self._current_resolution // self.patch_size if \
-                            self.image_size != self._current_resolution \
+            output_grid_size=self._current_resolution // self.patch_size if 
+                            self.image_size != self._current_resolution 
                             else None, 
             training=training
         )
         x = self.patches_conds_merger((
-            x, tf.repeat(
+            x, 
+            tf.repeat(
                 conds_merged[:, None], 
                 tf.shape(x)[1], 
                 axis=1
@@ -3161,21 +3113,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             ratio = reshaper_options.get(
                                 "latent_dim_ratio", 1.0
                             )
-                            if not (
-                                isinstance(ratio, Real) and
-                                not isinstance(ratio, bool) and
-                                math.isfinite(float(ratio)) and ratio > 0.0
-                            ):
-                                raise ValueError(
-                                    "Progressive latent_dim_ratio must be "
-                                    "finite and positive."
-                                )
                             self.reshaper_kwargs = {
-                                **self.reshaper_kwargs,
+                                **self.reshaper_kwargs, 
                                 "latent_dim_ratio": [
                                     *self.reshaper_kwargs[
                                         "latent_dim_ratio"
-                                    ],
+                                    ], 
                                     ratio
                                 ]
                             }
@@ -3458,8 +3401,8 @@ def run_self_tests() -> dict[str, str]:
                 selected_inputs, model.cond_type, 
                 full_return=True, training=False
             )
-            tokens = model.prepend_cls_token(
-                tokens, token_type, 
+            tokens = model.prepend_single_token(
+                tokens, model.cls_token, token_type,
                 time_embeds=time_embeds, 
                 label_embeds=label_embeds, 
                 times=selected_times, 
@@ -4075,14 +4018,10 @@ def run_self_tests() -> dict[str, str]:
         {"downsample_kwargs": {"unknown": 1}}, 
         {"upsample_kwargs": {"unknown": 1}}, 
         {"reshaper_kwargs": {"unknown": 1}}, 
-        {"reshaper_kwargs": {"add_kl": 1}},
         {"reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
         {"reshaper_kwargs": {"latent_dim_ratio": float("inf")}},
         {"reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"cls_token_regularizer_kwargs": {"unknown": 1}}, 
-        {"cls_token_regularizer_kwargs": {
-            "start": 0, "end": 1, "mlp_ratio": 0
-        }},
     )
     for overrides in invalid_cases:
         try:

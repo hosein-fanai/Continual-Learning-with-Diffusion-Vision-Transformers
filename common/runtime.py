@@ -15,7 +15,6 @@ import hashlib
 import json
 
 from collections.abc import Sequence
-from numbers import Integral
 from typing import Any
 
 
@@ -41,7 +40,6 @@ def _validate_seed(seed: int | None, name: str) -> int | None:
         int | None: A plain Python integer, or ``None`` unchanged.
 
     Raises:
-        TypeError: If ``seed`` is not a non-boolean integer or ``None``.
         ValueError: If ``seed`` falls outside NumPy's supported interval.
     """
 
@@ -49,9 +47,6 @@ def _validate_seed(seed: int | None, name: str) -> int | None:
     if seed is None:
         return None
 
-    # Reject values that merely coerce to an integer, including booleans.
-    if isinstance(seed, bool) or not isinstance(seed, Integral):
-        raise TypeError(f"{name} must be a non-boolean integer or None.")
     normalized = int(seed)
     # Keras seeds NumPy as well as Python and TensorFlow, so use their overlap.
     if not 0 <= normalized < _NUMPY_SEED_LIMIT:
@@ -84,7 +79,6 @@ def effective_seed(
         run.
 
     Raises:
-        TypeError: If the selected seed has an invalid type.
         ValueError: If the selected seed is outside the supported interval.
     """
 
@@ -130,7 +124,6 @@ def derive_seed(
         when ``seed`` is ``None``.
 
     Raises:
-        TypeError: If a component is a boolean or is not a string/integer.
         ValueError: If no component is supplied or the master seed is outside
             the supported interval.
     """
@@ -146,14 +139,9 @@ def derive_seed(
         # Tag strings and integers so values such as 1 and "1" cannot collide.
         if isinstance(component, str):
             normalized_components.append(("str", component))
-        # Accept NumPy integer scalars while continuing to reject booleans.
-        elif isinstance(component, Integral) and not isinstance(component, bool):
-            normalized_components.append(("int", int(component)))
-        # Reject unstable representations of arbitrary Python objects.
+        # Normalize numeric seed components through the integer path.
         else:
-            raise TypeError(
-                "Seed components must be non-boolean integers or strings."
-            )
+            normalized_components.append(("int", int(component)))
 
     # Preserve unseeded behavior after validating the stream description.
     if normalized_master is None:
@@ -170,10 +158,10 @@ def derive_seed(
     return int.from_bytes(digest[:8], "big") % _DERIVED_SEED_MODULUS
 
 
-def _validate_dtype_policy(
+def validate_model_dtype_policy(
     dtype_policy: str | tf.keras.mixed_precision.Policy
 ) -> tf.keras.mixed_precision.Policy:
-    """Resolve a Keras policy and require floating-point computation.
+    """Resolve a Keras dtype policy.
 
     Args:
         dtype_policy (str | tf.keras.mixed_precision.Policy): Keras policy.
@@ -189,84 +177,7 @@ def _validate_dtype_policy(
     else:
         policy = tf.keras.mixed_precision.Policy(dtype_policy)
 
-    dtypes = (policy.compute_dtype, policy.variable_dtype)
-    # Exclude integer-only policies that cannot support scientific training.
-    if not all(dtype is not None and tf.as_dtype(dtype).is_floating
-               for dtype in dtypes):
-        raise ValueError(
-            "dtype_policy must use floating compute and variable dtypes."
-        )
     return policy
-
-
-def validate_model_dtype_policy(
-    model: tf.keras.Model, 
-    dtype_policy: str | tf.keras.mixed_precision.Policy | None = None, 
-    role: str = "model"
-) -> str:
-    """Check policies retained by a restored model and its layers.
-
-    Args:
-        model (tf.keras.Model): Restored or externally supplied Keras model.
-        dtype_policy (str | tf.keras.mixed_precision.Policy | None): Requested
-            policy. None uses the active global policy.
-        role (str): Model role included in a mismatch error.
-
-    Returns:
-        str: Validated requested policy name.
-
-    Raises:
-        ValueError: If the model or a nested layer has an incompatible policy.
-    """
-
-    # Resolve an omitted request through the already-installed global policy.
-    requested = _validate_dtype_policy(
-        tf.keras.mixed_precision.global_policy()
-        if dtype_policy is None else dtype_policy
-    )
-
-    incompatible: list[str] = []
-    layers: dict[int, tf.keras.layers.Layer] = {}
-    pending = [model]
-    while pending:
-        layer = pending.pop()
-        if id(layer) in layers:
-            continue
-        layers[id(layer)] = layer
-        children = list(getattr(layer, "layers", ()))
-        children.extend(
-            child for child in getattr(
-                layer, "_self_tracked_trackables", ()
-            )
-            if isinstance(child, tf.keras.layers.Layer)
-        )
-        pending.extend(children)
-
-    for layer in layers.values():
-        policy_name = getattr(
-            getattr(layer, "dtype_policy", None), "name", None
-        )
-        allowed = {requested.name}
-        # Functional inputs may expose either dtype of a mixed policy.
-        if isinstance(layer, tf.keras.layers.InputLayer):
-            allowed.update((requested.compute_dtype, requested.variable_dtype))
-        activation = getattr(getattr(layer, "activation", None), "__name__", None)
-        # Permit explicitly stable probability outputs at variable precision.
-        if isinstance(layer, tf.keras.layers.Dense) and activation == "softmax":
-            allowed.add(requested.variable_dtype)
-        # Keep compact provenance for every incompatible nested layer.
-        if policy_name not in allowed:
-            incompatible.append(f"{layer.name}={policy_name!r}")
-
-    # Fail once with the collected layer context needed to rebuild the model.
-    if incompatible:
-        raise ValueError(
-            f"{role} has layers incompatible with dtype policy "
-            f"{requested.name!r}: {', '.join(incompatible[:8])}. "
-            "Global policy changes do not retrofit restored layers."
-        )
-
-    return requested.name
 
 
 def configure_runtime(
@@ -284,25 +195,21 @@ def configure_runtime(
     Args:
         seed (int | None): Effective experiment seed already resolved by
             :func:`effective_seed`.
-        dtype_policy (str): Floating Keras global policy name.
+        dtype_policy (str): Keras global policy name.
         deterministic_ops (bool): Enable deterministic TensorFlow kernels.
 
     Returns:
         str: Name of the installed Keras dtype policy.
 
     Raises:
-        TypeError: If seed, policy, or boolean inputs have invalid types.
         ValueError: If a seed/policy is invalid, or deterministic operations
             are requested without an effective seed.
         AttributeError: If TensorFlow cannot enable deterministic operations.
     """
 
     normalized_seed = _validate_seed(seed, "seed")
-    policy = _validate_dtype_policy(dtype_policy)
+    policy = validate_model_dtype_policy(dtype_policy)
 
-    # Prevent truthy strings or numbers from changing process-wide behavior.
-    if not isinstance(deterministic_ops, bool):
-        raise TypeError("deterministic_ops must be a boolean.")
     # TensorFlow deterministic random operations require a configured seed.
     if deterministic_ops and normalized_seed is None:
         raise ValueError(

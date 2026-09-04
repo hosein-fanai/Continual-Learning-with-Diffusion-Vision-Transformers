@@ -81,10 +81,6 @@ class PatchEmbedding(BaseEmbedding):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
-        # Require a positive integer patch stride.
-        if not isinstance(self.patch_size, int) or isinstance(self.patch_size, bool) \
-        or self.patch_size < 1:
-            raise ValueError("patch_size must be a positive integer.")
         # Require the target patch-grid size for positional construction.
         if self.grid_size is None:
             raise ValueError("PatchEmbedding requires grid_size.")

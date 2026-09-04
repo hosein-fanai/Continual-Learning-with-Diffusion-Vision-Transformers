@@ -159,7 +159,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         decoder_config.setdefault("dtype", self.dtype_policy.name)
         decoder_config.setdefault("seed", derive_seed(self.seed, "decoder"))
         decoder_config.setdefault("shift_inputs", False)
-        encoder_feature_dims, encoder_feature_grids = \
+        encoder_feature_dims, encoder_feature_grids, encoder_feature_is_flat = \
             DiTEncoderDecoder._get_encoder_feature_metadata(self)
         # Require a spatial final encoder feature for decoder initialization.
         if encoder_feature_grids[-1] is None:
@@ -169,6 +169,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         inferred_metadata = {
             "encoder_feature_dims": encoder_feature_dims, 
             "encoder_feature_grid_sizes": encoder_feature_grids, 
+            "encoder_feature_is_flat": encoder_feature_is_flat,
             "encoder_output_grid_size": encoder_feature_grids[-1], 
             "encoder_output_dim": encoder_feature_dims[-1], 
         }
@@ -512,8 +513,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             decoder_spec = []
 
         growth = DiTClassifier.add_depths(self, classifier_spec)
-        dims, grids = DiTEncoderDecoder._get_encoder_feature_metadata(self)
-        self.decoder.set_encoder_feature_metadata(dims, grids)
+        dims, grids, flat_states = \
+            DiTEncoderDecoder._get_encoder_feature_metadata(self)
+        self.decoder.set_encoder_feature_metadata(dims, grids, flat_states)
         decoder_growth = self.decoder.add_depths(decoder_spec)["network"]
         DiTEncoderDecoder._validate_decoder_output(self)
         self.decoder_kwargs = deepcopy(self.decoder.get_config())
@@ -1408,9 +1410,9 @@ def run_self_tests() -> dict[str, str]:
 
     vae_encoder_kwargs = {
         **encoder_kwargs, 
-        "depth": 2, 
-        "vit_block_ids": [], 
-        "reshaper_ids_dict": {1: "flatten", 2: "unflatten"}, 
+        "depth": 4,
+        "vit_block_ids": [1, 4],
+        "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
         "reshaper_kwargs": {"add_kl": True, "latent_dim_ratio": [0.5]},
     }
     vae_decoder_kwargs = {

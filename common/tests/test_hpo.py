@@ -615,6 +615,18 @@ class HpoObjectiveTests(unittest.TestCase):
 class HpoConfigTests(unittest.TestCase):
     """Verify HPO configuration, search spaces, and objective contracts."""
 
+    def test_zero_epoch_budget_cannot_score_untrained_weights(self) -> None:
+        """Reject an HPO objective that would skip every training epoch."""
+
+        with self.assertRaisesRegex(ValueError, "epochs"):
+            run_hpo(
+                "generation",
+                "vae",
+                dataset_name="mnist",
+                n_trials=1,
+                epochs=0,
+            )
+
     def test_tensorboard_name_hashes_wide_conditional_spaces(self) -> None:
         """Keep Windows event paths short without losing run identity."""
 
@@ -713,21 +725,6 @@ class HpoConfigTests(unittest.TestCase):
             save_samples(bad_bundle, bad_base, ".npy")
             with self.assertRaisesRegex(ValueError, "2048"):
                 _feature_archive_signature(bad_base, "cifar10")
-
-            for name, dtype in (("text", "U1"), ("boolean", np.bool_)):
-                invalid_base = Path(temp_dir) / f"cifar10_{name}_features_safe"
-                invalid_bundle = np.empty(3, dtype=object)
-                invalid_bundle[:] = [
-                    np.zeros((2, 2048), dtype=dtype),
-                    np.zeros((1, 2048), dtype=dtype),
-                    np.zeros((2, 2048), dtype=dtype),
-                ]
-                save_samples(invalid_bundle, invalid_base, ".npy")
-                with self.subTest(dtype=name), self.assertRaisesRegex(
-                    ValueError,
-                    "real numeric",
-                ):
-                    _feature_archive_signature(invalid_base, "cifar10")
 
             no_metadata = Path(temp_dir) / "cifar10_no_metadata_safe"
             save_samples(bundle, no_metadata, ".npy")
@@ -930,13 +927,51 @@ class HpoConfigTests(unittest.TestCase):
         """Keep x0 HPO variational, sampleable, and trajectory-free."""
 
         dit_vae_overrides = {
-            "vit_block_ids": [1],
-            "reshaper_ids_dict": {1: "flatten", 2: "unflatten"},
+            "vit_block_ids": [1, 4],
+            "use_decoder_ids": [4],
+            "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
             "reshaper_kwargs": {
                 "add_kl": True,
                 "latent_dim_ratio": [1.0],
             },
         }
+        with self.assertRaisesRegex(ValueError, "before and after"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                {
+                    "vit_block_ids": [1],
+                    "reshaper_ids_dict": {
+                        1: "flatten", 2: "unflatten",
+                    },
+                    "reshaper_kwargs": {"add_kl": True},
+                },
+                {"swap_noise_image": True},
+            )
+        for incomplete_topology in (
+            {
+                "vit_block_ids": [4],
+                "use_decoder_ids": [4],
+            },
+            {
+                "vit_block_ids": [1],
+                "cls_token_regularizer_ids": [4],
+            },
+        ):
+            with self.subTest(incomplete_topology=incomplete_topology):
+                with self.assertRaisesRegex(
+                    ValueError, "actual encoder and decoder"
+                ):
+                    _validate_swap_noise_hpo(
+                        "diffusion_transformer",
+                        {
+                            **incomplete_topology,
+                            "reshaper_ids_dict": {
+                                2: "flatten", 3: "unflatten",
+                            },
+                            "reshaper_kwargs": {"add_kl": True},
+                        },
+                        {"swap_noise_image": True},
+                    )
 
         with self.assertRaisesRegex(ValueError, "reshaper_kwargs"):
             _build_trial_config(
@@ -969,8 +1004,10 @@ class HpoConfigTests(unittest.TestCase):
         self.assertTrue(config.model.wrapper_kwargs["swap_noise_image"])
         self.assertEqual(config.model.wrapper_kwargs["image_loss_coef"], 0.)
         self.assertGreater(config.model.wrapper_kwargs["kl_loss_coef"], 0.)
+        self.assertEqual(config.model.kwargs["depth"], 4)
         self.assertNotIn("image_loss_coef", trial.params)
         self.assertIn("kl_loss_coef", trial.params)
+        self.assertNotIn("depth", trial.params)
         self.assertNotIn("test_cfg_scale", trial.params)
         self.assertNotIn("test_eta", trial.params)
         self.assertFalse(any(
@@ -996,6 +1033,12 @@ class HpoConfigTests(unittest.TestCase):
         self.assertNotIn("kl_loss_coef", generation_trial.params)
         self.assertEqual(generation.training.monitor, "val_loss")
         self.assertFalse(generation.reporting.save_final_gifs)
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                dit_vae_overrides,
+                {"swap_noise_image": True, "kl_loss_coef": float("nan")},
+            )
 
         unet = _build_trial_config(
             _SuggestionTrial(),
@@ -1088,12 +1131,87 @@ class HpoConfigTests(unittest.TestCase):
                 )
             self.assertFalse(results_path.exists())
 
+    def test_swap_noise_multilevel_topology_fixes_sufficient_depth(self) -> None:
+        """Derive Copy35 depth and reject topology that crosses its bridge."""
+
+        topology = {
+            "vit_block_ids": [1, 3, 5, 13, 15],
+            "use_decoder_ids": [13, 15],
+            "connection_ids_dict": {8: [3], 10: [1], 12: [7]},
+            "cross_attention_ids_dict": {13: [9], 15: [11]},
+            "downsample_ids": [2, 4],
+            "reshaper_ids_dict": {
+                6: "flatten", 7: "unflatten",
+                8: "flatten", 9: "unflatten",
+                10: "flatten", 11: "unflatten",
+            },
+            "reshaper_kwargs": {
+                "add_kl": True,
+                "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256],
+            },
+            "upsample_ids": [12, 14],
+        }
+        derived_trial = _SuggestionTrial()
+        derived = _build_trial_config(
+            derived_trial,
+            "generation",
+            "diffusion_transformer",
+            "cifar10",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            model_overrides=topology,
+            wrapper_overrides={"swap_noise_image": True},
+        )
+        self.assertEqual(derived.model.kwargs["depth"], 15)
+        self.assertNotIn("depth", derived_trial.params)
+
+        fixed_trial = _SuggestionTrial()
+        fixed = _build_trial_config(
+            fixed_trial,
+            "generation",
+            "diffusion_transformer",
+            "cifar10",
+            epochs=1,
+            seed=3,
+            results_path="results/hpo",
+            model_overrides={**topology, "depth": 16},
+            wrapper_overrides={"swap_noise_image": True},
+        )
+        self.assertEqual(fixed.model.kwargs["depth"], 16)
+        self.assertNotIn("depth", fixed_trial.params)
+
+        with self.assertRaisesRegex(ValueError, "cover every fixed topology"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                {**topology, "depth": 14},
+                {"swap_noise_image": True},
+            )
+        with self.assertRaisesRegex(ValueError, "inside the central bridge"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                {**topology, "vit_block_ids": [1, 6, 13, 15]},
+                {"swap_noise_image": True},
+            )
+        with self.assertRaisesRegex(ValueError, "explicit vit_block_ids"):
+            _validate_swap_noise_hpo(
+                "diffusion_transformer",
+                {
+                    name: value for name, value in topology.items()
+                    if name != "vit_block_ids"
+                },
+                {"swap_noise_image": True},
+            )
+
     def test_swap_noise_preflight_validates_multilevel_latent_ratios(
         self,
     ) -> None:
         """Match ordered ratio lists to pairs without rejecting latent builders."""
 
         model_overrides = {
+            "depth": 6,
+            "vit_block_ids": [1, 6],
+            "use_decoder_ids": [6],
             "reshaper_ids_dict": {
                 2: "flatten", 3: "unflatten",
                 4: "flatten", 5: "unflatten",
@@ -1119,11 +1237,6 @@ class HpoConfigTests(unittest.TestCase):
             0.5,
             (0.5, 0.25),
             [0.5],
-            [0.5, 0.0],
-            [0.5, float("nan")],
-            [0.5, float("inf")],
-            [0.5, True],
-            [0.5, "0.25"],
         ):
             invalid_overrides = {
                 **model_overrides,
@@ -1139,6 +1252,30 @@ class HpoConfigTests(unittest.TestCase):
                         invalid_overrides,
                         {"swap_noise_image": True},
                     )
+
+        for unchecked_ratios in (
+            [0.5, 0.0],
+            [0.5, float("nan")],
+            [0.5, float("inf")],
+            [0.5, True],
+            [0.5, "0.25"],
+        ):
+            unchecked_overrides = {
+                **model_overrides,
+                "reshaper_kwargs": {
+                    "add_kl": True,
+                    "latent_dim_ratio": unchecked_ratios,
+                },
+            }
+            with self.subTest(unchecked_ratios=unchecked_ratios):
+                self.assertEqual(
+                    _validate_swap_noise_hpo(
+                        "diffusion_transformer",
+                        unchecked_overrides,
+                        {"swap_noise_image": True},
+                    ),
+                    (True, None),
+                )
 
         for invalid_reshapers in (
             {2: "flatten", 4: "unflatten"},
@@ -1179,6 +1316,9 @@ class HpoConfigTests(unittest.TestCase):
         """Only a route whose target is a flatten stage may cross the boundary."""
 
         base_overrides = {
+            "depth": 6,
+            "vit_block_ids": [1, 6],
+            "use_decoder_ids": [6],
             "reshaper_ids_dict": {
                 2: "flatten", 3: "unflatten",
                 4: "flatten", 5: "unflatten",
@@ -1297,14 +1437,64 @@ class HpoConfigTests(unittest.TestCase):
             )
             if architecture == "u_multilevel_vae":
                 self.assertEqual(
+                    network_kwargs["clf_connection_ids_dict"][-1], [-1]
+                )
+                self.assertEqual(
                     network.clf_connection_ids_dict,
-                    {8: [3], 10: [1], 12: [7]},
+                    {8: [3], 10: [1], 12: [7], 16: [15]},
                 )
             self.assertTrue(all(
                 depth > max(network.clf_downsample_ids)
                 and depth < min(network.clf_upsample_ids)
                 for depth in network.clf_reshaper_ids_dict
             ))
+
+    def test_all_feature_aggregation_forces_every_classifier_width(self) -> None:
+        """Project concatenated main features before every classifier template."""
+
+        class AllAggregationTrial(_SuggestionTrial):
+            """Select one architecture and all-depth feature aggregation."""
+
+            def __init__(self, architecture: str) -> None:
+                super().__init__()
+                self.architecture = architecture
+
+            def suggest_categorical(
+                self, name: str, choices: list[object]
+            ) -> object:
+                """Return the requested classifier controls or a valid default."""
+
+                if name.startswith("classifier_architecture"):
+                    value = self.architecture
+                elif name == "feature_aggregation":
+                    value = "all"
+                elif name == "classifier_only_cls_token":
+                    value = True
+                elif name.startswith("clf_latent_dim_pair"):
+                    value = 16
+                else:
+                    value = choices[0]
+                self.params[name] = value
+                return value
+
+        for architecture in (
+            "linear", "connection", "u_shape", "u_vae",
+            "u_multilevel_vae",
+        ):
+            network_kwargs = {
+                "patch_size": 2,
+                "dim": 8,
+            }
+            with self.subTest(architecture=architecture):
+                _suggest_joint(
+                    AllAggregationTrial(architecture),
+                    "dit_classifier",
+                    network_kwargs,
+                    {},
+                    image_size=8,
+                )
+                self.assertEqual(network_kwargs["clf_dim"], 8)
+                self.assertIs(network_kwargs["clf_dim_forced"], True)
 
     def test_run_hpo_accepts_singleton_transfer_objectives(self) -> None:
         """Later task cells make singleton-first CL objectives computable."""

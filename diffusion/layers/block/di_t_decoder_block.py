@@ -26,8 +26,8 @@ class DiTDecoderBlock(VisionTransformerBlock):
             ``dim``, ``query_dim``, ``num_heads``, ``key_dim``, ``value_dim``,
             ``mlp_ratio``, ``drop_prob``, ``drop_per_sample``,
             ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, and
-            standard Keras layer options. ``gate_query_flag`` is fixed to false
-            and must not be supplied.
+            standard Keras layer options. ``gate_query_flag`` is ignored and
+            fixed to false.
 
     Inputs:
         Pair ``(x, cond)`` with decoder tokens ``[batch, target_tokens, dim]``
@@ -58,10 +58,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             ``None``.
         """
 
-        gate_query_flag = kwargs.pop("gate_query_flag", False)
-        # Preserve the decoder's fixed query-gating convention.
-        if gate_query_flag is not False:
-            raise ValueError("DiTDecoderBlock fixes gate_query_flag to False.")
+        kwargs.pop("gate_query_flag", None)
         super().__init__(
             gate_query_flag=False, 
             **kwargs
@@ -275,12 +272,8 @@ def run_self_tests() -> dict[str, str]:
     gradients = tape.gradient(loss, identity.trainable_variables)
     assert gradients and all(gradient is not None for gradient in gradients)
 
-    try:
-        DiTDecoderBlock(dim=4, gate_query_flag=True)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("gate_query_flag is constructor-controlled.")
+    forced_query_gate = DiTDecoderBlock(dim=4, gate_query_flag=True)
+    assert forced_query_gate.gate_query_flag is False
     try:
         identity(
             (x, condition), 
