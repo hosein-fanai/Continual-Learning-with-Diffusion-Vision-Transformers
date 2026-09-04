@@ -3116,9 +3116,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             self.reshaper_kwargs = {
                                 **self.reshaper_kwargs, 
                                 "latent_dim_ratio": [
-                                    *self.reshaper_kwargs.get(
-                                        "latent_dim_ratio", []
-                                    ),
+                                    *(self.reshaper_kwargs.get(
+                                        "latent_dim_ratio"
+                                    ) or [1.0] * (len(self.reshaper_ids_dict) // 2)),
                                     ratio
                                 ]
                             }
@@ -3154,7 +3154,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 raise ValueError(
                     "reshapers must be consecutive flatten/unflatten pairs."
                 )
-            if len(self.reshaper_kwargs.get("latent_dim_ratio", [])) != \
+            if self.reshaper_kwargs.get("latent_dim_ratio") and \
+            len(self.reshaper_kwargs["latent_dim_ratio"]) != \
             len(reshaper_items) // 2:
                 raise ValueError(
                     "latent_dim_ratio must contain one value per "

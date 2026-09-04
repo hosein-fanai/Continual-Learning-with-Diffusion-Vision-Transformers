@@ -2232,12 +2232,12 @@ def _run_continual_tasks(
                     candidate_seed,
                     replay_cache_context,
                 )
-                if (
-                    x_train.ndim == 3
-                    and x_buffer.ndim == 4
-                    and x_buffer.shape[-1] == 1
-                ):
-                    x_buffer = x_buffer[..., 0]
+            if (
+                x_train.ndim == 3
+                and x_buffer.ndim == 4
+                and x_buffer.shape[-1] == 1
+            ):
+                x_buffer = x_buffer[..., 0]
             task_resource["seconds"]["generator_sampling"] = float(
                 time.perf_counter() - sample_started
             )

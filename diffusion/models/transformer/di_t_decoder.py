@@ -464,9 +464,13 @@ class DiTDecoder(DiffusionTransformer):
             int | None: Last known feature width.
         """
 
-        return super()._get_layers_dict_last_output_dim(
+        output_dim = super()._get_layers_dict_last_output_dim(
             layers_dict, skip_reshaper
         )
+        # Use the aggregator width when no later component changes it.
+        if output_dim is None and self.FA in layers_dict:
+            return layers_dict[self.FA].output_dim
+        return output_dim
 
     def _get_last_grid_size(
         self, 
@@ -1609,50 +1613,48 @@ def run_self_tests() -> dict[str, str]:
     assert final_feature_growth.feature_aggregation_ids_dict == {1: [1]}
     assert final_feature_growth.FA in final_feature_growth.layers_dicts[0]
 
-    token_axis = DiTDecoder(
+    feature_axis = DiTDecoder(
         depth=1, 
         feature_aggregation_ids_dict={1: [0, 1]}, 
-        feature_aggregation_kwargs={"connect_axis": 1}, 
+        feature_aggregation_kwargs={"connect_axis": -1},
         dim_forced=False, 
         use_unpatchify=False, 
         **common,
     )
-    token_axis_output = token_axis(
+    feature_axis_output = feature_axis(
         (images, times, labels), encoder_cond, encoder_features,
     )["noises"]
-    assert token_axis.layers_dicts[0][token_axis.FA].output_dim == 4
-    assert token_axis_output.shape == (2, 12, 4)
+    assert feature_axis.layers_dicts[0][feature_axis.FA].output_dim == 12
+    assert feature_axis_output.shape == (2, 4, 12)
 
-    connector_tokens = DiTDecoder(
+    connector_features = DiTDecoder(
         depth=1, 
         feature_aggregation_ids_dict={1: [0]}, 
         connection_ids_dict={1: [0]}, 
-        feature_aggregation_kwargs={"connect_axis": 1}, 
-        connection_kwargs={"connect_axis": 1}, 
+        feature_aggregation_kwargs={"connect_axis": -1},
+        connection_kwargs={"connect_axis": -1},
         vit_block_ids=[], 
         use_decoder_ids=[], 
         dim_forced=False, 
         use_unpatchify=False, 
         **common,
     )
-    connector_output = connector_tokens(
+    connector_output = connector_features(
         (images, times, labels), encoder_cond, encoder_features,
     )["noises"]
-    assert connector_tokens.layers_dicts[0][connector_tokens.FC].output_dim == 4
-    assert connector_tokens.layers_dicts[0][
-        connector_tokens.FC
-    ].output_is_flat is False
-    assert connector_tokens._get_last_grid_size(
-        0, connector_tokens.layers_dicts, connector_tokens.grid_size
-    ) == connector_tokens.grid_size
-    assert connector_output.shape == (2, 8, 4)
+    assert connector_features.layers_dicts[0][connector_features.FC].output_dim == 8
+    assert connector_output.shape.rank == 3
+    assert connector_features._get_last_grid_size(
+        0, connector_features.layers_dicts, connector_features.grid_size
+    ) == connector_features.grid_size
+    assert connector_output.shape == (2, 4, 8)
 
-    non_square_tokens = DiTDecoder(
+    unknown_grid_features = DiTDecoder(
         depth=1,
         vit_block_ids=[],
         use_decoder_ids=[],
         feature_aggregation_ids_dict={1: [0]},
-        feature_aggregation_kwargs={"connect_axis": 1},
+        feature_aggregation_kwargs={"connect_axis": -1},
         use_unpatchify=False,
         encoder_feature_grid_sizes=[None, 2],
         encoder_feature_dims=[4, 4],
@@ -1661,17 +1663,17 @@ def run_self_tests() -> dict[str, str]:
             "encoder_feature_grid_sizes", "encoder_feature_dims"
         )},
     )
-    non_square_handler = non_square_tokens.layers_dicts[0][
-        non_square_tokens.FA
+    unknown_grid_handler = unknown_grid_features.layers_dicts[0][
+        unknown_grid_features.FA
     ]
-    assert non_square_handler.grid_size is None
-    assert non_square_handler.output_is_flat is False
-    non_square_output = non_square_tokens(
+    assert unknown_grid_handler.grid_size is None
+    assert unknown_grid_handler.output_is_flat is False
+    unknown_grid_output = unknown_grid_features(
         (images, times, labels),
         encoder_cond,
-        [tf.ones((2, 6, 4)), encoder_features[-1]],
+        [tf.ones((2, 4, 4)), encoder_features[-1]],
     )["noises"]
-    assert non_square_output.shape == (2, 10, 4)
+    assert unknown_grid_output.shape == (2, 4, 4)
 
     try:
         DiTDecoder(

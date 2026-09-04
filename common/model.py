@@ -99,8 +99,7 @@ def get_callbacks(
         monitor (str): Key expected in epoch logs, such as ``"val_accuracy"``,
             ``"val_loss"``, or the project's ``"decoder_accuracy"``.
         mode (str): ``"min"``, ``"max"``, or ``"auto"`` direction used by
-            ``EarlyStopping``.  This argument is not forwarded to
-            ``ReduceLROnPlateau``, whose Keras default remains ``"auto"``.
+            both callbacks.
         patience (int): Number of non-improving epochs tolerated by both
             callbacks.
         min_delta (float): Minimum absolute change counted as improvement by
@@ -131,6 +130,7 @@ def get_callbacks(
         ),
         callbacks.ReduceLROnPlateau(
             monitor=monitor, 
+            mode=mode,
             patience=patience, 
             min_delta=min_delta, 
             factor=reducelr_factor, 

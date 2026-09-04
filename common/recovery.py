@@ -1586,7 +1586,13 @@ def find_latest_task_checkpoint(
             # Select the recovery action required by this condition.
             if _sha256_file(candidate / _STATE_NAME) != latest["state_sha256"]:
                 raise ValueError("latest.json state checksum is inconsistent.")
-            return candidate
+            # A crash can commit a newer task before updating latest.json.
+            if not any(
+                _TASK_DIRECTORY_PATTERN.fullmatch(child.name)
+                and int(child.name[5:]) > int(latest["completed_task_index"])
+                for child in supplied.iterdir()
+            ):
+                return candidate
         except Exception:
             # Scan below. latest.json is an optimization, not the source of
             # truth for whether a checkpoint is committed.

@@ -553,7 +553,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     clf_upsample_ids: list[int | None] = field(default_factory=list)
     clf_upsample_kwargs: dict | None = None
     clf_reshaper_ids_dict: dict[int, str] = field(default_factory=dict)
-    clf_reshaper_kwargs: dict = field(default_factory=dict)
+    clf_reshaper_kwargs: dict | None = None
     clf_cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
     clf_cls_token_regularizer_kwargs: dict | None = None
     force_global_avg_pooling: bool = False

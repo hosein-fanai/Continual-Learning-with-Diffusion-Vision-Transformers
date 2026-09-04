@@ -1766,9 +1766,9 @@ class DiTClassifier(DiffusionTransformer):
                             self.clf_reshaper_kwargs = {
                                 **self.clf_reshaper_kwargs, 
                                 "latent_dim_ratio": [
-                                    *self.clf_reshaper_kwargs.get(
-                                        "latent_dim_ratio", []
-                                    ), 
+                                    *(self.clf_reshaper_kwargs.get(
+                                        "latent_dim_ratio"
+                                    ) or [1.0] * (len(self.clf_reshaper_ids_dict) // 2)),
                                     ratio
                                 ]
                             }
@@ -1805,7 +1805,8 @@ class DiTClassifier(DiffusionTransformer):
                     "classifier reshapers must be consecutive "
                     "flatten/unflatten pairs."
                 )
-            if len(self.clf_reshaper_kwargs.get("latent_dim_ratio", [])) != \
+            if self.clf_reshaper_kwargs.get("latent_dim_ratio") and \
+            len(self.clf_reshaper_kwargs["latent_dim_ratio"]) != \
             len(reshaper_items) // 2:
                 raise ValueError(
                     "classifier latent_dim_ratio must contain one value per "
@@ -2062,9 +2063,7 @@ def run_self_tests() -> dict[str, str]:
     public_default_first.clf_reshaper_kwargs["probe"] = True
     assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_second.clf_connection_ids_dict == {2: [1]}
-    assert public_default_second.clf_reshaper_kwargs == {
-        "latent_dim_ratio": []
-    }
+    assert public_default_second.clf_reshaper_kwargs == {}
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
     assert public_reshaper_default is None
@@ -2078,7 +2077,6 @@ def run_self_tests() -> dict[str, str]:
     supplied_reshaper_kwargs["add_kl"] = True
     assert supplied_options.clf_reshaper_kwargs == {
         "add_kl": False,
-        "latent_dim_ratio": [],
     }
     assert supplied_options.clf_connection_kwargs == {"connect_type": "concat"}
     assert supplied_options.clf_connection_kwargs is not \

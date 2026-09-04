@@ -152,8 +152,8 @@ def linear_cka(first: np.ndarray, second: np.ndarray) -> float:
     """Compute linear centered-kernel alignment between two representations.
 
     Samples occupy rows and arbitrary remaining representation dimensions are
-    flattened. This feature-space identity avoids materializing quadratic Gram
-    matrices and is therefore suitable for moderately large probe sets.
+    flattened. Use feature or sample matrices according to which dimensions
+    are smaller, and leave the supplied representations unchanged.
 
     Args:
         first (numpy.ndarray): First representation with a sample axis.
@@ -175,11 +175,20 @@ def linear_cka(first: np.ndarray, second: np.ndarray) -> float:
 
     x = x.reshape((len(x), -1))
     y = y.reshape((len(y), -1))
-    x -= np.mean(x, axis=0, keepdims=True)
-    y -= np.mean(y, axis=0, keepdims=True)
-    cross_norm = float(np.sum(np.square(x.T @ y)))
-    x_norm = float(np.sum(np.square(x.T @ x)))
-    y_norm = float(np.sum(np.square(y.T @ y)))
+    x = x - np.mean(x, axis=0, keepdims=True)
+    y = y - np.mean(y, axis=0, keepdims=True)
+    # Use sample matrices when the representations are wider than the batch.
+    if max(x.shape[1], y.shape[1]) > len(x):
+        xx = x @ x.T
+        yy = y @ y.T
+        cross_norm = float(np.sum(xx * yy))
+        x_norm = float(np.sum(np.square(xx)))
+        y_norm = float(np.sum(np.square(yy)))
+    # Narrow representations use the equivalent feature-space calculation.
+    else:
+        cross_norm = float(np.sum(np.square(x.T @ y)))
+        x_norm = float(np.sum(np.square(x.T @ x)))
+        y_norm = float(np.sum(np.square(y.T @ y)))
     denominator = np.sqrt(x_norm * y_norm)
 
     # Mark a constant representation as unavailable instead of dividing by zero.
