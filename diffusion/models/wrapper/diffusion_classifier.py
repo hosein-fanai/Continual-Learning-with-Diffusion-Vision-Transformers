@@ -294,6 +294,7 @@ class DiffusionClassifier(DiffusionModel):
 
         teacher_labels = self.teacher_network.predict_class(
             (x_t, t, labels), 
+            max_encoder_num=None,
             training=False
         )
         tf.debugging.assert_rank(

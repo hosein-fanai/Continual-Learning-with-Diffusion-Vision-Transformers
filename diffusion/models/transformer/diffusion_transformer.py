@@ -2303,7 +2303,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     self.channels, 
                     kernel_size=3, 
                     padding="same", 
-                    kernel_initializer="zeros", 
+                    kernel_initializer="zeros" if self.refiner_cnn_residual else "glorot_uniform",
                     bias_initializer="zeros", 
                     name=f"{name}/refiner_conv_2"
                 )(h)
@@ -3154,7 +3154,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 raise ValueError(
                     "reshapers must be consecutive flatten/unflatten pairs."
                 )
-            if len(self.reshaper_kwargs["latent_dim_ratio"]) != \
+            if len(self.reshaper_kwargs.get("latent_dim_ratio", [])) != \
             len(reshaper_items) // 2:
                 raise ValueError(
                     "latent_dim_ratio must contain one value per "

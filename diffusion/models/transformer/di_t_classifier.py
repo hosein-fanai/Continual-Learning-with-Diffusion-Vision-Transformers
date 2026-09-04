@@ -1805,7 +1805,7 @@ class DiTClassifier(DiffusionTransformer):
                     "classifier reshapers must be consecutive "
                     "flatten/unflatten pairs."
                 )
-            if len(self.clf_reshaper_kwargs["latent_dim_ratio"]) != \
+            if len(self.clf_reshaper_kwargs.get("latent_dim_ratio", [])) != \
             len(reshaper_items) // 2:
                 raise ValueError(
                     "classifier latent_dim_ratio must contain one value per "
