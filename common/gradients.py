@@ -66,10 +66,10 @@ def apply_policy_gradients(
     if uses_loss_scaling:
         gradients = optimizer.get_unscaled_gradients(gradients)
 
+    gradient_variable_pairs = list(zip(gradients, selected_variables))
     pairs = [
         (gradient, variable)
-        for gradient, variable in 
-        zip(gradients, selected_variables)
+        for gradient, variable in gradient_variable_pairs
         if gradient is not None
     ]
     if not pairs:
@@ -77,6 +77,6 @@ def apply_policy_gradients(
             "The loss is disconnected from every selected variable."
         )
 
-    optimizer.apply_gradients(pairs)
+    optimizer.apply_gradients(gradient_variable_pairs)
 
     return pairs

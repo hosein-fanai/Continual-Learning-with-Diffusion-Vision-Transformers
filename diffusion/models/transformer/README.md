@@ -163,10 +163,10 @@ metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
 KL reshapers are configured as adjacent `"flatten"`, `"unflatten"` pairs.
-For every transformer VAE intended for `sample_vae`, arrange its pair or pairs
+A transformer VAE intended for `sample_vae` can arrange its pair or pairs
 as one contiguous central bridge after real encoder computation and before
 real decoder or up-sampling computation. This applies to single- and
-multi-level bottlenecks. `sample_vae` validates this positional invariant:
+multi-level bottlenecks. For this layout,
 no transformer/local-mixer block can split the bridge, downsampling must occur
 before it, and upsampling must occur after it. Whether a transformer stage uses
 `VisionTransformerBlock` or `DiTDecoderBlock` does not determine which side it
@@ -351,8 +351,7 @@ predicted_noise = network(
 ```
 
 `network.encoder` is a read-only alias for `network`. Consequently
-`embed_conditions`, `embed_inputs`, `prepend_cls_token`,
-`prepend_distil_token`,
+`embed_conditions`, `embed_inputs`, `prepend_single_token`,
 `slice_and_flatten_tokens`, `encode`, `add_depths`, and variable inspection all
 belong to the encoder. The composite forces the encoder's `use_unpatchify`
 setting to `False` because only the decoder owns the final noise/image head.

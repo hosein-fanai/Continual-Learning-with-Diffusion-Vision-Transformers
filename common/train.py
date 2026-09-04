@@ -377,7 +377,8 @@ def train_model(
     trainset: tf.data.Dataset | Callable[..., object] | None = None, 
     valset: tf.data.Dataset | None = None, 
     save_config_: bool = True, 
-    extra_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None, 
+    extra_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None,
+    _run_state: dict[str, object] | None = None,
     **kwargs: object
 ) -> dict[str, list[float]]:
     """Fit one model or continual bundle and persist requested artifacts.
@@ -392,6 +393,8 @@ def train_model(
         save_config_ (bool): Persist the resolved typed configuration.
         extra_callbacks (Sequence[tf.keras.callbacks.Callback] | None):
             Callbacks appended to the standard training callbacks.
+        _run_state (dict[str, object] | None): Internal mutable holder used by
+            direct ``main`` calls to receive the concrete artifact directory.
         **kwargs (object): Direct-mode training options. Continual bundles use
             the canonical ``continually_learn_kwargs`` mapping.
 
@@ -589,7 +592,10 @@ def train_model(
             restore_best_weights=True
         ))
 
-    # Record the callback's concrete timestamped results directory.
+    # Publish the callback's concrete timestamped results directory.
+    if _run_state is not None:
+        _run_state["results_path"] = image_callback.results_path
+    # Configured callers retain the established in-place path update.
     if config is not None:
         config.training.results_path = image_callback.results_path
 
@@ -972,8 +978,38 @@ def train_model(
                 "verbose": training_verbose, 
                 **fit_kwargs
             }
+            method_input = trainset
+            if isinstance(model, VariationalAutoencoder):
+                method_kwargs.setdefault("batch_size", batch_size)
+                method_kwargs.setdefault("seed", seed)
+                if continual_shuffle_buffer is not None:
+                    method_kwargs.setdefault(
+                        "shuffle_buffer", continual_shuffle_buffer
+                    )
+            # The VAE resampling API operates on rows, while orchestration
+            # supplies an already-batched dataset. Materialize those finite
+            # batches once so ``train_num`` still samples individual examples.
+            if isinstance(model, VariationalAutoencoder) and isinstance(
+                trainset, tf.data.Dataset
+            ):
+                batches = [
+                    tf.keras.utils.unpack_x_y_sample_weight(batch)
+                    for batch in trainset.as_numpy_iterator()
+                ]
+                if not batches:
+                    raise ValueError("Training dataset must contain at least one batch.")
+
+                method_input = np.concatenate([
+                    np.asarray(batch_x) for batch_x, _, _ in batches
+                ], axis=0)
+                if model.conditioned and "y" not in method_kwargs:
+                    labels = [batch_y for _, batch_y, _ in batches]
+                    method_kwargs["y"] = None if any(
+                        label is None for label in labels
+                    ) else np.concatenate(labels, axis=0)
+
             trained = method(
-                trainset, 
+                method_input,
                 **method_kwargs
             )
         # Progressive methods own their stage and final epoch budgets.
@@ -1644,13 +1680,20 @@ def main(
         **kwargs
     )
 
+    run_state = {}
     history = train_model(
         config, 
         model, 
         trainset, 
-        valset=valset, 
+        valset=valset,
+        _run_state=run_state,
         **kwargs
     )
+
+    # Direct calls have no mutable Config through which training can publish
+    # the timestamped child used for every artifact.
+    if config is None:
+        kwargs["results_path"] = run_state["results_path"]
 
     evaluations = report(
         config, 
@@ -1666,7 +1709,7 @@ def main(
         "history": history, 
         "evaluations": evaluations, 
         "results_path": config.training.results_path if config is not None
-                        else kwargs.get("results_path", "./results")
+                        else kwargs["results_path"]
     }
 
 

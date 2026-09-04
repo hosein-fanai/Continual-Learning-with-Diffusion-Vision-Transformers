@@ -35,9 +35,9 @@ class LocalMixer(BaseEmbedding):
         use_pointwise: If true, project depthwise channels to
             ``dim * pointwise_dim_ratio``; otherwise retain
             ``dim * depth_multiplier`` channels.
-        zero_init: Zero-initialize the depthwise kernel so the initial local
-            correction is zero. This covers the convolutional path, while an
-            adaptive normalization gate also starts at zero by default.
+        zero_init: Keep the initial residual correction at zero. Adaptive
+            residual mixing uses its learned zero gate; other configurations
+            zero-initialize the depthwise kernel.
         circumvent_tokens: Number of leading non-spatial tokens excluded from
             convolution. ``True`` retains the original one-token mode.
         **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
@@ -85,7 +85,8 @@ class LocalMixer(BaseEmbedding):
             depth_multiplier (int): Positive depthwise channel multiplier.
             pointwise_dim_ratio (int): Positive pointwise channel multiplier.
             use_pointwise (bool): Whether to apply the pointwise convolution.
-            zero_init (bool): Whether to zero-initialize the depthwise kernel.
+            zero_init (bool): Whether to initialize the local correction at
+                zero.
             circumvent_tokens (bool | int): Number of leading tokens to
                 preserve; ``True`` preserves one.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
@@ -117,12 +118,19 @@ class LocalMixer(BaseEmbedding):
             gate_dim=self.output_dim if self.add_residual else 0, 
             return_gate=True
         )
+
+        zero_kernel = self.zero_init and not (
+            self.add_residual
+            and self.layer_norm is not None
+            and not self.ln_no_adaptation
+        )
+
         self.depthwise = layers.DepthwiseConv2D(
             kernel_size=self.kernel_size, 
             strides=self.strides, 
             padding=self.padding, 
             depth_multiplier=self.depth_multiplier, 
-            depthwise_initializer="zeros" if self.zero_init else "glorot_uniform", 
+            depthwise_initializer="zeros" if zero_kernel else "glorot_uniform", 
             dtype=self.dtype_policy, 
             name=f"{self.name}/depthwise"
         )
@@ -304,6 +312,45 @@ def run_self_tests() -> dict[str, str]:
         identity_layer((identity_input, None), training=False).numpy(), 
         identity_input.numpy(), 
         atol=1e-6
+    )
+
+    adaptive_identity = LocalMixer(
+        dim=2,
+        grid_size=4,
+        pos_embed_type=None,
+        use_layer_norm=True,
+        zero_init=True,
+    )
+    adaptive_input = tf.random.normal((2, 16, 2))
+    adaptive_condition = tf.random.normal((2, 3))
+    np.testing.assert_allclose(
+        adaptive_identity(
+            (adaptive_input, adaptive_condition),
+            training=False,
+        ).numpy(),
+        adaptive_input.numpy(),
+        atol=1e-6,
+    )
+    with tf.GradientTape() as tape:
+        adaptive_output = adaptive_identity(
+            (adaptive_input, adaptive_condition),
+            training=True,
+        )
+        probe = tf.random.stateless_normal(
+            tf.shape(adaptive_output),
+            seed=(31, 37),
+        )
+        adaptive_loss = tf.reduce_sum(adaptive_output * probe)
+    adaptive_gradients = tape.gradient(
+        adaptive_loss,
+        adaptive_identity.trainable_variables,
+    )
+    assert adaptive_gradients and all(
+        gradient is not None for gradient in adaptive_gradients
+    )
+    assert any(
+        bool(tf.reduce_any(gradient != 0.0))
+        for gradient in adaptive_gradients
     )
 
     strided_same = LocalMixer(

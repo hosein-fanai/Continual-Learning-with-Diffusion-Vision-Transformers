@@ -843,6 +843,34 @@ class HpoConfigTests(unittest.TestCase):
         )
         self.assertEqual(pretrained.model.kwargs["num_last_not_frozen"], 12)
 
+    def test_continual_classifier_preprocessing_matches_selected_family(
+        self,
+    ) -> None:
+        """Do not replace classifier-only input scaling with replay-CNN scaling."""
+
+        common = {
+            "task": "continual",
+            "dataset_name": "cifar10",
+            "epochs": 1,
+            "seed": 3,
+            "results_path": "results/hpo",
+            "class_num": 4,
+            "task_size": 2,
+        }
+        pretrained = _build_trial_config(
+            _SuggestionTrial(),
+            model_name="pretrained",
+            **common,
+        )
+        dnn = _build_trial_config(
+            _SuggestionTrial(),
+            model_name="dnn",
+            **common,
+        )
+
+        self.assertIsNone(pretrained.dataset.preprocess)
+        self.assertEqual(dnn.dataset.preprocess, "normalize")
+
     def test_reservoir_buffer_dimensions_are_independent(self) -> None:
         """Keep replay capacity separate from sample and insertion counts."""
 

@@ -193,9 +193,12 @@ class BaseLayer(ArgumentSaverLayer):
                 raise ValueError(
                     "prev_output_dim is required when mlp_output_dim is set."
                 )
+
             self.prev_output_dim = None
             self.output_dim = None
+
             return None
+
         self.prev_output_dim = prev_output_dim
         # Build the requested output projection when an output width is set.
         if mlp_output_dim is not None:
@@ -212,8 +215,8 @@ class BaseLayer(ArgumentSaverLayer):
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
-                name=f"{mlp.name}/final_layer",
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
+                name=f"{mlp.name}/final_layer"
             ))
         # Otherwise expose an identity transformation with unchanged width.
         else:
@@ -269,6 +272,11 @@ def run_self_tests() -> dict[str, str]:
         name="plain_override", 
     )
     assert overridden_plain((tf.ones((1, 2, 3)), None)).shape == (1, 2, 3)
+    inferred_plain = BaseLayer(
+        use_layer_norm=True,
+        ln_no_adaptation=True,
+    )._create_layer_norm(return_gate=False)
+    assert inferred_plain((tf.ones((1, 2, 5)), None)).shape == (1, 2, 5)
 
     two_layer_mlp = adaptive._create_mlp(prev_output_dim=4)
     assert len(two_layer_mlp.layers) == 2

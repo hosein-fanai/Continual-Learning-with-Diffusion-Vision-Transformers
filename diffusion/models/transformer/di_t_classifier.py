@@ -1793,6 +1793,25 @@ class DiTClassifier(DiffusionTransformer):
                 )
                 planned_layers.append(layers_dict)
 
+            reshaper_items = sorted(self.clf_reshaper_ids_dict.items())
+            if len(reshaper_items) % 2 != 0 or any(
+                first_type != "flatten"
+                or second_depth != first_depth + 1
+                or second_type != "unflatten"
+                for (first_depth, first_type), (second_depth, second_type)
+                in zip(reshaper_items[::2], reshaper_items[1::2])
+            ):
+                raise ValueError(
+                    "classifier reshapers must be consecutive "
+                    "flatten/unflatten pairs."
+                )
+            if len(self.clf_reshaper_kwargs["latent_dim_ratio"]) != \
+            len(reshaper_items) // 2:
+                raise ValueError(
+                    "classifier latent_dim_ratio must contain one value per "
+                    "flatten/unflatten pair."
+                )
+
             new_clf_depth = old_clf_depth + len(classifier_specs)
             # Retarget the terminal connector when it referenced the old last depth.
             if terminal_ids == [old_clf_depth]:
@@ -2048,7 +2067,7 @@ def run_self_tests() -> dict[str, str]:
     }
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
-    assert public_reshaper_default == {}
+    assert public_reshaper_default is None
 
     supplied_reshaper_kwargs = {"add_kl": False}
     supplied_options = make_model(
@@ -2659,8 +2678,6 @@ def run_self_tests() -> dict[str, str]:
         {"clf_downsample_kwargs": {"unknown": 1}}, 
         {"clf_upsample_kwargs": {"unknown": 1}}, 
         {"clf_reshaper_kwargs": {"unknown": 1}}, 
-        {"clf_reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
-        {"clf_reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
     )
     for overrides in invalid_cases:

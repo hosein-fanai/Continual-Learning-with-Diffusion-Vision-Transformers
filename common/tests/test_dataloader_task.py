@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from common.config import Config
 from common.dataloader import get_datasets
 from common.hpo import run_hpo
@@ -48,3 +50,46 @@ class DatasetTaskValidationTests(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             run_hpo(None, "cnn", n_trials=1)
+
+    def test_vae_conditioning_selects_onehot_labels(self) -> None:
+        """Keep VAE factory inputs aligned with their conditioning mode."""
+
+        images = np.zeros((4, 28, 28), dtype="uint8")
+        sparse = np.asarray([0, 1, 0, 1], dtype="uint8")
+        onehot = np.eye(10, dtype="float32")[sparse]
+
+        with patch("common.dataloader.load_mnist") as load_mnist:
+            load_mnist.return_value = (
+                images, onehot, None, None, images[:2], onehot[:2]
+            )
+            config = Config(
+                model={"name": "vae_classifier"},
+                training={"task": "joint", "use_valset": False},
+            )
+            get_datasets(config)
+
+            self.assertTrue(config.dataset.onehot_labels)
+            self.assertTrue(load_mnist.call_args.kwargs["onehot_labels"])
+
+        with patch("common.dataloader.load_mnist") as load_mnist:
+            load_mnist.return_value = (
+                images, onehot, None, None, images[:2], onehot[:2]
+            )
+            config = Config(
+                model={"name": "vae"},
+                training={"task": "continual", "use_valset": False},
+                continually_learn={"class_num": 2},
+            )
+            get_datasets(config)
+
+            self.assertTrue(config.dataset.onehot_labels)
+            self.assertTrue(load_mnist.call_args.kwargs["onehot_labels"])
+
+        with patch("common.dataloader.load_mnist") as load_mnist:
+            load_mnist.return_value = (
+                images, sparse, None, None, images[:2], sparse[:2]
+            )
+            get_datasets(model_name="vae", use_valset=False)
+
+            self.assertFalse(load_mnist.call_args.kwargs["onehot_labels"])
+            self.assertFalse(get_model(model_name="vae").conditioned)

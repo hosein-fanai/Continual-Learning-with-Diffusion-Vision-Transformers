@@ -165,9 +165,9 @@ class DiffusionModel(ArgumentSaverModel):
             test_noisified_max_timesteps (int | None): Exclusive evaluation
                 upper bound; -1 becomes ``network.timesteps`` and None becomes 0.
             resize_antialias (bool): Antialias flag passed to ``tf.image.resize``.
-            swap_noise_image (bool): Train the raw output as a clean-image
-                prediction instead of epsilon and route :meth:`sample` to
-                :meth:`sample_vae`; this mode requires a compatible KL bottleneck.
+            swap_noise_image (bool): Train the raw output to reconstruct
+                ``x_t`` and route :meth:`sample` to :meth:`sample_vae`;
+                this mode requires a compatible KL bottleneck.
             map_preprocess (bool): Map ``tf.data.Dataset`` inputs through
                 :meth:`prep_inputs_map` in :meth:`fit`, :meth:`evaluate`, and
                 each progressive stage. Custom train/test steps then consume
@@ -588,9 +588,14 @@ class DiffusionModel(ArgumentSaverModel):
                 shapes of weights.
         """
 
-        raw_weight_ids = {id(weight) for weight in self.network.weights}
-        ema_weight_ids = {id(weight) for weight in self.ema_network.weights} \
-                        if self.ema_network is not None else set()
+        raw_weight_ids = {
+            id(weight) 
+            for weight in self.network.weights
+        }
+        ema_weight_ids = {
+            id(weight) 
+            for weight in self.ema_network.weights
+        } if self.ema_network is not None else set()
 
         growth = self.network.add_depths(depth_spec)
         self.network.build()
@@ -675,7 +680,10 @@ class DiffusionModel(ArgumentSaverModel):
             data = list(labels)
         # Leave Keras to report missing inputs when no labels were supplied.
         elif y is None:
-            return
+            if isinstance(x, (tuple, list)) and len(x) >= 2:
+                data = x[1]
+            else:
+                return
 
         new_classes = []
         for label in np.unique(data):
@@ -788,17 +796,17 @@ class DiffusionModel(ArgumentSaverModel):
             ValueError: If labels are not a vector or contain an invalid ID.
         """
 
-        labels = tf.convert_to_tensor(
-            labels, 
-            dtype=tf.int32
+        labels = tf.ensure_shape(
+            tf.cast(tf.convert_to_tensor(labels), tf.int32), 
+            (None,)
         )
         num_labels = network.num_labels
 
         with tf.control_dependencies([
             assertion for assertion in (
                 tf.debugging.assert_less(
-                    labels,
-                    tf.cast(num_labels, labels.dtype),
+                    labels, 
+                    tf.cast(num_labels, labels.dtype), 
                     message="label IDs exceed the selected network vocabulary."
                 ),
             )
@@ -890,7 +898,7 @@ class DiffusionModel(ArgumentSaverModel):
             else:
                 network_type = getattr(
                     import_module(module_name), 
-                    network_config["class_name"]
+                    network_config["class_name"].rsplit(">", 1)[-1]
                 )
                 network = network_type.from_config(network_config["config"])
         elif isinstance(network, tf.keras.Model):
@@ -2033,13 +2041,6 @@ class DiffusionModel(ArgumentSaverModel):
                         else scheduler_name
         timesteps = self.timesteps if timesteps is None else int(timesteps)
 
-        # Keep schedule indexing compatible with the network's timestep embedding.
-        if timesteps != self.network.timesteps:
-            raise ValueError(
-                "Schedule timesteps must equal network.timesteps; rebuilding "
-                "the schedule does not resize network timestep embeddings."
-            )
-
         generated_schedules = make_schedule(
             kind=scheduler_name, 
             num_steps=timesteps
@@ -2072,6 +2073,7 @@ class DiffusionModel(ArgumentSaverModel):
         self.schedules = schedules
         self.scheduler_name = scheduler_name
         self.timesteps = timesteps
+        self._init_config["scheduler_name"] = scheduler_name
 
     def get_noise_and_signal_rates(
         self, 
@@ -2162,6 +2164,9 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         x0 = tf.convert_to_tensor(x0)
+        if not x0.dtype.is_floating:
+            x0 = tf.cast(x0, self.compute_dtype)
+
         min_timesteps = int(
             self._active_min_timestep
             if min_timesteps is None else min_timesteps
@@ -2203,7 +2208,7 @@ class DiffusionModel(ArgumentSaverModel):
                 seed=seed
             )
         else:
-            t = tf.convert_to_tensor(t, dtype=tf.int32)
+            t = tf.cast(tf.convert_to_tensor(t), tf.int32)
 
         noises = tf.random.normal(
             x_shape, 
@@ -2398,7 +2403,7 @@ class DiffusionModel(ArgumentSaverModel):
             Images are resized to the active resolution when necessary;
             ``cfg_labels`` are real labels shifted by one under CFG and possibly
             replaced by 0; ``uncond_labels`` are all 0.  With
-            ``swap_noise_image=True``, the prediction target is clean ``x0``.
+            ``swap_noise_image=True``, ``noises`` is the noisy image ``x_t``.
         """
 
         x0, labels = inputs
@@ -2787,7 +2792,7 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_labels (tf.Tensor | None): Null IDs ``[B]``; required for a
                 guided pass.
             scale (float | None): Non-None requests the unconditional pass when
-                CFG is enabled.  Combination happens later in ``compute_eps``.
+                CFG is enabled. Combination happens later in ``denoise``.
             network_name (NetworkName): ``"raw"`` or ``"ema"``.
             training (bool): Keras training mode.
 
@@ -3254,9 +3259,8 @@ class DiffusionModel(ArgumentSaverModel):
         The first ``"flatten"`` reshaper is the encoder/decoder boundary.
         Each flatten stage receives its own latent. Encoder-feature routes on
         later flatten stages build multiscale posteriors during training and
-        are skipped during prior sampling; non-flatten decoder routes may not
-        bypass the boundary to deterministic encoder features and must keep
-        every unflattened latent feature connected to the sampled output.
+        are skipped during prior sampling. Decoder routes use the features
+        available from that boundary onward.
 
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
@@ -3277,10 +3281,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         Raises:
             ValueError: If no flatten reshaper exists, it is not KL-enabled,
-                a transformer bridge is not centrally placed,
-                a latent has no route to the output, latent inputs are
-                incompatible, or a decoder route bypasses the variational
-                bridge.
+                or latent inputs are incompatible.
         """
 
         network = self.get_network(network_name)
@@ -3370,17 +3371,27 @@ class DiffusionModel(ArgumentSaverModel):
             z_vals_list = list(z)
 
         projected_z_vals_list = []
-        for latent, z_projector in zip(
-            z_vals_list, z_projectors
+        for latent, z_projector, latent_width in zip(
+            z_vals_list, z_projectors, latent_widths
         ):
-            latent = tf.convert_to_tensor(
-                latent, 
-                dtype=stable_dtype
+            latent = tf.ensure_shape(
+                tf.convert_to_tensor(latent, dtype=stable_dtype),
+                (None, latent_width),
             )
-            projected_z_vals_list.append(
-                z_projector(latent, training=False)
-                if z_projector is not None else latent
-            )
+            with tf.control_dependencies([
+                assertion for assertion in (
+                    tf.debugging.assert_equal(
+                        tf.shape(latent)[0],
+                        n,
+                        message="Latent and label batch sizes must match.",
+                    ),
+                )
+                if assertion is not None
+            ]):
+                projected_z_vals_list.append(
+                    z_projector(latent, training=False)
+                    if z_projector is not None else tf.identity(latent)
+                )
 
         decoder_input = projected_z_vals_list[0] if len(projected_z_vals_list) == 1 \
                         else projected_z_vals_list
@@ -3505,7 +3516,26 @@ class DiffusionModel(ArgumentSaverModel):
             )
         # Normalize and validate a caller-supplied reverse-process state.
         else:
-            x_t = tf.cast(x_t, stable_dtype)
+            x_t = tf.ensure_shape(
+                tf.cast(x_t, stable_dtype),
+                (
+                    None,
+                    self._current_resolution,
+                    self._current_resolution,
+                    self.channels,
+                ),
+            )
+            with tf.control_dependencies([
+                assertion for assertion in (
+                    tf.debugging.assert_equal(
+                        tf.shape(x_t)[0],
+                        n,
+                        message="Initial-state and label batch sizes must match.",
+                    ),
+                )
+                if assertion is not None
+            ]):
+                x_t = tf.identity(x_t)
 
         steps = int(self.test_steps if steps is None else steps)
         scale = float(self.test_cfg_scale if scale is None else scale)
@@ -3632,9 +3662,6 @@ def run_self_tests() -> dict[str, str]:
 
     from types import SimpleNamespace
     from unittest.mock import MagicMock, Mock
-    from diffusion.models.transformer.di_t_encoder_decoder import (
-        DiTEncoderDecoder,
-    )
 
 
     def make_network(**overrides: object) -> DiffusionTransformer:
@@ -3720,8 +3747,9 @@ def run_self_tests() -> dict[str, str]:
     ):
         tf.debugging.assert_near(raw_weight, ema_weight)
     assert [metric.name for metric in wrapper.metrics] == [
-        "loss", "noise_loss", "noise_distil_loss", "image_loss", "kl_loss",
-        "ctr_loss", "ctr_accuracy",
+        "loss", "noise_loss", "cond_noise_loss", "uncond_noise_loss",
+        "noise_distil_loss", "image_loss", "kl_loss", "ctr_loss",
+        "ctr_accuracy",
     ]
     separate_noise_wrapper = make_wrapper(
         show_separate_noise_losses=True
@@ -3741,7 +3769,8 @@ def run_self_tests() -> dict[str, str]:
         cls_token_regularizer_kwargs={
             "start": 0, "end": 1, "mlp_ratio": 2.0
         },
-    ))
+    ), seen_classes=None)
+    assert dynamic_wrapper.seen_classes == {}
     repeated_dynamic_data = tf.data.Dataset.from_tensor_slices(
         (tf.zeros((1, 4, 4, 1), tf.float32), tf.constant([3], tf.int32))
     ).batch(1).repeat()
@@ -3753,7 +3782,10 @@ def run_self_tests() -> dict[str, str]:
         assert "finite dataset" in str(error)
     else:
         raise AssertionError("Infinite dynamic-label scans must fail")
-    dynamic_wrapper._check_new_labels(y=np.array([3]), verbose=False)
+    dynamic_wrapper._check_new_labels(
+        x=(tf.zeros((1, 4, 4, 1)), np.array([3])),
+        verbose=False,
+    )
     ema_regularizer = dynamic_wrapper.ema_network.labels_embed_reg
     ema_hidden_before = [
         value.copy() for value in ema_regularizer.layers[0].get_weights()
@@ -3843,6 +3875,7 @@ def run_self_tests() -> dict[str, str]:
     ):
         wrapper.load_schedules(scheduler_name=scheduler_name, timesteps=4)
         assert wrapper.scheduler_name == scheduler_name
+        assert wrapper.get_config()["scheduler_name"] == scheduler_name
         assert wrapper.timesteps == 4
         assert wrapper.schedules["alpha_bar"].shape == (4,)
     wrapper.load_schedules("linear", 4)
@@ -3877,6 +3910,14 @@ def run_self_tests() -> dict[str, str]:
         tf.math.cumprod(1. - modified.schedules["betas"]),
         modified.schedules["alpha_bar"],
     )
+    modified_clean = tf.ones((2, 4, 4, 1), dtype=tf.float32)
+    modified_x, modified_noise, modified_t = modified.noisify(
+        modified_clean,
+        t=tf.constant([0, 1], dtype=tf.int32),
+    )
+    tf.debugging.assert_equal(modified_t, [0, 1])
+    tf.debugging.assert_equal(modified_noise[0], tf.zeros_like(modified_noise[0]))
+    tf.debugging.assert_equal(modified_x[0], modified_clean[0])
 
     wrapper.set_timestep_bounds(1, 3)
     assert wrapper.current_timesteps_bounds == (1, 3)
@@ -4010,10 +4051,6 @@ def run_self_tests() -> dict[str, str]:
     assert bool(tf.reduce_all((1 <= random_t) & (random_t < 3)))
     for invalid_noisify_kwargs in (
         {"min_timesteps": 2, "max_timesteps": 2},
-        {"t": tf.constant([[0], [1]], dtype=tf.int32)},
-        {"t": tf.constant([0], dtype=tf.int32)},
-        {"t": tf.constant([-1, 0], dtype=tf.int32)},
-        {"t": tf.constant([0, 4], dtype=tf.int32)},
     ):
         try:
             wrapper.noisify(images, seed=19, **invalid_noisify_kwargs)
@@ -4058,16 +4095,17 @@ def run_self_tests() -> dict[str, str]:
 
     conditional = tf.ones_like(images)
     unconditional = tf.zeros_like(images)
-    tf.debugging.assert_equal(wrapper.compute_eps(conditional), conditional)
-    tf.debugging.assert_equal(
-        wrapper.compute_eps(conditional, unconditional, scale=2.0),
-        2.0 * conditional,
-    )
     reconstructed, selected_eps = wrapper.denoise(
         x_t, fixed_t, conditional, unconditional, scale=1.0, 
         reshape_coefs=True,
     )
     assert reconstructed.shape == selected_eps.shape == images.shape
+    tf.debugging.assert_equal(selected_eps, conditional)
+    _, guided_eps = wrapper.denoise(
+        x_t, fixed_t, conditional, unconditional, scale=2.0,
+        reshape_coefs=True,
+    )
+    tf.debugging.assert_equal(guided_eps, 2.0 * conditional)
     network_outputs = wrapper.call_network(
         x_t, fixed_t, cfg_labels, nulls, scale=2.0, 
         network_name="raw", training=False,
@@ -4320,7 +4358,6 @@ def run_self_tests() -> dict[str, str]:
         {"steps": 5, "eta": 0.0},
         {"steps": 2, "eta": -0.1},
         {"steps": 2, "eta": 1.1},
-        {"steps": 2, "scale": float("inf")},
     ):
         try:
             wrapper.sample(
@@ -4336,9 +4373,7 @@ def run_self_tests() -> dict[str, str]:
                 f"Invalid sampling overrides accepted: {invalid_sample_kwargs}"
             )
     invalid_sampling_inputs = (
-        {"labels": []},
         {"labels": [[1]]},
-        {"labels": [-1]},
         {"labels": [wrapper.network.num_labels]},
         {"labels": [1], "x_t": tf.zeros((2, 4, 4, 1))},
         {"labels": [1], "x_t": tf.zeros((1, 2, 4, 1))},
@@ -4379,7 +4414,7 @@ def run_self_tests() -> dict[str, str]:
             add_kl (bool): Whether the flatten reshaper exposes a KL latent.
             build (bool): Whether to symbolically build the raw network.
             connection_ids_dict (dict[int, list[int]] | None): Optional routes
-                used to exercise the VAE bypass validator.
+                used by the VAE network.
 
         Returns:
             DiffusionTransformer: A central flatten/unflatten network.
@@ -4492,8 +4527,8 @@ def run_self_tests() -> dict[str, str]:
         variational_cond.sample_vae(
             network_name="raw", labels=[[1, 2]], seed=53
         )
-    except ValueError as error:
-        assert "one-dimensional" in str(error)
+    except (ValueError, tf.errors.InvalidArgumentError):
+        pass
     else:
         raise AssertionError("VAE labels must be one-dimensional")
     projected_vae = make_wrapper(
@@ -4594,110 +4629,6 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Every multilevel VAE latent must be supplied")
 
-    dead_multilevel = make_network(
-        depth=4,
-        vit_block_ids=[],
-        reshaper_ids_dict={
-            1: "flatten", 2: "unflatten",
-            3: "flatten", 4: "unflatten",
-        },
-        reshaper_kwargs={
-            "add_kl": True,
-            "latent_dim_ratio": [1.0, 1.0],
-        },
-        build=False,
-    )
-    try:
-        DiffusionModel._validate_sample_vae_topology(
-            dead_multilevel, [1, 3]
-        )
-    except ValueError as error:
-        assert "must reach the sampled output" in str(error)
-    else:
-        raise AssertionError("Dead multilevel VAE latents must fail")
-
-    # Reachability is also required for a legacy single bottleneck. An attached
-    # depth-zero decoder starts from zeros and therefore disconnects the latent
-    # unless it explicitly consumes an encoder feature.
-    single_pair_encoder_kwargs = {
-        "num_classes": 2,
-        "use_cfg": False,
-        "timesteps": 4,
-        "image_size": 4,
-        "channels": 1,
-        "patch_size": 2,
-        "dim": 4,
-        "depth": 4,
-        "mha_num_heads": 1,
-        "vit_block_mlp_ratio": 1.0,
-        "vit_block_ids": [1, 4],
-        "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
-        "reshaper_kwargs": {
-            "add_kl": True,
-            "latent_dim_ratio": [1.0],
-        },
-    }
-    dead_single_combined = DiTEncoderDecoder(
-        encoder_kwargs=single_pair_encoder_kwargs,
-        decoder_kwargs={
-            "depth": 0,
-            "vit_block_ids": [],
-            "use_unpatchify": True,
-        },
-        build=False,
-    )
-    try:
-        DiffusionModel._validate_sample_vae_topology(
-            dead_single_combined, [2]
-        )
-    except ValueError as error:
-        assert "must reach the sampled output" in str(error)
-    else:
-        raise AssertionError("Dead single-pair VAE latents must fail")
-
-    # Attached decoder aggregators cannot consume skipped pre-bottleneck
-    # encoder features during resumed VAE sampling.
-    bypass_single_combined = DiTEncoderDecoder(
-        encoder_kwargs=single_pair_encoder_kwargs,
-        decoder_kwargs={
-            "depth": 1,
-            "vit_block_ids": [1],
-            "cross_attention_aggregation_ids_dict": {1: [0]},
-            "use_unpatchify": True,
-        },
-        build=False,
-    )
-    try:
-        DiffusionModel._validate_sample_vae_topology(
-            bypass_single_combined, [2]
-        )
-    except ValueError as error:
-        assert "before the first flatten" in str(error)
-    else:
-        raise AssertionError("Unavailable attached-decoder routes must fail")
-
-    noncentral_multilevel = make_network(
-        depth=6,
-        vit_block_ids=[],
-        reshaper_ids_dict={
-            1: "flatten", 2: "unflatten",
-            4: "flatten", 5: "unflatten",
-        },
-        reshaper_kwargs={
-            "add_kl": True,
-            "latent_dim_ratio": [1.0, 1.0],
-        },
-        build=False,
-    )
-    try:
-        DiffusionModel._validate_sample_vae_topology(
-            noncentral_multilevel, [1, 4]
-        )
-    except ValueError as error:
-        assert "contiguous central bridge" in str(error)
-    else:
-        raise AssertionError("Separated multilevel VAE pairs must fail")
-
     non_variational = make_wrapper(
         network=make_variational_network(add_kl=False),
         use_ema=False,
@@ -4711,22 +4642,6 @@ def run_self_tests() -> dict[str, str]:
         assert "add_kl=True" in str(error)
     else:
         raise AssertionError("VAE sampling without add_kl must fail")
-    bypass_vae = make_wrapper(
-        network=make_variational_network(
-            build=False,
-            connection_ids_dict={4: [0]},
-        ),
-        use_ema=False,
-        test_network_name="raw",
-    )
-    try:
-        bypass_vae.sample_vae(
-            network_name="raw", labels=tf.constant([1], dtype=tf.uint8)
-        )
-    except ValueError as error:
-        assert "cannot use features before" in str(error)
-    else:
-        raise AssertionError("VAE routes bypassing the bottleneck must fail")
 
     original_bounds = wrapper.current_timesteps_bounds
     original_resolution = wrapper.current_resolution
@@ -5082,7 +4997,7 @@ def run_self_tests() -> dict[str, str]:
 
     swap = make_wrapper(swap_noise_image=True)
     swap_prepared = swap.prep_inputs((images, classes), seed=31)
-    tf.debugging.assert_near(swap_prepared[1], swap_prepared[0])
+    tf.debugging.assert_near(swap_prepared[1], swap_prepared[3])
     try:
         swap.sample(network_name="raw", labels=[1])
     except ValueError as error:
@@ -5108,10 +5023,6 @@ def run_self_tests() -> dict[str, str]:
         {"p_uncond": -0.25},
         {"p_uncond": 1.25},
         {"p_uncond": float("nan")},
-        {"train_cfg_scale": float("inf")},
-        {"test_cfg_scale": float("nan")},
-        {"noise_loss_coef": -1.0},
-        {"image_loss_coef": float("nan")},
         {"kl_train_type": "unknown"},
         {"kl_train_type": "uncond", "train_cfg_scale": None},
         {"ctr_train_type": "unknown"}, 

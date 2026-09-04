@@ -172,12 +172,11 @@ class ContinualIntegrationTests(unittest.TestCase):
             tf.keras.layers.Dense(2),
         ])
         model.seed = 7
-        _validate_supplied_model_runtime(model, 7, "float32", "test model")
+        _validate_supplied_model_runtime(model, 7, "test model")
         with self.assertRaisesRegex(ValueError, "requires seed 8"):
             _validate_supplied_model_runtime(
                 model,
                 8,
-                "float32",
                 "test model",
             )
 

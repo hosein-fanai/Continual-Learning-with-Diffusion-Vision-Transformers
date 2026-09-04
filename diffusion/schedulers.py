@@ -518,34 +518,45 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
     t = np.linspace(0.0, 1.0, n, dtype=np.float64)
 
-    # Interpolate beta directly for the standard linear schedule.
-    if config.kind == ScheduleKind.LINEAR:
-        betas = np.linspace(
-            config.beta_start, 
-            config.beta_end, 
-            n, 
-            dtype=np.float64
+    # Construct schedules defined directly in beta space.
+    if config.kind in {
+        ScheduleKind.LINEAR,
+        ScheduleKind.SCALED_LINEAR,
+        ScheduleKind.QUADRATIC,
+    }:
+        # Interpolate beta directly for the standard linear schedule.
+        if config.kind == ScheduleKind.LINEAR:
+            betas = np.linspace(
+                config.beta_start,
+                config.beta_end,
+                n,
+                dtype=np.float64,
+            )
+        # Interpolate in square-root beta space for a gentler early ramp.
+        elif config.kind == ScheduleKind.SCALED_LINEAR:
+            betas = np.linspace(
+                np.sqrt(config.beta_start),
+                np.sqrt(config.beta_end),
+                n,
+            ) ** 2
+        # Increase beta quadratically across normalized time.
+        else:
+            betas = config.beta_start + (
+                config.beta_end - config.beta_start
+            ) * (t**2)
+
+        betas = np.clip(betas, config.clip_min, config.clip_max)
+        if config.snr_shift == 0.0:
+            return betas
+
+        return alpha_bar_to_betas(
+            _apply_snr_shift(
+                betas_to_alpha_bar(betas),
+                config.snr_shift,
+            ),
+            clip_min=config.clip_min,
+            clip_max=config.clip_max,
         )
-
-        return np.clip(betas, config.clip_min, config.clip_max)
-
-    # Interpolate in square-root beta space for a gentler early ramp.
-    if config.kind == ScheduleKind.SCALED_LINEAR:
-        # Common Diffusers-style schedule: linearly interpolate sqrt(beta),
-        # then square to get a gentler early ramp.
-        betas = np.linspace(
-            np.sqrt(config.beta_start), 
-            np.sqrt(config.beta_end), 
-            n
-        ) ** 2
-
-        return np.clip(betas, config.clip_min, config.clip_max)
-
-    # Increase beta quadratically across normalized time.
-    if config.kind == ScheduleKind.QUADRATIC:
-        betas = config.beta_start + (config.beta_end - config.beta_start) * (t**2)
-
-        return np.clip(betas, config.clip_min, config.clip_max)
 
     # Discretize the cosine cumulative signal curve at interval edges.
     if config.kind == ScheduleKind.COSINE:
@@ -1289,6 +1300,12 @@ def run_self_tests() -> dict[str, str]:
     quadratic = replace(linear, kind=ScheduleKind.QUADRATIC)
     quadratic_betas = generate_betas(quadratic)
     assert quadratic_betas[1] < generate_betas(linear)[1]
+    for direct_beta_config in (linear, scaled, quadratic):
+        shifted_direct = replace(direct_beta_config, snr_shift=0.75)
+        assert np.all(
+            betas_to_alpha_bar(generate_betas(shifted_direct))
+            > betas_to_alpha_bar(generate_betas(direct_beta_config))
+        )
 
     sigmoid = replace(
         linear,

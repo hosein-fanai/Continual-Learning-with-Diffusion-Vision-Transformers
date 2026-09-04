@@ -756,8 +756,7 @@ def run_self_tests() -> dict[str, str]:
 
     public_apis = {
         "build", "_build_model", "call", "set_current_resolution", 
-        "embed_conditions", "embed_inputs", "prepend_cls_token", 
-        "prepend_distil_token", 
+        "embed_conditions", "embed_inputs", "prepend_single_token",
         "slice_and_flatten_tokens", "encode", "add_depths", 
         "get_variables_names", "set_max_encoder_num", "predict_noise", 
         "compute_class", "predict_class", "get_config", "from_config", 

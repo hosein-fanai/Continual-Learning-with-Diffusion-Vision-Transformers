@@ -411,6 +411,95 @@ class DtypeModelTests(unittest.TestCase):
         restored.train_on_batch(inputs, labels)
         self.assertEqual(int(restored.optimizer.iterations), 1)
 
+    def test_hp_tuned_preserves_functional_branching(self) -> None:
+        """Replace a Functional head without linearizing its graph."""
+
+        configure_runtime(25, "float32")
+        inputs = tf.keras.layers.Input(shape=(4,))
+        left = tf.keras.layers.Dense(2, name="left_branch")(inputs)
+        right = tf.keras.layers.Dense(2, name="right_branch")(inputs)
+        features = tf.keras.layers.Concatenate(name="merge")([left, right])
+        outputs = tf.keras.layers.Dense(
+            2, activation="softmax", name="old_head"
+        )(features)
+        source = tf.keras.Model(inputs, outputs)
+        source.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+        values = tf.reshape(tf.range(8, dtype=tf.float32), (2, 4))
+        expected_features = tf.keras.Model(
+            source.inputs, source.layers[-1].input
+        )(values, training=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "functional_classifier"
+            source.save(str(model_path), include_optimizer=True)
+            restored = _get_classifier_model(
+                class_num=3,
+                model_type="hp-tuned",
+                model_path=str(model_path),
+                verbose=0,
+            )
+
+        restored_features = tf.keras.Model(
+            restored.inputs, restored.layers[-1].input
+        )(values, training=False)
+        np.testing.assert_allclose(restored_features, expected_features)
+        self.assertEqual(restored.output_shape[-1], 3)
+
+    def test_vae_custom_steps_accept_sample_weights(self) -> None:
+        """Apply per-row weights in conditional VAE train and test steps."""
+
+        configure_runtime(26, "float32")
+        x = tf.constant([[0., 0.], [1., 1.]], dtype=tf.float32)
+        y = tf.one_hot([0, 1], depth=2)
+        sample_weight = tf.constant([1., 0.], dtype=tf.float32)
+        compile_args = {
+            "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3),
+            "loss": "mse",
+            "metrics": [tf.keras.metrics.MeanAbsoluteError(name="recon_mae")],
+            "run_eagerly": True,
+        }
+        vae = VariationalAutoencoder(
+            data_dim=2,
+            latent_dim=1,
+            hiddens_dims=(),
+            conditioned=True,
+            class_num=2,
+            compile=False,
+        )
+        vae.compile(**compile_args)
+
+        train_result = vae.train_step((x, y, sample_weight))
+        vae.reset_metrics()
+        test_result = vae.test_step((x, y, sample_weight))
+        self.assertIn("recon_mae", train_result)
+        self.assertIn("recon_mae", test_result)
+
+        classifier = tf.keras.Sequential([
+            tf.keras.layers.InputLayer(input_shape=(2,)),
+            tf.keras.layers.Dense(
+                2,
+                activation="softmax",
+                kernel_initializer="zeros",
+                bias_initializer="zeros",
+            ),
+        ])
+        joint = VAEClassifier(
+            class_num=2,
+            classifier=classifier,
+            data_dim=2,
+            latent_dim=1,
+            hiddens_dims=(),
+            compile_args={
+                **compile_args,
+                "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3),
+            },
+        )
+        joint_test = joint.test_step((x, y, sample_weight))
+        np.testing.assert_allclose(joint_test["clf_accuracy"], 1.)
+        joint.reset_metrics()
+        joint_train = joint.train_step((x, y, sample_weight))
+        self.assertIn("clf_loss", joint_train)
+
     def test_hp_tuned_loaded_optimizer_requires_compiled_saved_model(self) -> None:
         """Reject an optimizer-restoration request when no optimizer was saved.
 

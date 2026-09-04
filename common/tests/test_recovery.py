@@ -109,6 +109,30 @@ class RecoveryTests(unittest.TestCase):
             "fingerprint": "test-fingerprint",
         })
 
+    def test_literal_recovery_type_mapping_round_trips(self) -> None:
+        """Keep user mappings distinct from the recovery serializer's tags."""
+
+        literal = {
+            "__recovery_type__": "path",
+            "value": "literal-not-a-path",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            save_task_checkpoint(
+                temporary,
+                completed_task_index=0,
+                state={
+                    "class_order": [0, 1],
+                    "task_groups": [[0], [1]],
+                    "literal": literal,
+                },
+            )
+            restored = load_task_checkpoint(temporary)
+
+        self.assertEqual(restored.experiment_state["literal"], literal)
+        self.assertNotEqual(fingerprint_state(literal), fingerprint_state(Path(
+            "literal-not-a-path"
+        )))
+
     @staticmethod
     def _create_optimizer_slots(
         optimizer: tf.keras.optimizers.Optimizer,

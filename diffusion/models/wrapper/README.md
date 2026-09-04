@@ -130,7 +130,7 @@ Important constructor controls are:
 - `map_preprocess=False`: keep `prep_inputs` in the train/test step. When true,
   `fit`, `evaluate`, validation, and progressive stages map each
   `tf.data.Dataset` through `prep_inputs_map` in the CPU input pipeline;
-- `swap_noise_image=True`: trains a direct clean-`x0` prediction and makes
+- `swap_noise_image=True`: trains a direct noisy-`x_t` prediction and makes
   `sample` use the network's KL-enabled flatten bottleneck via `sample_vae`.
 
 ### VAE sampling topology
@@ -142,12 +142,12 @@ depth; omission selects a full-width ratio of `1.0` for every pair.
 or supplied latent for every pair in that same order. The immediately
 following unflatten restores the feature consumed downstream.
 
-In every transformer VAE, arrange the adjacent pair or pairs as one central
+A transformer VAE can arrange the adjacent pair or pairs as one central
 bridge after real encoder computation and before real decoder/up-sampling
 computation. This applies to single- and multi-level bottlenecks.
-`sample_vae` enforces that the bridge is contiguous and free of
-transformer/local-mixer processing, with downsampling before it and upsampling
-after it. Block class does not define encoder versus decoder placement; depth
+Keep the bridge contiguous and free of transformer/local-mixer processing,
+with downsampling before it and upsampling after it. Block class does not
+define encoder versus decoder placement; depth
 relative to the bridge does. Normal training executes an encoder-feature route
 attached to a flatten stage before computing that pair's posterior. Sampling
 bypasses the whole flatten stage—including that training-only route—and injects
@@ -161,11 +161,10 @@ multiple pairs, it must be a sequence in the same ascending-depth order; when
 every stochastic unflattened feature—otherwise a later flatten overwrites the
 stream and leaves the earlier latent disconnected—and must not select
 pre-latent encoder features in a way that bypasses the variational path.
-`sample_vae` validates both reachability and the no-bypass rule. The same rules
+`sample_vae` does not check network topology. These layout recommendations also
 apply when `swap_noise_image=True` delegates `sample(...)` to `sample_vae(...)`.
-Reachability is checked even for one pair: an attached decoder must actually
-consume a post-flatten encoder feature rather than start from a disconnected
-zero stream.
+Even for one pair, an attached decoder needs to consume a post-flatten encoder
+feature for the sampled latent to affect its output.
 
 `compile(loss=..., **kwargs)` forwards `optimizer`, `run_eagerly`,
 `steps_per_execution`, supported `jit_compile`, metrics, weighted metrics, and
@@ -522,9 +521,9 @@ aggregation mappings. In that mode the wrapper supplies empty encoder context,
 so the decoder uses its own time/label embeddings and decoder blocks fall back
 to self-attention.
 
-A standalone `DiTDecoder` cannot use `swap_noise_image=True`. A composed
-`DiTEncoderDecoder` can use the inherited VAE sampler when its reshaper and
-decoder routes satisfy the base wrapper's `sample_vae` constraints.
+A standalone `DiTDecoder` or composed `DiTEncoderDecoder` needs a KL-enabled
+flatten bottleneck and decoder routes that work from the sampled boundary
+to use the inherited VAE sampler.
 
 For `DiTEncoderDecoderClassifier`, prefer `DiffusionClassifier` for ordinary
 training, evaluation, and sampling. Its three-input wrapper calls automatically

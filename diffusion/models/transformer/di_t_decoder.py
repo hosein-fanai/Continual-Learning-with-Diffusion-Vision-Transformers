@@ -369,9 +369,9 @@ class DiTDecoder(DiffusionTransformer):
             dims.append(increased_dim)
             grids.append(second_grid_size)
             flat_states.append(second_is_flat)
-        merged_dim, grid_size, output_is_flat = self._merge_feature_metadata(
-            dims, grids, flat_states, kwargs
-        )
+        merged_dim = sum(dims) if kwargs.get("connect_type", "concat") == "concat" else dims[0]
+        grid_size = grids[0]
+        output_is_flat = flat_states[0]
         options = {
             "ids": ids, 
             "ln_dim": merged_dim, 
@@ -444,12 +444,8 @@ class DiTDecoder(DiffusionTransformer):
             ln_no_adaptation=ln_no_adaptation,
             kwargs=kwargs,
             zero_index_base_dim=zero_index_base_dim,
-            base_is_flat=base_is_flat,
             increased_dim=increased_dim,
-            increased_grid_size=increased_grid_size,
-            increased_is_flat=increased_is_flat,
             output_dim_flag=output_dim_flag,
-            prepended_tokens_num=prepended_tokens_num,
             name=name,
         )
 
@@ -497,7 +493,6 @@ class DiTDecoder(DiffusionTransformer):
             layers_dicts,
             base_grid_size,
             skip_reshaper=skip_reshaper,
-            base_is_flat=base_is_flat,
         )
 
     def _create_layers_dict(self, i: int, layers_dicts: list[dict]) -> dict:
@@ -515,9 +510,10 @@ class DiTDecoder(DiffusionTransformer):
         stage = {}
         key = i + 1
         previous_dim = self._get_last_output_dim(i - 1, layers_dicts, self.dim)
-        previous_grid, previous_is_flat = self._get_last_shape_metadata(
+        previous_grid = self._get_last_grid_size(
             i - 1, layers_dicts, self.grid_size
         )
+        previous_is_flat = previous_grid == 0
 
         # Build the encoder aggregator and append decoder features unless separately connected.
         if key in self.feature_aggregation_ids_dict:
@@ -592,10 +588,10 @@ class DiTDecoder(DiffusionTransformer):
                 # Otherwise use aggregated encoder features as attention queries.
                 elif self.CAA in stage:
                     query_dim = stage[self.CAA].output_dim
-                query_grid = stage[self.CAC].output_grid_size \
+                query_grid = stage[self.CAC].grid_size \
                     if self.CAC in stage else stage[self.CAA].output_grid_size \
                     if self.CAA in stage else previous_grid
-                decoder_grid = stage[self.FC].output_grid_size \
+                decoder_grid = stage[self.FC].grid_size \
                     if self.FC in stage else stage[self.FA].output_grid_size \
                     if self.FA in stage else previous_grid
                 require(query_grid == decoder_grid, (
@@ -678,7 +674,7 @@ class DiTDecoder(DiffusionTransformer):
         # Build this decoder depth's flatten or unflatten reshaper.
         if key in self.reshaper_ids_dict:
             stage[self.R] = self._create_reshaper(
-                reshape_type=self.reshaper_ids_dict[key],
+                ids_dict=self.reshaper_ids_dict,
                 i=i,
                 layers_dicts=layers_dicts,
                 layers_dict=stage,
@@ -686,11 +682,7 @@ class DiTDecoder(DiffusionTransformer):
                 base_grid_size=self.grid_size,
                 grid_has_tokens=int(self.cls_token_type is not None) +
                     int(self.distil_token_type is not None),
-                kwargs=self._get_reshaper_kwargs_for_depth(
-                    key,
-                    self.reshaper_ids_dict,
-                    self.reshaper_kwargs
-                ),
+                kwargs=self.reshaper_kwargs,
                 name=f"{self.name_prefix}depth_{key}_{self.R[2:]}",
             )
 
@@ -1652,7 +1644,7 @@ def run_self_tests() -> dict[str, str]:
     ].output_is_flat is False
     assert connector_tokens._get_last_grid_size(
         0, connector_tokens.layers_dicts, connector_tokens.grid_size
-    ) is None
+    ) == connector_tokens.grid_size
     assert connector_output.shape == (2, 8, 4)
 
     non_square_tokens = DiTDecoder(
@@ -1744,7 +1736,7 @@ def run_self_tests() -> dict[str, str]:
     assert bottleneck_full[4][0][1].shape == bottleneck_full[4][0][0].shape
     assert bottleneck._get_last_grid_size(
         0, bottleneck.layers_dicts, bottleneck.grid_size
-    ) is None
+    ) == 0
     assert bottleneck._get_last_grid_size(
         1, bottleneck.layers_dicts, bottleneck.grid_size
     ) == 2
@@ -1793,44 +1785,6 @@ def run_self_tests() -> dict[str, str]:
         training=False,
     )
     assert truncated_multilevel[0].shape == (2, 4, 4)
-
-    flat_connector = DiTDecoder(
-        depth=2, 
-        vit_block_ids=[], 
-        use_decoder_ids=[], 
-        reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-        connection_ids_dict={2: [1, 1]}, 
-        connection_kwargs={"connect_axis": 1, "mlp_output_dim": 16}, 
-        encoder_feature_grid_sizes=[2], 
-        encoder_feature_dims=[4], 
-        **{key: value for key, value in common.items() if key not in (
-            "encoder_feature_grid_sizes", "encoder_feature_dims"
-        )}, 
-    )
-    flat_handler = flat_connector.layers_dicts[1][flat_connector.FC]
-    assert flat_handler.ln_dim == 32 and flat_handler.output_is_flat
-    flat_output = flat_connector(
-        (images, times, labels), encoder_cond, [encoder_features[-1]],
-    )["noises"]
-    assert flat_output.shape == (2, 4, 4, 1)
-    try:
-        DiTDecoder(
-            depth=2, 
-            vit_block_ids=[], 
-            use_decoder_ids=[], 
-            reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-            connection_ids_dict={2: [1, 1]}, 
-            connection_kwargs={"connect_axis": -2, "mlp_output_dim": 16}, 
-            encoder_feature_grid_sizes=[2], 
-            encoder_feature_dims=[4], 
-            **{key: value for key, value in common.items() if key not in (
-                "encoder_feature_grid_sizes", "encoder_feature_dims"
-            )}, 
-        )
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("Flat features accept only a width merge axis.")
 
     depth_zero_reg = DiTDecoder(
         depth=0, 

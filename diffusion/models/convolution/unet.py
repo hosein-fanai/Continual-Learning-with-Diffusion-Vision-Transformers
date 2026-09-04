@@ -899,7 +899,7 @@ class UNet(ArgumentSaverModel):
         # Add a convolutional residual block when requested.
         if self.CB in spec:
             stage_layers[self.CB] = self._residual_stack(
-                self.widths[0], 
+                self.widths[0] if self.widths else self.bottleneck_width,
                 self.block_depth, 
                 f"{self.name_prefix}depth_{key}_{self.CB[2:]}", 
             )
@@ -1433,6 +1433,11 @@ def run_self_tests() -> dict[str, str]:
     assert z_vals_list == []
     assert len(model.layers_dicts) == model.depth
     assert model.connection_ids_dict
+
+    bottleneck_only = UNet(**{**common, "widths": ()})
+    assert bottleneck_only((images, times, labels)).shape == images.shape
+    bottleneck_only.add_depths("convolution_block")
+    assert bottleneck_only((images, times, labels)).shape == images.shape
 
     clone = UNet.from_config(model.get_config())
     assert clone((images, times, labels)).shape == images.shape

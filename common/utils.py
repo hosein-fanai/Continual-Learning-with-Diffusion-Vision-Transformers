@@ -508,6 +508,9 @@ def create_gif(
 
         frames.append(image.convert("RGBA"))
 
+    if not frames:
+        raise ValueError("At least one GIF frame is required.")
+
     frames[0].save(
         output_path, 
         save_all=True, 

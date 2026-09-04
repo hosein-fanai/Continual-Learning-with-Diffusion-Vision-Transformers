@@ -30,8 +30,8 @@ flatten/unflatten pair, ordered by ascending flatten depth; omission means
 pairs at successive encoder scales so its decoder skips originate from their
 unflattened outputs.
 
-For every transformer VAE used with `sample_vae`, its adjacent pair or pairs
-form one central bridge after real encoder computation and before real
+A transformer VAE used with `sample_vae` can arrange its adjacent pair or pairs
+as one central bridge after real encoder computation and before real
 decoder/up-sampling computation. This includes single- and multi-level
 bottlenecks. Training may route an encoder feature at each
 flatten stage; latent sampling bypasses those routes, and the decoder consumes

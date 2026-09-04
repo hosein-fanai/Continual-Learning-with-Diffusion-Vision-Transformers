@@ -20,6 +20,7 @@ class AdaLNZero(ArgumentSaverLayer):
 
     Args:
         dim: Size of the last axis of ``x`` and of the shift/scale vectors.
+            It may be ``None`` only when ``no_adaptation=True``.
         gate_dim: Number of gate channels. ``None`` uses ``dim``. It may differ
             from ``dim`` when the gated branch projects to another width.
         mlp_ratio: If provided, insert a dense hidden layer of width
@@ -47,7 +48,7 @@ class AdaLNZero(ArgumentSaverLayer):
 
     def __init__(
         self, 
-        dim: int, 
+        dim: int | None,
         gate_dim: int | None = None, 
         mlp_ratio: float | None = None, 
         return_gate: bool = True, 
@@ -58,7 +59,8 @@ class AdaLNZero(ArgumentSaverLayer):
         """Initialize the normalization and optional conditioning network.
 
         Args:
-            dim (int): Feature width normalized and modulated by the layer.
+            dim (int | None): Feature width normalized and modulated by the
+                layer, or ``None`` for inferred-width plain normalization.
             gate_dim (int | None): Optional residual-gate width; ``None`` uses
                 ``dim``.
             mlp_ratio (float | None): Optional conditioning-MLP width ratio.
@@ -84,34 +86,39 @@ class AdaLNZero(ArgumentSaverLayer):
             dtype=self.dtype_policy
         )
 
-        self.mlp_output_dim = self.dim * 2 + (
-            self.gate_dim if self.return_gate else 0
-        )
-        # Use activation-only conditioning when no hidden-width ratio is set.
-        if self.mlp_ratio is None:
-            mlp_first_layer = layers.Activation(
-                "swish", 
-                name=f"{self.name}/mlp/first_layer",
-                dtype=self.dtype_policy,
-            )
-        # Otherwise add the configured hidden conditioning projection.
+        # Plain normalization infers its width from the input and has no MLP.
+        if self.no_adaptation:
+            self.mlp_output_dim = None
+            self.mlp = None
         else:
-            mlp_first_layer = layers.Dense(
-                int(self.dim * self.mlp_ratio), 
-                activation="swish", 
-                # kernel_initializer="zeros", 
-                name=f"{self.name}/mlp/first_layer",
-                dtype=self.dtype_policy,
+            self.mlp_output_dim = self.dim * 2 + (
+                self.gate_dim if self.return_gate else 0
             )
-        self.mlp = models.Sequential([
-            mlp_first_layer, 
-            layers.Dense(
-                self.mlp_output_dim, 
-                kernel_initializer="zeros", 
-                name=f"{self.name}/mlp/final_layer",
-                dtype=self.dtype_policy,
-            )
-        ], name="mlp") if not self.no_adaptation else None
+            # Use activation-only conditioning when no hidden-width ratio is set.
+            if self.mlp_ratio is None:
+                mlp_first_layer = layers.Activation(
+                    "swish",
+                    name=f"{self.name}/mlp/first_layer",
+                    dtype=self.dtype_policy,
+                )
+            # Otherwise add the configured hidden conditioning projection.
+            else:
+                mlp_first_layer = layers.Dense(
+                    int(self.dim * self.mlp_ratio),
+                    activation="swish",
+                    # kernel_initializer="zeros",
+                    name=f"{self.name}/mlp/first_layer",
+                    dtype=self.dtype_policy,
+                )
+            self.mlp = models.Sequential([
+                mlp_first_layer,
+                layers.Dense(
+                    self.mlp_output_dim,
+                    kernel_initializer="zeros",
+                    name=f"{self.name}/mlp/final_layer",
+                    dtype=self.dtype_policy,
+                )
+            ], name="mlp")
 
     def call(
         self, 
@@ -225,6 +232,18 @@ def run_self_tests() -> dict[str, str]:
     assert plain_ungated.compute_dtype == "float64"
     assert plain_ungated_result.dtype == tf.float64
     assert plain_ungated.norm.epsilon == 1e-4
+
+    inferred_plain = AdaLNZero(
+        dim=None,
+        no_adaptation=True,
+        return_gate=False,
+    )
+    inferred_plain_result = inferred_plain((x, None))
+    assert inferred_plain_result.shape == x.shape
+    assert inferred_plain.mlp is None and inferred_plain.mlp_output_dim is None
+    inferred_gated = AdaLNZero(dim=None, no_adaptation=True)
+    inferred_gated_result, inferred_gate = inferred_gated((x, None))
+    assert inferred_gated_result.shape == x.shape and inferred_gate == 1.0
 
     config = AdaLNZero(dim=4, gate_dim=3, mlp_ratio=1.5).get_config()
     restored = AdaLNZero.from_config(config)

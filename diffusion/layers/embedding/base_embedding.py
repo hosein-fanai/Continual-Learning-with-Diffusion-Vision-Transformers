@@ -575,17 +575,15 @@ class BaseEmbedding(BaseLayer):
             pos_embed, 
             training=training
         ) if self.pos_embed_mlp is not None else pos_embed
-        pos_embed = tf.repeat(
-            pos_embed, 
-            batch_size, 
-            axis=0
-        )
         # Merge policy constants in the activation dtype selected by Keras.
         pos_embed = tf.cast(pos_embed, x.dtype)
 
         # Append positional channels for concatenation mode.
         if self.pos_merger_type == "concat":
-            return tf.concat([x, pos_embed], axis=-1)
+            return tf.concat([
+                x,
+                tf.repeat(pos_embed, batch_size, axis=0),
+            ], axis=-1)
 
         # Add position features elementwise for additive mode.
         if self.pos_merger_type == "add":

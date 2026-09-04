@@ -207,13 +207,13 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 self.layers_dicts, 
                 self.dim
             ))
-            grid_size, is_flat = self._get_last_shape_metadata(
+            grid_size = self._get_last_grid_size(
                 index, 
                 self.layers_dicts, 
                 self.grid_size
             )
-            grids.append(grid_size)
-            flat_states.append(is_flat)
+            grids.append(None if grid_size == 0 else grid_size)
+            flat_states.append(grid_size == 0)
 
         return dims, grids, flat_states
 
@@ -243,7 +243,6 @@ class DiTEncoderDecoder(DiffusionTransformer):
             layers_dicts,
             base_grid_size,
             skip_reshaper=skip_reshaper,
-            base_is_flat=base_is_flat,
         )
 
     def _validate_decoder_output(self) -> None:

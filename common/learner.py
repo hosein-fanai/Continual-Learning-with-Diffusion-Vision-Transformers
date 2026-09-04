@@ -376,6 +376,7 @@ def _predict_diffusion_classes(
 
         predictions.append(network.predict_class(
             (x_batch, t_batch, null_labels),
+            max_encoder_num=None,
             training=False
         ).numpy())
 
@@ -613,6 +614,7 @@ def _predict_teacher_probabilities(
         null_labels = np.zeros((len(batch),), dtype="uint8")
         predictions.append(np.asarray(teacher.predict_class(
             (batch, timesteps, null_labels),
+            max_encoder_num=None,
             training=False
         )))
 

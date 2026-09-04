@@ -696,12 +696,20 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self, 
         variables: list[tf.Variable] | None = None
     ) -> bool:
-        """Decay only the raw variables owned by the active V2 phase."""
+        """Decay active trainables and synchronize mutable network state."""
 
         if variables is None:
             variables = self.clf_trainable_variables \
                         if self._train_part == "discriminator" \
                         else self.gen_trainable_variables
+
+        # Batch-normalization state can change during either phase despite not
+        # belonging to either optimizer's trainable-variable group.
+        if variables is not None:
+            variables = [
+                *variables,
+                *self.network.non_trainable_variables,
+            ]
 
         return super().update_ema(variables)
 
@@ -1113,6 +1121,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         with tf.GradientTape() as tape:
             class_outputs = self.network.predict_class(
                 (x_t, t, uncond_labels), 
+                max_encoder_num=None,
                 full_return=True, 
                 training=True
             )
@@ -1207,6 +1216,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         ).predict_class
         class_outputs = predict_class(
             (x_t, t, uncond_labels), 
+            max_encoder_num=None,
             full_return=True, 
             training=False
         )

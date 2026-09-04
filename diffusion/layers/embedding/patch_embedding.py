@@ -87,7 +87,8 @@ class PatchEmbedding(BaseEmbedding):
 
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
-        self.hidden_dim = self.dim // 2 if self.pos_merger_type == "concat" else self.dim
+        self.hidden_dim = self.dim // 2 if self.pos_embed_type is not None \
+                        and self.pos_merger_type == "concat" else self.dim
         self.mlp_output_dim = self.hidden_dim if self.mlp_output_dim is None \
                             and self.embed_freq_dim is not None else self.mlp_output_dim
         self.embed_dim = self.hidden_dim if self.embed_freq_dim is None else self.embed_freq_dim
@@ -138,7 +139,10 @@ class PatchEmbedding(BaseEmbedding):
         ) if self.pos_merger_type is not None else None
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
-        )
+        ) if self.pos_embed is not None else None
+
+        self.output_dim = self.hidden_dim + self.output_dim if self.pos_embed is not None and \
+                        self.pos_merger_type == "concat" else self.hidden_dim
 
     def call(
         self, 
@@ -253,6 +257,15 @@ def run_self_tests() -> dict[str, str]:
     )
     assert no_position(images).shape == (2, 16, 3)
     assert no_position.pos_embed is None
+    no_position_concat = PatchEmbedding(
+        dim=6,
+        grid_size=4,
+        patch_size=2,
+        pos_embed_type=None,
+        pos_merger_type="concat",
+    )
+    assert no_position_concat(images).shape == (2, 16, 6)
+    assert no_position_concat.output_dim == 6
 
     concatenated = PatchEmbedding(
         dim=6, 
@@ -262,6 +275,7 @@ def run_self_tests() -> dict[str, str]:
         pos_merger_type="concat", 
     )
     assert concatenated(images).shape == (2, 16, 6)
+    assert concatenated.output_dim == 6
 
     projected = PatchEmbedding(
         dim=6, 

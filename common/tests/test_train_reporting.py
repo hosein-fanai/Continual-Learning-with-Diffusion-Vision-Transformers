@@ -7,7 +7,7 @@ import unittest
 import warnings
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import tensorflow as tf
@@ -15,6 +15,7 @@ import tensorflow as tf
 from common.config import Config, load_config
 from common.runtime import derive_seed
 from common.train import _report_final_visuals, main, report, train_model
+from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
 class _FakeDiffusion:
@@ -98,6 +99,36 @@ class TrainReportingTests(unittest.TestCase):
             )
 
         self.assertTrue(np.isnan(history["task_val_accuracy"][0]))
+
+    def test_direct_vae_train_materializes_dataset_rows(self) -> None:
+        """Pass raw aligned rows to the VAE resampling training API."""
+
+        images = np.arange(12, dtype="float32").reshape(4, 3)
+        labels = np.eye(2, dtype="float32")[[0, 1, 0, 1]]
+        trainset = tf.data.Dataset.from_tensor_slices(
+            (images, labels)
+        ).batch(3)
+        model = MagicMock(spec=VariationalAutoencoder)
+        model.conditioned = True
+        model.train.return_value = {"loss": [1.0]}
+
+        history = train_model(
+            model=model,
+            trainset=trainset,
+            fit_method="train",
+            fit_kwargs={"train_num": -1},
+            epochs=1,
+            show_images=True,
+            report_every_epoch=False,
+            save_weights=False,
+            verbose=0,
+        )
+
+        self.assertEqual(history, {"loss": [1.0]})
+        train_args = model.train.call_args
+        np.testing.assert_array_equal(train_args.args[0], images)
+        np.testing.assert_array_equal(train_args.kwargs["y"], labels)
+        self.assertEqual(train_args.kwargs["batch_size"], 128)
 
     def test_configured_continual_seed_is_forwarded_once(self) -> None:
         """Use the effective training seed without duplicate keyword routing."""
@@ -414,6 +445,47 @@ class TrainReportingTests(unittest.TestCase):
                 main(task="prediction")
 
         get_datasets.assert_not_called()
+
+    def test_direct_main_reports_and_returns_concrete_results_path(self) -> None:
+        """Propagate training's timestamped artifact directory in direct mode."""
+
+        concrete_path = "results/2026-09-05_12-00-00"
+        history = {"loss": [1.0]}
+        model = object()
+
+        def fake_train_model(
+            *args: object,
+            _run_state: dict[str, object],
+            **kwargs: object,
+        ) -> dict[str, list[float]]:
+            """Publish the simulated concrete path and return fake history."""
+
+            del args, kwargs
+            _run_state["results_path"] = concrete_path
+            return history
+
+        with patch("common.train.configure_runtime"), patch(
+            "common.train.get_datasets",
+            return_value=(object(), None),
+        ), patch(
+            "common.train.get_model",
+            return_value=model,
+        ), patch(
+            "common.train.train_model",
+            side_effect=fake_train_model,
+        ), patch(
+            "common.train.report",
+            return_value={"accuracy": 0.5},
+        ) as report_mock:
+            result = main(
+                task="classification",
+                results_path="results",
+                trainset_len=1,
+            )
+
+        self.assertEqual(report_mock.call_args.kwargs["results_path"], concrete_path)
+        self.assertEqual(result["results_path"], concrete_path)
+        self.assertIs(result["history"], history)
 
 
 # Select the test action required by this condition.

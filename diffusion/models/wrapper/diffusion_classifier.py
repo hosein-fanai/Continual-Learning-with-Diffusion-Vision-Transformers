@@ -782,6 +782,7 @@ class DiffusionClassifier(DiffusionModel):
         zero_ts = tf.zeros_like(t, dtype=tf.int32)
         class_outputs = self.get_network(self.test_network_name).predict_class(
             (x0, zero_ts, uncond_labels), 
+            max_encoder_num=None,
             full_return=True, 
             training=False
         )

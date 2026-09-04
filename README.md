@@ -155,7 +155,7 @@ flatten/unflatten pair, ordered by ascending flatten depth; this
 single-bottleneck example therefore has one entry. Omitting the list selects
 full-width latents by default.
 
-For every transformer VAE decoded through `sample_vae(...)`, arrange all
+A transformer VAE decoded through `sample_vae(...)` can arrange all
 adjacent pairs as one central bridge after real encoder computation and before
 real decoder/up-sampling computation. This applies to both single-level and
 multi-level bottlenecks. During training, a flatten-stage route

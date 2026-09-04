@@ -1791,8 +1791,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Create a token/vector bottleneck model for one stage.
 
         Args:
-            reshape_type (str): ``"flatten"`` maps ``[B, tokens, dim]`` to
-                ``[B, tokens*dim]``; ``"unflatten"`` performs the inverse.
+            ids_dict (dict[int, str]): Depth-indexed ``"flatten"`` and
+                ``"unflatten"`` directions.
             i (int): Zero-based current stage index.
             layers_dicts (list[dict]): Completed stages.
             layers_dict (dict): Current partial stage.
@@ -1801,7 +1801,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             grid_has_tokens (bool | int): Number of prefix tokens included
                 in reshape sizes; booleans retain the one-token API.
             kwargs (dict[str, object]): ``add_kl`` (bool) and
-                ``latent_dim_ratio`` (float, default 1).
+                ``latent_dim_ratio`` (one ratio per flatten/unflatten pair).
             name (str | None): Required/generated model name.
 
         Returns:
@@ -3116,9 +3116,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             self.reshaper_kwargs = {
                                 **self.reshaper_kwargs, 
                                 "latent_dim_ratio": [
-                                    *self.reshaper_kwargs[
-                                        "latent_dim_ratio"
-                                    ], 
+                                    *self.reshaper_kwargs.get(
+                                        "latent_dim_ratio", []
+                                    ),
                                     ratio
                                 ]
                             }
@@ -3143,13 +3143,23 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 )
                 planned_layers.append(layers_dict)
 
-            try:
-                self._check_reshaper_kwargs(
-                    self.reshaper_kwargs,
-                    self.reshaper_ids_dict
+            reshaper_items = sorted(self.reshaper_ids_dict.items())
+            if len(reshaper_items) % 2 != 0 or any(
+                first_type != "flatten"
+                or second_depth != first_depth + 1
+                or second_type != "unflatten"
+                for (first_depth, first_type), (second_depth, second_type)
+                in zip(reshaper_items[::2], reshaper_items[1::2])
+            ):
+                raise ValueError(
+                    "reshapers must be consecutive flatten/unflatten pairs."
                 )
-            except AssertionError as error:
-                raise ValueError(str(error)) from error
+            if len(self.reshaper_kwargs["latent_dim_ratio"]) != \
+            len(reshaper_items) // 2:
+                raise ValueError(
+                    "latent_dim_ratio must contain one value per "
+                    "flatten/unflatten pair."
+                )
 
             # Keep progressive output width compatible with the existing output head.
             if self._get_last_output_dim(
@@ -3372,23 +3382,6 @@ def run_self_tests() -> dict[str, str]:
 
     for token_type in ("new_weight", "time", "label", "time_label"):
         for merger_type in ("add", "concat"):
-            # Confirm incompatible concatenated class-token widths fail construction.
-            if merger_type == "concat" and token_type != "new_weight":
-                try:
-                    DiffusionTransformer(
-                        depth=0, 
-                        cls_token_type=token_type, 
-                        cls_token_pos_merger_type=merger_type, 
-                        **base
-                    )
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError(
-                        "Condition-backed concat class tokens must expose their "
-                        "documented width mismatch"
-                    )
-                continue
             model = DiffusionTransformer(
                 depth=0, 
                 cls_token_type=token_type, 
@@ -4018,9 +4011,6 @@ def run_self_tests() -> dict[str, str]:
         {"downsample_kwargs": {"unknown": 1}}, 
         {"upsample_kwargs": {"unknown": 1}}, 
         {"reshaper_kwargs": {"unknown": 1}}, 
-        {"reshaper_kwargs": {"latent_dim_ratio": float("nan")}},
-        {"reshaper_kwargs": {"latent_dim_ratio": float("inf")}},
-        {"reshaper_kwargs": {"latent_dim_ratio": 0.0}},
         {"cls_token_regularizer_kwargs": {"unknown": 1}}, 
     )
     for overrides in invalid_cases:

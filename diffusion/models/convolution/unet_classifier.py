@@ -3,6 +3,8 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
+import tempfile
+
 from copy import deepcopy
 
 from collections.abc import Mapping
@@ -136,7 +138,9 @@ class UNetClassifier(UNet):
             max_id=self.clf_depth, 
         )
 
-        default_clf_dim = int(self.widths[-1])
+        default_clf_dim = int(
+            self.widths[-1] if self.widths else self.bottleneck_width
+        )
         self.clf_dim = default_clf_dim if self.clf_dim is None else self.clf_dim
         self.set_max_encoder_num()
 
@@ -254,7 +258,7 @@ class UNetClassifier(UNet):
             None: ``clf_layers_dicts`` is populated in place.
         """
 
-        self.clf_layers_dicts = []
+        self.clf_layers_dicts = self._no_dependency([])
         for depth_id in range(1, self.clf_depth + 1):
             self.clf_layers_dicts.append(
                 self._make_classifier_stage(depth_id)
@@ -287,6 +291,8 @@ class UNetClassifier(UNet):
                 name=f"{self.name_prefix}clf_terminal_reshaper", 
             )
         self.clf_layers_dicts.append(terminal)
+        self._clf_layers_tracker = list(self.clf_layers_dicts[:-1])
+        self._clf_terminal_tracker = terminal
 
     def _make_classifier_stage(self, depth_id: int) -> LayerDict:
         """Create one fixed-width classifier processing depth.
@@ -892,15 +898,15 @@ class UNetClassifier(UNet):
             int: One-based depth assigned to the new classifier stage.
         """
 
-        terminal = self.clf_layers_dicts.pop()
         new_depth = self.clf_depth + 1
         # Register newly added classifier regularizer depths.
         if use_regularizer:
             self.clf_cls_token_regularizer_ids.append(new_depth)
 
         self.clf_depth = new_depth
-        self.clf_layers_dicts.append(self._make_classifier_stage(new_depth))
-        self.clf_layers_dicts.append(terminal)
+        new_stage = self._make_classifier_stage(new_depth)
+        self._clf_layers_tracker.append(new_stage)
+        self.clf_layers_dicts.insert(-1, new_stage)
 
         return new_depth
 
@@ -1055,6 +1061,10 @@ def run_self_tests() -> dict[str, str]:
     assert model.predict_class(inputs).shape == (2, 2)
     assert len(model.clf_layers_dicts) == model.clf_depth + 1
 
+    bottleneck_only = UNetClassifier(**{**common, "widths": ()})
+    assert bottleneck_only.clf_dim == bottleneck_only.bottleneck_width
+    assert bottleneck_only.predict_class(inputs).shape == (2, 2)
+
     dynamic_regularized = UNetClassifier(
         **{**common, "num_classes": None},
         cls_token_regularizer_ids=[None],
@@ -1147,6 +1157,8 @@ def run_self_tests() -> dict[str, str]:
         left.shape == right.shape
         for left, right in zip(model.weights, grown_clone.weights)
     )
+    with tempfile.TemporaryDirectory() as directory:
+        tf.train.Checkpoint(model=model).write(f"{directory}/checkpoint")
 
     main_variational = UNetClassifier(
         **common, 

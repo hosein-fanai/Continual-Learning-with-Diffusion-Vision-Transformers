@@ -112,7 +112,7 @@ changes and shape-preserving residual depth growth through `add_depths(...)`.
 The ratio list has exactly one entry per contiguous flatten/unflatten pair in
 ascending flatten-depth order; if omitted, every pair uses ratio `1.0`.
 Convolutional multiscale U-Net places stochastic pairs at successive encoder
-scales. Every transformer VAE instead keeps its adjacent pair or pairs together
+scales. A transformer VAE can keep its adjacent pair or pairs together
 as a central bridge after real encoder computation and before real
 decoder/up-sampling computation.
 Its flatten-stage encoder routes run during training but are bypassed by

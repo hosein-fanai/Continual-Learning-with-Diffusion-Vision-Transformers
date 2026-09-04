@@ -719,28 +719,29 @@ class VariationalAutoencoder(models.Model):
             metrics.
         """
 
-        # Extract reconstruction targets from conditional training pairs.
-        if self.conditioned:
-            x, _ = data
-        # Ignore optional supervised labels in unconditional Keras pipelines.
-        else:
-            x = data[0] if isinstance(data, (tuple, list)) else data
+        x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        model_inputs = (x, y) if self.conditioned else x
 
         with tf.GradientTape() as tape:
-            model_inputs = data if self.conditioned else x
             (z_mean, z_log_var, _), x_recon = self(
                 model_inputs, training=True
             )
 
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            row_sample_weight = None if sample_weight is None else tf.broadcast_to(
+                tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
+                tf.shape(x)[:1],
+            )
             recon_loss = tf.cast(self.compiled_loss(
                 x, 
                 x_recon, 
+                sample_weight=row_sample_weight,
                 regularization_losses=self.losses
             ), stable_dtype)
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
                 z_log_var,
+                sample_weight=row_sample_weight,
                 dtype=stable_dtype,
             )
 
@@ -763,7 +764,9 @@ class VariationalAutoencoder(models.Model):
         self.kl_loss_tracker.update_state(
             kl_loss, sample_weight=batch_weight
         )
-        self.compiled_metrics.update_state(x, x_recon)
+        self.compiled_metrics.update_state(
+            x, x_recon, sample_weight=row_sample_weight
+        )
 
         results = {
             "loss": self.total_loss_tracker.result(), 
@@ -794,27 +797,27 @@ class VariationalAutoencoder(models.Model):
             metrics.
         """
 
-        # Extract reconstruction targets from conditional evaluation pairs.
-        if self.conditioned:
-            x, _ = data
-        # Ignore optional supervised labels in unconditional Keras pipelines.
-        else:
-            x = data[0] if isinstance(data, (tuple, list)) else data
-
-        model_inputs = data if self.conditioned else x
+        x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        model_inputs = (x, y) if self.conditioned else x
         (z_mean, z_log_var, _), x_recon = self(
             model_inputs, training=False
         )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        row_sample_weight = None if sample_weight is None else tf.broadcast_to(
+            tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
+            tf.shape(x)[:1],
+        )
         recon_loss = tf.cast(self.compiled_loss(
             x, 
             x_recon, 
+            sample_weight=row_sample_weight,
             regularization_losses=self.losses
         ), stable_dtype)
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
             z_log_var,
+            sample_weight=row_sample_weight,
             dtype=stable_dtype,
         )
 
@@ -826,7 +829,9 @@ class VariationalAutoencoder(models.Model):
         self.recon_loss_tracker.update_state(
             recon_loss, sample_weight=batch_weight
         )
-        self.compiled_metrics.update_state(x, x_recon)
+        self.compiled_metrics.update_state(
+            x, x_recon, sample_weight=row_sample_weight
+        )
 
         results = {
             "loss": self.total_loss_tracker.result(), 

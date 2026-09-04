@@ -208,6 +208,13 @@ def _encode_json(value: object) -> object:
 
             encoded[key] = _encode_json(item)
 
+        # Escape literal mappings that use the serializer's reserved tag key.
+        if "__recovery_type__" in encoded:
+            return {
+                "__recovery_type__": "mapping",
+                "items": encoded,
+            }
+
         return encoded
 
     raise TypeError(
@@ -280,6 +287,13 @@ def _decode_json(value: object) -> object:
     # Select the recovery action required by this condition.
     if type_name == "set":
         return set(_decode_json(item) for item in value["items"])
+
+    # Restore an escaped literal mapping without interpreting its own tag key.
+    if type_name == "mapping":
+        return {
+            key: _decode_json(item)
+            for key, item in value["items"].items()
+        }
 
     raise ValueError(f"Unknown recovery JSON type tag: {type_name!r}.")
 

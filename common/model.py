@@ -432,14 +432,17 @@ def _get_classifier_model(
         cloned_model = models.clone_model(loaded_model)
         # Restore learned trunk parameters before replacing the output head.
         cloned_model.set_weights(loaded_model.get_weights())
-        model = models.Sequential([
-            *cloned_model.layers[:-1],
-            layers.Dense(
-                class_num, 
-                activation="softmax", 
-                dtype=stable_dtype
-            )
-        ])
+        outputs = layers.Dense(
+            class_num,
+            activation="softmax",
+            dtype=stable_dtype,
+            name=cloned_model.layers[-1].name,
+        )(cloned_model.layers[-1].input)
+        model = models.Model(
+            cloned_model.inputs,
+            outputs,
+            name=cloned_model.name,
+        )
     # Build a configurable convolutional classifier.
     elif model_type == "cnn":
         # Preserve the compact legacy CNN when no architecture is supplied.
@@ -1080,7 +1083,9 @@ def get_model(
                     **selected_kwargs
                 )
 
-            conditioned = selected_kwargs.pop("conditioned", True)
+            conditioned = selected_kwargs.pop(
+                "conditioned", task == "continual"
+            )
             # Require class conditioning for generative replay.
             if task == "continual" and not conditioned:
                 # Supply the required conditioning automatically in typed mode.

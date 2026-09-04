@@ -292,30 +292,40 @@ class VAEClassifier(VariationalAutoencoder):
             additional keys.
         """
 
-        x, y = inputs
+        x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)
+        model_inputs = (x, y)
 
         with tf.GradientTape() as tape:
             (z_mean, z_log_var, _), x_recon, y_pred = self(
-                inputs, training=True
+                model_inputs, training=True
             )
 
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            row_sample_weight = None if sample_weight is None else tf.broadcast_to(
+                tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
+                tf.shape(x)[:1],
+            )
             recon_loss = tf.cast(self.compiled_loss(
                 x, 
                 x_recon, 
+                sample_weight=row_sample_weight,
                 regularization_losses=self.losses,
             ), stable_dtype)
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
                 z_log_var,
+                sample_weight=row_sample_weight,
                 dtype=stable_dtype,
             )
-            clf_loss = tf.reduce_mean(
-                losses.categorical_crossentropy(
-                    tf.cast(y, stable_dtype),
-                    tf.cast(y_pred, stable_dtype),
-                ),
+            clf_rows = losses.categorical_crossentropy(
+                tf.cast(y, stable_dtype),
+                tf.cast(y_pred, stable_dtype),
             )
+            clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
+                else tf.math.divide_no_nan(
+                    tf.reduce_sum(clf_rows * row_sample_weight),
+                    tf.reduce_sum(row_sample_weight),
+                )
 
             generative_loss = (
                 recon_loss + tf.cast(self.beta, stable_dtype) * kl_loss
@@ -340,8 +350,12 @@ class VAEClassifier(VariationalAutoencoder):
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
-        self.clf_accuracy_tracker.update_state(y, y_pred)
-        self.compiled_metrics.update_state(x, x_recon)
+        self.clf_accuracy_tracker.update_state(
+            y, y_pred, sample_weight=row_sample_weight
+        )
+        self.compiled_metrics.update_state(
+            x, x_recon, sample_weight=row_sample_weight
+        )
 
         results = {
             "loss": self.total_loss_tracker.result(),
@@ -379,29 +393,39 @@ class VAEClassifier(VariationalAutoencoder):
             additional keys.
         """
 
-        x, y = inputs
+        x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)
+        model_inputs = (x, y)
 
         (z_mean, z_log_var, _), x_recon, y_pred = self(
-            inputs, training=False
+            model_inputs, training=False
         )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        row_sample_weight = None if sample_weight is None else tf.broadcast_to(
+            tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
+            tf.shape(x)[:1],
+        )
         recon_loss = tf.cast(self.compiled_loss(
             x, 
             x_recon, 
+            sample_weight=row_sample_weight,
             regularization_losses=self.losses,
         ), stable_dtype)
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
             z_log_var,
+            sample_weight=row_sample_weight,
             dtype=stable_dtype,
         )
-        clf_loss = tf.reduce_mean(
-            losses.categorical_crossentropy(
-                tf.cast(y, stable_dtype),
-                tf.cast(y_pred, stable_dtype),
-            )
+        clf_rows = losses.categorical_crossentropy(
+            tf.cast(y, stable_dtype),
+            tf.cast(y_pred, stable_dtype),
         )
+        clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
+            else tf.math.divide_no_nan(
+                tf.reduce_sum(clf_rows * row_sample_weight),
+                tf.reduce_sum(row_sample_weight),
+            )
 
         generative_loss = (
             recon_loss + tf.cast(self.beta, stable_dtype) * kl_loss
@@ -419,8 +443,12 @@ class VAEClassifier(VariationalAutoencoder):
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
-        self.clf_accuracy_tracker.update_state(y, y_pred)
-        self.compiled_metrics.update_state(x, x_recon)
+        self.clf_accuracy_tracker.update_state(
+            y, y_pred, sample_weight=row_sample_weight
+        )
+        self.compiled_metrics.update_state(
+            x, x_recon, sample_weight=row_sample_weight
+        )
 
         results = {
             "loss": self.total_loss_tracker.result(),

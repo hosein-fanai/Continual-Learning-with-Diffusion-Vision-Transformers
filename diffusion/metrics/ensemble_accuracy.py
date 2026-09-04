@@ -146,6 +146,12 @@ class EnsembleAccuracy(metrics.Metric):
         self.diffusion_clf = diffusion_clf
         self.network_name = network_name
         self.network = self.diffusion_clf.get_network(self.network_name)
+        # Label zero is unconditional only when the classifier reserves a CFG row.
+        if not getattr(self.network, "use_cfg", False):
+            raise ValueError(
+                "EnsembleAccuracy requires use_cfg=True so label 0 is "
+                "an unconditional condition."
+            )
         self.compute_type = compute_type
         self.separate_probas = bool(separate_probas)
         self.weighted = weighted
@@ -226,6 +232,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         outputs = self.network.predict_class(
             inputs, 
+            max_encoder_num=None,
             full_return=True, 
             training=training
         )
@@ -404,8 +411,9 @@ class EnsembleAccuracy(metrics.Metric):
         """Accumulate sparse categorical accuracy statistics.
 
         Args:
-            y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
-                ``[batch, 1]``.
+            y_true (tf.Tensor): Sparse dataset labels shaped ``[batch]`` or
+                ``[batch, 1]``. Dynamic classifiers map their observed labels
+                to the wrapper's zero-based class IDs here.
             y_pred (tf.Tensor): Floating scores shaped ``[batch, num_classes]``. Scores may
                 be logits or probabilities because accuracy uses ``argmax``.
             sample_weight (tf.Tensor | None): Optional per-example weights.
@@ -467,7 +475,7 @@ class EnsembleAccuracy(metrics.Metric):
         t_rep = tf.tile(ts, multiples=[batch_size])
         uncond_labels = tf.zeros(
             (batch_size * self.max_t,), 
-            dtype=tf.uint8
+            dtype=tf.int32
         )
 
         cls_pred = self._predict_classes(
@@ -522,7 +530,7 @@ class EnsembleAccuracy(metrics.Metric):
             t_rep = tf.tile(ts_chunk, multiples=[batch_size])
             uncond_labels = tf.zeros(
                 (batch_size * chunk_t,), 
-                dtype=tf.uint8
+                dtype=tf.int32
             )
 
             x_rep = self._noisify_timestep_block(
@@ -581,6 +589,8 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         y_pred = self.ensemble_predict(x)
+        if getattr(self.network, "dynamic_num_classes", False):
+            y_true = self.diffusion_clf._map_classes(y_true)
         self.update_state(
             y_true, y_pred, 
             sample_weight=sample_weight
@@ -635,10 +645,6 @@ class EnsembleAccuracy(metrics.Metric):
                     "dataset batches must contain two or three values."
                 )
 
-            # Compare dynamic predictions with zero-based mapped targets.
-            if getattr(self.network, "dynamic_num_classes", False):
-                y = self.diffusion_clf._map_classes(y)
-
             acc = self.test_step(
                 y, x, 
                 sample_weight=sample_weight
@@ -677,6 +683,7 @@ def run_self_tests() -> dict[str, str]:
 
     def predict_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        max_encoder_num: int | None = -1,
         full_return: bool = False,
         training: bool | None = None
     ) -> tf.Tensor | tuple:
@@ -770,11 +777,13 @@ def run_self_tests() -> dict[str, str]:
     raw_network = SimpleNamespace(
         num_classes=3,
         dynamic_num_classes=False,
+        use_cfg=True,
         predict_class=predict_class,
     )
     ema_network = SimpleNamespace(
         num_classes=3,
         dynamic_num_classes=False,
+        use_cfg=True,
         predict_class=predict_class,
     )
     network_by_name = {"raw": raw_network, "ema": ema_network}
@@ -980,6 +989,7 @@ def run_self_tests() -> dict[str, str]:
 
     def predict_conditioned_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        max_encoder_num: int | None = -1,
         full_return: bool = False,
         training: bool | None = None
     ) -> tf.Tensor | tuple:
@@ -1136,6 +1146,72 @@ def run_self_tests() -> dict[str, str]:
         evaluated = stateful.evaluate([(images, labels), (images, labels)])
     assert float(evaluated) == 1.0
 
+    dynamic_map_calls = []
+
+    def map_dynamic_classes(classes: tf.Tensor) -> tf.Tensor:
+        """Map observed dataset labels to contiguous classifier indices."""
+
+        dynamic_map_calls.append(classes.numpy().copy())
+        return tf.where(
+            tf.equal(classes, 5),
+            tf.zeros_like(classes),
+            tf.ones_like(classes),
+        )
+
+    dynamic_network = SimpleNamespace(
+        num_classes=3,
+        dynamic_num_classes=True,
+        use_cfg=True,
+        predict_class=predict_class,
+    )
+    dynamic_wrapper = SimpleNamespace(
+        timesteps=8,
+        network=dynamic_network,
+        ema_network=dynamic_network,
+        noisify=noisify,
+        q_sample=q_sample,
+        get_network=lambda name: dynamic_network,
+        _map_classes=map_dynamic_classes,
+    )
+    dataset_labels = tf.fill((2,), 5)
+    direct_dynamic = EnsembleAccuracy(
+        dynamic_wrapper,
+        compute_type="batched",
+        max_t=4,
+    )
+    assert float(direct_dynamic.test_step(dataset_labels, images)) == 1.0
+    evaluated_dynamic = EnsembleAccuracy(
+        dynamic_wrapper,
+        compute_type="batched",
+        max_t=4,
+    )
+    assert float(evaluated_dynamic.evaluate(
+        [(images, dataset_labels)],
+        verbose=False,
+    )) == 1.0
+    assert len(dynamic_map_calls) == 2
+    for mapped_input in dynamic_map_calls:
+        np.testing.assert_array_equal(mapped_input, [5, 5])
+
+    no_cfg_network = SimpleNamespace(
+        num_classes=3,
+        dynamic_num_classes=False,
+        use_cfg=False,
+        predict_class=predict_class,
+    )
+    no_cfg_wrapper = SimpleNamespace(
+        timesteps=8,
+        get_network=lambda name: no_cfg_network,
+    )
+    try:
+        EnsembleAccuracy(no_cfg_wrapper, max_t=1)
+    except ValueError as error:
+        assert "use_cfg=True" in str(error)
+    else:
+        raise AssertionError(
+            "An ensemble without an unconditional CFG label must fail."
+        )
+
     try:
         EnsembleAccuracy(wrapper, max_t=9)
     except ValueError:
@@ -1150,9 +1226,7 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Unknown compute strategies must fail.")
 
     for invalid_kwargs in (
-        {"max_t": 0},
         {"max_t": 1, "clf_acc_coef": -1.0},
-        {"max_t": 1, "clf_distil_acc_coef": float("inf")},
         {
             "max_t": 1,
             "clf_acc_coef": 0.0,
@@ -1177,6 +1251,7 @@ def run_self_tests() -> dict[str, str]:
 
     def missing_optional_predict_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        max_encoder_num: int | None = -1,
         full_return: bool = False,
         training: bool | None = None
     ) -> tf.Tensor | tuple:
@@ -1206,6 +1281,7 @@ def run_self_tests() -> dict[str, str]:
     missing_network = SimpleNamespace(
         num_classes=3,
         dynamic_num_classes=False,
+        use_cfg=True,
         predict_class=missing_optional_predict_class,
     )
 

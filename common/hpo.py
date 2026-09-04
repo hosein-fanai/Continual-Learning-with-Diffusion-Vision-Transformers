@@ -106,10 +106,10 @@ _DIT = {
     "evaluation_network": "fixed EMA",
     "loss_function": "mse",
     "image_loss_coefficient": (
-        "0, 0.01, 0.05, or 0.1; fixed to 0 for x0 prediction"
+        "0, 0.01, 0.05, or 0.1; fixed to 0 for input reconstruction"
     ),
     "variational_kl_coefficient": (
-        "log-uniform 1e-4 to 1e-2 for x0 prediction"
+        "log-uniform 1e-4 to 1e-2 for input reconstruction"
     ),
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
@@ -136,10 +136,10 @@ _UNET = {
     "evaluation_network": "fixed EMA",
     "loss_function": "mse",
     "image_loss_coefficient": (
-        "0, 0.01, 0.05, or 0.1; fixed to 0 for x0 prediction"
+        "0, 0.01, 0.05, or 0.1; fixed to 0 for input reconstruction"
     ),
     "variational_kl_coefficient": (
-        "log-uniform 1e-4 to 1e-2 for x0 prediction"
+        "log-uniform 1e-4 to 1e-2 for input reconstruction"
     ),
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
@@ -761,11 +761,10 @@ def _suggest_diffusion_wrapper(
             generative replay. Loss-based generation/joint studies use fixed
             evaluation settings because these values do not affect their
             objectives.
-        swap_noise_image (bool): Configure direct clean-image prediction. Its
-            primary loss already targets x0, so no auxiliary image-loss weight
-            is sampled.
-        fixed_kl_loss_coef (float | None): Immutable positive KL weight for x0
-            prediction. None searches the variational weight.
+        swap_noise_image (bool): Configure reconstruction of the noisy input
+            ``x_t``. No auxiliary image-loss weight is sampled in this mode.
+        fixed_kl_loss_coef (float | None): Immutable positive KL weight for
+            input reconstruction. None searches the variational weight.
 
     Returns:
         tuple[int, dict[str, object]]: Training timestep count and wrapper
@@ -903,7 +902,7 @@ def _validate_swap_noise_hpo(
     """Preflight an immutable x0/VAE HPO architecture.
 
     Returns:
-        tuple[bool, float | None]: Whether x0 prediction is active and an
+        tuple[bool, float | None]: Whether input reconstruction is active and an
         optional fixed KL coefficient.
     """
 
@@ -2692,7 +2691,7 @@ def _build_trial_config(
     if swap_noise_image and use_distillation:
         raise ValueError(
             "noise distillation is incompatible with "
-            "swap_noise_image=True x0 prediction."
+            "swap_noise_image=True input reconstruction."
         )
     swap_noise_image, fixed_kl_loss_coef = _validate_swap_noise_hpo(
         model_name,
@@ -3154,7 +3153,7 @@ def _build_trial_config(
                 }
             }
         # Select a convolutional classifier for image-space replay.
-        else:
+        elif not classifier_only:
             classifier_name = "cnn"
             preprocess = "min-max"
             classifier_kwargs = {
@@ -3411,7 +3410,7 @@ def _x0_generation_value(
     kl_loss_coef: float,
     diffusion_network_name: str,
 ) -> float:
-    """Return clean-image reconstruction plus weighted main-latent KL."""
+    """Return noisy-input reconstruction plus weighted main-latent KL."""
 
     reconstruction = _validation_evaluation_value(
         evaluations,
@@ -3522,7 +3521,7 @@ def _configured_objective_value(
         evaluations (Mapping[str, object]): Final report evaluation mapping.
         metric_name (str): Exact or supported semantic objective name.
         diffusion_network_name (str): Selected diffusion validation branch.
-        swap_noise_image (bool): Whether diffusion predicts clean images.
+        swap_noise_image (bool): Whether diffusion reconstructs the noisy input ``x_t``.
         kl_loss_coef (float): Main variational KL coefficient in x0 mode.
     Returns:
         float: Selected scalar objective value.
@@ -3624,7 +3623,7 @@ def _objective_values(
             directions for explicit post-training validation metrics.
         diffusion_network_name (str): Raw or EMA post-training validation
             branch used for diffusion objectives.
-        swap_noise_image (bool): Whether diffusion predicts clean images.
+        swap_noise_image (bool): Whether diffusion reconstructs the noisy input ``x_t``.
         kl_loss_coef (float): Main variational KL coefficient in x0 mode.
 
     Returns:
@@ -3913,7 +3912,7 @@ def run_hpo(
     if swap_noise_image and effective_distillation:
         raise ValueError(
             "noise distillation is incompatible with "
-            "swap_noise_image=True x0 prediction."
+            "swap_noise_image=True input reconstruction."
         )
     _validate_swap_noise_hpo(
         model_name,

@@ -965,6 +965,33 @@ def get_datasets(
     seed = options["seed"]
     task = options["task"]
 
+    # Conditional VAEs consume full-width labels as model inputs. Keep dataset
+    # construction aligned with the effective factory setting rather than
+    # requiring a redundant one-hot override from every caller.
+    vae_conditioned = False
+    if model_name in {"vae", "variational_autoencoder"}:
+        if config is None:
+            direct_model_kwargs = kwargs.get(
+                "model_kwargs", kwargs.get("kwargs", {})
+            ) or {}
+            vae_conditioned = bool(direct_model_kwargs.get(
+                "conditioned", task == "continual"
+            ))
+        elif config.model.kwargs:
+            vae_conditioned = bool(config.model.kwargs.get(
+                "conditioned", task == "continual"
+            ))
+        else:
+            vae_conditioned = bool(
+                config.model.variational_autoencoder.conditioned
+                or task == "continual"
+            )
+
+    if model_name == "vae_classifier" or vae_conditioned:
+        onehot_labels = True
+        if config is not None:
+            config.dataset.onehot_labels = True
+
     dataset_name = dataset_name.lower()
 
     # Prevent image padding from being applied to saved feature vectors.

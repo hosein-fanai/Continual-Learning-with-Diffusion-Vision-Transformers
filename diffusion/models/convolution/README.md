@@ -160,7 +160,7 @@ decoder skip connectors source the corresponding stochastic unflatten depths.
 
 Normal `DiffusionModel` training retains the diffusion noise target and adds
 the configured KL loss. Setting `swap_noise_image=True` selects the wrapper's
-alternate image/noise target and also routes `model.sample(...)` to
+noisy `x_t` target and also routes `model.sample(...)` to
 `sample_vae(...)`. A single-bottleneck latent may still be supplied as one
 tensor. Multiscale models accept one tensor per ordered flatten stage; omitted
 latents are drawn independently from the standard-normal prior.

@@ -73,13 +73,14 @@ class SingleTokenLayer(BaseEmbedding):
         self._save_init_args(locals())
         derive_seed(self.seed, "single_token", "validation")
 
+        component_dim = self.dim // 2 if self.with_pos_embed and self.pos_merger_type == "concat" \
+                        else self.dim
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
-        self.mlp_output_dim = self.dim if self.mlp_output_dim is None \
-                            and self.embed_freq_dim is not None \
+        self.mlp_output_dim = component_dim if self.mlp_output_dim is None and self.embed_freq_dim is not None \
                             else self.mlp_output_dim
         self.pos_embed_type = "new_weight" if self.with_pos_embed else None
-        self.embed_dim = self.dim // 2 if self.pos_merger_type == "concat" else self.dim
+        self.embed_dim = component_dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.seed = None if self.seed is None else int(self.seed)
 
         self.token = self.add_weight(
@@ -96,14 +97,20 @@ class SingleTokenLayer(BaseEmbedding):
             name=f"{self.name}/token_embeddings"
         ) if not self.input_as_token else None
         self.token_mlp = self._create_mlp(
+            self.embed_dim, 
+            mlp_output_dim=component_dim
+        ) if self.input_as_token and self.mlp_output_dim is None else self._create_mlp(
             self.embed_dim
-        ) if self.token is not None else None
+        )
         self.pos_embed = self._create_embeddings(
-            output_grid_size=1, 
+            output_grid_size=1
         )
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
         ) if self.pos_embed is not None else None
+
+        self.output_dim *= 2 if self.pos_embed is not None and self.pos_merger_type == "concat" \
+                        else 1
 
     def call(
         self, 
@@ -180,8 +187,8 @@ def run_self_tests() -> dict[str, str]:
         input_as_token=True
     )
     supplied_result = input_token((images, supplied))
-    np.testing.assert_array_equal(supplied_result[:, 0, :].numpy(), supplied.numpy())
-    assert input_token.token is None and input_token.token_mlp is None
+    assert supplied_result.shape == (3, 1, 4)
+    assert input_token.token is None and input_token.token_mlp is not None
 
     supplied_positioned = SingleTokenLayer(
         dim=4, 
@@ -196,6 +203,7 @@ def run_self_tests() -> dict[str, str]:
         pos_merger_type="concat"
     )
     assert concatenated((images[:1], None)).shape == (1, 1, 6)
+    assert concatenated.output_dim == 6
     batched_concatenated = SingleTokenLayer(
         dim=6, 
         with_pos_embed=True, 
@@ -221,6 +229,15 @@ def run_self_tests() -> dict[str, str]:
     )
     assert projected.token_mlp is not None and projected.pos_embed_mlp is not None
     assert projected((images, None), training=True).shape == (3, 1, 4)
+    projected_input = SingleTokenLayer(
+        dim=6,
+        with_pos_embed=True,
+        input_as_token=True,
+        pos_merger_type="concat",
+        embed_freq_dim=2,
+    )
+    assert projected_input((images, tf.ones((3, 4)))).shape == (3, 1, 6)
+    assert projected_input.output_dim == 6
 
     with tf.GradientTape() as tape:
         token_output = learned_with_position(

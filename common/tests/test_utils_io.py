@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from common.utils import load_samples, save_samples
+from common.utils import create_gif, load_samples, save_samples
 
 
 class SampleArchiveTests(unittest.TestCase):
@@ -123,6 +123,14 @@ class SampleArchiveTests(unittest.TestCase):
                 load_samples(path, ".npy", allow_pickle=1),
                 np.ones(1),
             )
+
+    def test_create_gif_rejects_an_empty_frame_sequence(self) -> None:
+        """Report the documented error before indexing an absent first frame."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "empty.gif"
+            with self.assertRaisesRegex(ValueError, "At least one GIF frame"):
+                create_gif(output_path, [], verbose=0)
 
 
 # Support direct execution in addition to unittest discovery.

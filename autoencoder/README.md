@@ -160,18 +160,18 @@ least one class must have been recorded before the callback runs.
 
 ## Continual-learning integration
 
-In direct mode, pass a conditional `VariationalAutoencoder` or `VAEClassifier`
-to `common.learner.continually_learn` with `generative_model=model`. In config
-mode, select `model.name="vae"` or `"vae_classifier"`; `get_model` creates the
-VAE and standalone classifier, while `get_datasets` supplies the loader. The
-continual loop generates prior-class features before each task and routes both
-VAE training and evaluation through `common.train`.
+In direct mode, pass a conditional `VariationalAutoencoder` to
+`common.learner.continually_learn` with `generative_model=model`. In config
+mode, select `model.name="vae"`; `get_model` creates the VAE and expanding
+standalone classifier, while `get_datasets` supplies one-hot labels through the
+loader. The continual loop generates prior-class features before each task and
+routes both VAE training and evaluation through `common.train`.
 
 The dataset loader must return one-hot labels, and `data_dim` must match the
-loaded image/feature width. With `use_generative_model_classifier=True`, a
-`VAEClassifier`'s attached classifier becomes the continual model; setting
-`train_classifier_separately=True` gives it an additional classifier-only fit
-and requires that classifier to already be compiled.
+loaded image/feature width. `VAEClassifier` is intentionally unsupported in the
+continual loop: its fixed full-class head exposes future logits. Use the
+generator-only conditional VAE with the learner's expanding external
+classifier instead.
 
 See individual class and method docstrings with `help(...)` for tracker initial
 state, exact tensor shapes, return dictionaries, callback composition, and

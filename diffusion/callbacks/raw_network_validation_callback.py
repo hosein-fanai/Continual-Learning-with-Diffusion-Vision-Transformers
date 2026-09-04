@@ -78,8 +78,8 @@ class RawNetworkValidationCallback(callbacks.Callback):
         logs = {} if logs is None else logs
 
         raw_results = self.model.evaluate(
-            self.val_x, 
-            self.val_y, 
+            x=self.val_x,
+            y=self.val_y,
             network_name="raw", 
             verbose=0, 
             return_dict=True,
@@ -117,8 +117,8 @@ def run_self_tests() -> dict[str, str]:
         "val_raw_accuracy": 0.75, 
     }
     evaluate.assert_called_once_with(
-        validation_x, 
-        validation_y, 
+        x=validation_x,
+        y=validation_y,
         network_name="raw", 
         verbose=0, 
         return_dict=True, 
@@ -130,8 +130,8 @@ def run_self_tests() -> dict[str, str]:
     dataset_callback.set_model(SimpleNamespace(evaluate=dataset_evaluate))
     assert dataset_callback.on_epoch_end(0, None) is None
     dataset_evaluate.assert_called_once_with(
-        dataset_like, 
-        None, 
+        x=dataset_like,
+        y=None,
         network_name="raw", 
         verbose=0, 
         return_dict=True, 
@@ -140,6 +140,41 @@ def run_self_tests() -> dict[str, str]:
     empty_logs = {}
     dataset_callback.on_epoch_end(1, empty_logs)
     assert empty_logs == {"val_raw_noise_loss": 0.5}
+
+    class V2StyleModel:
+        """Expose classifier-V2 control arguments before Keras inputs."""
+
+        def __init__(self) -> None:
+            self.call = None
+
+        def evaluate(
+            self,
+            eval_both: bool = False,
+            test_part: str | None = None,
+            **kwargs: Any
+        ) -> dict[str, float]:
+            """Record positional controls and keyword evaluation inputs."""
+
+            self.call = (eval_both, test_part, kwargs)
+            return {"loss": 0.125}
+
+    v2_model = V2StyleModel()
+    v2_callback = RawNetworkValidationCallback(validation_x, validation_y)
+    v2_callback.set_model(v2_model)
+    v2_logs = {}
+    v2_callback.on_epoch_end(0, v2_logs)
+    assert v2_model.call == (
+        False,
+        None,
+        {
+            "x": validation_x,
+            "y": validation_y,
+            "network_name": "raw",
+            "verbose": 0,
+            "return_dict": True,
+        },
+    )
+    assert v2_logs == {"val_raw_loss": 0.125}
 
     return {"RawNetworkValidationCallback": "passed"}
 
