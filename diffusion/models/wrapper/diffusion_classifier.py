@@ -325,9 +325,9 @@ class DiffusionClassifier(DiffusionModel):
             labels (tf.Tensor): Condition IDs supplied to the teacher.
 
         Returns:
-            tf.Tensor: Stopped-gradient probabilities [B, teacher_class_count], cast to
-            the wrapper policy variable dtype. The frozen teacher's vocabulary may be
-            narrower or wider than the student's current class count.
+            tf.Tensor: Stopped-gradient probabilities [B, teacher_class_count], retaining
+            the teacher prediction dtype. The frozen teacher's vocabulary may be narrower
+            or wider than the student's current class count.
         """
 
         teacher_labels = self.teacher_network.predict_class(
