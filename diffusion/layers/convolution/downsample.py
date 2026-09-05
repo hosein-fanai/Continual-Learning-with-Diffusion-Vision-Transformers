@@ -1,4 +1,9 @@
-"""Channels-last image downsampling layers for convolutional networks."""
+"""Channels-last image downsampling layers for convolutional networks.
+
+ImageDownsample reduces image grids through same-padded average/max pooling or
+strided convolution. Pooling adds a channel projection only when needed; deferred
+building resolves omitted output widths from the input channel dimension.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -13,7 +18,25 @@ from diffusion.layers.convolution.residual_block import _split_inputs
 
 @register_canonical_keras_serializable(package="continual_learning")
 class ImageDownsample(ArgumentSaverLayer):
-    """Reduce both spatial image dimensions by a configurable integer stride."""
+    """Reduce both spatial image dimensions by a configurable integer stride.
+
+    Attributes:
+        output_dim (int | None): Requested filters, resolved from input channels at build
+            time when omitted.
+        scaling_layer (tf.keras.layers.Layer | None): Pooling or learned strided scaler;
+            convolution is created during build.
+        projection (tf.keras.layers.Conv2D | None): Optional 1x1 projection after pooling
+            when channel widths differ.
+
+    Inputs:
+        Floating channels-last image features [B, H, W, C], or an image/condition
+        pair whose condition is ignored. Channels must be known at build time.
+
+    Outputs:
+        Floating image features [B, ceil(H / strides), ceil(W / strides), output_dim] under the layer's compute policy.
+        Constructor filters=None preserves C; pooling otherwise adds
+        a 1x1 projection when learned spatial scaling does not already set width.
+    """
 
     def __init__(
         self, 
@@ -29,11 +52,16 @@ class ImageDownsample(ArgumentSaverLayer):
         Args:
             filters (int | None): Output channels; ``None`` preserves the input
                 width.
+                Defaults to ``None``.
             scaling_method (str): ``"avg_pooling"``, ``"max_pooling"``, or
                 ``"cnn_stride"``.
+                Defaults to ``'avg_pooling'``.
             kernel_size (int): Positive convolution kernel size.
+                Defaults to ``3``.
             strides (int): Positive spatial reduction factor.
+                Defaults to ``2``.
             activation_func (str): Keras activation used by learned projections.
+                Defaults to ``'linear'``.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -77,6 +105,9 @@ class ImageDownsample(ArgumentSaverLayer):
 
         Returns:
             None: Valid arguments complete without a value.
+
+        Raises:
+            ValueError: If scaling_method does not name an implemented strategy.
         """
 
         # Restrict scaling to the three implemented downsampling strategies.
@@ -100,6 +131,8 @@ class ImageDownsample(ArgumentSaverLayer):
             None: Keras build state is updated in place.
         """
 
+        # Extract image shape from a paired image/condition signature; otherwise use the
+        # tensor shape directly.
         image_shape = input_shape[0] if (
             isinstance(input_shape, (tuple, list))
             and len(input_shape) == 2
@@ -110,6 +143,8 @@ class ImageDownsample(ArgumentSaverLayer):
         if input_dim is None:
             raise ValueError("ImageDownsample requires known input channels.")
 
+        # Preserve input channels when filters is omitted; otherwise use the requested
+        # width.
         self.output_dim = int(input_dim) if self.filters is None else self.filters
         # Build the learned strided convolution at the resolved output width.
         if self.scaling_method == "cnn_stride":
@@ -145,9 +180,15 @@ class ImageDownsample(ArgumentSaverLayer):
             inputs (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Image tensor or
                 image-condition pair; the condition is ignored by this layer.
             training (bool | tf.Tensor | None): Optional Keras training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Spatially downsampled channels-last image features.
+
+        Notes:
+            The image input is [B, H, W, C]; the result is [B, ceil(H / strides), ceil(W / strides), output_dim]. Outputs follow the
+            layer compute policy and condition tensors never influence this scaler.
         """
 
         x, _ = _split_inputs(inputs)
@@ -156,6 +197,7 @@ class ImageDownsample(ArgumentSaverLayer):
             x, 
             training=training
         )
+        # Apply the optional channel projection; otherwise retain the resized features.
         x = self.projection(
             x, 
             training=training
@@ -197,6 +239,7 @@ def run_self_tests() -> dict[str, str]:
         ImageDownsample(scaling_method="unknown")
     except ValueError:
         pass
+    # This invalid case should already have raised: Unknown downsampling methods must fail.
     else:
         raise AssertionError("Unknown downsampling methods must fail.")
 

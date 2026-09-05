@@ -1,4 +1,10 @@
-"""Condition-aware residual convolution blocks for image feature maps."""
+"""Condition-aware residual convolution blocks for image feature maps.
+
+ResidualConvBlock adds a two-convolution correction to an identity/projected
+image residual, optionally using batch normalization, spatial dropout, and a
+broadcast condition bias. ResidualConvStack composes these blocks with independent
+dropout streams and optional zero initialization on its final block.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -22,6 +28,9 @@ def _split_inputs(
     Returns:
         tuple[tf.Tensor, tf.Tensor | None]: Image features and optional
         per-example condition.
+
+    Raises:
+        ValueError: If a list/tuple does not contain exactly image and condition.
     """
 
     # Unpack an explicit image-condition pair when one is supplied.
@@ -41,6 +50,17 @@ class ResidualConvBlock(ArgumentSaverLayer):
     Inputs may be an image feature map ``x`` or ``(x, condition)``. ``x`` is a
     channels-last rank-four tensor. A supplied condition is rank two and is
     projected to ``filters`` channels before it is broadcast over the image.
+
+    Attributes:
+        output_dim (int): Number of output channels, equal to filters.
+        condition_projector (tf.keras.layers.Dense): Lazy projection built from an
+            actually supplied condition width.
+        residual_projector (tf.keras.layers.Conv2D | None): 1x1 residual projection
+            created only when input channels differ.
+        normalization (tf.keras.layers.BatchNormalization | None): Optional non-affine
+            input normalization.
+        dropout (tf.keras.layers.SpatialDropout2D | None): Optional training-only spatial
+            dropout.
     """
 
     def __init__(
@@ -59,13 +79,23 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
         Args:
             filters (int): Positive output-channel count.
-            condition_dim (int | None): Optional condition-vector width.
+            condition_dim (int | None): Optional condition-width metadata. Defaults to ``None``. The actual
+                condition projector is built lazily from a supplied condition tensor, and this metadata
+                neither requires nor disables conditioning.
             kernel_size (int): Positive spatial convolution kernel size.
+                Defaults to ``3``.
             activation_func (str): Keras activation name.
+                Defaults to ``'swish'``.
             use_batch_norm (bool): Whether to normalize before convolution.
+                Defaults to ``True``.
             dropout_rate (float): Spatial-dropout probability in ``[0, 1)``.
+                Defaults to ``0.0``.
             zero_init (bool): Whether to zero-initialize the second convolution.
+                Defaults to ``False``.
             seed (int | None): Optional component seed for spatial dropout.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -76,9 +106,12 @@ class ResidualConvBlock(ArgumentSaverLayer):
         self._save_init_args(locals())
         derive_seed(seed, "residual_conv_block", "validation")
 
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         self.seed = None if self.seed is None else int(self.seed)
         self.output_dim = self.filters
 
+        # Create input batch normalization only when requested.
         self.normalization = layers.BatchNormalization(
             center=False, 
             scale=False, 
@@ -93,12 +126,15 @@ class ResidualConvBlock(ArgumentSaverLayer):
             dtype=self.dtype_policy,
             name=f"{self.name}/first_convolution",
         )
+        # Create spatial dropout only for a nonzero drop probability.
         self.dropout = layers.SpatialDropout2D(
             rate=self.dropout_rate, 
             seed=derive_seed(self.seed, "spatial_dropout"),
             dtype=self.dtype_policy, 
             name=f"{self.name}/dropout"
         ) if self.dropout_rate > 0.0 else None
+        # Start the residual correction at zero when requested; otherwise use Glorot
+        # initialization.
         self.second_convolution = layers.Conv2D(
             filters=self.filters, 
             kernel_size=self.kernel_size, 
@@ -126,6 +162,8 @@ class ResidualConvBlock(ArgumentSaverLayer):
             None: Keras build state is updated in place.
         """
 
+        # Extract image shape from a paired image/condition signature; otherwise use the
+        # tensor shape directly.
         image_shape = input_shape[0] if (
             isinstance(input_shape, (tuple, list))
             and len(input_shape) == 2
@@ -159,17 +197,27 @@ class ResidualConvBlock(ArgumentSaverLayer):
             inputs (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Image features or
                 an image-condition pair.
             training (bool | tf.Tensor | None): Optional Keras training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Residual image features with ``filters`` channels.
+
+        Notes:
+            Inputs contain an image [B, H, W, C] and optionally a condition [B, D].
+            Output is [B, H, W, filters] in the layer compute dtype. Training forwards
+            to optional batch normalization and spatial dropout; inference preserves
+            normalization statistics and disables dropout.
         """
 
         x, condition = _split_inputs(inputs)
+        # Project the residual to its configured width only when a projector exists.
         residual = self.residual_projector(
             x, 
             training=training
         ) if self.residual_projector is not None else x
 
+        # Normalize input features only when batch normalization is enabled.
         h = self.normalization(
             x,
             training=training,
@@ -190,6 +238,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
             condition = condition[:, None, None, :]
             h = h + condition
 
+        # Apply configured spatial dropout; otherwise pass the convolution features through.
         h = self.dropout(
             h, 
             training=training
@@ -203,7 +252,13 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
 @register_canonical_keras_serializable(package="continual_learning")
 class ResidualConvStack(ArgumentSaverLayer):
-    """Run a fixed number of `ResidualConvBlock` objects in sequence."""
+    """Run a fixed number of `ResidualConvBlock` objects in sequence.
+
+    Attributes:
+        blocks (list[ResidualConvBlock]): Ordered depth-many blocks with distinct dropout
+            seeds.
+        output_dim (int): Output channel count shared by every block.
+    """
 
     def __init__(
         self, 
@@ -223,14 +278,25 @@ class ResidualConvStack(ArgumentSaverLayer):
         Args:
             filters (int): Positive output-channel count for every block.
             depth (int): Positive number of residual blocks.
-            condition_dim (int | None): Optional condition-vector width.
+                Defaults to ``1``.
+            condition_dim (int | None): Optional condition-width metadata. Defaults to ``None``. The actual
+                condition projector is built lazily from a supplied condition tensor, and this metadata
+                neither requires nor disables conditioning.
             kernel_size (int): Positive convolution kernel size.
+                Defaults to ``3``.
             activation_func (str): Keras activation name.
+                Defaults to ``'swish'``.
             use_batch_norm (bool): Whether each block uses batch normalization.
+                Defaults to ``True``.
             dropout_rate (float): Spatial-dropout probability in ``[0, 1)``.
+                Defaults to ``0.0``.
             zero_init (bool): Whether the last block ends with zero weights.
+                Defaults to ``False``.
             seed (int | None): Optional stack seed used to derive one spatial
                 dropout stream per residual block.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -238,9 +304,12 @@ class ResidualConvStack(ArgumentSaverLayer):
         """
 
         derive_seed(seed, "residual_conv_stack", "validation")
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
 
+        # Require at least one residual block so output width matches the declared stack.
         if depth < 1:
             raise ValueError("ResidualConvStack depth must be positive.")
         self._save_init_args(locals())
@@ -273,14 +342,23 @@ class ResidualConvStack(ArgumentSaverLayer):
             inputs (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Image features or
                 an image-condition pair.
             training (bool | tf.Tensor | None): Optional Keras training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Output of the final residual block.
+
+        Notes:
+            Inputs contain an image [B, H, W, C] and optionally a condition [B, D].
+            Output is [B, H, W, filters] in the layer compute dtype. Training forwards
+            to optional batch normalization and spatial dropout; inference preserves
+            normalization statistics and disables dropout.
         """
 
         x, condition = _split_inputs(inputs)
 
         for block in self.blocks:
+            # Forward the condition alongside features only when one was supplied.
             x = block(
                 (x, condition) if condition is not None else x, 
                 training=training
@@ -324,6 +402,8 @@ def run_self_tests() -> dict[str, str]:
         ResidualConvStack(filters=6, depth=0)
     except ValueError:
         pass
+    # This invalid case should already have raised: An empty residual stack must not lie
+    # about width.
     else:
         raise AssertionError("An empty residual stack must not lie about width.")
 

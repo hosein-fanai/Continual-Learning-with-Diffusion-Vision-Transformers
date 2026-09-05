@@ -1,4 +1,17 @@
-"""Generate the thin, API-focused HPO notebooks in this directory."""
+"""Build the task/model matrix of thin configuration-driven HPO notebooks.
+
+NOTEBOOKS maps task names to model names and (epochs, rationale) pairs; ROOT
+is this generator's directory. Builders return nbformat-4 dictionaries with
+Python source and markdown. They do not execute the generated experiments.
+The main function verifies NOTEBOOKS against common.hpo.SEARCH_SPACES and
+writes one notebook per entry, replacing existing files at those paths.
+
+Generated experiments use CIFAR10, 30 trials, seed 42, and results/hpo by
+default. Each setup cell exposes these values for editing. The result cell
+displays a Pareto set for multiple objectives or the best value/parameters for
+a single objective. Direct script execution writes notebooks; importing this
+module only defines constants and builder functions.
+"""
 
 from __future__ import annotations
 
@@ -158,18 +171,24 @@ NOTEBOOKS = {
 
 
 def markdown_cell(task: str, model: str, rationale: str) -> dict:
-    """Build one notebook overview cell.
+    """Build a task/model overview as a fresh markdown cell mapping.
+
+    Model underscores become title-case spaces. The joint task receives the
+    explicit heading Generation + Classification; all other task strings use
+    title case. The rationale is inserted verbatim, without escaping markdown.
 
     Args:
-        task (str): HPO task key such as ``"generation"`` or ``"joint"``.
-        model (str): Model-family key used in headings.
-        rationale (str): Human-readable experiment motivation.
+        task (str): HPO task key such as generation, joint, or continual.
+        model (str): Model-family key used only to form the displayed heading.
+        rationale (str): Experiment motivation placed beneath the heading.
 
     Returns:
-        dict: Notebook-format markdown cell mapping.
+        dict[str, object]: Markdown cell with id='overview', empty metadata, and
+        a list of newline-preserving source strings. No file is written.
     """
 
     title = model.replace("_", " ").title()
+    # Label joint optimization by both tasks; title-case every other task key.
     task_title = "Generation + Classification" \
                 if task == "joint" else task.title()
 
@@ -186,14 +205,19 @@ def markdown_cell(task: str, model: str, rationale: str) -> dict:
 
 
 def code_cell(source: str, cell_id: str) -> dict:
-    """Build one executable notebook cell.
+    """Package Python source as a fresh, unexecuted notebook code cell.
+
+    This function does not parse or run source. splitlines(keepends=True) preserves
+    the caller's line endings and missing final newline. Empty source becomes an
+    empty list, and the caller supplies the stable cell identifier.
 
     Args:
-        source (str): Python source stored in the cell.
-        cell_id (str): Stable notebook cell identifier.
+        source (str): Python code to store verbatim as source lines.
+        cell_id (str): Cell identifier, expected to be unique within its notebook.
 
     Returns:
-        dict: Notebook-format code cell mapping.
+        dict[str, object]: Code cell with the supplied id, empty metadata/outputs,
+        execution_count=None, and a list-valued source field.
     """
 
     return {
@@ -208,19 +232,40 @@ def code_cell(source: str, cell_id: str) -> dict:
 
 def make_notebook(task: str, model: str, 
                 epochs: int, rationale: str) -> dict:
-    """Build a complete HPO notebook document.
+    """Build a five-cell notebook that inspects and executes one HPO study.
+
+    The overview is followed by setup, search-space inspection, run_hpo invocation,
+    and results. Setup fixes DATASET='CIFAR10', N_TRIALS=30, SEED=42, and
+    RESULTS_PATH='results/hpo', leaving them visible for subsequent notebook edits.
+    The supplied epochs is written into setup. No validation or training occurs
+    while building; search-space keys are resolved only when cells are executed.
 
     Args:
-        task (str): Supported HPO task key.
-        model (str): Model-family key accepted for that task.
-        epochs (int): Positive training epochs per Optuna trial.
-        rationale (str): Markdown explanation for the generated notebook.
+        task (str): HPO task key interpolated into the setup cell and heading.
+        model (str): Model key accepted for that task by common.hpo.SEARCH_SPACES.
+        epochs (int): Requested training epochs per trial, inserted as Python code.
+        rationale (str): Markdown explanation passed to the overview builder.
 
     Returns:
-        dict: Notebook-format document with five cells and kernel metadata.
+        dict[str, object]: nbformat=4, nbformat_minor=5 document with five fresh
+        cells and Python 3.10/tf_env kernel metadata. Results show best_trials when
+        multiple directions exist, otherwise best_value and best_params.
     """
 
-    setup = f'''from common.hpo import SEARCH_SPACES, run_hpo
+    setup = f'''"""Configuration-driven HPO experiment using the shared task/model APIs.
+
+TASK and MODEL select a constrained search space; DATASET names the input
+dataset. The setup defaults to CIFAR10, 30 trials, seed 42, and results/hpo;
+EPOCHS is supplied by the notebook generator. Edit these visible constants
+before executing the study. The run cell constructs and trains trial models
+through Config, may download data, and writes configured study/report artifacts.
+
+Outputs are an Optuna study, trial dataframe, and best-trial view. Multiple
+objectives expose the Pareto set; a single objective exposes its best scalar
+value and parameters. Defining the setup does not itself launch training.
+"""
+
+from common.hpo import SEARCH_SPACES, run_hpo
 
 TASK = "{task}"
 MODEL = "{model}"
@@ -244,6 +289,7 @@ SEARCH_SPACES[TASK][MODEL]
 )
 '''
     results = '''trials = study.trials_dataframe()
+# Multiple objectives expose the Pareto set; a single objective exposes its best trial.
 best = (
     study.best_trials
     if len(study.directions) > 1
@@ -277,13 +323,23 @@ trials, best, RESULTS_PATH
 
 
 def main() -> None:
-    """Generate every declared HPO notebook beneath its task directory.
+    """Write every declared HPO notebook beneath its task directory.
+
+    The declared task/model set must match SEARCH_SPACES before any output is
+    written. Missing task directories are created. Existing notebooks at the
+    generated paths are replaced by new unexecuted documents, including their
+    metadata and outputs. Other paths are not enumerated for deletion.
 
     Args:
-        None.
+        None. ROOT, NOTEBOOKS, and imported SEARCH_SPACES determine all output paths.
 
     Returns:
-        None: Notebook files are written in place.
+        None: UTF-8 JSON notebooks with one-space indentation and final newlines
+        have been written; the written count equals the supported task/model count.
+
+    Raises:
+        RuntimeError: The declared search-space matrix or final count disagrees.
+        OSError: A directory cannot be created or an output notebook cannot be written.
     """
 
     from common.hpo import SEARCH_SPACES
@@ -298,6 +354,7 @@ def main() -> None:
         for task, models in SEARCH_SPACES.items()
         for model in models
     }
+    # Reject a missing or extra task/model entry before creating output files.
     if declared != supported:
         raise RuntimeError(
             "Notebook/search-space mismatch: missing="
@@ -317,6 +374,7 @@ def main() -> None:
             )
             count += 1
 
+    # Reject a completed write count that does not cover the supported matrix.
     if count != len(supported):
         raise RuntimeError(
             f"Expected {len(supported)} notebooks, generated {count}."

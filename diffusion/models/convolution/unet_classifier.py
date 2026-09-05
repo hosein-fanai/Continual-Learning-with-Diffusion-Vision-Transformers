@@ -1,4 +1,11 @@
-"""Convolutional U-Net with classifier and optional distillation heads."""
+"""Convolutional denoiser with classifier and optional distillation heads.
+
+UNetClassifier aggregates inherited depth-indexed image features or predicted
+noises, aligns spatial resolutions, and emits class probabilities. Optional
+classifier latents, auxiliary heads, and progressive class/depth growth retain
+the interfaces expected by DiffusionClassifier and DiffusionClassifierV2.
+The wrapper, rather than this raw network, defines training losses and EMA.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -31,6 +38,26 @@ class UNetClassifier(UNet):
     match the contracts consumed by ``DiffusionClassifier`` and
     ``DiffusionClassifierV2``. Optional distillation uses a parallel head over
     the same pooled convolutional feature.
+
+    Attributes:
+        clf_layers_dicts (list[LayerDict]): Classifier residual stages followed by
+            the terminal pooling/optional-latent mapping.
+        classifier_feature_extractor (tf.keras.layers.Layer): Global average pool
+            when forced, otherwise global max pool; the convolutional model has
+            no actual sequence class token to select.
+        classifier (tf.keras.Sequential): Primary class softmax in stable policy
+            variable dtype, preceded by an optional hidden projection/dropout.
+        distil_classifier (tf.keras.Sequential | None): Independent distillation
+            probability head, present when classifier_only_distil_token is True.
+        clf_labels_embed_reg (tf.keras.layers.Layer | None): Optional classifier
+            depth-zero auxiliary class head.
+        clf_dim (int): Explicit classifier width or inferred final encoder width.
+        clf_depth (int): Number of processing stages, excluding the terminal map.
+        max_encoder_num (int): Largest inherited depth required by classifier
+            feature routes or by complete noise-image reconstruction.
+        clf_has_cls_token (bool): Always False; token placeholders exist only for
+            shared wrapper variable-selection compatibility.
+        clf_has_distil_token (bool): Whether the parallel distillation head is active.
     """
 
     STACK = "0_residual_conv_stack"
@@ -74,41 +101,46 @@ class UNetClassifier(UNet):
         one-entry list because this branch owns one terminal flatten stage.
 
         Args:
-            aggregate_from_noises (bool): Classify the predicted noise image
-                instead of saved U-Net features.
-            feature_aggregation_ids_dict (dict[int, tuple[int | None, ...]]):
-                Classifier depth-to-U-Net feature routes.
-            classifier_only_cls_token (bool): Compatibility flag controlling
-                ownership of the tracked classifier token placeholder.
-            classifier_only_distil_token (bool): Enable the tracked
-                distillation-token placeholder and its parallel softmax head.
-            clf_dim (int | None): Positive classifier width; None uses the last
-                U-Net encoder width.
-            clf_depth (int): Nonnegative number of classifier residual stages.
-            clf_block_depth (int): Positive residual blocks per classifier stage.
-            clf_reshaper_kwargs (dict[str, object]): Optional classifier
-                ``add_kl`` and a one-entry positive ``latent_dim_ratio`` list.
-            clf_cls_token_regularizer_ids (list[int | None]): Auxiliary
-                classifier-head depths; None expands across all depths.
-            force_global_avg_pooling (bool): Globally pool classifier maps when
-                true; false uses resolution-independent global max pooling.
-            classifier_mlp_ratio (float | None): Positive hidden-width ratio,
-                or None to omit the hidden Dense layer.
-            classifier_mlp_activation_func (str): Hidden Keras activation name.
-            dropout_rate (float): Classifier/U-Net dropout probability in
-                ``[0,1)``.
-            build (bool): Build model variables immediately when true.
+            aggregate_from_noises (bool): Classify the predicted noise image instead of saved U-Net
+                features. Defaults to ``False``.
+            feature_aggregation_ids_dict (dict[int, tuple[int | None, ...]]): Classifier depth-to-U-Net
+                feature routes. Defaults to ``{1: (-1,)}``.
+            classifier_only_cls_token (bool): Compatibility flag controlling ownership of the tracked
+                classifier token placeholder. Defaults to ``False``.
+            classifier_only_distil_token (bool): Enable the tracked distillation-token placeholder and
+                its parallel softmax head. Defaults to ``False``.
+            clf_dim (int | None): Positive classifier width; None uses the last U-Net encoder width.
+                Defaults to ``None``.
+            clf_depth (int): Nonnegative number of classifier residual stages. Defaults to ``1``.
+            clf_block_depth (int): Positive residual blocks per classifier stage. Defaults to ``1``.
+            clf_reshaper_kwargs (dict[str, object]): Optional classifier ``add_kl`` and a one-entry
+                positive ``latent_dim_ratio`` list. Defaults to ``{}``.
+            clf_cls_token_regularizer_ids (list[int | None]): Auxiliary classifier-head depths; None
+                expands across all depths. Defaults to ``[]``.
+            force_global_avg_pooling (bool): Globally pool classifier maps when true; false uses
+                resolution-independent global max pooling. Defaults to ``True``.
+            classifier_mlp_ratio (float | None): Positive hidden-width ratio, or None to omit the hidden
+                Dense layer. Defaults to ``None``.
+            classifier_mlp_activation_func (str): Hidden Keras activation name. Defaults to ``'tanh'``.
+            dropout_rate (float): Classifier/U-Net dropout probability in ``[0,1)``. Defaults to
+                ``0.0``.
+            build (bool): Build model variables immediately when true. Defaults to ``True``.
             **kwargs (object): Inherited :class:`UNet` constructor options and
                 standard Keras model options.
 
         Returns:
             None: Denoiser, classifier branch, and optional symbolic graph are
             initialized in place.
+
+        Raises:
+            ValueError: If model dimensions, feature routes, sampling/reshaping
+                options, or classifier topology violate the implemented contract.
         """
 
         feature_aggregation_ids_dict = deepcopy(feature_aggregation_ids_dict)
         # Normalize numeric string depth keys before base-class serialization.
         if isinstance(feature_aggregation_ids_dict, dict):
+            # Normalize numeric YAML routing keys to classifier depth IDs before validation.
             feature_aggregation_ids_dict = {
                 int(key) if isinstance(key, str) and key.lstrip("-").isdigit()
                 else key: value
@@ -138,9 +170,11 @@ class UNetClassifier(UNet):
             max_id=self.clf_depth, 
         )
 
+        # Infer default classifier width from the last encoder level or a level-free bottleneck.
         default_clf_dim = int(
             self.widths[-1] if self.widths else self.bottleneck_width
         )
+        # Use the inferred feature width only when clf_dim is omitted.
         self.clf_dim = default_clf_dim if self.clf_dim is None else self.clf_dim
         self.set_max_encoder_num()
 
@@ -153,10 +187,12 @@ class UNetClassifier(UNet):
             self.cls_token = LayerDict(
                 name=f"{self.name_prefix}clf_depth_0_cls_token",
             )
+        # Track a distillation-token placeholder only when that classifier branch is enabled.
         self.distil_token = LayerDict(
             name=f"{self.name_prefix}clf_depth_0_distil_token",
         ) if self.classifier_only_distil_token else None
 
+        # Choose global average pooling or resolution-independent global max pooling.
         self.classifier_feature_extractor = (
             layers.GlobalAveragePooling2D(
                 dtype=self.dtype_policy,
@@ -168,11 +204,13 @@ class UNetClassifier(UNet):
                 name=f"{self.name_prefix}classifier_feature_extractor",
             )
         )
+        # Create the classifier label regularizer only when depth zero is selected.
         self.clf_labels_embed_reg = self._create_clf_regularizer(
             "clf_depth_0_cls_token_regularizer",
         ) if 0 in self.clf_cls_token_regularizer_ids else None
         self._create_classifier_layers()
         self.classifier = self._create_classifier_head("classes")
+        # Create a parallel distillation softmax head only when its token placeholder exists.
         self.distil_classifier = self._create_classifier_head(
             "distil_classes"
         ) if self.clf_has_distil_token else None
@@ -221,13 +259,16 @@ class UNetClassifier(UNet):
         latent_dim_ratios = local_vars["clf_reshaper_kwargs"].get(
             "latent_dim_ratio"
         )
+        # Fill an omitted classifier latent-ratio list from whether KL is enabled.
         if latent_dim_ratios is None or len(latent_dim_ratios) == 0:
+            # Use one unit latent ratio for a KL bottleneck or no ratios without a bottleneck.
             local_vars["clf_reshaper_kwargs"]["latent_dim_ratio"] = (
                 [1.0] if add_kl else []
             )
         latent_dim_ratios = local_vars["clf_reshaper_kwargs"][
             "latent_dim_ratio"
         ]
+        # Require exactly one ratio for the optional classifier bottleneck.
         if len(latent_dim_ratios) != int(add_kl):
             raise ValueError(
                 "Classifier latent_dim_ratio must contain one value for its "
@@ -373,8 +414,8 @@ class UNetClassifier(UNet):
         """Append one classifier output while preserving the existing head.
 
         Args:
-            source_network (object | None): Optional already-expanded raw
-                classifier whose new output initializes an EMA clone.
+            source_network (object | None): Optional already-expanded raw classifier whose new output
+                initializes an EMA clone. Defaults to ``None``.
 
         Returns:
             None: The label vocabulary and enabled classifier heads grow by
@@ -385,6 +426,7 @@ class UNetClassifier(UNet):
         old_kernel, old_bias = old_layer.get_weights()
         super().add_class(source_network=source_network)
 
+        # Seed the classifier label-regularizer column from a matching source head when supplied.
         self.clf_labels_embed_reg = self._expand_regularizer(
             self.clf_labels_embed_reg,
             source_network.clf_labels_embed_reg
@@ -393,6 +435,7 @@ class UNetClassifier(UNet):
         for index, stage in enumerate(self.clf_layers_dicts):
             # Expand only classifier stages that own an auxiliary class head.
             if self.REGULARIZER in stage:
+                # Seed this classifier stage regularizer from its matching source head when supplied.
                 stage[self.REGULARIZER] = self._expand_regularizer(
                     stage[self.REGULARIZER],
                     source_network.clf_layers_dicts[index][self.REGULARIZER]
@@ -433,8 +476,8 @@ class UNetClassifier(UNet):
         """Set the greatest inherited feature depth needed for classification.
 
         Args:
-            max_encoder_num (int | None): Depth in ``[0, depth]``; None infers
-                the greatest routed main feature.
+            max_encoder_num (int | None): Depth in ``[0, depth]``; None infers the greatest routed main
+                feature. Defaults to ``None``.
 
         Returns:
             None: ``max_encoder_num`` is updated in place.
@@ -447,6 +490,7 @@ class UNetClassifier(UNet):
                 for ids in self.feature_aggregation_ids_dict.values()
                 for feature_id in ids
             ]
+            # Require the full denoiser when classification consumes predicted noise images.
             max_encoder_num = self.depth if self.aggregate_from_noises \
                 else max(feature_ids)
         # Require an explicit encoder limit to be a valid network depth.
@@ -519,7 +563,7 @@ class UNetClassifier(UNet):
         Args:
             features_list (list[tf.Tensor]): Main-branch depth features.
             feature_ids (list[int]): Selected absolute feature depths.
-            current (tf.Tensor | None): Current classifier feature to include.
+            current (tf.Tensor | None): Current classifier feature to include. Defaults to ``None``.
 
         Returns:
             tf.Tensor: Spatially aligned, fixed-width average feature.
@@ -534,6 +578,7 @@ class UNetClassifier(UNet):
         # Initialize aggregation from the deepest selected feature group.
         if current is None:
             reference = selected[-1]
+            # Reuse the reference feature grid and resize only other aggregation sources.
             aligned = [
                 feature if feature is reference else self._resize_feature(
                     feature, reference,
@@ -541,6 +586,7 @@ class UNetClassifier(UNet):
                 for feature in selected
             ]
 
+            # Return one aligned source directly or average several aligned sources.
             return aligned[0] if len(aligned) == 1 else tf.add_n(aligned) / len(
                 aligned
             )
@@ -562,7 +608,10 @@ class UNetClassifier(UNet):
         Args:
             regularizer (tf.keras.layers.Layer | None): Optional class head.
             feature (tf.Tensor): Rank-four classifier feature.
-            training (bool | None): Keras training mode.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag.
 
         Returns:
             tf.Tensor | None: Class probabilities in the policy's stable
@@ -599,8 +648,18 @@ class UNetClassifier(UNet):
             noises (tf.Tensor | None): Predicted noise image when classifying it.
             times (tf.Tensor): Integer timestep IDs; retained for API parity.
             labels (tf.Tensor): Integer label IDs; retained for API parity.
-            cond (tf.Tensor | None): Condition passed into residual stacks.
-            training (bool | None): Keras training mode.
+            cond (tf.Tensor | None): Optional [B, condition_dim] vector forwarded to residual stacks.
+                None invokes the stacks with features alone and is returned unchanged as the tuple
+                condition. Defaults to ``None``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+
+        Both primary and optional distillation probabilities have shape
+        [B, num_classes] and use the policy variable dtype. Classifier feature lists
+        retain depth-indexed tensors; auxiliary head entries may be None and absent
+        KL statistics are represented by an empty list, not by zero-valued losses.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor | None, list[tf.Tensor],
@@ -639,6 +698,7 @@ class UNetClassifier(UNet):
                     self.feature_aggregation_ids_dict[depth_id],
                     current=x,
                 )
+            # Forward explicit conditions as a pair; otherwise let the stack handle features alone.
             x = stage[self.STACK](
                 (x, cond) if cond is not None else x,
                 training=training,
@@ -665,6 +725,7 @@ class UNetClassifier(UNet):
         # Produce classifier latent statistics at a variational terminal.
         if self.RESHAPER in terminal:
             x, z_mean, z_log_var = terminal[self.RESHAPER](x, training=training)
+            # Record classifier latent statistics only when KL sampling is enabled.
             if bool(self.clf_reshaper_kwargs.get("add_kl", False)):
                 clf_z_vals_list.append((z_mean, z_log_var))
 
@@ -712,10 +773,13 @@ class UNetClassifier(UNet):
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/latent,
                 timestep, and label tensors.
-            full_return (bool): Include both branches' intermediates when true.
-            training (bool | None): Keras training mode.
-            min_depth (int): Resume the denoiser from this depth; zero runs both
-                denoiser and classifier.
+            full_return (bool): Include both branches' intermediates when true. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): Resume the denoiser from this depth; zero runs both denoiser and
+                classifier. Defaults to ``0``.
 
         Returns:
             dict[str, object] | tf.Tensor | tuple: Branch mapping at depth zero,
@@ -779,8 +843,11 @@ class UNetClassifier(UNet):
 
         Args:
             inputs (UNetInputs): Image, timestep, and label tensors.
-            full_return (bool): Include denoiser intermediates when true.
-            training (bool | None): Keras training mode.
+            full_return (bool): Include denoiser intermediates when true. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | UNetFullOutput: Same output as :meth:`UNet.call`.
@@ -803,10 +870,13 @@ class UNetClassifier(UNet):
 
         Args:
             inputs (UNetInputs): Image, timestep, and label tensors.
-            max_encoder_num (int | None): Exclusive encoder stop; -1 runs all
-                stages and None uses the greatest routed feature depth.
-            full_return (bool): Include classifier intermediates when true.
-            training (bool | None): Keras training mode.
+            max_encoder_num (int | None): Exclusive encoder stop; -1 runs all stages and None uses the
+                greatest routed feature depth. Defaults to ``-1``.
+            full_return (bool): Include classifier intermediates when true. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | tuple: Float32 probabilities ``[B,num_classes]`` or
@@ -824,6 +894,7 @@ class UNetClassifier(UNet):
             )
         # Otherwise encode only as deeply as classifier feature routes require.
         else:
+            # Use the inferred encoder stop only when the caller omits an explicit stop.
             max_encoder_num = self.max_encoder_num \
                 if max_encoder_num is None else max_encoder_num
             _, cond, features_list, _, _ = self.encode(
@@ -842,6 +913,7 @@ class UNetClassifier(UNet):
             training=training, 
         )
 
+        # Return all classifier metadata when requested, otherwise just primary probabilities.
         return outputs if full_return else outputs[0]
 
     @staticmethod
@@ -876,6 +948,7 @@ class UNetClassifier(UNet):
             names = set(spec)
         # Retain enabled layer names from a mapped depth specification.
         elif isinstance(spec, Mapping):
+            # Drop explicitly disabled components from the progressive classifier specification.
             names = {name for name, enabled in spec.items() if enabled is not False}
         # Let any other iterable use the same name validation below.
         else:
@@ -1012,6 +1085,14 @@ def run_self_tests() -> dict[str, str]:
 
     Returns:
         dict[str, str]: ``{"UNetClassifier": "passed"}`` after all checks.
+
+    The checks construct small TensorFlow models, reset Keras session state, and
+    seed random streams. Successful completion returns the named pass mapping;
+    failed numerical, shape, serialization, or invalid-input expectations raise.
+
+    Raises:
+        AssertionError: If a regression expectation fails.
+        tf.errors.InvalidArgumentError: If a TensorFlow numerical assertion fails.
     """
 
     tf.keras.backend.clear_session()

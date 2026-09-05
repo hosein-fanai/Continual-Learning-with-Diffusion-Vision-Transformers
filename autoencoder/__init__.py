@@ -1,4 +1,10 @@
-"""Lazy autoencoder API with canonical Keras deserialization registration."""
+"""Lazy autoencoder API with canonical Keras deserialization registration.
+
+Package exports load VAE models and their accuracy callback on first access and cache
+them in module globals. Import installs lightweight Keras deserialization proxies
+for both model classes; architecture, training, and tensor contracts live in their
+defining modules.
+"""
 
 from importlib import import_module
 

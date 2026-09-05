@@ -1,4 +1,11 @@
-"""Dense variational autoencoder with optional class conditioning and replay."""
+"""Dense variational autoencoder with optional class conditioning and replay.
+
+VariationalAutoencoder builds dense Gaussian encoder/decoder models for flat
+features, optionally conditioned on one-hot class labels. Training combines the
+compiled reconstruction objective with beta-weighted KL; generation samples the
+standard-normal prior for continual replay. Import registers serialization names,
+and the executable self-tests cover mathematics, weighting, and orchestration.
+"""
 
 from __future__ import annotations
 
@@ -31,10 +38,14 @@ class VariationalAutoencoder(models.Model):
     Attributes:
         latent_dim (int): Width of ``z_mean``, ``z_log_var``, and sampled ``z``;
             initialized from ``latent_dim``.
+            Defaults to ``8``.
         beta (float): KL-divergence multiplier initialized from ``beta``.
+            Defaults to ``0.25``.
         conditioned (bool): Whether one-hot labels condition both networks.
+            Defaults to ``False``.
         class_num (int | None): One-hot label width in conditional mode;
             otherwise ``None``.
+            Defaults to ``None``.
         encoder (tf.keras.Model): Maps ``x`` or ``(x, y)`` to
             ``(z_mean, z_log_var, z)``.
         decoder (tf.keras.Model): Maps ``z`` or ``(z, y)`` to reconstructed
@@ -70,40 +81,46 @@ class VariationalAutoencoder(models.Model):
         Args:
             data_dim (int): Positive feature width for input and reconstruction;
                 the expected sample shape is ``[batch, data_dim]``.
+                Defaults to ``2048``.
             latent_dim (int): Positive number of Gaussian latent features.
+                Defaults to ``8``.
             hiddens_dims (Sequence[int]): Encoder hidden widths in forward
                 order.  The decoder uses the reverse order.  ``()`` creates
                 direct latent/output projections with no hidden block.
-            hiddens_kwargs (Mapping[str, object]): Options forwarded to every
-                :meth:`_dense_layer`.  Allowed keys are ``actv`` (a Keras
-                activation name/callable, including the special ``"prelu"``),
-                ``use_batch_norm`` (bool), and ``kernel_init`` (a Keras
-                initializer name/object).  Example:
-                ``{"actv": "relu", "use_batch_norm": False,
-                "kernel_init": "glorot_uniform"}``.  ``units`` is not valid
-                because each width comes from ``hiddens_dims``.
+                Defaults to ``(16,)``.
+            hiddens_kwargs (Mapping[str, object] | None): Per-hidden-block options actv, use_batch_norm, and
+                kernel_init accepted by _dense_layer. Defaults to ``None``, using actv="selu",
+                use_batch_norm=True, and kernel_init="he_normal". An empty mapping has the same effect;
+                units comes from hiddens_dims and cannot be overridden.
             last_activation (str | Callable | None): Keras activation for the
                 final reconstruction.  Use ``"tanh"`` for data scaled to
                 ``[-1, 1]``, ``"sigmoid"`` for ``[0, 1]``, or ``None``/
                 ``"linear"`` for unbounded features.
+                Defaults to ``'tanh'``.
             beta (float): Finite, nonnegative KL-loss multiplier applied to
                 the latent regularization term.
+                Defaults to ``0.25``.
             conditioned (bool): Require one-hot labels and concatenate them to
                 encoder/decoder inputs when true.
+                Defaults to ``False``.
             class_num (int | None): Positive one-hot width when conditioned.
                 It must be ``None`` when ``conditioned=False`` and non-``None``
                 when ``conditioned=True``.
+                Defaults to ``None``.
             compile (bool): Whether to call ``Model.compile`` during
                 construction.  False leaves compilation to the caller.
-            compile_args (Mapping[str, object]): Overrides/extends defaults
-                ``{"optimizer": Nadam(learning_rate=0.1, decay=0.0),
-                "loss": "mean_squared_error"}``.  Keys may be any accepted by
-                ``Model.compile``, for example ``{"optimizer": "adam",
-                "run_eagerly": True}``.
+                Defaults to ``True``.
+            compile_args (Mapping[str, object] | None): Keras compile overrides. Defaults to ``None``, using
+                a fresh Nadam(learning_rate=0.1, decay=0.0) and loss="mean_squared_error". Empty mappings
+                preserve these defaults; compile=False leaves the model uncompiled regardless of this
+                mapping.
             seed (int | None): Optional experiment seed for the VAE's explicit
                 reparameterization operation and default generation/training
                 streams. Continual task-level global reseeding combines with
                 this component seed to reproduce its stateful draw sequence.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (object): Standard ``tf.keras.Model`` constructor options,
                 such as ``name``, ``trainable``, and ``dtype``.
 
@@ -130,11 +147,15 @@ class VariationalAutoencoder(models.Model):
         data_dim = int(data_dim)
         latent_dim = int(latent_dim)
         hiddens_dims = tuple(int(hidden_dim) for hidden_dim in hiddens_dims)
+        # Normalize conditional class width while preserving the unconditional None
+        # sentinel.
         class_num = int(class_num) if class_num is not None else None
+        # Reject empty feature, latent, hidden, or conditional label dimensions.
         if data_dim <= 0 or latent_dim <= 0 \
         or any(hidden_dim <= 0 for hidden_dim in hiddens_dims) \
         or (conditioned and class_num <= 0):
             raise ValueError("VAE dimensions must be positive.")
+        # Reject KL weights that would make the variational objective invalid.
         if not np.isfinite(beta) or beta < 0.:
             raise ValueError("beta must be finite and nonnegative.")
 
@@ -176,6 +197,8 @@ class VariationalAutoencoder(models.Model):
             "vae",
             "reparameterization",
         )
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         self.seed = None if seed is None else int(seed)
 
         self.encoder = self._build_encoder(data_dim, latent_dim, hiddens_dims, 
@@ -321,6 +344,8 @@ class VariationalAutoencoder(models.Model):
         # Restore an encoded initializer while retaining stable string names.
         if "kernel_init" in hidden_kwargs:
             initializer_config = hidden_kwargs["kernel_init"]
+            # Keep a named initializer unchanged; deserialize a structured initializer
+            # configuration.
             hidden_kwargs["kernel_init"] = (
                 initializer_config
                 if isinstance(initializer_config, str)
@@ -366,11 +391,14 @@ class VariationalAutoencoder(models.Model):
                 trainable ``PReLU`` layer; other values use ``Activation`` when
                 batch normalization is enabled or the Dense activation itself
                 when it is disabled.
+                Defaults to ``'selu'``.
             use_batch_norm (bool): Append ``BatchNormalization`` and omit the
                 Dense bias when true.  The implemented order is Dense,
                 activation, then batch normalization.
+                Defaults to ``True``.
             kernel_init (str | tf.keras.initializers.Initializer): Dense kernel
                 initializer accepted by Keras.
+                Defaults to ``'he_normal'``.
 
         Returns:
             tf.keras.Sequential: An unbuilt block mapping ``[..., input_dim]``
@@ -387,6 +415,8 @@ class VariationalAutoencoder(models.Model):
             )
         )
 
+        # Fuse activation into Dense only when no separate batch-normalized or PReLU
+        # activation is needed.
         dlayer.add(layers.Dense(
             units, 
             activation=actv if not(use_batch_norm or actv == "prelu") else "linear", 
@@ -394,12 +424,16 @@ class VariationalAutoencoder(models.Model):
             use_bias=not use_batch_norm,
             dtype=self.dtype_policy,
         ))
+        # Add an ordinary activation after Dense only for batch-normalized, non-PReLU
+        # blocks.
         dlayer.add(
             layers.Activation(actv, dtype=self.dtype_policy)
         ) if (use_batch_norm and actv != "prelu") else None
+        # Use a trainable PReLU layer only for the special prelu activation mode.
         dlayer.add(
             layers.PReLU(dtype=self.dtype_policy)
         ) if actv == "prelu" else None
+        # Append batch normalization only when the hidden block requests it.
         dlayer.add(
             layers.BatchNormalization(dtype=self.dtype_policy)
         ) if use_batch_norm else None
@@ -420,11 +454,10 @@ class VariationalAutoencoder(models.Model):
             input_dim (int): Width of each flat input sample.
             latent_dim (int): Width of each latent statistic/sample.
             hiddens_dims (Sequence[int]): Hidden block widths in encoder order.
-            hiddens_kwargs (Mapping[str, object]): Per-block keys ``actv``,
-                ``use_batch_norm``, and/or ``kernel_init``; see
-                :meth:`_dense_layer`.
-            class_num (int | None): Conditional label width.  Used only when
-                ``self.conditioned`` is true.
+            hiddens_kwargs (Mapping[str, object] | None): Per-block actv, use_batch_norm, and kernel_init
+                options. Defaults to ``None``, using _dense_layer defaults for every hidden width.
+            class_num (int | None): One-hot label width. Defaults to ``None``, valid only for an
+                unconditional encoder; conditional mode needs a positive width.
 
         Returns:
             tf.keras.Model: A model accepting ``x`` shaped
@@ -560,9 +593,13 @@ class VariationalAutoencoder(models.Model):
                 ``[batch, latent_dim]``.
             z_log_var (tf.Tensor): Matching floating elementwise log variances.
             seed (int | None): Optional stateful TensorFlow operation seed.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
                 None preserves ``z_mean.dtype``. Mixed-precision callers should
                 pass their policy's variable dtype.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor: Values cast back to ``z_mean``'s dtype, computed as
@@ -597,21 +634,31 @@ class VariationalAutoencoder(models.Model):
             z_mean (tf.Tensor | Sequence[tuple[tf.Tensor, tf.Tensor]]): One
                 rank-two mean tensor, or an ordered sequence of
                 ``(mean, log_variance)`` pairs for multiple latent sites.
-            z_log_var (tf.Tensor | None): Log variances matching a single
-                ``z_mean`` tensor. Leave None when ``z_mean`` is a sequence.
-            sample_weight (tf.Tensor | None): Optional per-row weights. The
-                weighted result divides by their sum and is zero when every
-                weight is zero.
-            dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
-                None preserves the first mean tensor's dtype.
+            z_log_var (tf.Tensor | None): Log variances matching a single mean tensor. Defaults to ``None``,
+                so z_mean must instead be an iterable of (mean, log_variance) pairs; an empty iterable
+                returns zero.
+            sample_weight (tf.Tensor | None): Nonnegative row weights shaped [batch] or flattenable [batch,
+                1]. Defaults to ``None``, averaging row KL values uniformly. Supplied weights divide their
+                weighted sum by total weight; an all-zero vector returns zero.
+            dtype (tf.dtypes.DType | str | None): Stable calculation/output dtype. Defaults to ``None``,
+                using the first latent mean dtype or Keras floatx for an empty site sequence.
 
         Returns:
             tf.Tensor: Scalar floating tensor. Divergence is summed over every
             latent dimension and site, then averaged across batch rows.
             An empty sequence returns zero.
+
+        Notes:
+            Each site contributes -0.5 * sum(1 + log_variance - mean**2 -
+            exp(log_variance)) per row, the analytic KL from its diagonal Gaussian to
+            a standard normal prior. Sites must share batch size; widths may differ.
         """
 
+        # Accept a sequence of latent sites when log variance is omitted, or wrap one
+        # explicit mean/variance pair.
         z_vals_list = tuple(z_mean) if z_log_var is None else ((z_mean, z_log_var),)
+        # Infer calculation dtype from the first latent site, or Keras floatx when the site
+        # list is empty.
         stable_dtype = tf.as_dtype(
             dtype or (
                 z_vals_list[0][0].dtype
@@ -619,6 +666,7 @@ class VariationalAutoencoder(models.Model):
             )
         )
 
+        # An empty collection of latent sites contributes zero KL.
         if not z_vals_list:
             return tf.constant(0., dtype=stable_dtype)
 
@@ -632,6 +680,7 @@ class VariationalAutoencoder(models.Model):
             for mean, log_var in z_vals_list
         ])
 
+        # Use the ordinary batch mean when no sample weighting is requested.
         if sample_weight is None:
             return tf.reduce_mean(kl_rows)
 
@@ -657,6 +706,8 @@ class VariationalAutoencoder(models.Model):
             :meth:`compile`.
         """
 
+        # Include compiled metrics once their container exists; otherwise expose only local
+        # trackers.
         compiled_metrics = self.compiled_metrics.metrics \
             if self.compiled_metrics is not None else []
 
@@ -681,12 +732,18 @@ class VariationalAutoencoder(models.Model):
                 ``[batch, class_num]``.
             training (bool | tf.Tensor): Keras training flag forwarded to both
                 submodels, affecting batch normalization.
+                Defaults to ``False``.
 
         Returns:
             tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor]:
             ``((z_mean, z_log_var, z), reconstruction)``.  Latent tensors have
             shape ``[batch, latent_dim]`` and reconstruction matches
             ``[batch, data_dim]``.
+
+        Notes:
+            Gaussian reparameterization remains stochastic in evaluation; training=False
+            affects normalization, not latent sampling. Latents/reconstructions follow
+            the submodels' compute dtype, with latent exponentiation in variable dtype.
         """
 
         z_mean, z_log_var, z = self.encoder(inputs, training=training)
@@ -717,9 +774,19 @@ class VariationalAutoencoder(models.Model):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, and ``recon_loss``, plus configured reconstruction
             metrics.
+
+        Notes:
+            Keras (x, y, sample_weight) triples are also accepted; weights broadcast to
+            rows. Reconstruction follows the compiled loss reduction, while KL divides
+            by total row weight. Trackers average batch objectives using actual batch
+            size, and reconstruction metrics receive row weights. Evaluation still
+            samples latents and updates metric state; only train_step applies gradients
+            and training-mode batch-normalization updates.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        # Pass labels into conditional reconstruction; unconditional reconstruction receives
+        # only features.
         model_inputs = (x, y) if self.conditioned else x
 
         with tf.GradientTape() as tape:
@@ -728,6 +795,8 @@ class VariationalAutoencoder(models.Model):
             )
 
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            # Use unweighted rows when no weights are supplied; otherwise broadcast weights
+            # across the batch.
             row_sample_weight = None if sample_weight is None else tf.broadcast_to(
                 tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
                 tf.shape(x)[:1],
@@ -795,15 +864,27 @@ class VariationalAutoencoder(models.Model):
             dict[str, tf.Tensor]: Scalar running means under ``loss``,
             ``kl_loss``, and ``recon_loss``, plus configured reconstruction
             metrics.
+
+        Notes:
+            Keras (x, y, sample_weight) triples are also accepted; weights broadcast to
+            rows. Reconstruction follows the compiled loss reduction, while KL divides
+            by total row weight. Trackers average batch objectives using actual batch
+            size, and reconstruction metrics receive row weights. Evaluation still
+            samples latents and updates metric state; only train_step applies gradients
+            and training-mode batch-normalization updates.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        # Pass labels into conditional reconstruction; unconditional reconstruction receives
+        # only features.
         model_inputs = (x, y) if self.conditioned else x
         (z_mean, z_log_var, _), x_recon = self(
             model_inputs, training=False
         )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        # Use unweighted rows when no weights are supplied; otherwise broadcast weights
+        # across the batch.
         row_sample_weight = None if sample_weight is None else tf.broadcast_to(
             tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
             tf.shape(x)[:1],
@@ -860,13 +941,17 @@ class VariationalAutoencoder(models.Model):
                 uses ``seen_classes``; ``[]`` returns ``([], [])`` immediately.
                 IDs should lie in ``[0, class_num)``.  In unconditional mode
                 this argument is ignored.
+                Defaults to ``None``.
             samples_per_class (int): Number of examples per class in
                 conditional mode, or total examples in unconditional mode.
+                Defaults to ``500``.
             onehot_y_output (bool): In conditional mode, return labels as
                 one-hot rows in the policy's stable variable dtype when true,
                 or NumPy integer IDs when false. Ignored in unconditional mode.
-            seed (int | None): Optional stateless latent-sampling seed. The
-                same seed and arguments reproduce the same latent batch.
+                Defaults to ``False``.
+            seed (int | None): Latent sampling seed. Defaults to ``None``, inheriting self.seed; if both are
+                None, use fresh stateful normal draws. A resolved seed selects repeatable stateless draws
+                for fixed classes/count and current decoder weights.
 
         Returns:
             numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray] | tuple[list,
@@ -918,6 +1003,8 @@ class VariationalAutoencoder(models.Model):
 
             latent_shape = (samples_per_class * len(classes), self.latent_dim)
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            # Draw fresh stateful conditional latents without a seed, or a repeatable
+            # stateless batch with one.
             z = tf.random.normal(
                 shape=latent_shape,
                 dtype=stable_dtype,
@@ -943,6 +1030,8 @@ class VariationalAutoencoder(models.Model):
 
         latent_shape = (samples_per_class, self.latent_dim)
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        # Draw fresh stateful prior noise without a seed, or a repeatable stateless batch
+        # with one.
         z = tf.random.normal(
             shape=latent_shape,
             dtype=stable_dtype,
@@ -984,45 +1073,49 @@ class VariationalAutoencoder(models.Model):
         Args:
             x (numpy.ndarray | tf.Tensor): Flat samples shaped
                 ``[samples, data_dim]``.
-            y (numpy.ndarray | tf.Tensor | None): Required only in conditional
-                mode; one-hot labels shaped ``[samples, class_num]``.  Observed
-                argmax class IDs are added to ``seen_classes``.
+            y (numpy.ndarray | tf.Tensor | None): One-hot labels [samples, class_num]. Defaults to ``None``,
+                required for unconditional mode and invalid for conditional mode. Conditional observations
+                after resampling update seen_classes.
             train_num (int): ``-1`` uses the input once
                 without resampling.
                 Any positive value samples exactly that many indices with
                 replacement, so smaller values downsample and larger values
                 oversample the supplied rows.
+                Defaults to ``10000``.
             epochs (int): Positive maximum number of Keras training
                 epochs.
+                Defaults to ``10``.
             batch_size (int): Positive examples per
                 ``tf.data.Dataset`` batch.
+                Defaults to ``512``.
             shuffle_buffer (int): Nonnegative training shuffle
                 capacity passed to :func:`common.dataloader.get_dataset`; ``0``
                 disables shuffling.
+                Defaults to ``10000``.
             seed (int | None): Optional task seed for resampling, dataset
                 shuffling, and decoder-accuracy sampling. ``None`` uses the
                 model constructor seed when available.
-            validation_data (tf.data.Dataset | numpy.ndarray | tf.Tensor |
-                tuple[numpy.ndarray | tf.Tensor, numpy.ndarray | tf.Tensor] |
-                None): Validation input. A passed dataset is preserved; raw
-                conditional ``(x_val, y_val)`` arrays or an unconditional
-                ``x_val`` array/tensor are converted to a fresh dataset.
-            callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Exact
-                callbacks to pass to ``fit``.  When omitted, :func:`get_callbacks`
-                adds early stopping; when ``clf`` is supplied, a
-                :class:`DecoderAccuracyCallback` is prepended.
-            callbacks_monitor (str): Metric name for automatically constructed
-                callbacks.  With ``clf`` and an empty string it becomes
-                ``"decoder_accuracy"``.  Without ``clf``, the empty default is
-                passed through unchanged.
-            clf (tf.keras.Model | Callable | None): Classifier mapping generated
-                vectors ``[batch, data_dim]`` to class scores
-                ``[batch, class_num]``.  It is used only by the decoder-accuracy
-                callback and does not enter the VAE loss.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
+            validation_data (tf.data.Dataset | numpy.ndarray | tf.Tensor | tuple | None): Validation input.
+                Defaults to ``None``, skipping validation. A tf.data.Dataset is reused; conditional (x_val,
+                one_hot_y_val) tuples or unconditional x_val arrays are converted without shuffling. Tuple
+                validation is rejected for unconditional models.
+            callbacks_list (Sequence[tf.keras.callbacks.Callback] | None): Callbacks copied before fitting.
+                Defaults to ``None``, constructing early stopping. An empty list suppresses automatic early
+                stopping; a supplied clf always prepends DecoderAccuracyCallback.
+            callbacks_monitor (str): Metric for automatically constructed callbacks. Defaults to ``""``:
+                classifier monitoring selects decoder_accuracy; otherwise validation selects val_loss and no
+                validation selects loss. Explicit callback lists keep their own monitor settings.
+            clf (tf.keras.Model | Callable | None): Classifier from generated vectors to class scores.
+                Defaults to ``None``, omitting decoder-accuracy monitoring. A supplied classifier affects
+                callback evaluation, not the reconstruction/KL objective.
             verbose (int | bool): Keras verbosity and callback verbosity.
-            steps_per_epoch (int | None): Optional fixed update count
-                per epoch. When supplied, the prepared finite dataset repeats
-                so Keras can always complete the requested number of steps.
+                Defaults to ``1``.
+            steps_per_epoch (int | None): Fixed updates per epoch. Defaults to ``None``, consuming the
+                finite prepared dataset once per epoch. A supplied positive count repeats the dataset to
+                make that many updates available.
 
         Returns:
             dict[str, list[float]]: ``History.history`` with per-epoch total,
@@ -1032,6 +1125,17 @@ class VariationalAutoencoder(models.Model):
         Raises:
             ValueError: If label presence does not match conditional mode, the
                 input is empty, or ``x``/``y`` lengths differ.
+
+        Side Effects:
+            Updates model/optimizer/metric state through fit and extends seen_classes
+            from the resampled conditional population. Input arrays and callback lists
+            are not modified; callback objects may update their own state or artifacts.
+
+        Notes:
+            Automatically constructed callbacks retain get_callbacks(mode="max"),
+            including when the inferred monitor is loss or val_loss. For minimizing
+            reconstruction loss, supply a callback configured with mode="min" through
+            callbacks_list. This method does not infer a minimizing direction.
         """
 
         # Publish the normalized Python integer to the Keras fit call.
@@ -1042,6 +1146,7 @@ class VariationalAutoencoder(models.Model):
         epochs = int(epochs)
         batch_size = int(batch_size)
         shuffle_buffer = int(shuffle_buffer)
+        # Inherit the VAE constructor seed when no task-specific training seed is supplied.
         seed = self.seed if seed is None else seed
         # Validate and normalize the effective task seed.
         derive_seed(seed, "vae", "train", "validation")
@@ -1059,6 +1164,8 @@ class VariationalAutoencoder(models.Model):
         if y is not None and len(x) != len(y):
             raise ValueError("x and y must contain the same number of samples.")
 
+        # Copy explicit callbacks in order; preserve None so default callbacks can be
+        # constructed.
         callbacks_list = list(callbacks_list) if callbacks_list is not None else None
 
         # Resample to the requested training size.
@@ -1066,12 +1173,16 @@ class VariationalAutoencoder(models.Model):
             input_size = len(x)
             rng = np.random.default_rng(seed)
             indices = rng.integers(0, input_size, size=train_num)
+            # Gather resampled TensorFlow inputs with tf.gather; use indexed selection for
+            # NumPy arrays.
             x = tf.gather(
                 x, 
                 indices
             ) if isinstance(x, tf.Tensor) else x[indices]
             # Apply the same sampled indices to conditional labels.
             if y is not None:
+                # Gather resampled TensorFlow labels with tf.gather; use indexed selection
+                # for NumPy arrays.
                 y = tf.gather(
                     y,
                     indices
@@ -1107,6 +1218,8 @@ class VariationalAutoencoder(models.Model):
         elif clf is None and callbacks_list is None:
             # Select a validation-aware reconstruction monitor by default.
             if callbacks_monitor == "":
+                # Monitor validation loss when validation is present, or training loss
+                # otherwise.
                 callbacks_monitor = "val_loss" if validation_data is not None \
                     else "loss"
             callbacks_list = get_callbacks(
@@ -1219,6 +1332,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # This invalid case should already have raised: Conditioning and class_num must
+        # agree.
         else:
             raise AssertionError("Conditioning and class_num must agree.")
 
@@ -1238,6 +1353,8 @@ def run_self_tests() -> dict[str, str]:
             VariationalAutoencoder(**options)
         except ValueError:
             pass
+        # This invalid case should already have raised: Degenerate VAE dimensions/losses
+        # must fail.
         else:
             raise AssertionError("Degenerate VAE dimensions/losses must fail.")
 
@@ -1251,6 +1368,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except TypeError:
         pass
+    # This invalid case should already have raised: Unknown dense-block options must be
+    # rejected.
     else:
         raise AssertionError("Unknown dense-block options must be rejected.")
     uncompiled = VariationalAutoencoder(
@@ -1614,6 +1733,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # This invalid case should already have raised: Out-of-range conditional class IDs must
+    # fail.
     else:
         raise AssertionError("Out-of-range conditional class IDs must fail.")
     normalized_class_x, normalized_class_y = conditioned.generate(
@@ -1785,18 +1906,23 @@ def run_self_tests() -> dict[str, str]:
         unconditioned.train(x_numpy, y_numpy, train_num=-1, verbose=0)
     except ValueError:
         pass
+    # This invalid case should already have raised: Unconditional training must reject
+    # labels.
     else:
         raise AssertionError("Unconditional training must reject labels.")
     try:
         conditioned.train(x_numpy, None, train_num=-1, verbose=0)
     except ValueError:
         pass
+    # This invalid case should already have raised: Conditional training must require
+    # labels.
     else:
         raise AssertionError("Conditional training must require labels.")
     try:
         unconditioned.train(np.empty((0, 4), np.float32), train_num=0, verbose=0)
     except ValueError:
         pass
+    # This invalid case should already have raised: Resampling an empty input must fail.
     else:
         raise AssertionError("Resampling an empty input must fail.")
 

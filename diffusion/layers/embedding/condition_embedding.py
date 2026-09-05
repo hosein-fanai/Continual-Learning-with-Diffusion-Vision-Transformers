@@ -1,4 +1,9 @@
-"""Discrete timestep and class-condition embedding layers."""
+"""Discrete timestep and class-condition embedding layers.
+
+ConditionEmbedding maps integer class/timestep IDs through learned or sinusoidal
+lookup tables and an optional dense projection. It preserves all index axes and
+appends the resolved output width; spatial positional modes are rejected.
+"""
 
 import tensorflow as tf
 
@@ -17,12 +22,12 @@ class ConditionEmbedding(BaseEmbedding):
     interpolation modes produce rank-three/four tables and are therefore not
     valid weights for this rank-two lookup layer.
 
-    When ``embed_freq_dim`` differs from ``dim``, the class defaults to a
+    When ``embed_freq_dim`` is supplied, the class defaults to a
     one-hidden-layer projection with ratio ``1`` and output width ``dim``.
     Explicit ``mlp_ratio`` or ``mlp_output_dim`` values override those defaults.
 
     Args:
-        **kwargs: :class:`BaseEmbedding` constructor arguments. ``dim`` and
+        **kwargs (Any): :class:`BaseEmbedding` constructor arguments. ``dim`` and
             positive ``embed_steps`` are required. Set
             ``pos_embed_type="new_weight"`` for learned labels, or
             ``pos_embed_type="1d_sincos"`` for timestep-style initialization.
@@ -41,6 +46,11 @@ class ConditionEmbedding(BaseEmbedding):
     Serialization:
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
+
+    Attributes:
+        embed (tf.keras.layers.Embedding): Discrete condition lookup table.
+        embed_mlp (tf.keras.Sequential | None): Optional projection of lookup values.
+        output_dim (int): Raw or projected output width appended to the input index shape.
     """
 
     def __init__(
@@ -55,7 +65,7 @@ class ConditionEmbedding(BaseEmbedding):
                 table modes are ``"new_weight"`` and ``"1d_sincos"``.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(**kwargs)
@@ -70,8 +80,12 @@ class ConditionEmbedding(BaseEmbedding):
                 "ConditionEmbedding supports new_weight or 1d_sincos only."
             )
 
+        # Add the default ratio-one projection only when a raw frequency width needs
+        # projection and no ratio is set.
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
+        # Project raw frequency features to the target component width unless an output
+        # width is explicit.
         self.mlp_output_dim = self.dim if self.mlp_output_dim is None \
                             and self.embed_freq_dim is not None \
                             else self.mlp_output_dim
@@ -94,9 +108,11 @@ class ConditionEmbedding(BaseEmbedding):
                 shaped ``[batch]``.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to the lookup and
                 projection layers. No stochastic operation is introduced here.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` with floating compute dtype and shape
+            tf.Tensor: with floating compute dtype and shape
             ``x.shape + (output_dim,)``. ``output_dim`` is the raw
             ``embed_dim`` when no MLP exists and otherwise ``mlp_output_dim``.
         """
@@ -105,6 +121,8 @@ class ConditionEmbedding(BaseEmbedding):
             x, 
             training=training
         )
+        # Project looked-up conditions when configured; otherwise retain the raw embedding
+        # width.
         x = self.embed_mlp(
             x, 
             training=training
@@ -179,6 +197,8 @@ def run_self_tests() -> dict[str, str]:
         ConditionEmbedding(dim=4, embed_steps=5, pos_embed_type=None)
     except ValueError:
         pass
+    # This invalid case should already have raised: A condition lookup requires an
+    # initialized table mode.
     else:
         raise AssertionError("A condition lookup requires an initialized table mode.")
 
@@ -216,6 +236,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # This invalid case should already have raised: Spatial table mode must not silently
+        # initialize a rank-two condition lookup.
         else:
             raise AssertionError(
                 f"Spatial table mode {unsupported_spatial_mode!r} must not "

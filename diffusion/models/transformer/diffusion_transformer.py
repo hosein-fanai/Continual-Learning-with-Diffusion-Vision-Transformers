@@ -172,195 +172,192 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Initialize the transformer and optionally build all variables.
 
         Args:
-            num_classes (int | None): Positive number of real classes. ``None``
-                starts with no real classes and enables class-by-class growth;
-                this mode requires classifier-free guidance.
-            use_cfg (bool): Whether the label vocabulary includes null label 0
-                for classifier-free guidance.  The wrapper shifts real labels
-                by one when this is true.
-            timesteps (int): Size of the discrete time-embedding vocabulary.
-            image_size (int): Base square image size.  It must be divisible by
-                ``patch_size``.
-            channels (int): Number of image and output channels.
-            patch_size (int): Side length of each non-overlapping patch.
-            dim (int): Depth-0 patch feature width.
-            dim_forced (bool): If true, connectors and spatial layers project
-                feature growth back toward the inferred base width when needed.
-            patchify_with_cnn (bool): Use a two-convolution ``same``-padding
-                stem instead of the single patch-size/stride projection.
-            patches_pos_embed_type (PosEmbedType): Patch positional encoding:
-                ``"new_weight"``, ``"1d_sincos"``, ``"1d_interpolate"``,
-                ``"1d_learned_interpolate"``, ``"2d_sincos"``,
-                ``"2d_interpolate"``, or ``"2d_learned_interpolate"``.
-            patches_pos_merger_type (MergeType): ``"add"`` preserves width;
-                ``"concat"`` appends positional channels.
-            patches_conds_merger_type (MergeType | None): How to inject the
-                repeated condition into every patch.  ``None`` leaves patches
-                separate, ``"add"`` requires ``dim == cond_dim``, and
-                ``"concat"`` increases the token width.
-            shift_inputs (bool): Prepend the patch embedder's learned BOS token
-                and drop the final patch, providing right-shifted decoder input.
-            cond_dim (int | None): Combined conditioning width.  ``None`` uses
-                ``dim``.  With ``conds_merger_type="concat"`` and both time and
-                label conditions, each individual embedder uses half this width.
-            cond_type (CondType | None): Adaptive-normalization/patch condition:
-                ``"time_label"``, ``"time"``, ``"label"``, or ``None``.
-                ``None`` requires ``ln_no_adaptation=True``.
-            conds_merger_type (MergeType): Combine simultaneous time and label
-                embeddings by ``"add"`` or ``"concat"``.
-            time_embed_type (PosEmbedType): Encoding used for integer timesteps.
-                Use ``"new_weight"`` or ``"1d_sincos"``; spatial/interpolation
-                modes do not produce the rank-2 table required by condition
-                lookup.
-            time_freq_dim (int | None): Optional pre-MLP time embedding width;
-                ``None`` uses the condition-embedder width.
-            time_embed_trainable (bool): Whether a non-``"new_weight"`` table
-                initialized from the selected time encoding may be trained.
-                ``"new_weight"`` is always trainable.
-            time_mlp_ratio (float | None): Hidden expansion for the time
-                embedding MLP; ``None`` omits its hidden expansion.
-            label_embed_type (PosEmbedType): Encoding/table used for label IDs.
-                ``"new_weight"`` and ``"1d_sincos"`` are the valid rank-2
-                lookup-table modes.
-            label_embed_trainable (bool): Whether a non-learned initialized
-                label table can train; ``"new_weight"`` is always trainable.
-            label_freq_dim (int | None): Optional label embedding width before
-                its projection MLP.
-            label_mlp_ratio (float | None): Hidden expansion for the label MLP.
-            cls_token_type (TokenType | None): ``"new_weight"`` creates a
-                learned token; ``"time"``, ``"label"``, or ``"time_label"``
-                derives it from those conditions; ``None`` adds no token.
-            cls_token_freq_dim (int | None): Optional width of the class-token
-                positional representation before projection.
-            cls_token_mlp_ratio (float | None): Hidden expansion used by the
-                class-token projection.
-            cls_token_pos_merger_type (MergeType): ``"add"`` or ``"concat"``
-                for the token's learned/positional representation.
-            distil_token_type (TokenType | None): Distillation-token source,
-                with the same ``"new_weight"``, ``"time"``, ``"label"``,
-                ``"time_label"``, and ``None`` choices as ``cls_token_type``.
-            distil_token_freq_dim (int | None): Optional width of the
-                distillation-token representation before projection.
-            distil_token_mlp_ratio (float | None): Hidden expansion used by
-                the distillation-token projection.
-            distil_token_pos_merger_type (MergeType): Positional merge for the
-                distillation token, matching ``cls_token_pos_merger_type``.
-            depth (int): Number N of processing stages.  ``0`` creates only
-                depth-0 embedding plus the output head; ``1..N`` create those
-                many ordered dictionaries in ``layers_dicts``.
-            connection_ids_dict (dict[int, list[int | None]]): Maps a target
-                depth to feature depths combined before that stage.  Keys are
-                in ``1..depth``; source IDs must precede the target after
-                normalization.  Example: ``{2: [0, 1]}`` concatenates depth 0
-                and depth 1 at stage 2.
-            connection_kwargs (dict[str, object]): Options shared by every
-                feature connector.  Allowed keys are ``connect_axis`` (int,
-                default ``-1``), ``connect_type`` (``"concat"`` or ``"add"``),
-                ``use_layer_norm`` (bool), ``ln_dim`` (int | None),
-                ``ln_mlp_ratio`` (float | None), ``ln_no_adaptation`` (bool),
-                ``mlp_output_dim`` (int | None), ``mlp_ratio`` (float | None),
-                and ``mlp_activation_func`` (Keras activation name/callable).
-                For ``"add"``, all selected tensors must have identical shape.
-            cross_attention_ids_dict (dict[int, list[int | None]]): Same ID
-                syntax as ``connection_ids_dict``, but constructs the tensor
-                plugged into attention as external queries or values.
-            cross_attention_kwargs (dict[str, object]): Same allowed keys and
-                value rules as ``connection_kwargs``.
-            cross_attention_plug_type (Literal["values", "queries"]): Feed the
-                cross-attention connector to the block as keys/values or as
-                queries, respectively.
-            vit_block_ids (list[int | None]): Stage IDs containing attention
-                blocks.  ``[None]`` means every depth, ``[]`` means none, and
-                negative IDs are relative to the end.
-            use_decoder_ids (list[int | None]): Subset of block IDs implemented
-                by ``DiTDecoderBlock``; all other block IDs use encoder blocks.
-            mha_key_dim (int | None): Per-head key width; ``None`` lets the
-                attention layer infer it.
-            mha_value_dim (int | None): Per-head value width; ``None`` uses the
-                attention implementation's default.
-            mha_num_heads (int): Number of attention heads.
-            vit_block_mlp_ratio (float): Transformer FFN hidden expansion.
-            vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN
-                output widths, for example ``{3: 128}``.
-            ln_mlp_ratio (float | None): Hidden expansion for adaptive layer
-                normalization projections throughout the network.
-            ln_no_adaptation (bool): Use ordinary layer normalization without a
-                condition-dependent affine/gate path.
-            drop_prob (float): Transformer residual-drop probability in
-                ``[0, 1]``.
-            drop_per_sample (bool): Apply residual dropping independently per
-                sample instead of sharing a decision across the batch.
-            local_mixer_ids (list[int | None]): Depths with a depthwise spatial
-                token mixer.  ID handling matches ``vit_block_ids``.
-            local_mixer_kwargs (dict[str, object]): Shared mixer overrides.
-                Allowed keys are ``embed_temperature`` (float), ``dim`` (int),
-                ``grid_size`` (int), ``use_layer_norm`` (bool),
-                ``ln_mlp_ratio`` (float | None), ``ln_no_adaptation`` (bool),
-                ``kernel_size`` (int), ``strides`` (int), ``depth_multiplier``
-                (int), ``use_pointwise`` (bool), ``pointwise_dim_ratio`` (int),
-                ``zero_init`` (bool), ``pos_embed_type`` (a positional type or
-                ``None``), ``pos_interpolation_method`` (``tf.image.resize``
-                method), ``pos_merger_type`` (``"add"``/``"concat"``), and
-                ``mlp_ratio``, ``mlp_activation_func``, ``mlp_output_dim``.
-            downsample_ids (list[int | None]): Depths that reduce each spatial
-                grid dimension, normally by two.
-            downsample_kwargs (dict[str, object]): Allowed keys are
-                ``embed_temperature``, ``dim``, ``grid_size``,
-                ``use_layer_norm``, ``ln_mlp_ratio``, ``ln_no_adaptation``,
-                ``scaling_method`` (``"avg_pooling"``, ``"max_pooling"``, or
-                ``"cnn_stride"``), ``cnn_dim_ratio`` (int),
-                ``cnn_kernel_size`` (int), ``cnn_activation_func`` (Keras
-                activation), positional ``pos_embed_type``,
-                ``pos_interpolation_method``, ``pos_merger_type``, and MLP
-                ``mlp_ratio``, ``mlp_activation_func``, ``mlp_output_dim``.
-            upsample_ids (list[int | None]): Depths that double each spatial
-                grid dimension.
-            upsample_kwargs (dict[str, object]): Same common embedding, layer
-                norm, position, and MLP keys as ``downsample_kwargs`` plus
-                ``scaling_method`` (``"cnn_transpose"``, ``"interpolate"``, or
-                ``"cnn_interpolate"``), ``scaling_interpolation_method``
-                (Keras ``UpSampling2D`` interpolation), ``cnn_dim_ratio``,
-                ``cnn_kernel_size``, and ``cnn_activation_func``.
-            reshaper_ids_dict (dict[int, str]): Maps depths to ``"flatten"``
-                (tokens to one vector) or ``"unflatten"`` (vector back to the
-                inferred token grid). Reshapers form consecutive pairs, for
-                example ``{2: "flatten", 3: "unflatten"}``.
-            reshaper_kwargs (dict[str, object]): Only ``add_kl`` (bool) and
-                ``latent_dim_ratio`` (a list of positive floats) are allowed.
-                The list has one entry per flatten/unflatten pair in ascending
-                flatten-depth order. With ``add_kl=True``, each flatten
-                reshaper returns a sampled latent, mean, and log variance for
-                a VAE KL objective.
-            cls_token_regularizer_ids (list[int | None]): Depth IDs whose token
-                slice feeds an auxiliary ``num_classes`` softmax.  ID 0 applies
-                a regularizer to the label embedding; ``[None]`` selects 0..N.
-            cls_token_regularizer_kwargs (dict[str, object]): ``start`` and
-                ``end`` are Python token-slice bounds. Optional ``mlp_ratio``
-                adds a hidden Dense layer, and ``activation_function`` selects
-                its activation. Missing values default to ``None`` and
-                ``"tanh"``, respectively. ``train_type`` is ``"normal"``,
-                ``"distil"``, or ``"both"``; ``distil_type`` is ``"hard"``
-                or ``"soft"``.
-            final_ffn_activation_func (str | callable): Activation on the
-                zero-initialized patch-output projection.
-            use_refiner_cnn (bool): Add a two-convolution image-space refinement
-                head after unpatchification.
-            refiner_cnn_hidden_dim (int | None): Refiner hidden channels;
-                ``None`` uses the current token width.
-            refiner_cnn_residual (bool): Add the refiner output to the initial
-                unpatchified image; false returns only the refinement.
-            final_activation_func (str | callable): Final output activation.
-            use_unpatchify (bool): Return image-shaped output when true; when
-                false return final tokens of shape ``[B, tokens, features]``.
-            name_prefix (str): Prefix inserted in all generated layer names.
-            seed (int | None): Optional raw-network seed used to derive
-                independent token-initializer and stochastic-depth streams.
-            build (bool): Build symbolic inputs and variables immediately.
+            num_classes (int | None): Positive number of real classes. ``None`` starts with no real
+                classes and enables class-by-class growth; this mode requires classifier-free guidance.
+                Defaults to ``10``.
+            use_cfg (bool): Whether the label vocabulary includes null label 0 for classifier-free
+                guidance. The wrapper shifts real labels by one when this is true. Defaults to ``True``.
+            timesteps (int): Size of the discrete time-embedding vocabulary. Defaults to ``1000``.
+            image_size (int): Base square image size. It must be divisible by ``patch_size``. Defaults
+                to ``28``.
+            channels (int): Number of image and output channels. Defaults to ``1``.
+            patch_size (int): Side length of each non-overlapping patch. Defaults to ``2``.
+            dim (int): Depth-0 patch feature width. Defaults to ``32``.
+            dim_forced (bool): If true, connectors and spatial layers project feature growth back toward
+                the inferred base width when needed. Defaults to ``True``.
+            patchify_with_cnn (bool): Use a two-convolution ``same``-padding stem instead of the single
+                patch-size/stride projection. Defaults to ``False``.
+            patches_pos_embed_type (PosEmbedType): Patch positional encoding: ``"new_weight"``,
+                ``"1d_sincos"``, ``"1d_interpolate"``, ``"1d_learned_interpolate"``, ``"2d_sincos"``,
+                ``"2d_interpolate"``, or ``"2d_learned_interpolate"``. Defaults to ``'2d_sincos'``.
+            patches_pos_merger_type (MergeType): ``"add"`` preserves width; ``"concat"`` appends
+                positional channels. Defaults to ``'add'``.
+            patches_conds_merger_type (MergeType | None): How to inject the repeated condition into
+                every patch. ``None`` leaves patches separate, ``"add"`` requires ``dim == cond_dim``,
+                and ``"concat"`` increases the token width. Defaults to ``None``.
+            shift_inputs (bool): Prepend the patch embedder's learned BOS token and drop the final
+                patch, providing right-shifted decoder input. Defaults to ``False``.
+            cond_dim (int | None): Combined conditioning width. ``None`` uses ``dim``. With
+                ``conds_merger_type="concat"`` and both time and label conditions, each individual
+                embedder uses half this width. Defaults to ``None``.
+            cond_type (CondType | None): Adaptive-normalization/patch condition: ``"time_label"``,
+                ``"time"``, ``"label"``, or ``None``. ``None`` requires ``ln_no_adaptation=True``.
+                Defaults to ``'time_label'``.
+            conds_merger_type (MergeType): Combine simultaneous time and label embeddings by ``"add"``
+                or ``"concat"``. Defaults to ``'add'``.
+            time_embed_type (PosEmbedType): Encoding used for integer timesteps. Use ``"new_weight"`` or
+                ``"1d_sincos"``; spatial/interpolation modes do not produce the rank-2 table required by
+                condition lookup. Defaults to ``'1d_sincos'``.
+            time_freq_dim (int | None): Optional pre-MLP time embedding width; ``None`` uses the
+                condition-embedder width. Defaults to ``None``.
+            time_embed_trainable (bool): Whether a non-``"new_weight"`` table initialized from the
+                selected time encoding may be trained. ``"new_weight"`` is always trainable. Defaults to
+                ``False``.
+            time_mlp_ratio (float | None): Hidden-width ratio of the time-embedding projection. None
+                omits a hidden expansion when time_freq_dim is None; an explicit time_freq_dim makes an
+                omitted ratio resolve to 1. Defaults to ``None``.
+            label_embed_type (PosEmbedType): Encoding/table used for label IDs. ``"new_weight"`` and
+                ``"1d_sincos"`` are the valid rank-2 lookup-table modes. Defaults to ``'new_weight'``.
+            label_embed_trainable (bool): Whether a non-learned initialized label table can train;
+                ``"new_weight"`` is always trainable. Defaults to ``False``.
+            label_freq_dim (int | None): Pre-projection label-table width. None uses the resolved
+                label-condition width; an explicit value enables projection back to that condition
+                width. Defaults to ``None``.
+            label_mlp_ratio (float | None): Hidden-width ratio of the label projection. None omits the
+                hidden expansion when label_freq_dim is None; an explicit frequency width makes an
+                omitted ratio resolve to 1. Defaults to ``None``.
+            cls_token_type (TokenType | None): ``"new_weight"`` creates a learned token; ``"time"``,
+                ``"label"``, or ``"time_label"`` derives it from those conditions; ``None`` adds no
+                token. Defaults to ``None``.
+            cls_token_freq_dim (int | None): Pre-projection token component width. None uses the token
+                width, or half that width for concatenated positional/token components. An explicit
+                value enables projection back to the component width. Defaults to ``None``.
+            cls_token_mlp_ratio (float | None): Hidden-width ratio for the class-token projection. None
+                omits its hidden layer unless cls_token_freq_dim is explicit, in which case the ratio
+                becomes 1. A condition-derived token may still require an output projection. Defaults to
+                ``None``.
+            cls_token_pos_merger_type (MergeType): ``"add"`` or ``"concat"`` for the token's
+                learned/positional representation. Defaults to ``'add'``.
+            distil_token_type (TokenType | None): Distillation-token source, with the same
+                ``"new_weight"``, ``"time"``, ``"label"``, ``"time_label"``, and ``None`` choices as
+                ``cls_token_type``. Defaults to ``None``.
+            distil_token_freq_dim (int | None): Pre-projection distillation-token component width,
+                following cls_token_freq_dim rules. None infers the component width; unused when
+                distil_token_type is None. Defaults to ``None``.
+            distil_token_mlp_ratio (float | None): Hidden expansion for distillation-token projection,
+                with the same None/explicit-frequency behavior as cls_token_mlp_ratio. Unused when no
+                distillation token exists. Defaults to ``None``.
+            distil_token_pos_merger_type (MergeType): Positional merge for the distillation token,
+                matching ``cls_token_pos_merger_type``. Defaults to ``'add'``.
+            depth (int): Number N of processing stages. ``0`` creates only depth-0 embedding plus the
+                output head; ``1..N`` create those many ordered dictionaries in ``layers_dicts``.
+                Defaults to ``2``.
+            connection_ids_dict (dict[int, list[int | None]]): Maps a target depth to feature depths
+                combined before that stage. Keys are in ``1..depth``; source IDs must precede the target
+                after normalization. Example: ``{2: [0, 1]}`` concatenates depth 0 and depth 1 at stage
+                2. Defaults to ``{}``.
+            connection_kwargs (dict[str, object]): Options shared by every feature connector. Allowed
+                keys are ``connect_axis`` (int, default ``-1``), ``connect_type`` (``"concat"`` or
+                ``"add"``), ``use_layer_norm`` (bool), ``ln_dim`` (int | None), ``ln_mlp_ratio`` (float
+                | None), ``ln_no_adaptation`` (bool), ``mlp_output_dim`` (int | None), ``mlp_ratio``
+                (float | None), and ``mlp_activation_func`` (Keras activation name/callable). For
+                ``"add"``, all selected tensors must have identical shape. Defaults to ``{}``.
+            cross_attention_ids_dict (dict[int, list[int | None]]): Same ID syntax as
+                ``connection_ids_dict``, but constructs the tensor plugged into attention as external
+                queries or values. Defaults to ``{}``.
+            cross_attention_kwargs (dict[str, object]): Same allowed keys and value rules as
+                ``connection_kwargs``. Defaults to ``{}``.
+            cross_attention_plug_type (Literal["values", "queries"]): Feed the cross-attention connector
+                to the block as keys/values or as queries, respectively. Defaults to ``'values'``.
+            vit_block_ids (list[int | None]): Stage IDs containing attention blocks. ``[None]`` means
+                every depth, ``[]`` means none, and negative IDs are relative to the end. Defaults to
+                ``[None]``.
+            use_decoder_ids (list[int | None]): Subset of block IDs implemented by ``DiTDecoderBlock``;
+                all other block IDs use encoder blocks. Defaults to ``[]``.
+            mha_key_dim (int | None): Per-head key width; ``None`` lets the attention layer infer it.
+                Defaults to ``None``.
+            mha_value_dim (int | None): Per-head value width; ``None`` uses the attention
+                implementation's default. Defaults to ``None``.
+            mha_num_heads (int): Number of attention heads. Defaults to ``4``.
+            vit_block_mlp_ratio (float): Transformer FFN hidden expansion. Defaults to ``4.0``.
+            vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN output widths, for
+                example ``{3: 128}``. Defaults to ``{}``.
+            ln_mlp_ratio (float | None): Hidden expansion for adaptive layer normalization projections
+                throughout the network. Defaults to ``None``.
+            ln_no_adaptation (bool): Use ordinary layer normalization without a condition-dependent
+                affine/gate path. Defaults to ``False``.
+            drop_prob (float): Transformer residual-drop probability in ``[0, 1]``. Defaults to ``0.0``.
+            drop_per_sample (bool): Apply residual dropping independently per sample instead of sharing
+                a decision across the batch. Defaults to ``True``.
+            local_mixer_ids (list[int | None]): Depths with a depthwise spatial token mixer. ID handling
+                matches ``vit_block_ids``. Defaults to ``[]``.
+            local_mixer_kwargs (dict[str, object]): Shared mixer overrides. Allowed keys are
+                ``embed_temperature`` (float), ``dim`` (int), ``grid_size`` (int), ``use_layer_norm``
+                (bool), ``ln_mlp_ratio`` (float | None), ``ln_no_adaptation`` (bool), ``kernel_size``
+                (int), ``strides`` (int), ``depth_multiplier`` (int), ``use_pointwise`` (bool),
+                ``pointwise_dim_ratio`` (int), ``zero_init`` (bool), ``pos_embed_type`` (a positional
+                type or ``None``), ``pos_interpolation_method`` (``tf.image.resize`` method),
+                ``pos_merger_type`` (``"add"``/``"concat"``), and ``mlp_ratio``,
+                ``mlp_activation_func``, ``mlp_output_dim``. Defaults to ``{}``.
+            downsample_ids (list[int | None]): Depths that reduce each spatial grid dimension, normally
+                by two. Defaults to ``[]``.
+            downsample_kwargs (dict[str, object]): Allowed keys are ``embed_temperature``, ``dim``,
+                ``grid_size``, ``use_layer_norm``, ``ln_mlp_ratio``, ``ln_no_adaptation``,
+                ``scaling_method`` (``"avg_pooling"``, ``"max_pooling"``, or ``"cnn_stride"``),
+                ``cnn_dim_ratio`` (int), ``cnn_kernel_size`` (int), ``cnn_activation_func`` (Keras
+                activation), positional ``pos_embed_type``, ``pos_interpolation_method``,
+                ``pos_merger_type``, and MLP ``mlp_ratio``, ``mlp_activation_func``, ``mlp_output_dim``.
+                Defaults to ``{}``.
+            upsample_ids (list[int | None]): Depths that double each spatial grid dimension. Defaults to
+                ``[]``.
+            upsample_kwargs (dict[str, object]): Same common embedding, layer norm, position, and MLP
+                keys as ``downsample_kwargs`` plus ``scaling_method`` (``"cnn_transpose"``,
+                ``"interpolate"``, or ``"cnn_interpolate"``), ``scaling_interpolation_method`` (Keras
+                ``UpSampling2D`` interpolation), ``cnn_dim_ratio``, ``cnn_kernel_size``, and
+                ``cnn_activation_func``. Defaults to ``{}``.
+            reshaper_ids_dict (dict[int, str]): Maps depths to ``"flatten"`` (tokens to one vector) or
+                ``"unflatten"`` (vector back to the inferred token grid). Reshapers form consecutive
+                pairs, for example ``{2: "flatten", 3: "unflatten"}``. Defaults to ``{}``.
+            reshaper_kwargs (dict[str, object]): Only ``add_kl`` (bool) and ``latent_dim_ratio`` (a list
+                of positive floats) are allowed. The list has one entry per flatten/unflatten pair in
+                ascending flatten-depth order. With ``add_kl=True``, each flatten reshaper returns a
+                sampled latent, mean, and log variance for a VAE KL objective. Defaults to ``{}``.
+            cls_token_regularizer_ids (list[int | None]): Depth IDs whose token slice feeds an auxiliary
+                ``num_classes`` softmax. ID 0 applies a regularizer to the label embedding; ``[None]``
+                selects 0..N. Defaults to ``[]``.
+            cls_token_regularizer_kwargs (dict[str, object]): ``start`` and ``end`` are Python
+                token-slice bounds. Optional ``mlp_ratio`` adds a hidden Dense layer, and
+                ``activation_function`` selects its activation. Missing values default to ``None`` and
+                ``"tanh"``, respectively. ``train_type`` is ``"normal"``, ``"distil"``, or ``"both"``;
+                ``distil_type`` is ``"hard"`` or ``"soft"``. Defaults to ``{'start': 0, 'end': 1,
+                'train_type': 'normal', 'distil_type': 'hard'}``.
+            final_ffn_activation_func (str | callable): Activation on the zero-initialized patch-output
+                projection. Defaults to ``'linear'``.
+            use_refiner_cnn (bool): Add a two-convolution image-space refinement head after
+                unpatchification. Defaults to ``False``.
+            refiner_cnn_hidden_dim (int | None): Refiner hidden channels; ``None`` uses the current
+                token width. Defaults to ``None``.
+            refiner_cnn_residual (bool): Add the refiner output to the initial unpatchified image; false
+                returns only the refinement. Defaults to ``True``.
+            final_activation_func (str | callable): Final output activation. Defaults to ``'linear'``.
+            use_unpatchify (bool): Return image-shaped output when true; when false return final tokens
+                of shape ``[B, tokens, features]``. Defaults to ``True``.
+            name_prefix (str): Prefix inserted in all generated layer names. Defaults to ``''``.
+            seed (int | None): Optional component seed from which named token, reshaper, and dropout
+                streams are derived. None leaves the component seed unset so the surrounding runtime
+                controls random streams. Defaults to ``None``.
+            build (bool): Build symbolic inputs and variables immediately. Defaults to ``True``.
             **kwargs (object): Standard ``tf.keras.Model`` options, principally ``name``,
                 ``trainable``, ``dtype``, and ``dynamic``.
 
         Returns:
             None: A configured ``tf.keras.Model`` is initialized in place.
+
+        Raises:
+            AssertionError: If constructor dimensions, routes, options, or compatible
+                conditioning/token combinations violate the network contract.
+            ValueError: If a nested layer cannot construct the requested shape or
+                mode, including an unusable variational latent width.
         """
 
         super().__init__(**kwargs)
@@ -374,14 +371,19 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "validation"
         )
 
+        # Keep an omitted component seed unset; normalize an explicit seed to int.
         self.seed = None if self.seed is None else int(self.seed)
         self.dynamic_num_classes = self.num_classes is None
+        # Start dynamic class growth with an empty real-class vocabulary.
         self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
         self.grid_size = self.image_size // self.patch_size
         self.patches_dim = self.dim
+        # Infer omitted condition width from the patch embedding width.
         self.cond_dim = self.dim if self.cond_dim is None else self.cond_dim
+        # Account for appended condition channels only for concatenation.
         self.dim = self.patches_dim + self.cond_dim if self.patches_conds_merger_type == "concat" else self.dim
+        # Split condition width equally only when time and label vectors concatenate.
         self.cond_embedder_dim = self.cond_dim // 2 if self.conds_merger_type == "concat" and \
                                 self.cond_type == "time_label" else self.cond_dim
         self.has_cls_token = self.cls_token_type is not None
@@ -432,23 +434,22 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             local_vars (dict[str, object]): Namespace containing ``dict_name``
                 and the named depth values.
             dict_name (str): Key of the mapping/list to validate.
-            check_items_num (bool): Require at most one mapping entry per target
-                depth, except when the configured depth is zero.
-            check_keys (bool): Validate mapping keys as target depth IDs or
-                members of ``allowed_keys``.
-            allowed_keys (tuple[object, ...]): Explicit key whitelist.  Empty
-                means integer keys in ``1..depth``.
-            depth_name (str): Namespace key holding the target-side depth.
-            second_depth_name (str): Namespace key holding the source-side
-                depth used to validate values.
-            check_values (bool): Interpret each mapping value as an ID iterable
-                and validate its items.
-            id_less_than_key (bool): Require each normalized source ID to be
-                less than its target key. This is disabled for cross-branch
-                aggregation.
-            allowed_values (tuple[object, ...]): Explicit item whitelist.  Empty
-                permits the source-depth numeric range.
-            none_is_filler (bool): Permit ``None`` as the expand-all sentinel.
+            check_items_num (bool): Require at most one mapping entry per target depth, except when the
+                configured depth is zero. Defaults to ``True``.
+            check_keys (bool): Validate mapping keys as target depth IDs or members of ``allowed_keys``.
+                Defaults to ``True``.
+            allowed_keys (tuple[object, ...]): Explicit key whitelist. Empty means integer keys in
+                ``1..depth``. Defaults to ``()``.
+            depth_name (str): Namespace key holding the target-side depth. Defaults to ``'depth'``.
+            second_depth_name (str): Namespace key holding the source-side depth used to validate
+                values. Defaults to ``'depth'``.
+            check_values (bool): Interpret each mapping value as an ID iterable and validate its items.
+                Defaults to ``True``.
+            id_less_than_key (bool): Require each normalized source ID to be less than its target key.
+                This is disabled for cross-branch aggregation. Defaults to ``True``.
+            allowed_values (tuple[object, ...]): Explicit item whitelist. Empty permits the source-depth
+                numeric range. Defaults to ``()``.
+            none_is_filler (bool): Permit ``None`` as the expand-all sentinel. Defaults to ``True``.
 
         Returns:
             None: Invalid configuration raises ``AssertionError``.
@@ -456,6 +457,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Note:
             A non-dictionary ID sequence is treated as ``{1: sequence}`` for
             validation.  This helper validates but does not normalize IDs.
+
+        Raises:
+            AssertionError: If enabled checks reject target/source depths, routing
+                order, allowed option keys, or allowed value sets.
         """
 
         # Limit routed entries to the number of available target depths.
@@ -486,6 +491,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 for id_ in value:
                     # Prevent a connection from reading its own or a future depth.
                     if id_less_than_key:
+                        # Resolve negative source IDs before checking that routes point
+                        # backward.
                         normalized_id = id_ + local_vars[
                             second_depth_name
                         ] + 1 if id_ is not None and id_ < 0 else id_
@@ -517,12 +524,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None: Invalid dimensions, IDs, option keys, or enum-like values
             raise ``AssertionError``.  The allowed-key tuples are retained on
             the instance for classifier-branch validation.
+
+        Raises:
+            AssertionError: If shape, conditioning, depth routes, or component-option
+                constraints required by this constructor are violated.
         """
 
         require(local_vars["image_size"] % local_vars["patch_size"] == 0, \
             "image_size must be divisible by patch_size.")
         require(local_vars["num_classes"] is not None or local_vars["use_cfg"], \
             "num_classes=None requires use_cfg=True.")
+        # Validate against the inferred patch width when cond_dim is omitted.
         effective_cond_dim = (
             local_vars["dim"]
             if local_vars["cond_dim"] is None
@@ -722,17 +734,19 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             ids_dict (dict[int, list[int | None]]): Mapping modified in place.
-            min_id (int): First generated ID.
-            max_id (int | None): Last generated ID.  ``None`` uses each mapping
-                key, so ``{3: [None]}`` becomes ``{3: [0, 1, 2, 3]}`` with the
-                default ``min_id``.
+            min_id (int): First generated ID. Defaults to ``0``.
+            max_id (int | None): Inclusive explicit expansion endpoint. None instead uses each mapping
+                target key as an exclusive endpoint, selecting only preceding depths. Defaults to
+                ``None``.
 
         Returns:
             dict[int, list[int]]: The same mapping object after expansion.
         """
 
         for key in ids_dict:
+            # Use the target key as an exclusive route endpoint, or include an explicit maximum ID.
             max_id_ = key if max_id is None else max_id+1
+            # Expand an all-depth marker; preserve explicit source selections otherwise.
             ids_dict[key] = list(range(min_id, max_id_)) if None in ids_dict[key] \
                             else ids_dict[key]
 
@@ -779,9 +793,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ids_dict (dict[int, list[int | None]] | list[int | None]): ID
                 mapping, or a list shorthand associated with target key 1.
             depth (int): Depth used to resolve negative IDs.
-            min_id (int): Lower bound used when expanding ``None``.
-            max_id (int | None): Inclusive expansion upper bound.  ``None``
-                makes it target-key dependent.
+            min_id (int): Lower bound used when expanding ``None``. Defaults to ``0``.
+            max_id (int | None): Inclusive expansion upper bound. ``None`` makes it target-key
+                dependent. Defaults to ``None``.
 
         Returns:
             dict[int, list[int]] | list[int]: The normalized mapping, or a list
@@ -816,7 +830,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Stage-selection lists expand ``None`` over depths 1..N, class-token
         regularizers expand over 0..N, and routed feature dictionaries expand
-        ``None`` from depth 0 through their target key.  Negative IDs use the
+        ``None`` from depth 0 up to, but excluding, their target key.  Negative IDs use the
         model's total depth.
 
         Returns:
@@ -924,7 +938,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dicts (list[dict[str, tf.keras.layers.Layer]]): Stages to
                 search backward.
             base_dim (int): Width at depth 0.
-            skip_reshaper (bool): Ignore reshaper width changes.
+            skip_reshaper (bool): Ignore reshaper width changes. Defaults to ``False``.
 
         Returns:
             int: Resolved feature width, falling back to ``base_dim``.
@@ -934,11 +948,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if i == -1:
             return base_dim
 
+        # Inspect an existing stage or continue searching earlier stages for a width.
         last_output_dim = self._get_layers_dict_last_output_dim(
             layers_dicts[i], 
             skip_reshaper
         ) if i < len(layers_dicts) else None
             
+        # Fall back to the preceding width only when this stage establishes none.
         last_output_dim = self._get_last_output_dim(
             i-1, 
             layers_dicts, 
@@ -963,7 +979,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dicts (list[dict]): Completed stages.
             layers_dict (dict): Components already created for this stage.
             base_dim (int): Depth-0 width.
-            skip_reshaper (bool): Ignore reshapers while resolving width.
+            skip_reshaper (bool): Ignore reshapers while resolving width. Defaults to ``False``.
 
         Returns:
             int: Current inferred feature width.
@@ -993,9 +1009,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ids_set (list[int]): Absolute feature depth IDs; 0 is the input.
             layers_dicts (list[dict]): Source stages.
             base_dim (int): Width of source depth 0.
-            skip_reshaper (bool): Ignore reshaper width changes.
-            kwargs (dict[str, object] | None): Connector options.  A missing
-                ``connect_type`` defaults to ``"concat"``.
+            skip_reshaper (bool): Ignore reshaper width changes. Defaults to ``False``.
+            kwargs (dict[str, object] | None): Connector options. A missing ``connect_type`` defaults to
+                ``"concat"``. Defaults to ``None``.
 
         Returns:
             int: Sum of widths for concatenation, the common width for addition,
@@ -1051,11 +1067,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             i (int): Zero-based stage index; ``-1`` denotes depth 0.
             layers_dicts (list[dict]): Stages to search backward.
             base_grid_size (int): Depth-0 grid side.
-            skip_reshaper (bool): Ignore a reshaper's sequence/vector change.
+            skip_reshaper (bool): Ignore a reshaper's sequence/vector change. Defaults to ``False``.
 
         Returns:
-            int | None: Grid side, or ``None`` when the latest representation
-            is a flat vector with no spatial grid.
+            int | None: Latest square spatial side. A flattened rank-two reshaper
+            output uses integer sentinel 0; None can propagate when the supplied
+            base grid itself is unknown. skip_reshaper=True ignores rank changes.
         """
 
         # Return the patch grid before any transformer depth executes.
@@ -1083,9 +1100,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             # Infer the grid from a spatial reshaper, or mark flattened output nonspatial.
             if (key:=self.R) in layers_dicts[i] and not skip_reshaper:
                 output_shape = layers_dicts[i][key].output_shape[0]
+                # Represent rank-two flattened features with grid sentinel zero.
                 grid_size = int(output_shape[1] ** 0.5) if len(output_shape) == 3 \
                             else 0
 
+        # Search earlier stages only when this stage has no grid metadata.
         grid_size = self._get_last_grid_size(
             i-1, 
             layers_dicts, 
@@ -1110,10 +1129,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dicts (list[dict]): Completed stages.
             layers_dict (dict): Current partially built stage.
             base_grid_size (int): Depth-0 grid side.
-            skip_reshaper (bool): Ignore reshapers when resolving the grid.
+            skip_reshaper (bool): Ignore reshapers when resolving the grid. Defaults to ``False``.
 
         Returns:
-            int | None: Current spatial grid side.
+            int | None: Latest square spatial side. A flattened rank-two reshaper
+            output uses integer sentinel 0; None can propagate when the supplied
+            base grid itself is unknown. skip_reshaper=True ignores rank changes.
         """
 
         layers_dicts = layers_dicts + [layers_dict]
@@ -1139,7 +1160,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ids_set (list[int]): Source depths, where 0 is the embedded input.
             layers_dicts (list[dict]): Source stage dictionaries.
             base_grid_size (int): Grid side at depth 0.
-            must_be_same (bool): Require equal sides and return one scalar.
+            must_be_same (bool): Require equal sides and return one scalar. Defaults to ``False``.
 
         Returns:
             list[int | None] | int | None: One size per source, or their common
@@ -1165,6 +1186,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # An empty feature selection has no independently inferable grid.
         if len(grid_sizes) == 0:
+            # Return no common grid for an empty selection, or an empty per-source list.
             return None if must_be_same else []
 
         # Return all source grids when equality is not required.
@@ -1184,8 +1206,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Create the configured discrete timestep embedding layer.
 
         Args:
-            name_prefix (str): Extra component prefix inserted after the model's
-                global ``name_prefix``.
+            name_prefix (str): Extra component prefix inserted after the model's global ``name_prefix``.
+                Defaults to ``''``.
 
         Returns:
             ConditionEmbedding: Layer mapping integer tensors of shape ``[B]``
@@ -1208,7 +1230,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Create the configured class-label embedding layer.
 
         Args:
-            name_prefix (str): Extra component prefix used in the layer name.
+            name_prefix (str): Extra component prefix used in the layer name. Defaults to ``''``.
 
         Returns:
             ConditionEmbedding: Layer mapping label IDs of shape ``[B]`` to
@@ -1236,7 +1258,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             merger_type (MergeType): ``"add"`` or ``"concat"``.
-            name (str | None): Optional Keras layer name.
+            name (str | None): Optional Keras layer name. Defaults to ``None``.
 
         Returns:
             tf.keras.layers.Add | tf.keras.layers.Concatenate: Merger layer;
@@ -1276,10 +1298,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None: Embedder and merger attributes are assigned in place.
         """
 
+        # Create adaptive/patch conditions only when a consumer requires them.
         self._cond_type = self.cond_type if self.cond_type is not None and \
                         (not self.ln_no_adaptation or self.patches_conds_merger_type is not None) \
                         else []
+        # Track class-token condition dependencies only when the token is enabled.
         self._cls_token_type = self.cls_token_type if self.cls_token_type is not None else []
+        # Track distillation-token condition dependencies only when enabled.
         self._distil_token_type = self.distil_token_type if self.distil_token_type is not None else []
 
         embed_times_flag = "time" in self._cls_token_type or \
@@ -1304,22 +1329,27 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             name=f"{self.name_prefix}depth_0_patch_embedder"
         )
 
+        # Create a timestep lookup only when a condition or token consumes time.
         self.time_embedder = self._create_time_embedder(
         ) if embed_times_flag else None
 
+        # Create a label lookup only when a condition, token, or regularizer needs labels.
         self.label_embedder = self._create_label_embedder(
         ) if embed_labels_flag else None
 
+        # Create a condition merger only when time and label embeddings are combined.
         self.conds_merger = self._create_merger(
             merger_type=self.conds_merger_type, 
             name=f"{self.name_prefix}depth_0_time_label_merger"
         ) if conds_merger_type_flag else None
 
+        # Create a patch-condition merger only when patch conditioning is enabled.
         self.patches_conds_merger = self._create_merger(
             merger_type=self.patches_conds_merger_type, 
             name=f"{self.name_prefix}depth_0_patches_conds_merger_type"
         ) if self.patches_conds_merger_type is not None else None
 
+        # Attach the depth-zero label regularizer only when ID zero is selected.
         self.labels_embed_reg = self._create_token_regularizer(
             i=-1, 
             layers_dicts=[], 
@@ -1343,17 +1373,20 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Args:
             dim (int): Output token width.
             pos_merger_type (MergeType): Positional merge operation.
-            freq_dim (int): Pre-projection embedding width.
-            mlp_ratio (float): Projection hidden expansion.
-            token_type (TokenType): ``"new_weight"``, ``"time"``,
-                ``"label"``, ``"time_label"``, or ``None``.
-            name (str | None): Optional layer name.
+            freq_dim (int | None): Pre-projection component width. None infers the token component
+                width; an explicit width enables projection back to that component width.
+            mlp_ratio (float | None): Hidden-width ratio. None omits the hidden layer unless freq_dim is
+                explicit, in which case SingleTokenLayer defaults the ratio to 1.
+            token_type (TokenType | None): 'new_weight' creates a learned token; 'time', 'label', and
+                'time_label' use condition embeddings; None disables the layer.
+            name (str | None): Optional layer name. Defaults to ``None``.
 
         Returns:
             SingleTokenLayer | None: Layer returning one ``[B, 1, dim]`` token,
             or ``None`` when no class token is requested.
         """
 
+        # Build a prefix-token layer when its source is enabled; otherwise expose None.
         token = SingleTokenLayer(
             dim=dim, 
             pos_merger_type=pos_merger_type, 
@@ -1396,10 +1429,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             kwargs (dict[str, object]): Feature-handler overrides.  Accepted keys
                 are documented on ``connection_kwargs``; supplied values take
                 precedence over inferred values.
-            zero_index_base_dim (int | None): Alternate width for source ID 0.
-            increased_dim (int): Width of an additional ``second_list`` tensor.
-            output_dim_flag (bool): Permit automatic forced projection.
-            name (str | None): Keras layer name.
+            zero_index_base_dim (int | None): Alternate width for source ID 0. Defaults to ``None``.
+            increased_dim (int): Width of an additional ``second_list`` tensor. Defaults to ``0``.
+            output_dim_flag (bool): Permit automatic forced projection. Defaults to ``True``.
+            name (str | None): Keras layer name. Defaults to ``None``.
 
         Returns:
             FeatureHandler: A layer accepting a feature list, optional second
@@ -1409,6 +1442,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             AssertionError: If additive sources have incompatible widths.
         """
 
+        # Use the regular base width unless depth-zero source width is overridden.
         increased_dim_ = self._get_unforced_total_dim(
             ids_set, 
             layers_dicts, 
@@ -1427,6 +1461,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 "In connect_type == add, all of the feature dimensions must be equal."
             )
 
+        # Project widened features back to the forced width only when projection is allowed.
         mlp_output_dim = base_dim if dim_forced and increased_dim_ > base_dim and \
                         output_dim_flag else None
         grid_size = self._get_ids_grid_size(
@@ -1493,7 +1528,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             use_decoder (bool): Create ``DiTDecoderBlock`` when true, otherwise
                 ``VisionTransformerBlock``.
             name_prefix (str): Full generated Keras layer-name prefix.
-            mha_query_dim (int | None): External query width when known.
+            mha_query_dim (int | None): External query width when known. Defaults to ``None``.
 
         Returns:
             VisionTransformerBlock | DiTDecoderBlock: A block mapping token and
@@ -1576,8 +1611,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ln_no_adaptation (bool): Disable condition adaptation.
             circumvent_tokens (bool | int): Number of leading special tokens
                 kept outside spatial convolution.
-            kwargs (dict[str, object]): Allowed ``local_mixer_kwargs`` options.
-            name (str | None): Keras layer name.
+            kwargs (dict[str, object]): Allowed ``local_mixer_kwargs`` options. Defaults to ``{}``.
+            name (str | None): Keras layer name. Defaults to ``None``.
 
         Returns:
             LocalMixer: Configured rank-3 token mixer.
@@ -1644,9 +1679,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ln_no_adaptation (bool): Disable condition adaptation.
             circumvent_tokens (bool | int): Number of leading special tokens
                 kept outside resizing.
-            kwargs (dict[str, object]): The corresponding documented
-                downsample/upsample option mapping.
-            name (str | None): Keras layer name.
+            kwargs (dict[str, object]): The corresponding documented downsample/upsample option mapping.
+                Defaults to ``{}``.
+            name (str | None): Keras layer name. Defaults to ``None``.
 
         Returns:
             Downsample | Upsample: Layer mapping ``[B, G*G(+1), D]`` tokens to
@@ -1678,9 +1713,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         flag1 = kwargs.get("pos_merger_type", "add") == "concat" and \
                 kwargs.get("pos_embed_type", "new_weight") is not None
+        # Choose spatial reduction or enlargement according to the requested scaler.
         default_method = "avg_pooling" if scaler_type == "downsample" \
                         else "cnn_transpose"
         scaling_method = kwargs.get("scaling_method", default_method)
+        # Choose the downsampling or upsampling component family.
         width_changing_methods = ("cnn_stride",) if scaler_type == "downsample" \
                                 else ("cnn_transpose", "cnn_interpolate")
         flag2 = kwargs.get("cnn_dim_ratio", 1) > 1 and \
@@ -1730,12 +1767,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if self._current_resolution == self.image_size:
             return x
 
+        # Detach prefix tokens before resizing a spatial grid; grids without prefixes stay
+        # intact.
         x, token = (
             x[:, int(grid_has_tokens):, :], 
             x[:, :int(grid_has_tokens), :]
         ) if grid_has_tokens else (x, None)
 
         x_shape = tf.shape(x)
+        # Infer an omitted source side from spatial token count.
         input_grid_size = tf.cast(
             tf.sqrt(tf.cast(
                 x_shape[1], 
@@ -1765,6 +1805,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             (None, output_grid_size * output_grid_size, dim)
         )
 
+        # Restore detached prefix tokens after spatial resizing.
         x = tf.concat([
             token, x
         ], axis=1) if grid_has_tokens else x
@@ -1800,9 +1841,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             base_grid_size (int): Depth-0 grid side.
             grid_has_tokens (bool | int): Number of prefix tokens included
                 in reshape sizes; booleans retain the one-token API.
-            kwargs (dict[str, object]): ``add_kl`` (bool) and
-                ``latent_dim_ratio`` (one ratio per flatten/unflatten pair).
-            name (str | None): Required/generated model name.
+            kwargs (dict[str, object]): ``add_kl`` (bool) and ``latent_dim_ratio`` (one ratio per
+                flatten/unflatten pair). Defaults to ``{}``.
+            name (str | None): Prefix used to construct child-layer/model names. The signature default
+                is None, but this private factory concatenates suffixes and requires callers to supply a
+                string. Defaults to ``None``.
 
         Returns:
             tf.keras.Model: Model returning ``(x, mean, log_variance)``.  Without
@@ -1895,11 +1938,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
 
 
+        # Accept variable token count for flattening and a fixed vector width for unflattening.
         inputs = layers.Input(
             shape=(None, dim) if reshape_type == "flatten" else source_shape, 
             dtype=self.compute_dtype
         )
 
+        # Resize active tokens to the base grid before flattening.
         x = layers.Lambda(
             resize_to_base, 
             dtype=self.dtype_policy, 
@@ -1910,6 +1955,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             dtype=self.dtype_policy, 
             name=name
         )(x)
+        # Resize reconstructed tokens to the active grid only after unflattening.
         x = layers.Lambda(
             resize_from_base, 
             dtype=self.dtype_policy, 
@@ -1918,12 +1964,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Add a variational latent projection only on KL-enabled flatten stages.
         if kwargs.get("add_kl", False) and reshape_type == "flatten":
+            # Count only flatten stages when matching per-bottleneck latent ratios.
             id_ = sorted(
                 depth for depth, r_type 
                 in ids_dict.items()
                 if r_type == "flatten"
             ).index(key)
             latent_dim_ratio_list = kwargs.get("latent_dim_ratio", [])
+            # Use the configured pair-specific latent ratio, or unit width when none is
+            # supplied.
             latent_dim_ratio = latent_dim_ratio_list[id_] if len(
                 latent_dim_ratio_list
             ) > 0 else 1.
@@ -1958,6 +2007,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ), 
                 dtype=self.dtype_policy.variable_dtype
             )
+            # Project sampled latents back to flattened width only when their width changed.
             z = layers.Dense(
                 target_shape[-1], 
                 dtype=self.dtype_policy, 
@@ -1997,8 +2047,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers_dicts (list[dict]): Previously constructed stages.
             layers_dict (dict): Components already created at this stage.
             base_dim (int): Depth-zero feature width used for inference.
-            kwargs (dict): Token-slice bounds and optional MLP settings.
-            name (str | None): Keras layer name.
+            kwargs (dict[str, object]): Token slice with required integer start/end entries; mlp_ratio
+                optionally adds a hidden layer and activation_function defaults to 'tanh'. The default
+                empty mapping is only a signature placeholder; internal callers supply the required
+                slice bounds. Defaults to ``{}``.
+            name (str | None): Keras layer name. Defaults to ``None``.
 
         Returns:
             tf.keras.layers.Layer: A direct Dense softmax, or a two-Dense
@@ -2096,6 +2149,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Build a transformer block with the width produced by preceding handlers.
         if key in self.vit_block_ids:
+            # Use the external feature width for query-side attention; otherwise infer queries
+            # normally.
             mha_query_dim = layers_dict[self.CAC].output_dim if \
                             key in self.cross_attention_ids_dict and \
                             self.cross_attention_plug_type == "queries" \
@@ -2289,6 +2344,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             # Optionally refine the unpatchified image with residual convolutions.
             if self.use_refiner_cnn:
+                # Use the final token width when refiner hidden channels are omitted.
                 hidden_dim = dim if self.refiner_cnn_hidden_dim is None \
                             else self.refiner_cnn_hidden_dim
 
@@ -2299,6 +2355,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     activation="swish", 
                     name=f"{name}/refiner_conv_1"
                 )(x)
+                # Zero-initialize residual refinement so it starts as an identity; use ordinary
+                # initialization when the refinement is the whole output.
                 h = layers.Conv2D(
                     self.channels, 
                     kernel_size=3, 
@@ -2307,6 +2365,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     bias_initializer="zeros", 
                     name=f"{name}/refiner_conv_2"
                 )(h)
+                # Add a residual refinement to the image or return the refinement directly.
                 x = x + h if self.refiner_cnn_residual else h 
 
             outputs = layers.Activation(
@@ -2324,8 +2383,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Create symbolic Keras inputs for the active resolution.
 
         Args:
-            call_model (bool): Execute :meth:`call` on the symbolic inputs and
-                assign ``self.outputs`` when true; otherwise leave outputs None.
+            call_model (bool): Execute :meth:`call` on the symbolic inputs and assign ``self.outputs``
+                when true; otherwise leave outputs None. Defaults to ``True``.
 
         Returns:
             list[tf.TensorShape]: Shapes for image ``[None, H, H, C]``, scalar
@@ -2355,6 +2414,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         )
 
         self.inputs = (noisy_images, ts, labels)
+        # Optionally execute the symbolic inputs to materialize the model graph.
         self.outputs = self.call(
             self.inputs
         ) if call_model else None
@@ -2375,8 +2435,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             regularizer (tf.keras.layers.Layer | None): Head to expand.
-            source_regularizer (tf.keras.layers.Layer | None): Optional
-                expanded raw head supplying the new EMA output parameters.
+            source_regularizer (tf.keras.layers.Layer | None): Optional expanded raw head supplying the
+                new EMA output parameters. Defaults to ``None``.
 
         Returns:
             tf.keras.layers.Layer | None: Expanded head, or ``None`` when the
@@ -2387,6 +2447,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if regularizer is None:
             return None
 
+        # Expand the final softmax layer of a sequential head, or the head itself.
         old_layer = regularizer.layers[-1] if isinstance(regularizer, models.Sequential) \
                     else regularizer
         old_kernel, old_bias = old_layer.get_weights()
@@ -2404,6 +2465,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Initialize only the new EMA output from the expanded raw head.
         if source_regularizer is not None:
+            # Read matching source weights from its final softmax layer when the source is
+            # sequential.
             source_layer = source_regularizer.layers[-1] \
                         if isinstance(source_regularizer, models.Sequential) \
                         else source_regularizer
@@ -2438,9 +2501,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Build the network against its current configured resolution.
 
         Args:
-            input_shape (tuple[tuple, tuple, tuple] | None): Accepted for the
-                Keras ``Model.build`` protocol but ignored; symbolic shapes are
-                generated by :meth:`_build_model` from model configuration.
+            input_shape (tuple[tuple, tuple, tuple] | None): Accepted for the Keras ``Model.build``
+                protocol but ignored; symbolic shapes are generated by :meth:`_build_model` from model
+                configuration. Defaults to ``None``.
 
         Returns:
             None: Variables are created and the Keras built flag is set.
@@ -2469,12 +2532,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ``[B, H, W, channels]``, times are integer ``[B]``, and labels
                 are integer ``[B]``.  At ``min_depth>0``, the first tensor is
                 the already encoded representation required at that depth.
-            full_return (bool): Return intermediate conditioning, features,
-                regularizer predictions, and VAE statistics when true.
-            min_depth (int): First depth to execute.  ``0`` performs patch/input
-                embedding; ``k`` in ``1..depth`` treats ``inputs[0]`` as depth-k
-                input and skips stages before k.  This is used by VAE decoding.
-            training (bool | None): Keras training mode passed to every layer.
+            full_return (bool): Return intermediate conditioning, features, regularizer predictions, and
+                VAE statistics when true. Defaults to ``False``.
+            min_depth (int): First depth to execute. ``0`` performs patch/input embedding; ``k`` in
+                ``1..depth`` treats ``inputs[0]`` as depth-k input and skips stages before k. This is
+                used by VAE decoding. Defaults to ``0``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | tuple: Normally an image/noise tensor ``[B, H, W, C]``
@@ -2490,6 +2556,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             min_depth=min_depth, 
             training=training
         )
+        # Unpatchify final features only when an image output head is enabled.
         noises = self.unpatchifier(
             (x, cond), 
             training=training
@@ -2504,9 +2571,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Set the active square resolution used by embeddings and reshapers.
 
         Args:
-            resolution (int | None): Positive size divisible by ``patch_size``.
-                ``None`` restores the constructor ``image_size``.  Values may
-                differ from and exceed the base image size.
+            resolution (int | None): Positive size divisible by ``patch_size``. ``None`` restores the
+                constructor ``image_size``. Values may differ from and exceed the base image size.
+                Defaults to ``None``.
 
         Returns:
             None: ``current_resolution`` changes in place.
@@ -2516,6 +2583,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 divisible by ``patch_size``.
         """
 
+        # Restore native image resolution when no active resolution is supplied.
         resolution = self.image_size if resolution is None else resolution
 
         require(
@@ -2549,8 +2617,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             labels (tf.Tensor): Integer label IDs of shape ``[B]``.
             cond_type (CondType | None): ``"time_label"`` uses both,
                 ``"time"`` or ``"label"`` uses one, and ``None`` uses neither.
-            full_return (bool): Also return the individual embeddings.
-            training (bool | None): Keras training mode.
+            full_return (bool): Also return the individual embeddings. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | None | tuple[tf.Tensor | None, tf.Tensor | None,
@@ -2559,13 +2630,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``"add"`` preserves per-embedder width; ``"concat"`` appends it.
         """
 
+        # Treat an absent condition mode as having no requested time/label components.
         cond_type = [] if cond_type is None else cond_type
 
+        # Look up time embeddings only when the selected condition consumes time.
         time_embeds = self.time_embedder(
             times, 
             training=training
         ) if self.time_embedder is not None and "time" in cond_type else None
 
+        # Look up labels when needed by the condition or depth-zero label regularizer.
         label_embeds = self.label_embedder(
             labels, 
             training=training
@@ -2573,6 +2647,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "label" in cond_type or 0 in self.cls_token_regularizer_ids
         ) else None
 
+        # Merge embeddings only when both requested condition components exist.
         conds = self.conds_merger(
             (time_embeds, label_embeds), 
             training=training
@@ -2581,6 +2656,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Derive the combined condition from the configured condition type.
         if conds is None:
+            # Expose only the requested single condition when no combined condition is needed.
+            # Use labels as the single condition, or leave conditioning absent.
             conds = time_embeds if "time" in cond_type else (
                     label_embeds if "label" in cond_type else None
             )
@@ -2605,9 +2682,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ``[B]``.
             cond_type (CondType | None): Condition subset passed to
                 :meth:`embed_conditions`.
-            full_return (bool): Request the three-part condition tuple instead
-                of only its merged tensor.
-            training (bool | None): Keras training mode.
+            full_return (bool): Request the three-part condition tuple instead of only its merged
+                tensor. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tuple[tf.Tensor, object]: Patch tokens of shape
@@ -2624,8 +2704,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             full_return=full_return, 
             training=training
         )
+        # Request component embeddings only when the caller needs full embedding metadata.
         conds_merged = conds_list[0] if full_return else conds_list
 
+        # Override patch-grid size only when the active resolution differs from the native one.
         x = self.patch_embedder(
             images, 
             output_grid_size=self._current_resolution // self.patch_size if 
@@ -2633,6 +2715,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             else None, 
             training=training
         )
+        # Merge conditions into patches only when the patch-condition layer exists.
         x = self.patches_conds_merger((
             x, 
             tf.repeat(
@@ -2659,21 +2742,26 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             x (tf.Tensor): Patch tokens ``[B, P, D]``.
-            token (SingleTokenLayer): Layer that creates the prefix token.
-            token_type (TokenType): ``"new_weight"``, ``"time"``,
-                ``"label"``, or ``"time_label"``.
-            time_embeds (tf.Tensor | None): Reusable ``[B, E]`` time embedding;
-                when omitted for a time token, it is computed from ``times``.
-            label_embeds (tf.Tensor | None): Reusable label embedding.
-            times (tf.Tensor | None): Integer ``[B]`` IDs required when a time
-                embedding was not supplied.
-            labels (tf.Tensor | None): Integer ``[B]`` IDs required when a label
-                embedding was not supplied.
-            training (bool | None): Keras training mode.
+            token (SingleTokenLayer | None): Layer creating the prefix; None is allowed only when
+                token_type is None, in which case no layer is called.
+            token_type (TokenType | None): 'new_weight', 'time', 'label', or 'time_label' selects token
+                content; None returns the input sequence unchanged.
+            time_embeds (tf.Tensor | None): Reusable ``[B, E]`` time embedding; when omitted for a time
+                token, it is computed from ``times``. Defaults to ``None``.
+            label_embeds (tf.Tensor | None): Reusable [B, E] label embedding; when omitted for a label
+                token it is looked up from labels. Defaults to ``None``.
+            times (tf.Tensor | None): Integer ``[B]`` IDs required when a time embedding was not
+                supplied. Defaults to ``None``.
+            labels (tf.Tensor | None): Integer ``[B]`` IDs required when a label embedding was not
+                supplied. Defaults to ``None``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor: Token sequence ``[B, P + 1, D_out]`` with the new token
-            at index 0.
+            at index 0, or the unchanged [B, P, D] input when token_type is None.
         """
 
         # Leave the patch sequence unchanged when this prefix token is disabled.
@@ -2682,12 +2770,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Initialize the class token from timestep embeddings.
         if token_type == "time":
+            # Reuse supplied time embeddings or compute the token's missing time condition.
             embeds = self.time_embedder(
                 times, 
                 training=training
             ) if time_embeds is None else time_embeds
         # Initialize the class token from label embeddings.
         elif token_type == "label":
+            # Reuse supplied label embeddings or compute the token's missing label condition.
             embeds = self.label_embedder(
                 labels, 
                 training=training
@@ -2763,14 +2853,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 image ``[B,H,W,C]``, time IDs ``[B]``, and label IDs ``[B]``.
                 At ``min_depth>0``, the first item is an already embedded token
                 or flattened latent tensor positioned at that depth.
-            max_depth (int): Exclusive zero-based loop stop.  ``-1`` (default)
-                does not stop early; ``0`` executes no stage, and ``k>0``
-                executes stages with zero-based indices below k.
-            min_depth (int): Number of initial stages to skip, in ``0..depth``.
-                Skipped feature slots are filled with ``None``.  ``0`` performs
-                depth-0 embedding; values 1..N are intended for resuming from a
-                matching flattened/unflattened bottleneck representation.
-            training (bool | None): Keras training mode.
+            max_depth (int): Exclusive zero-based loop stop. ``-1`` (default) does not stop early; ``0``
+                executes no stage, and ``k>0`` executes stages with zero-based indices below k. Defaults
+                to ``-1``.
+            min_depth (int): Number of initial stages to skip, in ``0..depth``. Skipped feature slots
+                are filled with ``None``. ``0`` performs depth-0 embedding; values 1..N are intended for
+                resuming from a matching flattened/unflattened bottleneck representation. Defaults to
+                ``0``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tuple: ``(tokens, cond, features_list, regs_list, z_vals_list)``. Tokens
@@ -2817,6 +2910,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
         # Resume from a precomputed feature while rebuilding its conditions.
         else:
+            # Normalize resumed input into one feature plus any later bottleneck latents.
             latent_inputs = list(inputs[0]) if isinstance(
                 inputs[0], (list, tuple)
             ) else [inputs[0]]
@@ -2828,6 +2922,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             )
 
+        # Compute depth-zero regularization only when its auxiliary head exists.
         z = self.labels_embed_reg(
             label_embeds, 
             training=training
@@ -2846,11 +2941,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 continue
 
             is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
+            # During latent decoding, inject the next supplied latent at each later flatten
+            # boundary.
             if self.R in layers_dict and min_depth > 0 and is_flatten:
                 x = latent_inputs[latent_index]
                 latent_index += 1
                 x_mean, x_log_var = None, None
 
+                # Evaluate an auxiliary head on an injected latent only when this stage owns
+                # one.
                 z = layers_dict[self.CTR](
                     self.slice_and_flatten_tokens(
                         x, 
@@ -2864,18 +2963,25 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 regs_list.append(z)
                 continue
 
+            # Apply the stage's feature connector when present; otherwise retain the current
+            # stream.
             x = layers_dict[self.FC](
                 features_list, 
                 cond=cond, 
                 training=training
             ) if self.FC in layers_dict else x
 
+            # Prepare external attention features only when this stage has a cross connector.
             h = layers_dict[self.CAC](
                 features_list, 
                 cond=cond, 
                 training=training
             ) if self.CAC in layers_dict else None
 
+            # Run the attention block when present, routing external features to the configured
+            # query/value side.
+            # Use external queries only for query-side cross attention.
+            # Use external keys/values only for value-side cross attention.
             x = layers_dict[self.VTB](
                 (x, cond), 
                 queries=h if self.cross_attention_plug_type == "queries" else None, 
@@ -2883,26 +2989,31 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             ) if self.VTB in layers_dict else x
 
+            # Apply a configured local spatial mixer or retain the current stream.
             x = layers_dict[self.LM](
                 (x, cond), 
                 training=training
             ) if self.LM in layers_dict else x
 
+            # Reduce the spatial grid only at configured downsampling stages.
             x = layers_dict[self.DS](
                 (x, cond), 
                 training=training
             ) if self.DS in layers_dict else x
 
+            # Enlarge the spatial grid only at configured upsampling stages.
             x = layers_dict[self.US](
                 (x, cond), 
                 training=training
             ) if self.US in layers_dict else x
 
+            # Apply a configured bottleneck reshaper and collect its optional latent statistics.
             x, x_mean, x_log_var = layers_dict[self.R](
                 x, 
                 training=training
             ) if self.R in layers_dict else (x, None, None)
 
+            # Compute an auxiliary class distribution only at selected regularizer stages.
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
                     x, 
@@ -2914,6 +3025,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
+            # Record statistics only for actual variational flatten outputs, not injected
+            # latents or dummy values.
             if x_mean is not None and is_flatten and bool(
                 self.reshaper_kwargs.get("add_kl", False)
             ):
@@ -2921,6 +3034,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         prefix_tokens_num = int(self.cls_token_type is not None) + \
                             int(self.distil_token_type is not None)
+        # Remove class/distillation prefixes from the returned spatial token stream.
         x = x[:, prefix_tokens_num:] if prefix_tokens_num else x
 
         return x, cond, features_list, regs_list, z_vals_list
@@ -2932,13 +3046,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Return TensorFlow names for selected trainable variables.
 
         Args:
-            vars (list[tf.Variable] | None): Variables to inspect.  ``None``
-                selects every current trainable variable.
+            vars (list[tf.Variable] | None): Variables to inspect. ``None`` selects every current
+                trainable variable. Defaults to ``None``.
 
         Returns:
             list[str]: Variable names in input/model order.
         """
 
+        # Inspect all trainable variables unless a caller provides an explicit subset.
         vars = self.trainable_variables if vars is None else vars
         names = [var.name for var in vars]
 
@@ -2986,7 +3101,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 existing output head.
         """
 
+        # Normalize one growth specification or an explicit list of specifications.
         depth_specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
+        # Ignore disabled placeholder entries in the growth specification.
         depth_specs = [spec for spec in depth_specs if spec is not None]
         old_depth = self.depth
         # Leave the architecture unchanged for an empty growth request.
@@ -3034,9 +3151,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
                     # Register routed feature IDs for connector layers.
                     if layer_name in (self.FC[2:], self.CAC[2:]):
+                        # Copy supplied connection options; shorthand values use an empty
+                        # options mapping.
                         ids = options.get("ids") if isinstance(options, dict) else options
+                        # Use the immediately preceding depth for an unspecified connection
+                        # source.
                         ids = [-1] if ids is None or ids is True else ids
+                        # Wrap one source ID as a list before route normalization.
                         ids = [ids] if isinstance(ids, int) else list(ids)
+                        # Register a main feature connection or a cross-attention connection.
                         dict_name = "connection_ids_dict" if layer_name == self.FC[2:] \
                                     else "cross_attention_ids_dict"
 
@@ -3062,14 +3185,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         })
                     # Register transformer-block mode and output-width options.
                     elif layer_name == self.VTB[2:]:
+                        # Copy block options when supplied; shorthand blocks use defaults.
                         block_options = options if isinstance(options, dict) else {}
 
                         self.vit_block_ids = [
                             *self.vit_block_ids, key
                         ]
+                        # Select a decoder-capable attention block only for the decoder option.
                         self.use_decoder_ids = [
                             *self.use_decoder_ids, key
                         ] if block_options.get("use_decoder", False) else self.use_decoder_ids
+                        # Store an explicit FFN output width only when one was requested.
                         self.vit_block_mlp_output_dims = {
                             **self.vit_block_mlp_output_dims, 
                             key: block_options["mlp_output_dim"], 
@@ -3093,10 +3219,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         ]
                     # Register the new depth's flattening direction.
                     elif layer_name == self.R[2:]:
+                        # Copy mapping-valued growth options; bare component selectors use
+                        # defaults.
                         reshaper_options = options \
                             if isinstance(options, dict) else {
                                 "reshape_type": options
                             }
+                        # Reject reshaper options outside direction and per-pair latent width.
                         if set(reshaper_options) - {
                             "reshape_type", "latent_dim_ratio"
                         }:
@@ -3109,6 +3238,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         self.reshaper_ids_dict = {
                             **self.reshaper_ids_dict, key: reshape_type
                         }
+                        # Store a latent width when adding the flatten side of a new pair.
                         if reshape_type == "flatten":
                             ratio = reshaper_options.get(
                                 "latent_dim_ratio", 1.0
@@ -3122,6 +3252,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                                     ratio
                                 ]
                             }
+                        # Reject a latent ratio on unflattening, where no new latent
+                        # distribution is created.
                         elif "latent_dim_ratio" in reshaper_options:
                             raise ValueError(
                                 "latent_dim_ratio belongs on the flatten "
@@ -3144,6 +3276,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 planned_layers.append(layers_dict)
 
             reshaper_items = sorted(self.reshaper_ids_dict.items())
+            # Require consecutive flatten/unflatten pairs after growth.
             if len(reshaper_items) % 2 != 0 or any(
                 first_type != "flatten"
                 or second_depth != first_depth + 1
@@ -3154,6 +3287,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 raise ValueError(
                     "reshapers must be consecutive flatten/unflatten pairs."
                 )
+            # Require one configured latent ratio for each completed flatten pair.
             if self.reshaper_kwargs.get("latent_dim_ratio") and \
             len(self.reshaper_kwargs["latent_dim_ratio"]) != \
             len(reshaper_items) // 2:
@@ -3205,9 +3339,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """Append one class to the label embedding and auxiliary heads.
 
         Args:
-            source_network (object | None): Optional already-expanded raw
-                network.  Its new embedding row initializes the corresponding
-                row in an EMA clone; existing EMA rows remain unchanged.
+            source_network (object | None): Optional already-expanded raw network. Its new embedding row
+                initializes the corresponding row in an EMA clone; existing EMA rows remain unchanged.
+                Defaults to ``None``.
 
         Returns:
             None: ``num_classes``, ``num_labels``, ``label_embedder``, and all
@@ -3256,6 +3390,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             new_label_embedder.set_weights(new_weights)
             self.label_embedder = new_label_embedder
 
+        # Seed the expanded label regularizer from the corresponding source head when supplied.
         self.labels_embed_reg = self._expand_token_regularizer(
             self.labels_embed_reg, 
             source_network.labels_embed_reg if source_network is not None else None
@@ -3263,6 +3398,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         for index, layers_dict in enumerate(self.layers_dicts):
             # Expand only stages that own an auxiliary class head.
             if self.CTR in layers_dict:
+                # Copy each expanded stage regularizer from the matching source network when
+                # supplied.
                 layers_dict[self.CTR] = self._expand_token_regularizer(
                     layers_dict[self.CTR], 
                     source_network.layers_dicts[index][self.CTR]
@@ -3280,12 +3417,17 @@ def run_self_tests() -> dict[str, str]:
     auxiliary token heads, output alternatives, progressive depth growth,
     configuration reconstruction, resolution changes, and invalid arguments.
 
-    Args:
-        None.
-
     Returns:
         dict[str, str]: ``{"DiffusionTransformer": "passed"}`` after all
         assertions succeed.
+
+    The checks construct small TensorFlow models, reset Keras session state, and
+    seed random streams. Successful completion returns the named pass mapping;
+    failed numerical, shape, serialization, or invalid-input expectations raise.
+
+    Raises:
+        AssertionError: If a regression expectation fails.
+        tf.errors.InvalidArgumentError: If a TensorFlow numerical assertion fails.
     """
 
     tf.keras.backend.clear_session()
@@ -3334,6 +3476,7 @@ def run_self_tests() -> dict[str, str]:
         value, merged, stage_features, stage_regs, _ = model(
             inputs, full_return=True, training=False
         )
+        # Expect image output when the fixture enables unpatchification, otherwise token output.
         assert value.shape == (
             (2, 4, 4, 1) if cond_type is not None else (2, 4, 4)
         )
@@ -3777,6 +3920,8 @@ def run_self_tests() -> dict[str, str]:
         })
     except ValueError as error:
         assert "preserve the output-head feature dimension" in str(error)
+    # Fail this regression if no exception occurs: Incompatible progressive output grid must
+    # fail.
     else:
         raise AssertionError("Incompatible progressive output width must fail")
     assert progressive_rollback.depth == 0
@@ -3791,6 +3936,8 @@ def run_self_tests() -> dict[str, str]:
         })
     except ValueError as error:
         assert "consecutive flatten/unflatten pairs" in str(error)
+    # Fail this regression if no exception occurs: Incompatible progressive output grid must
+    # fail.
     else:
         raise AssertionError("An incomplete progressive reshape pair must fail")
     assert progressive_rollback.depth == 0
@@ -3806,6 +3953,8 @@ def run_self_tests() -> dict[str, str]:
         grid_rollback.add_depths("downsampler")
     except ValueError as error:
         assert "preserve the output-head token grid" in str(error)
+    # Fail this regression if no exception occurs: Incompatible progressive output grid must
+    # fail.
     else:
         raise AssertionError("Incompatible progressive output grid must fail")
     assert grid_rollback.depth == 0 and not grid_rollback.layers_dicts
@@ -3819,6 +3968,7 @@ def run_self_tests() -> dict[str, str]:
         parser_rollback.add_depths(["local_mixer", "unknown"])
     except ValueError as error:
         assert "Unknown progressive classifier layer" in str(error)
+    # Fail this regression if no exception occurs: A later unknown progressive layer must fail.
     else:
         raise AssertionError("A later unknown progressive layer must fail")
     assert parser_rollback.depth == 0
@@ -3884,10 +4034,14 @@ def run_self_tests() -> dict[str, str]:
             2, 4
         )
         assert embedded(inputs, training=True).shape == (2, 4, 4, 1)
+        # Learned time embeddings stay trainable; initialized tables follow their trainable
+        # flag.
         assert embedded.time_embedder.embed.trainable is (
             True if embed_kwargs["time_embed_type"] == "new_weight"
             else embed_kwargs["time_embed_trainable"]
         )
+        # Learned label embeddings stay trainable; initialized tables follow their trainable
+        # flag.
         assert embedded.label_embedder.embed.trainable is (
             True if embed_kwargs["label_embed_type"] == "new_weight"
             else embed_kwargs["label_embed_trainable"]
@@ -3910,6 +4064,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert additive_connection(inputs, training=False).shape == (2, 4, 4, 1)
 
+    # Replace only the attention-head count in this alternate-capacity fixture.
     explicit_attention = DiffusionTransformer(
         depth=1, 
         mha_key_dim=2, 
@@ -4019,6 +4174,8 @@ def run_self_tests() -> dict[str, str]:
             DiffusionTransformer(build=False, **{**base, **overrides})
         except AssertionError:
             pass
+        # Fail this regression if no exception occurs: min_depth greater than depth must be
+        # rejected.
         else:
             raise AssertionError(f"Expected invalid configuration to fail: {overrides}")
     try:
@@ -4035,6 +4192,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: min_depth greater than depth must be
+    # rejected.
     else:
         raise AssertionError("A zero-width transformer latent must fail.")
     for bad_resolution in (0, 3, 4.5):
@@ -4042,18 +4201,23 @@ def run_self_tests() -> dict[str, str]:
             depth_zero.set_current_resolution(bad_resolution)
         except AssertionError:
             pass
+        # Fail this regression if no exception occurs: min_depth greater than depth must be
+        # rejected.
         else:
             raise AssertionError(f"Expected invalid resolution: {bad_resolution}")
     try:
         depth_zero.encode(inputs, min_depth=1)
     except AssertionError:
         pass
+    # Fail this regression if no exception occurs: min_depth greater than depth must be
+    # rejected.
     else:
         raise AssertionError("min_depth greater than depth must be rejected")
     try:
         progressive.add_depths("unknown")
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Unknown progressive layers must be rejected.
     else:
         raise AssertionError("Unknown progressive layers must be rejected")
 

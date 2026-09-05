@@ -1,4 +1,10 @@
-"""Base utilities for learned and sinusoidal token embeddings."""
+"""Base utilities for learned and sinusoidal token embeddings.
+
+BaseEmbedding constructs learned or sinusoidal spatial/condition tables and
+merges spatial positions by addition or concatenation. Interpolation modes retain
+a source table until the merge call resolves its target grid. Numerical tables
+use the policy variable dtype and merge into the activation dtype.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -34,24 +40,32 @@ class BaseEmbedding(BaseLayer):
     * ``None`` disables positional embeddings.
 
     Args:
-        dim: Intended output feature width and default normalization width.
-        grid_size: Positive source grid side length. It is required by spatial
+        dim (int): Intended output feature width and default normalization width.
+        grid_size (int | None): Positive source grid side length. It is required by spatial
             interpolation modes and normally describes the construction-time
             patch grid.
-        pos_embed_type: One of :data:`PosEmbedType`, or ``None``. See the mode
+            Defaults to ``None``.
+        pos_embed_type (PosEmbedType | None): One of :data:`PosEmbedType`, or ``None``. See the mode
             descriptions above.
-        pos_interpolation_method: Method accepted by ``tf.image.resize``, such
+            Defaults to ``'new_weight'``.
+        pos_interpolation_method (str): Method accepted by ``tf.image.resize``, such
             as ``"nearest"``, ``"bilinear"``, ``"bicubic"``, or ``"area"``.
-        pos_merger_type: ``"add"`` requires equal content/position widths;
+            Defaults to ``'bicubic'``.
+        pos_merger_type (MergeType): ``"add"`` requires equal content/position widths;
             ``"concat"`` appends position channels on the last axis.
-        embed_freq_dim: Optional raw embedding width. ``None`` uses ``dim``;
+            Defaults to ``'add'``.
+        embed_freq_dim (int | None): Optional raw embedding width. ``None`` uses ``dim``;
             subclasses commonly project this frequency width to ``dim``.
-        embed_steps: Number of discrete embedding rows, for example diffusion
+            Defaults to ``None``.
+        embed_steps (int | None): Number of discrete embedding rows, for example diffusion
             timesteps or label categories. It is required by lookup embeddings.
-        embed_temperature: Positive sinusoidal wavelength temperature.
-        embed_trainable: Whether a non-``"new_weight"`` lookup layer may update
+            Defaults to ``None``.
+        embed_temperature (float): Positive sinusoidal wavelength temperature.
+            Defaults to ``10000.0``.
+        embed_trainable (bool): Whether a non-``"new_weight"`` lookup layer may update
             its initialized table. ``"new_weight"`` is always learned.
-        **kwargs: :class:`BaseLayer` arguments such as ``use_layer_norm``,
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseLayer` arguments such as ``use_layer_norm``,
             ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_ratio``,
             ``mlp_activation_func``, and ``mlp_output_dim``, plus Keras options
             including ``name``, ``dtype``, and ``trainable``. ``ln_dim`` is
@@ -70,6 +84,11 @@ class BaseEmbedding(BaseLayer):
         ``from_config(get_config())`` is supported. The constructor discards
         the inherited serialized ``ln_dim`` value and derives it from ``dim``
         so those widths cannot diverge during reconstruction.
+
+    Attributes:
+        embed_dim (int): Raw embedding width from embed_freq_dim or dim.
+        pos_embed_mlp (tf.keras.Sequential | None): Optional position projection assigned
+            by subclasses; initially None.
     """
 
     def __init__(
@@ -89,18 +108,26 @@ class BaseEmbedding(BaseLayer):
 
         Args:
             dim (int): Positive target feature width.
-            grid_size (int | None): Optional positive source-grid side length.
+            grid_size (int | None): Source-grid side. Defaults to ``None``, allowed for nonspatial
+                condition/token use; interpolation modes require a known source grid.
             pos_embed_type (PosEmbedType | None): Positional representation mode.
+                Defaults to ``'new_weight'``.
             pos_interpolation_method (str): ``tf.image.resize`` method name.
+                Defaults to ``'bicubic'``.
             pos_merger_type (MergeType): ``"add"`` or ``"concat"``.
-            embed_freq_dim (int | None): Optional positive raw embedding width.
-            embed_steps (int | None): Optional positive lookup-table row count.
+                Defaults to ``'add'``.
+            embed_freq_dim (int | None): Raw embedding width. Defaults to ``None``, using dim before any
+                subclass projection.
+            embed_steps (int | None): Discrete lookup row count. Defaults to ``None``, selecting spatial
+                rather than lookup construction for 1d_sincos; ConditionEmbedding requires a count.
             embed_temperature (float): Positive sinusoidal temperature.
+                Defaults to ``10000.0``.
             embed_trainable (bool): Whether initialized lookup tables train.
+                Defaults to ``False``.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         temp_val = kwargs.pop("ln_dim", dim)
@@ -123,10 +150,13 @@ class BaseEmbedding(BaseLayer):
             raise ValueError(
                 f"pos_merger_type must be one of {get_args(MergeType)}."
             )
+        # Require a positive sinusoidal temperature before constructing frequency scales.
         if self.embed_temperature <= 0:
             raise ValueError("embed_temperature must be positive.")
 
 
+        # Use the target width for embeddings unless a separate raw frequency width is
+        # configured.
         self.embed_dim = self.dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.pos_embed_mlp = None
 
@@ -144,9 +174,10 @@ class BaseEmbedding(BaseLayer):
             positions (np.ndarray): Rank-one NumPy array or eagerly convertible tensor of
                 numeric positions, shaped ``[count]``.
             temperature (float): Positive wavelength temperature.
+                Defaults to ``10000.0``.
 
         Returns:
-            ``np.ndarray`` shaped ``[count, dim]``. Values use the policy
+            np.ndarray: shaped ``[count, dim]``. Values use the policy
             variable dtype so mixed-precision tables remain numerically stable.
         """
 
@@ -186,10 +217,12 @@ class BaseEmbedding(BaseLayer):
             dim (int): Positive output channel count.
             grid_size (int): Positive square-grid side length.
             temperature (float): Positive wavelength temperature shared by both axes.
-            name (str | None): Optional TensorFlow operation name.
+                Defaults to ``10000.0``.
+            name (str | None): TensorFlow conversion-operation name. Defaults to ``None``, leaving naming to
+                TensorFlow.
 
         Returns:
-            ``tf.Tensor`` in the policy variable dtype and shape
+            tf.Tensor: in the policy variable dtype and shape
             ``[1, grid_size * grid_size, dim]`` in row-major order.
         """
 
@@ -235,7 +268,7 @@ class BaseEmbedding(BaseLayer):
                 ``2 * (dim // 2)`` channels, so odd values lose one channel.
 
         Returns:
-            ``tf.Tensor`` shaped ``[batch, 2 * (dim // 2)]``. This helper is
+            tf.Tensor: shaped ``[batch, 2 * (dim // 2)]``. This helper is
             retained for compatibility; new code uses
             :meth:`_get_1d_sincos_embedding`.
         """
@@ -267,7 +300,7 @@ class BaseEmbedding(BaseLayer):
                 ``4 * (dim // 4)`` channels.
 
         Returns:
-            ``tf.Tensor`` in the policy variable dtype shaped
+            tf.Tensor: in the policy variable dtype shaped
             ``[1, h * w, 4 * (dim // 4)]``. This compatibility helper is not
             used by the current positional modes.
         """
@@ -308,7 +341,7 @@ class BaseEmbedding(BaseLayer):
 
         ``1d_interpolate`` / ``2d_interpolate``
             Creates a fixed sine/cosine table at the source resolution and
-            resizes it to the target resolution.
+            retains it for later resizing by _pos_merger.
 
         ``1d_learned_interpolate`` / ``2d_learned_interpolate``
             Creates a learned table at the source resolution and resizes it to
@@ -320,33 +353,51 @@ class BaseEmbedding(BaseLayer):
 
         Args:
             embed_dim (int | None): Table width; ``None`` uses ``self.embed_dim``.
+                Defaults to ``None``.
             grid_size (int | None): Source square-grid size; ``None`` uses
                 ``self.grid_size``. Required by interpolation modes.
-            output_grid_size (int | None): Target square-grid size. Required by spatial
-                ``new_weight`` and sine/cosine modes.
+                Defaults to ``None``.
+            output_grid_size (int | None): Target grid side for spatial new_weight and direct sine/cosine
+                tables. Defaults to ``None``, permitted only for source-interpolation tables, disabled
+                positions, or a discrete 1d_sincos lookup.
             pos_embed_type (PosEmbedType | None): Positional mode override. ``None`` inherits the
                 instance mode; when the instance mode is also ``None``, this
                 method returns ``None``.
-            embed_steps (int | None): Number of rows for a non-spatial ``"1d_sincos"``
-                condition table. ``None`` makes that mode spatial with
-                ``output_grid_size ** 2`` rows.
+                Defaults to ``None``.
+            embed_steps (int | None): Lookup row count for nonspatial 1d_sincos. Defaults to ``None``,
+                inheriting self.embed_steps. When the resolved count is None, the table uses
+                output_grid_size ** 2 spatial rows.
             temperature (float | None): Positive sinusoidal temperature; ``None`` uses the
                 configured value.
+                Defaults to ``None``.
             name (str | None): Optional weight or tensor name.
+                Defaults to ``None``.
 
         Returns:
-            ``tf.Variable | tf.Tensor | np.ndarray | None``. Spatial results
+            tf.Variable | tf.Tensor | np.ndarray | None:. Spatial results
             have shape ``[1, positions, embed_dim]`` except the internal 2-D
             learned source table ``[1, grid, grid, embed_dim]``. A condition
             ``1d_sincos`` table has shape ``[embed_steps, embed_dim]``.
+
+        Side Effects:
+            Stores the resolved pos_embed_type on this instance and registers a new
+            trainable weight for learned table modes. Fixed tables use the stable
+            policy variable dtype; this factory does not resize or merge content.
         """
 
+        # Inherit the raw embedding width when no table-specific width is supplied.
         embed_dim = self.embed_dim if embed_dim is None else embed_dim
+        # Inherit the source grid when no table-specific grid is supplied.
         grid_size = self.grid_size if grid_size is None else grid_size
+        # Disable positions when neither call nor instance selects a mode; otherwise inherit
+        # or override it.
         pos_embed_type = None if pos_embed_type is None and self.pos_embed_type is None \
                         else pos_embed_type or self.pos_embed_type
+        # Inherit the configured lookup length when the table call omits it.
         embed_steps = self.embed_steps if embed_steps is None else embed_steps
+        # Use the configured sinusoidal temperature when no override is supplied.
         temperature = self.embed_temperature if temperature is None else temperature
+        # Derive the child name from its owner when no explicit name is supplied.
         name = f"{self.name}/positional_embeddings" if name is None else name
 
         self.pos_embed_type = pos_embed_type
@@ -371,6 +422,8 @@ class BaseEmbedding(BaseLayer):
         # Build a fixed one-dimensional sinusoidal lookup or spatial table.
         if pos_embed_type == "1d_sincos":
             spatial_embedding = embed_steps is None
+            # Spatial sinusoidal tables use squared grid positions and a batch axis;
+            # condition tables use lookup rows.
             embedding = self._get_1d_sincos_embedding(
                 dim=embed_dim, 
                 positions=tf.range(
@@ -383,6 +436,8 @@ class BaseEmbedding(BaseLayer):
                 temperature=temperature
             )
 
+            # Spatial sinusoidal tables use squared grid positions and a batch axis;
+            # condition tables use lookup rows.
             return embedding[None, ...] if spatial_embedding else embedding
 
         # Build the fixed one-dimensional source table for later resizing.
@@ -466,12 +521,14 @@ class BaseEmbedding(BaseLayer):
                 initialized non-new tables and may raise ``TypeError``.
 
         Returns:
-            ``tf.keras.layers.Embedding`` mapping integer tensors of arbitrary
+            tf.keras.layers.Embedding: mapping integer tensors of arbitrary
             shape to that shape plus a final ``embed_dim`` axis. A
             ``"new_weight"`` layer is always trainable; other modes honor the
             instance's ``embed_trainable`` flag.
         """
 
+        # Inherit the positional mode for lookup initialization, preserving a fully disabled
+        # mode.
         kwargs["pos_embed_type"] = None if kwargs.get("pos_embed_type", None) is None \
                                 and self.pos_embed_type is None \
                                 else kwargs.get("pos_embed_type", None) or self.pos_embed_type
@@ -506,14 +563,18 @@ class BaseEmbedding(BaseLayer):
             x (tf.Tensor): Floating content tensor shaped ``[batch, tokens, channels]``.
             batch_size (int | tf.Tensor | None): Scalar integer used to repeat
                 the positional table. ``None`` reads it from ``x``.
-            output_grid_size (int | None): Optional target grid side. Supplying it resizes
-                even a non-interpolation table; interpolation modes use it or
-                the subclass's ``self.output_grid_size``.
+                Defaults to ``None``.
+            output_grid_size (int | tf.Tensor | None): Target spatial side. Defaults to ``None``:
+                interpolation modes use self.output_grid_size, while direct modes use the existing table
+                unchanged. An explicit scalar side resizes any positional mode and must match the content
+                token count.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to the positional
                 projection MLP.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor``. With no positional mode, this is ``x`` unchanged.
+            tf.Tensor:. With no positional mode, this is ``x`` unchanged.
             ``"add"`` preserves shape and requires equal last dimensions;
             ``"concat"`` returns ``[batch, tokens, channels + pos_channels]``.
             Spatial token count must equal ``output_grid_size ** 2``.
@@ -523,14 +584,19 @@ class BaseEmbedding(BaseLayer):
         if self.pos_embed_type is None:
             return x
 
+        # Infer positional broadcast batch size from content unless the caller supplies it.
         batch_size = tf.shape(x)[0] if batch_size is None else batch_size
         pos_embed = self.pos_embed
 
         interpolated_pos_embed = "interpolate" in self.pos_embed_type
         # Resize whenever explicitly requested or required by an interpolation mode.
         if output_grid_size is not None or interpolated_pos_embed:
+            # Use the subclass target grid for an omitted resize target; honor an explicit
+            # target.
             output_grid_size = self.output_grid_size if output_grid_size is None \
                             else output_grid_size
+            # Interpolation modes reshape the source grid; direct tables reshape their
+            # original target grid.
             source_grid_size = self.grid_size if interpolated_pos_embed \
                              else self.output_grid_size
 
@@ -571,6 +637,7 @@ class BaseEmbedding(BaseLayer):
             ))
             pos_embed.set_shape((1, None, pos_embed_dim))
 
+        # Project positional features only when a positional MLP was configured.
         pos_embed = self.pos_embed_mlp(
             pos_embed, 
             training=training
@@ -609,6 +676,8 @@ def run_self_tests() -> dict[str, str]:
             BaseEmbedding(dim=4, pos_embed_type=invalid_type)
         except ValueError:
             pass
+        # This invalid case should already have raised: Unknown positional embedding modes
+        # must fail.
         else:
             raise AssertionError("Unknown positional embedding modes must fail.")
     for invalid_merge in ("multiply", "", None):
@@ -616,6 +685,8 @@ def run_self_tests() -> dict[str, str]:
             BaseEmbedding(dim=4, pos_merger_type=invalid_merge)
         except ValueError:
             pass
+        # This invalid case should already have raised: Unknown positional merge modes must
+        # fail.
         else:
             raise AssertionError("Unknown positional merge modes must fail.")
     try:
@@ -624,6 +695,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # This invalid case should already have raised: Nonpositive sinusoidal temperatures must
+    # fail.
     else:
         raise AssertionError("Nonpositive sinusoidal temperatures must fail.")
 
@@ -733,6 +806,8 @@ def run_self_tests() -> dict[str, str]:
         invalid_interpolation._pos_merger(tf.ones((1, 9, 4)))
     except ValueError:
         pass
+    # This invalid case should already have raised: Unknown TensorFlow resize methods must
+    # fail.
     else:
         raise AssertionError("Unknown TensorFlow resize methods must fail.")
 
@@ -762,6 +837,8 @@ def run_self_tests() -> dict[str, str]:
         additive._pos_merger(tf.ones((1, 3, 4)))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Mismatched content and position counts
+    # must fail.
     else:
         raise AssertionError("Mismatched content and position counts must fail.")
 

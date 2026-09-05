@@ -1,4 +1,11 @@
-"""Diffusion-transformer encoder with a context-aware DiT decoder head."""
+"""Composite diffusion network with a transformer encoder and DiT decoder.
+
+The encoder provides conditions and depth-indexed features while the attached
+decoder owns the image output. Three-input calls share the noisy image between
+branches; four-input calls provide a separate decoder/teacher-forcing image.
+Progressive growth, class expansion, serialization, and active resolution are
+coordinated across both branches for the standard DiffusionModel wrapper.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -43,6 +50,18 @@ class DiTEncoderDecoder(DiffusionTransformer):
         encoder (DiffusionTransformer): Read-only alias returning ``self``.
         decoder (DiTDecoder): Decoder receiving encoder condition/features.
         supports_teacher_forcing (bool): Always ``True``.
+
+    Attributes:
+        encoder (DiffusionTransformer): This object itself, exposed as a property
+            to avoid a cyclic Keras tracking reference.
+        decoder (DiTDecoder): Attached image-output branch with validated encoder
+            metadata, synchronized label vocabulary, and compatible image shape.
+        encoder_kwargs (dict[str, object]): Saved nested encoder options copied
+            from constructor input; flat constructor values take precedence.
+        decoder_kwargs (dict[str, object]): Saved nested decoder options copied
+            from constructor input. Derived metadata reflects the actual encoder.
+        layers_dicts (list[dict[str, tf.keras.layers.Layer]]): Encoder stages;
+            decoder stages are stored separately on decoder.layers_dicts.
     """
 
     def __init__(
@@ -55,37 +74,28 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Initialize the encoder state and attached decoder.
 
         Args:
-            encoder_kwargs (dict[str, object] | None): Nested
-                :class:`DiffusionTransformer` arguments, including dimensions,
-                condition/token choices, every routing ``*_ids_dict``, and
-                component ``*_kwargs``.  Flat values in ``**kwargs`` override
-                equal nested keys.  ``None`` uses transformer defaults.
-                ``use_unpatchify`` is forced to false because the attached
-                decoder exclusively owns the composite output head.
-            decoder_kwargs (dict[str, object] | None): :class:`DiTDecoder`
-                arguments.  Shared class, schedule, image, patch, token-width,
-                and condition-width values default to the encoder.  Encoder
-                feature dimensions and grids are derived from the actual
-                encoder; explicitly supplied metadata must match.  A
-                supplied ``build`` value is ignored because this model owns
-                symbolic construction.  ``shift_inputs`` defaults to ``False``;
-                pass ``True`` for right-shifted teacher forcing.  The decoder
-                also inherits the outer dtype policy unless this mapping
-                provides its own ``dtype``. Its image size and channels must
-                match the encoder, and ``use_unpatchify`` must be true so the
-                generic diffusion wrapper receives image-shaped predictions.
-                ``cond_dim`` must also match unless
-                ``decoder_separate_cond=True``. Any decoder timestep/label
-                embedding tables must cover the encoder's wrapper-visible ID
-                ranges. Feature-width merges and encoder features used as
-                cross-attention queries require matching encoder/decoder class
-                and distillation token settings; attention values may differ
-                in length.
-                Configure KL bottlenecks and token regularizers on the encoder,
-                because generic wrapper losses read the encoder metadata.
-            build (bool): Build the four-input symbolic graph immediately.
-                ``False`` defers building until :meth:`build` or the first
-                Keras call.
+            encoder_kwargs (dict[str, object] | None): Nested :class:`DiffusionTransformer` arguments,
+                including dimensions, condition/token choices, every routing ``*_ids_dict``, and
+                component ``*_kwargs``. Flat values in ``**kwargs`` override equal nested keys. ``None``
+                uses transformer defaults. ``use_unpatchify`` is forced to false because the attached
+                decoder exclusively owns the composite output head. Defaults to ``None``.
+            decoder_kwargs (dict[str, object] | None): :class:`DiTDecoder` arguments. Shared class,
+                schedule, image, patch, token-width, and condition-width values default to the encoder.
+                Encoder feature dimensions and grids are derived from the actual encoder; explicitly
+                supplied metadata must match. A supplied ``build`` value is ignored because this model
+                owns symbolic construction. ``shift_inputs`` defaults to ``False``; pass ``True`` for
+                right-shifted teacher forcing. The decoder also inherits the outer dtype policy unless
+                this mapping provides its own ``dtype``. Its image size and channels must match the
+                encoder, and ``use_unpatchify`` must be true so the generic diffusion wrapper receives
+                image-shaped predictions. ``cond_dim`` must also match unless
+                ``decoder_separate_cond=True``. Any decoder timestep/label embedding tables must cover
+                the encoder's wrapper-visible ID ranges. Feature-width merges and encoder features used
+                as cross-attention queries require matching encoder/decoder class and distillation token
+                settings; attention values may differ in length. Configure KL bottlenecks and token
+                regularizers on the encoder, because generic wrapper losses read the encoder metadata.
+                Defaults to ``None``.
+            build (bool): Build the four-input symbolic graph immediately. ``False`` defers building
+                until :meth:`build` or the first Keras call. Defaults to ``True``.
             **kwargs (object): Flat transformer arguments plus standard Keras
                 ``Model`` options ``name``, ``trainable``, ``dtype``, and
                 ``dynamic``.  Flat values take precedence over
@@ -101,9 +111,11 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 diffusion wrapper's image contract.
         """
 
+        # Copy supplied nested encoder options or start from an independent empty mapping.
         saved_encoder_kwargs = (
             {} if encoder_kwargs is None else deepcopy(encoder_kwargs)
         )
+        # Copy supplied nested decoder options or start from an independent empty mapping.
         saved_decoder_kwargs = (
             {} if decoder_kwargs is None else deepcopy(decoder_kwargs)
         )
@@ -151,6 +163,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         }
         for key, value in inferred_metadata.items():
             supplied = decoder_config.get(key)
+            # Normalize list-valued supplied metadata before comparing it with encoder-derived
+            # metadata.
             matches = (
                 isinstance(supplied, (list, tuple))
                 and list(supplied) == value
@@ -212,6 +226,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 self.layers_dicts, 
                 self.grid_size
             )
+            # Expose the encoder's zero flat-grid sentinel as None in decoder metadata.
             grids.append(None if grid_size == 0 else grid_size)
             flat_states.append(grid_size == 0)
 
@@ -230,12 +245,18 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Args:
             i (int): Zero-based stage index, or ``-1`` for depth zero.
             layers_dicts (list[dict]): Encoder stage dictionaries.
-            base_grid_size (int): Depth-zero patch grid side.
-            skip_reshaper (bool): Ignore reshaper changes when true.
+            base_grid_size (int): Depth-zero grid side forwarded to the inherited resolver, or None when
+                no spatial side is available.
+            skip_reshaper (bool): Ignore reshaper changes when true. Defaults to ``False``.
+
+            base_is_flat (bool): Compatibility argument currently unused; the inherited resolver
+                determines flat state from the stage structure and returns zero for a flattened output.
+                Defaults to ``False``.
 
         Returns:
-            int | None: Latest square grid side, or ``None`` after a flatten
-            reshaper until a later unflatten/spatial layer restores a grid.
+            int | None: Latest square spatial side. A flattened rank-two reshaper
+            output uses integer sentinel 0; None can propagate when the supplied
+            base grid itself is unknown. skip_reshaper=True ignores rank changes.
         """
 
         return super()._get_last_grid_size(
@@ -303,6 +324,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         )
         # Detect routed features whose prefix positions have different meanings.
         if encoder_prefix_tokens != decoder_prefix_tokens:
+            # Validate token compatibility against a self-connector when present, otherwise the
+            # encoder aggregator.
             feature_routes_require_match = any(
                 self._handler_merges_feature_width(
                     self.decoder.connection_kwargs
@@ -426,9 +449,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Build the composite against its four symbolic inputs.
 
         Args:
-            input_shape (tuple | None): Accepted by the Keras build protocol but
-                ignored; active encoder and decoder resolutions determine the
-                symbolic shapes.
+            input_shape (tuple | None): Accepted by the Keras build protocol but ignored; active encoder
+                and decoder resolutions determine the symbolic shapes. Defaults to ``None``.
 
         Returns:
             None: Encoder/decoder variables are created and the outer model is
@@ -442,8 +464,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Create encoder and teacher-forcing symbolic inputs.
 
         Args:
-            call_model (bool): Populate ``outputs`` through :meth:`call` when
-                true; false creates only the four symbolic inputs.
+            call_model (bool): Populate ``outputs`` through :meth:`call` when true; false creates only
+                the four symbolic inputs. Defaults to ``True``.
 
         Returns:
             list[tf.TensorShape]: Encoder image ``[None,H,H,C]``, timestep and
@@ -473,6 +495,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         )
 
         self.inputs = (encoder_images, times, labels, decoder_images)
+        # Call the symbolic composite only when eager graph construction is requested.
         self.outputs = self.call(self.inputs) if call_model else None
 
         return [input_layer.shape for input_layer in self.inputs]
@@ -489,9 +512,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Args:
             inputs (tuple[tf.Tensor, ...]): Three encoder tensors, optionally
                 followed by an explicit decoder image.
-            min_depth (int): Encoder resume depth. At depth zero the three-input
-                form reuses the encoder image. At later depths it creates a
-                zero decoder image because ``inputs[0]`` is a latent tensor.
+            min_depth (int): Encoder resume depth. At depth zero the three-input form reuses the encoder
+                image. At later depths it creates a zero decoder image because ``inputs[0]`` is a latent
+                tensor. Defaults to ``0``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]: Encoder input,
@@ -504,9 +527,13 @@ class DiTEncoderDecoder(DiffusionTransformer):
         # Reuse encoder images as decoder inputs for the standard three-tensor call.
         if len(inputs) == 3:
             encoder_input, times, labels = inputs
+            # Read the first resumed latent as the encoder feature or keep an ordinary tensor
+            # input.
             batch_input = encoder_input[0] if min_depth > 0 and isinstance(
                 encoder_input, (list, tuple)
             ) else encoder_input
+            # Reuse the original image for default decoder input; resumed encoder features
+            # require a zero image.
             decoder_images = encoder_input if min_depth == 0 else tf.zeros(
                 (
                     tf.shape(batch_input)[0],
@@ -592,20 +619,22 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 ``[B,H_d,W_d,C_d]`` respectively; times/labels are integer
                 ``[B]``.  Three inputs reuse the encoder image in the decoder,
                 so that tensor must satisfy both configured image interfaces.
-            full_return (bool): Return the standard five-item transformer tuple
-                when true.
-            training (bool | None): Keras training mode for both submodels.
-            min_depth (int): Encoder resume depth. ``0`` embeds an image;
-                values ``1..depth`` treat ``inputs[0]`` as a matching encoder
-                representation. Without a fourth input, the decoder starts
-                from a zero image at its active resolution.
+            full_return (bool): Return the standard five-item transformer tuple when true. Defaults to
+                ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): Encoder resume depth. ``0`` embeds an image; values ``1..depth`` treat
+                ``inputs[0]`` as a matching encoder representation. Without a fourth input, the decoder
+                starts from a zero image at its active resolution. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Decoder image/noise ``[B,H,W,C]``. Full return is
             ``(noises, encoder_cond, encoder_features, encoder_regs,
-            encoder_z_vals_list)``; condition, skipped features/regularizers,
-            and
-            absent latent statistics may contain ``None``.
+            encoder_z_vals_list)``; the condition and skipped feature/regularizer slots may be None.
+            encoder_z_vals_list is an ordered list of actual mean/log-variance pairs,
+            empty when no encoder KL bottleneck was executed.
 
         Raises:
             ValueError: If the input has neither three nor four tensors, or a
@@ -658,12 +687,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Args:
             inputs (tuple[tf.Tensor, ...]): Three- or four-input form accepted by
                 :meth:`call`.
-            full_return (bool): Include encoder condition, features,
-                regularizers, and latent statistics.
-            training (bool | None): Keras training mode.
-            min_depth (int): Encoder resume depth forwarded to :meth:`call`.
-                With three inputs, values above zero initialize the decoder
-                image to zeros.
+            full_return (bool): Include encoder condition, features, regularizers, and latent
+                statistics. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): Encoder resume depth forwarded to :meth:`call`. With three inputs, values
+                above zero initialize the decoder image to zeros. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Exactly the result contract of :meth:`call`.
@@ -768,8 +799,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Grow the encoder and attached decoder label vocabularies together.
 
         Args:
-            source_network (object | None): Optional already-expanded raw
-                encoder-decoder used to initialize new EMA embedding rows.
+            source_network (object | None): Optional already-expanded raw encoder-decoder used to
+                initialize new EMA embedding rows. Defaults to ``None``.
 
         Returns:
             None: Both label vocabularies grow by one and their saved
@@ -777,6 +808,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """
 
         super().add_class(source_network=source_network)
+        # Copy the corresponding source decoder's class column when source weights are supplied.
         self.decoder.add_class(
             source_network=(
                 source_network.decoder if source_network is not None else None
@@ -790,17 +822,20 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """Synchronize active encoder and decoder resolutions.
 
         Args:
-            resolution (int | None): Positive size divisible by both patch
-                sizes.  ``None`` restores each branch's configured image size.
+            resolution (int | None): Positive size divisible by both patch sizes. ``None`` restores each
+                branch's configured image size. Defaults to ``None``.
 
         Returns:
             None: Both branches are updated in place.
         """
 
+        # Restore the encoder's native resolution when the requested resolution is omitted.
         encoder_resolution = self.image_size if resolution is None else resolution
         resolutions_and_patches = [(encoder_resolution, self.patch_size)]
         # Validate the decoder's derived resolution after combined updates.
         if hasattr(self, "decoder"):
+            # Restore native decoder resolution or match the explicitly selected encoder
+            # resolution.
             decoder_resolution = self.decoder.image_size if resolution is None \
                 else resolution
             resolutions_and_patches.append(
@@ -821,6 +856,14 @@ def run_self_tests() -> dict[str, str]:
 
     Returns:
         dict[str, str]: One passed entry for :class:`DiTEncoderDecoder`.
+
+    The checks construct small TensorFlow models, reset Keras session state, and
+    seed random streams. Successful completion returns the named pass mapping;
+    failed numerical, shape, serialization, or invalid-input expectations raise.
+
+    Raises:
+        AssertionError: If a regression expectation fails.
+        tf.errors.InvalidArgumentError: If a TensorFlow numerical assertion fails.
     """
 
     import numpy as np
@@ -972,6 +1015,7 @@ def run_self_tests() -> dict[str, str]:
         model.add_depths({"encoder": "vision_transformer_block"})
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: The public targeted key is named network.
     else:
         raise AssertionError("The public targeted key is named network.")
     before_depths = (model.depth, model.decoder.depth)
@@ -982,6 +1026,8 @@ def run_self_tests() -> dict[str, str]:
         })
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Only three or four composite inputs are
+    # valid.
     else:
         raise AssertionError("Invalid branch growth must fail preflight.")
     assert (model.depth, model.decoder.depth) == before_depths
@@ -989,6 +1035,8 @@ def run_self_tests() -> dict[str, str]:
         model((images, times))
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Only three or four composite inputs are
+    # valid.
     else:
         raise AssertionError("Only three or four composite inputs are valid.")
     resumed = model(
@@ -1007,6 +1055,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Shared decoder conditioning must match
+    # cond_dim.
     else:
         raise AssertionError("Decoder metadata must match the encoder.")
     try:
@@ -1020,6 +1070,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Shared decoder conditioning must match
+    # cond_dim.
     else:
         raise AssertionError(
             "Routed encoder/decoder class-token settings must match."
@@ -1036,6 +1088,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Shared decoder conditioning must match
+    # cond_dim.
     else:
         raise AssertionError(
             "Cross-attention queries must match decoder token counts."
@@ -1059,6 +1113,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Shared decoder conditioning must match
+    # cond_dim.
     else:
         raise AssertionError("Shared decoder conditioning must match cond_dim.")
     separate_cond = DiTEncoderDecoder(
@@ -1085,6 +1141,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # Fail this regression if no exception occurs: Decoder embedding tables must cover
+        # wrapper-visible IDs.
         else:
             raise AssertionError(
                 "Decoder embedding tables must cover wrapper-visible IDs."

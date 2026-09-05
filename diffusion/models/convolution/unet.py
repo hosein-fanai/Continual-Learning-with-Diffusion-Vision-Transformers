@@ -1,4 +1,11 @@
-"""Depth-based conditional convolutional U-Net for diffusion training."""
+"""Hierarchical convolutional diffusion network with depth-indexed features.
+
+UNet supplies the same raw noise-prediction/intermediate-feature contract as
+the transformer families. Optional central or multiscale latent bottlenecks
+support variational generation, and class/depth expansion supports continual
+and progressive learning. Wrappers own noising, losses, EMA, and optimization;
+run_self_tests contains compact executable integration checks for this model.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -42,46 +49,35 @@ class UNet(ArgumentSaverModel):
     Explicitly enabling skips inserts a variational pair at every encoder level,
     making each routed skip independently sampleable.
 
-    Args:
-        num_classes: Number of real dataset classes, or ``None`` for dynamic
-            continual growth. After growth, ``get_config()`` records the
-            current class width for checkpoint reconstruction.
-        use_cfg: Reserve label ID 0 for classifier-free guidance.
-        timesteps: Number of discrete diffusion timesteps.
-        image_size: Native square input resolution.
-        channels: Input and output image channels.
-        widths: Encoder feature widths from high to low resolution.
-        block_depth: Residual blocks per encoder and decoder stack.
-        bottleneck_width: Bottleneck feature width.
-        bottleneck_depth: Residual blocks in the bottleneck stack.
-        image_embedding_dim: Width of the initial 1x1 image projection.
-        time_embedding_dim: Timestep embedding width.
-        label_embedding_dim: Label embedding width.
-        activation_func: Keras activation used in residual blocks.
-        final_activation_func: Activation applied to predicted noise.
-        use_batch_norm: Enable batch normalization in residual blocks.
-        dropout_rate: Spatial dropout rate inside residual blocks.
-        downsampling_method: ``avg_pooling``, ``max_pooling``, or
-            ``cnn_stride``.
-        upsampling_method: ``interpolate``, ``cnn_interpolate``, or
-            ``cnn_transpose``.
-        upsampling_interpolation: Interpolation used by image upsamplers.
-        use_skip_connections: Use encoder-to-decoder skips. ``None`` enables
-            them for an ordinary U-Net and disables them for a reshaped/VAE
-            bottleneck. Explicit ``True`` makes every skip stochastic.
-        reshaper_ids_dict: Optional exact model-computed flatten/unflatten
-            mapping. Leave it empty to create the required stages automatically.
-        reshaper_kwargs: ``add_kl`` and an optional ``latent_dim_ratio`` list
-            ordered by ascending flatten/unflatten pair depth.
-        cls_token_regularizer_ids: Depth IDs for auxiliary class heads. ID 0
-            regularizes the label embedding; ``[None]`` selects every depth.
-            The historical name is retained for wrapper compatibility.
-        cls_token_regularizer_kwargs: Retained transformer-compatible metadata.
-        extra_depth_specs: Shape-preserving residual depths previously added by
-            :meth:`add_depths`; normally left empty at construction.
-        name_prefix: Prefix for generated layer names.
-        build: Build all variables immediately for EMA cloning.
-        **kwargs (object): Standard Keras model options.
+
+    Attributes:
+        layers_dicts (list[LayerDict]): Tracked ordered convolution, scaling,
+            connector, reshaper, and auxiliary-head stages. Depth zero is embedded
+            input; list index i represents depth i + 1.
+        depth (int): Number of current processing stages, including appended
+            progressive stages; initially derived from widths and reshape mode.
+        dynamic_num_classes (bool): Whether construction requested num_classes=None.
+        num_classes (int): Current real-class count; initially zero for dynamic
+            growth, and updated in serialized configuration after add_class.
+        num_labels (int): Real-class count plus one reserved CFG row when enabled.
+        condition_dim (int): Sum of time and label embedding widths.
+        image_embedder (tf.keras.layers.Layer): Initial image channel projection.
+        time_embedder (ConditionEmbedding): Discrete timestep lookup.
+        label_embedder (ConditionEmbedding): Class/null-label lookup.
+        labels_embed_reg (tf.keras.layers.Layer | None): Optional depth-zero label
+            regularizer; None when its ID was not selected.
+        use_reshaper (bool): Whether explicit routes or add_kl request reshaping.
+        reshaper_ids_dict (dict[int, str]): Exact generated flatten/unflatten pairs;
+            empty for an ordinary unreshaped U-Net.
+        output_projection (tf.keras.layers.Conv2D): Zero-initialized 1x1
+            convolution mapping final features to image channels.
+        output_activation (tf.keras.layers.Activation): Configured final activation
+            applied after the image projection.
+        current_resolution (int): Active square input size, initially image_size.
+
+    All constructor controls are documented with types and defaults in __init__.
+    Their normalized copies are retained for serialization; mutable routing and
+    option containers are independent of caller-owned dictionaries/lists.
     """
 
     FC = "0_feature_connector"
@@ -131,53 +127,61 @@ class UNet(ArgumentSaverModel):
         """Initialize a conditional convolutional diffusion U-Net.
 
         Args:
-            num_classes (int | None): Positive number of real classes, or
-                ``None`` for dynamic continual growth with CFG.
-            use_cfg (bool): Whether label ID 0 is reserved for CFG.
-            timesteps (int): Positive timestep-embedding vocabulary size.
-            image_size (int): Positive native square image side.
-            channels (int): Positive input/output channel count.
-            widths (Sequence[int]): Positive encoder widths from high to low
-                spatial resolution.
-            block_depth (int): Positive residual-stack depth per level.
-            bottleneck_width (int): Positive bottleneck channel width.
-            bottleneck_depth (int): Positive bottleneck residual depth.
-            image_embedding_dim (int): Positive image-projection width.
-            time_embedding_dim (int): Positive timestep-embedding width.
-            label_embedding_dim (int): Positive label-embedding width.
-            activation_func (str): Keras residual activation name.
-            final_activation_func (str): Keras output activation name.
-            use_batch_norm (bool): Enable residual batch normalization.
-            dropout_rate (float): Spatial dropout probability in ``[0,1)``.
-            downsampling_method (str): ImageDownsample method name.
-            upsampling_method (str): ImageUpsample method name.
-            upsampling_interpolation (str): TensorFlow resize method.
-            use_skip_connections (bool | None): Explicit skip behavior; None
-                disables skips only for a variational bottleneck; True creates
-                stochastic multiscale skips.
-            reshaper_ids_dict (Mapping[int, str]): Optional exact generated
-                flatten/unflatten mapping.
-            reshaper_kwargs (Mapping[str, object]): ``add_kl`` and an optional
-                list of positive ``latent_dim_ratio`` values, one per generated
-                flatten/unflatten pair in ascending depth order.
-            cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class
-                head depths; None expands across all depths.
-            cls_token_regularizer_kwargs (Mapping[str, object]): Compatibility
-                mapping containing integer ``start`` and ``end`` keys.
-                ``train_type`` is ``"normal"``, ``"distil"``, or
-                ``"both"``; ``distil_type`` is ``"hard"`` or ``"soft"``.
-            extra_depth_specs (Sequence[object]): Serialized progressive stages.
-            name_prefix (str): Prefix for generated Keras layer names.
-            seed (int | None): Optional raw-network seed used to derive
-                independent spatial-dropout streams.
-            build (bool): Build variables immediately when true.
+            num_classes (int | None): Positive number of real classes, or ``None`` for dynamic continual
+                growth with CFG. Defaults to ``10``.
+            use_cfg (bool): Whether label ID 0 is reserved for CFG. Defaults to ``True``.
+            timesteps (int): Positive timestep-embedding vocabulary size. Defaults to ``1000``.
+            image_size (int): Positive native square image side. Defaults to ``32``.
+            channels (int): Positive input/output channel count. Defaults to ``1``.
+            widths (Sequence[int]): Positive encoder widths from high to low spatial resolution.
+                Defaults to ``(32, 64, 96)``.
+            block_depth (int): Positive residual-stack depth per level. Defaults to ``2``.
+            bottleneck_width (int): Positive bottleneck channel width. Defaults to ``128``.
+            bottleneck_depth (int): Positive bottleneck residual depth. Defaults to ``2``.
+            image_embedding_dim (int): Positive image-projection width. Defaults to ``21``.
+            time_embedding_dim (int): Positive timestep-embedding width. Defaults to ``22``.
+            label_embedding_dim (int): Positive label-embedding width. Defaults to ``21``.
+            activation_func (str): Keras residual activation name. Defaults to ``'swish'``.
+            final_activation_func (str): Keras output activation name. Defaults to ``'linear'``.
+            use_batch_norm (bool): Enable residual batch normalization. Defaults to ``True``.
+            dropout_rate (float): Spatial dropout probability in ``[0,1)``. Defaults to ``0.0``.
+            downsampling_method (str): ImageDownsample method name. Defaults to ``'avg_pooling'``.
+            upsampling_method (str): ImageUpsample method name. Defaults to ``'interpolate'``.
+            upsampling_interpolation (str): TensorFlow resize method. Defaults to ``'bilinear'``.
+            use_skip_connections (bool | None): Explicit encoder skip selection. None enables skips for
+                an ordinary U-Net and disables them when reshaping is active. True uses deterministic
+                ordinary skips, or independently sampled multiscale skip latents when add_kl enables
+                variational reshaping. Defaults to ``None``.
+            reshaper_ids_dict (Mapping[int, str]): Optional exact generated flatten/unflatten mapping.
+                Defaults to ``{}``.
+            reshaper_kwargs (Mapping[str, object]): ``add_kl`` and an optional list of positive
+                ``latent_dim_ratio`` values, one per generated flatten/unflatten pair in ascending depth
+                order. Defaults to ``{}``.
+            cls_token_regularizer_ids (Sequence[int | None]): Auxiliary class-head depths. Empty
+                disables heads; an item None expands across all allowed depths and negative IDs resolve
+                relative to final depth. Depth zero regularizes label embeddings. Defaults to ``()``.
+            cls_token_regularizer_kwargs (Mapping[str, object]): Compatibility mapping containing
+                integer ``start`` and ``end`` keys. ``train_type`` is ``"normal"``, ``"distil"``, or
+                ``"both"``; ``distil_type`` is ``"hard"`` or ``"soft"``. Defaults to ``{'start': 0,
+                'end': 1, 'train_type': 'normal', 'distil_type': 'hard'}``.
+            extra_depth_specs (Sequence[object]): Serialized progressive stages. Defaults to ``()``.
+            name_prefix (str): Prefix for generated Keras layer names. Defaults to ``''``.
+            seed (int | None): Optional raw-network seed used to derive independent spatial-dropout
+                streams. Defaults to ``None``.
+            build (bool): Build variables immediately when true. Defaults to ``True``.
             **kwargs (object): Standard ``tf.keras.Model`` options.
 
         Returns:
             None: The model and optional symbolic graph are initialized in place.
+
+        Raises:
+            ValueError: If model dimensions, feature routes, sampling/reshaping
+                options, or classifier topology violate the implemented contract.
         """
 
         widths = tuple(widths)
+        # Normalize numeric YAML mapping keys to depth IDs while preserving other keys for
+        # validation.
         reshaper_ids_dict = {
             int(key) if isinstance(key, str) and key.lstrip("-").isdigit()
             else key: value
@@ -191,6 +195,7 @@ class UNet(ArgumentSaverModel):
         extra_depth_specs = list(extra_depth_specs)
 
         derive_seed(seed, "unet", "validation")
+        # Keep an omitted raw-network seed unset and normalize explicit seeds to int.
         seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
         self._check_arguments(
@@ -220,6 +225,7 @@ class UNet(ArgumentSaverModel):
         })
 
         self.dynamic_num_classes = self.num_classes is None
+        # Start a dynamically growing class vocabulary with no real classes.
         self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
         self.condition_dim = self.time_embedding_dim + self.label_embedding_dim
@@ -230,6 +236,7 @@ class UNet(ArgumentSaverModel):
         if self.use_skip_connections is None:
             self.use_skip_connections = not self.use_reshaper
         self._base_depth = self._compute_base_depth()
+        # Build one latent flatten/unflatten pair per hierarchy level for variational skips.
         if self.use_reshaper and self.use_skip_connections:
             expected_reshapers = {
                 depth: reshape_type
@@ -239,14 +246,17 @@ class UNet(ArgumentSaverModel):
                     (4 * level + 3, "unflatten"),
                 )
             }
+        # Use one central flatten/unflatten pair when skips are disabled in a variational model.
         elif self.use_reshaper:
             flatten_depth = 2 * len(self.widths) + 2
             expected_reshapers = {
                 flatten_depth: "flatten",
                 flatten_depth + 1: "unflatten",
             }
+        # An ordinary U-Net has no automatically generated reshape stages.
         else:
             expected_reshapers = {}
+        # Reject supplied reshaper routes that disagree with the selected hierarchy layout.
         if self.reshaper_ids_dict and self.reshaper_ids_dict != expected_reshapers:
             raise ValueError(
                 "reshaper_ids_dict must match the model reshaper stages "
@@ -258,8 +268,10 @@ class UNet(ArgumentSaverModel):
             for reshape_type in self.reshaper_ids_dict.values()
         )
         latent_dim_ratios = self.reshaper_kwargs.get("latent_dim_ratio")
+        # Default omitted per-pair latent ratios to unit width.
         if latent_dim_ratios is None or len(latent_dim_ratios) == 0:
             latent_dim_ratios = [1.0] * pair_count
+        # Require exactly one latent-width ratio per generated bottleneck pair.
         if len(latent_dim_ratios) != pair_count:
             raise ValueError(
                 "latent_dim_ratio must contain one value per "
@@ -312,6 +324,7 @@ class UNet(ArgumentSaverModel):
             name=f"{self.name_prefix}label_embedder", 
             dtype=self.dtype_policy, 
         )
+        # Create a label-embedding regularizer only when depth zero is selected.
         self.labels_embed_reg = self._create_regularizer(
             f"{self.name_prefix}labels_embed_regularizer", 
             spatial=False,
@@ -435,6 +448,7 @@ class UNet(ArgumentSaverModel):
             self.use_reshaper and self.use_skip_connections
         )
         bottleneck_depth = 1 + 2 * int(self.use_reshaper)
+        # Include decoder skip-merge stages only when skip connections are enabled.
         decoder_depth = len(self.widths) * (
             3 if self.use_skip_connections else 2
         )
@@ -453,8 +467,8 @@ class UNet(ArgumentSaverModel):
         Args:
             ids_dict (dict | Sequence[int | None]): Mapping or shorthand IDs.
             depth (int | None): Depth used to resolve negative IDs.
-            min_id (int): Smallest permitted/expanded ID.
-            max_id (int | None): Largest permitted/expanded ID.
+            min_id (int): Smallest permitted/expanded ID. Defaults to ``0``.
+            max_id (int | None): Largest permitted/expanded ID. Defaults to ``None``.
 
         Returns:
             dict[int, list[int]] | list[int]: Normalized shape matching the
@@ -462,9 +476,11 @@ class UNet(ArgumentSaverModel):
         """
 
         is_dict = isinstance(ids_dict, dict)
+        # Keep mapping form or wrap a shorthand ID list for common normalization.
         values_dict = ids_dict if is_dict else {1: list(ids_dict)}
         values_dict = {key: list(value) for key, value in values_dict.items()}
         for key, values in values_dict.items():
+            # Use model depth as the implicit upper endpoint for ID expansion.
             upper = key if max_id is None else max_id
             # Expand the None sentinel to every valid layer ID.
             if None in values:
@@ -485,6 +501,7 @@ class UNet(ArgumentSaverModel):
                 fixed.append(value)
             values_dict[key] = fixed
 
+        # Return normalized mappings as mappings and shorthand selectors as lists.
         return values_dict if is_dict else values_dict[1]
 
     def _create_regularizer(
@@ -534,8 +551,8 @@ class UNet(ArgumentSaverModel):
 
         Args:
             regularizer (tf.keras.layers.Layer | None): Head to expand.
-            source_regularizer (tf.keras.layers.Layer | None): Optional
-                expanded raw head supplying the new EMA output parameters.
+            source_regularizer (tf.keras.layers.Layer | None): Optional expanded raw head supplying the
+                new EMA output parameters. Defaults to ``None``.
 
         Returns:
             tf.keras.layers.Layer | None: Expanded head, or ``None`` when the
@@ -546,6 +563,7 @@ class UNet(ArgumentSaverModel):
         if regularizer is None:
             return None
 
+        # Expand the last Dense of a sequential regularizer or the standalone Dense head.
         old_layer = regularizer.layers[-1] \
             if isinstance(regularizer, models.Sequential) else regularizer
         old_kernel, old_bias = old_layer.get_weights()
@@ -562,6 +580,7 @@ class UNet(ArgumentSaverModel):
 
         # Initialize only the new EMA output from the expanded raw head.
         if source_regularizer is not None:
+            # Read a source regularizer's final Dense weights when its head is sequential.
             source_layer = source_regularizer.layers[-1] \
                 if isinstance(source_regularizer, models.Sequential) \
                 else source_regularizer
@@ -675,6 +694,7 @@ class UNet(ArgumentSaverModel):
                 }, 
                 "convolution", 
             )
+            # Build the multiscale latent hierarchy only when variational skips are enabled.
             if self.use_reshaper and self.use_skip_connections:
                 source_shape = (base_side, base_side, width)
                 flatten_key = len(self.layers_dicts) + 1
@@ -718,6 +738,8 @@ class UNet(ArgumentSaverModel):
                     "unflatten",
                 )
                 skip_depths.append(unflatten_key)
+            # Build the ordinary encoder/central-bottleneck path when multiscale latents are
+            # disabled.
             else:
                 skip_depths.append(block_key)
             down_key = len(self.layers_dicts) + 1
@@ -898,6 +920,8 @@ class UNet(ArgumentSaverModel):
 
         # Add a convolutional residual block when requested.
         if self.CB in spec:
+            # Use the last encoder width for progressive stages, or bottleneck width for a
+            # level-free model.
             stage_layers[self.CB] = self._residual_stack(
                 self.widths[0] if self.widths else self.bottleneck_width,
                 self.block_depth, 
@@ -954,8 +978,11 @@ class UNet(ArgumentSaverModel):
         Args:
             times (tf.Tensor): Integer timestep IDs of shape ``[B]``.
             labels (tf.Tensor): Integer label IDs of shape ``[B]``.
-            full_return (bool): Include the two individual embeddings.
-            training (bool | None): Keras training mode.
+            full_return (bool): Include the two individual embeddings. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | tuple[tf.Tensor, tf.Tensor, tf.Tensor]: Concatenated
@@ -993,15 +1020,21 @@ class UNet(ArgumentSaverModel):
             inputs (UNetInputs): Image/latent tensor, integer timesteps, and
                 integer labels.  At depth zero the first tensor is ``[B,H,W,C]``;
                 at a resumed depth it is that depth's representation.
-            max_depth (int): Exclusive zero-based stage stop; -1 runs all.
-            training (bool | None): Keras training mode.
-            min_depth (int): First stage to execute in ``[0, depth]``.
+            max_depth (int): Exclusive zero-based stage stop; -1 runs all. Defaults to ``-1``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): First stage to execute in ``[0, depth]``. Defaults to ``0``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, list[tf.Tensor | None],
             list[tf.Tensor | None], list[tuple[tf.Tensor, tf.Tensor]]]:
             Final representation, condition, depth features, auxiliary class
-            predictions, and ordered latent mean/log-variance pairs.
+            predictions, and ordered latent mean/log-variance pairs. features[k] is the output
+            at architectural depth k; skipped slots are None. The supplied resumed
+            input may be a list containing the initial feature and one latent for
+            every subsequent flatten stage in the executed range.
         """
 
         # Require resumed execution to start at a valid stage boundary.
@@ -1020,9 +1053,11 @@ class UNet(ArgumentSaverModel):
             x = tf.concat([x, self._broadcast_condition(condition, x)], axis=-1)
         # Treat the supplied tensor as an already embedded intermediate feature.
         else:
+            # Normalize resumed input into an initial feature plus any later bottleneck latents.
             latent_inputs = list(inputs[0]) if isinstance(
                 inputs[0], (list, tuple)
             ) else [inputs[0]]
+            # Count future flatten stages that need independently supplied latent tensors.
             expected_latents = 1 + sum(
                 flatten_id > min_depth and (
                     max_depth < 0 or flatten_id <= max_depth
@@ -1038,6 +1073,7 @@ class UNet(ArgumentSaverModel):
                 )
             x = latent_inputs[0]
 
+        # Evaluate label regularization only when its depth-zero head exists.
         label_reg = self.labels_embed_reg(
             label_embeddings,
             training=training,
@@ -1083,11 +1119,17 @@ class UNet(ArgumentSaverModel):
             # Apply the configured flatten or unflatten bottleneck transform.
             if self.R in stage:
                 reshape_type = self.reshaper_ids_dict[index + 1]
+                # Inject a caller-supplied latent at later flatten boundaries during resumed
+                # decoding.
                 if min_depth > 0 and reshape_type == "flatten":
                     x = latent_inputs[latent_index]
                     latent_index += 1
                     x_mean, x_log_var = None, None
+                # Run the actual reshaper when this boundary is not supplied by a resumed
+                # latent.
                 else:
+                    # Match the stored base grid before flattening an active-resolution feature
+                    # map.
                     if reshape_type == "flatten":
                         x = tf.image.resize(
                             x, stage[self.R].source_shape_[:2]
@@ -1100,6 +1142,8 @@ class UNet(ArgumentSaverModel):
                 if reshape_type == "unflatten":
                     side = self.current_resolution
                     for previous_stage in self.layers_dicts[:index]:
+                        # Account for each preceding spatial reduction when restoring an
+                        # unflattened feature grid.
                         if self.DS in previous_stage:
                             side = (side + 1) // 2
                     x = tf.image.resize(x, (side, side))
@@ -1110,6 +1154,7 @@ class UNet(ArgumentSaverModel):
                 ) and x_mean is not None:
                     z_vals_list.append((x_mean, x_log_var))
 
+            # Compute stage auxiliary accuracy only when an auxiliary head is configured.
             regularizer = stage[self.CTR](
                 x, 
                 training=training,
@@ -1131,13 +1176,19 @@ class UNet(ArgumentSaverModel):
 
         Args:
             inputs (UNetInputs): Image/latent, timestep, and label tensors.
-            full_return (bool): Return the five-item wrapper contract when true.
-            training (bool | None): Keras training mode.
-            min_depth (int): Resume execution from this architectural depth.
+            full_return (bool): Return the five-item wrapper contract when true. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): Resume execution from this architectural depth. Defaults to ``0``.
 
         Returns:
             tf.Tensor | UNetFullOutput: Predicted noise ``[B,H,W,C]`` or the
-            prediction plus condition, features, regularizers, and latent stats.
+            prediction plus condition [B, condition_dim], depth-indexed features and
+            optional regularizers, and ordered latent mean/log-variance pairs. At
+            depth zero H/W match inputs[0]; resumed output uses current_resolution.
+            Denoiser output follows the model compute dtype.
         """
 
         x, condition, features_list, regs_list, z_vals_list = self.encode(
@@ -1145,6 +1196,7 @@ class UNet(ArgumentSaverModel):
             min_depth=min_depth,
             training=training,
         )
+        # Match the original image size at depth zero; resumed decoding uses the active resolution.
         target_size = tf.shape(inputs[0])[1:3] if min_depth == 0 else tf.constant(
             [self.current_resolution, self.current_resolution],
             dtype=tf.int32,
@@ -1168,8 +1220,11 @@ class UNet(ArgumentSaverModel):
 
         Args:
             inputs (UNetInputs): Image, timestep, and label tensors.
-            full_return (bool): Include branch intermediates when true.
-            training (bool | None): Keras training mode.
+            full_return (bool): Include branch intermediates when true. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | UNetFullOutput: Same contract as :meth:`call`.
@@ -1196,12 +1251,13 @@ class UNet(ArgumentSaverModel):
         """Set the active square resolution and invalidate Keras functions.
 
         Args:
-            resolution (int | None): Positive image side; None restores native.
+            resolution (int | None): Positive image side; None restores native. Defaults to ``None``.
 
         Returns:
             None: Resolution and execution caches are updated in place.
         """
 
+        # Restore native U-Net resolution when no alternate resolution is supplied.
         resolution = self.image_size if resolution is None else resolution
         # Invalidate traced functions only when the active resolution changes.
         if getattr(self, "_current_resolution", None) != resolution:
@@ -1218,9 +1274,9 @@ class UNet(ArgumentSaverModel):
         """Build variables from model-configured symbolic shapes.
 
         Args:
-            input_shape (tuple[tf.TensorShape, tf.TensorShape,
-                tf.TensorShape] | None): Accepted for Keras compatibility and
-                ignored in favor of configured shapes.
+            input_shape (object | None): Unused Keras compatibility input. Symbolic dimensions are
+                derived from current_resolution, channels, and the configured condition vocabulary.
+                Defaults to ``None``.
 
         Returns:
             None: Variables and the Keras built flag are initialized.
@@ -1234,7 +1290,7 @@ class UNet(ArgumentSaverModel):
         """Create symbolic image, timestep, and label inputs.
 
         Args:
-            call_model (bool): Populate symbolic outputs when true.
+            call_model (bool): Populate symbolic outputs when true. Defaults to ``True``.
 
         Returns:
             list[tf.TensorShape]: Shapes of the three symbolic inputs.
@@ -1248,6 +1304,7 @@ class UNet(ArgumentSaverModel):
         times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
         labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
         self.inputs = (noisy_images, times, labels)
+        # Materialize the symbolic U-Net graph only when a model call is requested.
         self.outputs = self.call(self.inputs) if call_model else None
 
         return [value.shape for value in self.inputs]
@@ -1256,8 +1313,8 @@ class UNet(ArgumentSaverModel):
         """Append one label embedding while preserving existing rows.
 
         Args:
-            source_network (object | None): Optional already-expanded raw
-                network whose new embedding row initializes an EMA clone.
+            source_network (object | None): Optional already-expanded raw network whose new embedding
+                row initializes an EMA clone. Defaults to ``None``.
 
         Returns:
             None: The label vocabulary grows by one in place and
@@ -1295,6 +1352,8 @@ class UNet(ArgumentSaverModel):
         new_label_embedder.set_weights(new_weights)
         self.label_embedder = new_label_embedder
 
+        # Copy the matching source label regularizer when expanding a class from another
+        # network.
         self.labels_embed_reg = self._expand_regularizer(
             self.labels_embed_reg,
             source_network.labels_embed_reg if source_network is not None else None,
@@ -1302,6 +1361,7 @@ class UNet(ArgumentSaverModel):
         for index, stage in enumerate(self.layers_dicts):
             # Expand only stages that own an auxiliary class head.
             if self.CTR in stage:
+                # Copy matching source stage regularizers when source weights are supplied.
                 stage[self.CTR] = self._expand_regularizer(
                     stage[self.CTR],
                     source_network.layers_dicts[index][self.CTR]
@@ -1318,7 +1378,9 @@ class UNet(ArgumentSaverModel):
             dict[str, dict[str, int]]: Before, added, and after depth counts.
         """
 
+        # Normalize one progressive U-Net stage or an explicit stage list.
         specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
+        # Ignore disabled placeholders in progressive stage specifications.
         specs = [spec for spec in specs if spec is not None]
         before = self.depth
         # Leave the architecture unchanged for an empty growth request.
@@ -1366,13 +1428,14 @@ class UNet(ArgumentSaverModel):
         """Return TensorFlow names for all or selected trainable variables.
 
         Args:
-            vars (list[tf.Variable] | None): Variables to inspect; None selects
-                every trainable variable.
+            vars (list[tf.Variable] | None): Variables to inspect; None selects every trainable
+                variable. Defaults to ``None``.
 
         Returns:
             list[str]: Variable names in model/input order.
         """
 
+        # Inspect all trainable variables unless a caller supplies an explicit subset.
         vars = self.trainable_variables if vars is None else vars
 
         return [variable.name for variable in vars]
@@ -1387,6 +1450,14 @@ def run_self_tests() -> dict[str, str]:
 
     Returns:
         dict[str, str]: ``{"UNet": "passed"}`` after all checks.
+
+    The checks construct small TensorFlow models, reset Keras session state, and
+    seed random streams. Successful completion returns the named pass mapping;
+    failed numerical, shape, serialization, or invalid-input expectations raise.
+
+    Raises:
+        AssertionError: If a regression expectation fails.
+        tf.errors.InvalidArgumentError: If a TensorFlow numerical assertion fails.
     """
 
     tf.keras.backend.clear_session()
@@ -1455,6 +1526,8 @@ def run_self_tests() -> dict[str, str]:
             UNet(**common, reshaper_kwargs=invalid_reshaper_kwargs)
         except ValueError:
             pass
+        # Fail this regression if no exception occurs: Invalid model-level latent_dim_ratio
+        # configuration must fail.
         else:
             raise AssertionError(
                 "Invalid model-level latent_dim_ratio configuration must fail."
@@ -1495,11 +1568,13 @@ def run_self_tests() -> dict[str, str]:
     multiscale_output = multiscale_vae(
         (square_images, times, labels), full_return=True, training=False
     )
+    # Select flatten-stage IDs when checking multiscale latent ordering.
     flatten_ids = sorted(
         depth for depth, reshape_type in
         multiscale_vae.reshaper_ids_dict.items()
         if reshape_type == "flatten"
     )
+    # Select unflatten-stage IDs when checking reconstructed multiscale features.
     unflatten_ids = {
         depth for depth, reshape_type in
         multiscale_vae.reshaper_ids_dict.items()

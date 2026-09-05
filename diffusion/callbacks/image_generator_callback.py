@@ -1,4 +1,10 @@
-"""Epoch-end diffusion sampling, image plotting, and denoising GIF output."""
+"""Epoch-end diffusion sampling, image plotting, and denoising GIF output.
+
+ImageGeneratorCallback samples the selected raw/EMA diffusion network after every
+epoch, displays or saves image grids, and optionally saves denoising trajectories
+as GIFs. Constructor output modes control immediate directory creation; portable
+phase prefixes keep later task artifacts distinct.
+"""
 
 from tensorflow.keras import callbacks
 
@@ -27,17 +33,23 @@ class ImageGeneratorCallback(callbacks.Callback):
     saving. GIF output additionally requires a result path.
 
     Args:
-        add_null_label: Whether a CFG model's null condition is included in
+        add_null_label (bool): Whether a CFG model's null condition is included in
             the generated grid.
-        show_images: Whether ``plot_images`` displays the generated image grid.
-        save_gifs: Whether to request intermediate ``x_t`` and ``x_0`` frames
+            Defaults to ``True``.
+        show_images (bool): Whether ``plot_images`` displays the generated image grid.
+            Defaults to ``True``.
+        save_gifs (bool): Whether to request intermediate ``x_t`` and ``x_0`` frames
             and write a denoising GIF per epoch.
-        results_path: Optional string or path-like base directory. A timestamped
+            Defaults to ``False``.
+        results_path (str | os.PathLike[str] | None): Optional string or path-like base directory. A timestamped
             child containing ``images`` is created; ``gifs`` is added when GIF
             saving is enabled.
-        project_tag: Optional text appended to the timestamped directory name.
-        seed: Optional sampling seed reused at each epoch.
-        **kwargs: Arguments forwarded to ``tf.keras.callbacks.Callback``. The
+            Defaults to ``None``.
+        project_tag (str | None): Optional text appended to the timestamped directory name.
+            Defaults to ``None``.
+        seed (int | None): Optional sampling seed reused at each epoch.
+            Defaults to ``None``.
+        **kwargs (Any): Arguments forwarded to ``tf.keras.callbacks.Callback``. The
             TensorFlow 2.10 base callback normally requires no extra options.
 
     Inputs:
@@ -47,6 +59,13 @@ class ImageGeneratorCallback(callbacks.Callback):
     Outputs:
         Callback hooks return ``None``. Observable outputs are displayed image
         grids and, when configured, PNG and GIF files.
+
+    Attributes:
+        results_path (str | os.PathLike | None): Resolved timestamped run directory, or
+            None for display-only mode.
+        seed (int | None): Current seed forwarded to each sampling call.
+        base_seed (int | None): Original constructor seed retained for recovery fingerprints.
+        artifact_prefix (str): Validated filename prefix, initially empty.
     """
 
     def __init__(
@@ -64,18 +83,26 @@ class ImageGeneratorCallback(callbacks.Callback):
         Args:
             add_null_label (bool): Include condition ID 0 for CFG models when
                 generating the epoch grid.
+                Defaults to ``True``.
             show_images (bool): Whether to display each generated image grid.
+                Defaults to ``True``.
             save_gifs (bool): Whether to save intermediate denoising frames as
                 a GIF for each epoch.
+                Defaults to ``False``.
             results_path (str | os.PathLike[str] | None): Optional output base
                 directory. A timestamped run directory is created beneath it.
+                Defaults to ``None``.
             project_tag (str | None): Optional suffix for the run-directory
                 name.
+                Defaults to ``None``.
             seed (int | None): Optional seed forwarded to model sampling.
+                Defaults to ``None``.
+                None is forwarded unchanged to model.sample, leaving seed resolution to the
+                bound wrapper.
             **kwargs (Any): Options forwarded to the Keras callback base class.
 
         Returns:
-            ``None``.
+            None: No value is returned.
 
         Raises:
             ValueError: If ``project_tag`` is not a portable filename fragment,
@@ -90,6 +117,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         # Require an output directory whenever GIF saving is enabled.
         if save_gifs and results_path is None:
             raise ValueError("save_gifs requires results_path.")
+        # Treat an omitted project tag as empty; trim a supplied filename suffix.
         normalized_project_tag = "" if project_tag is None else project_tag.strip()
         invalid_filename_characters = frozenset('/\\<>:"|?*')
         # Keep the directory suffix portable and inside the requested root.
@@ -111,6 +139,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         self.base_seed = seed
         self.artifact_prefix = ""
 
+        # Leave empty tags without a separator; prefix nonempty run tags with a space.
         project_tag = "" if not normalized_project_tag else " " + normalized_project_tag
 
         # Create a timestamped artifact directory when saving is requested.
@@ -149,6 +178,7 @@ class ImageGeneratorCallback(callbacks.Callback):
             ValueError: If ``prefix`` is not a portable filename fragment.
         """
 
+        # Treat an omitted task prefix as empty; trim a supplied filename prefix.
         normalized = "" if prefix is None else prefix.strip()
         invalid_filename_characters = frozenset('/\\<>:"|?*')
         # Keep the artifact name portable and inside its callback-owned folder.
@@ -159,6 +189,7 @@ class ImageGeneratorCallback(callbacks.Callback):
         ) or normalized.endswith("."):
             raise ValueError("prefix must be a portable filename fragment.")
 
+        # Append a separator only to a nonempty artifact prefix.
         self.artifact_prefix = normalized + "_" if normalized else ""
 
     def get_config(self) -> dict[str, object]:
@@ -188,9 +219,10 @@ class ImageGeneratorCallback(callbacks.Callback):
                 ``epoch + 1``.
             logs (dict[str, Any] | None): Optional Keras epoch-log mapping. It
                 is accepted for callback compatibility and is not read.
+                Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
-            ``None``. ``model.sample`` returns images shaped
+            None: ``model.sample`` returns images shaped
             ``[batch, height, width, channels]``. In GIF mode it must return
             ``(images, x_t_frames, x0_frames)``; the frame sequences are passed
             to ``create_gif``.
@@ -199,6 +231,8 @@ class ImageGeneratorCallback(callbacks.Callback):
         network_name = self.model.test_network_name
         network = self.model.get_network(network_name)
 
+        # Include CFG null label zero when requested; otherwise start with the first real
+        # label.
         sample_kwargs = {
             "network_name": network_name, 
             "labels": list(range(
@@ -281,6 +315,8 @@ def run_self_tests() -> dict[str, str]:
             ImageGeneratorCallback(**invalid_kwargs)
         except ValueError:
             pass
+        # This invalid case should already have raised: Invalid output-mode combinations
+        # must fail.
         else:
             raise AssertionError("Invalid output-mode combinations must fail.")
     for unsafe_tag in (

@@ -1,4 +1,9 @@
-"""Convert image feature maps into transformer patch-token sequences."""
+"""Convert image feature maps into transformer patch-token sequences.
+
+PatchEmbedding projects channels-last images with a direct patch convolution or
+a two-convolution stem, flattens the spatial grid, and merges positional data.
+An optional learned BOS token shifts decoder inputs without changing token count.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -21,20 +26,26 @@ class PatchEmbedding(BaseEmbedding):
     order.
 
     Args:
-        patch_size: Positive integer convolution stride and, for standard
+        patch_size (int): Positive integer convolution stride and, for standard
             patchification, kernel side length.
-        patchify_with_cnn: Select the two-convolution ``same``-padding stem
+            Defaults to ``2``.
+        patchify_with_cnn (bool): Select the two-convolution ``same``-padding stem
             instead of the single ``valid``-padding projection.
-        shift_right_token: Prepend a learned BOS token and discard the last
+            Defaults to ``False``.
+        shift_right_token (bool): Prepend a learned BOS token and discard the last
             patch token, preserving sequence length. The learned token is
             repeated across the runtime batch, so every example receives the
             same trainable BOS value.
-        **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size``. Common keys include ``pos_embed_type``,
             ``pos_merger_type``, ``pos_interpolation_method``,
             ``embed_freq_dim``, ``mlp_ratio``, and ``mlp_output_dim``. An
             additive table must match the patch projection width; concatenation
             allocates ``dim // 2`` channels to content before merging.
+        seed (int | None): Optional component seed for the learned BOS
+            token used by shifted-input decoders.
+            Defaults to ``None``.
 
     Inputs:
         Floating image tensor shaped ``[batch, height, width, channels]``. The
@@ -51,6 +62,15 @@ class PatchEmbedding(BaseEmbedding):
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
 
+    Attributes:
+        patch_projector (tf.keras.layers.Layer): Convolution or Sequential stem mapping
+            images to patch features.
+        shift_right_token (SingleTokenLayer | None): BOS provider; the constructor boolean
+            is replaced with this layer or None.
+        pos_embed (tf.Variable | tf.Tensor | np.ndarray | None): Configured position table
+            before runtime resizing.
+        output_grid_size (int): Native patch-grid side used to interpret positional tables.
+        output_dim (int): Content plus optional positional channel width.
     """
 
     def __init__(
@@ -65,18 +85,26 @@ class PatchEmbedding(BaseEmbedding):
 
         Args:
             patch_size (int): Positive patch-projection stride.
+                Defaults to ``2``.
             patchify_with_cnn (bool): Whether to use the two-convolution stem.
+                Defaults to ``False``.
             shift_right_token (bool): Whether to prepend a learned BOS token
                 and discard the final patch token.
+                Defaults to ``False``.
             seed (int | None): Optional component seed for the learned BOS
                 token used by shifted-input decoders.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         derive_seed(seed, "patch_embedding", "validation")
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         seed = None if seed is None else int(seed)
         super().__init__(**kwargs)
         self._save_init_args(locals())
@@ -85,12 +113,20 @@ class PatchEmbedding(BaseEmbedding):
         if self.grid_size is None:
             raise ValueError("PatchEmbedding requires grid_size.")
 
+        # Add the default ratio-one projection only when a raw frequency width needs
+        # projection and no ratio is set.
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
+        # Reserve half the target width for content when positions are concatenated;
+        # otherwise use the full width.
         self.hidden_dim = self.dim // 2 if self.pos_embed_type is not None \
                         and self.pos_merger_type == "concat" else self.dim
+        # Project raw frequency features to the target component width unless an output
+        # width is explicit.
         self.mlp_output_dim = self.hidden_dim if self.mlp_output_dim is None \
                             and self.embed_freq_dim is not None else self.mlp_output_dim
+        # Use the target width for embeddings unless a separate raw frequency width is
+        # configured.
         self.embed_dim = self.hidden_dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.output_grid_size = self.grid_size
 
@@ -127,6 +163,7 @@ class PatchEmbedding(BaseEmbedding):
                 name="patch_projector"
             )
 
+        # Create a learned BOS token only for shifted decoder inputs.
         self.shift_right_token = SingleTokenLayer(
             dim=self.hidden_dim, 
             with_pos_embed=False, 
@@ -134,13 +171,16 @@ class PatchEmbedding(BaseEmbedding):
             dtype=self.dtype_policy,
             name=f"{self.name}/bos_token"
         ) if self.shift_right_token else None
+        # Construct the positional table when merging is configured; otherwise omit it.
         self.pos_embed = self._create_embeddings(
             output_grid_size=self.grid_size, 
         ) if self.pos_merger_type is not None else None
+        # Build a positional projection only when a positional table exists.
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
         ) if self.pos_embed is not None else None
 
+        # Count both content and positional channels only when a table is concatenated.
         self.output_dim = self.hidden_dim + self.output_dim if self.pos_embed is not None and \
                         self.pos_merger_type == "concat" else self.hidden_dim
 
@@ -159,14 +199,17 @@ class PatchEmbedding(BaseEmbedding):
                 resizing. It does not resize image patches and must equal the
                 projected spatial side for elementwise addition/concatenation.
                 ``None`` uses the configured/native positional behavior.
+                Defaults to ``None``.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to convolutions,
                 token handling, and positional projection layers.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` of patch tokens with floating compute dtype and shape
+            tf.Tensor: of patch tokens with floating compute dtype and shape
             ``[batch, projected_height * projected_width, output_dim]``.
             Standard projection uses ``floor(height / patch_size)`` for
-            divisible inputs; the CNN stem uses ``ceil(height / patch_size)``.
+            positive valid-patch inputs; the CNN stem uses ``ceil(height / patch_size)``.
         """
 
         x = self.patch_projector(
@@ -181,6 +224,7 @@ class PatchEmbedding(BaseEmbedding):
             x_shape[1] * x_shape[2], 
             x_shape[3]
         ))
+        # Prepend BOS and discard the final patch only in shifted-input mode.
         x = tf.concat([
             self.shift_right_token(
                 (x, None),
@@ -308,6 +352,8 @@ def run_self_tests() -> dict[str, str]:
         incompatible_projection(images)
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Additive content and position widths
+    # must match.
     else:
         raise AssertionError("Additive content and position widths must match.")
 
@@ -379,12 +425,15 @@ def run_self_tests() -> dict[str, str]:
         standard(tf.ones((1, 6, 6, 1)))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: A native position table must reject
+    # wrong token counts.
     else:
         raise AssertionError("A native position table must reject wrong token counts.")
     try:
         PatchEmbedding(dim=4, grid_size=2, pos_embed_type="invalid")
     except ValueError:
         pass
+    # This invalid case should already have raised: Invalid positional modes must fail.
     else:
         raise AssertionError("Invalid positional modes must fail.")
 

@@ -1,4 +1,10 @@
-"""Functional flatten/unflatten models with an optional variational latent."""
+"""Functional flatten/unflatten models with an optional variational latent.
+
+VariationalReshaper builds a Functional model between a fixed spatial shape and
+its flattened vector width. Optional Gaussian sampling exposes latent statistics
+for an external KL objective; deterministic modes return scalar batch-size
+placeholders in the same three-output protocol.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -26,7 +32,11 @@ def _sample_latent(
         values (tuple[tf.Tensor, tf.Tensor]): Latent mean and log-variance
             tensors with identical shapes.
         seed (int | None): Optional TensorFlow operation seed.
-        dtype (tf.dtypes.DType | str | None): Stable calculation dtype.
+            Defaults to ``None``.
+            None leaves component operation/initializer seeds unspecified; global
+            TensorFlow RNG state can still affect draws.
+        dtype (tf.dtypes.DType | str | None): Calculation dtype for Gaussian sampling. Defaults to
+            ``None``, using the mean dtype; output is always cast back to the mean dtype.
 
     Returns:
         tf.Tensor: Reparameterized sample with the same shape and dtype.
@@ -61,6 +71,23 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
     samples a latent and projects it back to the flattened width when
     ``latent_dim_ratio != 1``. The projection is named ``<model-name>/z`` so
     ``DiffusionModel.sample_vae`` can retrieve it without wrapper changes.
+
+    Attributes:
+        source_shape_ (tuple[int, ...]): Static spatial feature shape excluding batch.
+        flattened_dim (int): Product of the source shape dimensions.
+        latent_dim (int | None): Gaussian width for KL-enabled flattening, otherwise None.
+        output_dim (int): Flattened width or restored last-axis channel count.
+
+    Inputs:
+        Flatten mode receives [B, *source_shape]; unflatten receives
+        [B, product(source_shape)]. Input dtype follows the resolved Keras policy.
+
+    Outputs:
+        A triple (features, z_mean, z_log_var). Features have the opposite reshape
+        geometry. KL-enabled flattening returns Gaussian statistics [B, latent_dim]
+        and samples a latent on every call, including inference. Other modes return
+        the scalar int32 batch size for each statistic placeholder. This model
+        exposes statistics but does not add a KL loss by itself.
     """
 
     def __init__(
@@ -78,10 +105,16 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             reshape_type (str): Either ``"flatten"`` or ``"unflatten"``.
             source_shape (tuple[int, ...] | list[int]): Positive static image
                 feature dimensions, excluding batch.
-            add_kl (bool): Whether flattening creates Gaussian latent parameters.
+            add_kl (bool): Enable Gaussian statistics and reparameterized sampling in flatten mode. Defaults
+                to ``False``. Unflatten mode ignores this flag and emits deterministic statistic
+                placeholders.
             latent_dim_ratio (float): Positive latent-to-flattened-width ratio.
+                Defaults to ``1.0``.
             seed (int | None): Parent seed used to derive this bottleneck's
                 reparameterization stream.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Standard Keras model options.
 
         Returns:
@@ -164,6 +197,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
                 },
                 name=f"{model_name}/sample"
             )((z_mean, z_log_var))
+            # Project sampled latents back to flattened width only when the latent ratio
+            # changes it.
             x = layers.Dense(
                 flattened_dim, 
                 name=f"{model_name}/z", 
@@ -193,6 +228,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         self.source_shape_ = source_shape
         self.flattened_dim = flattened_dim
         self.latent_dim = latent_dim
+        # Expose flattened vector width for encoding, or restored channel width for
+        # decoding.
         self.output_dim = flattened_dim if reshape_type == "flatten" \
                         else source_shape[-1]
 
@@ -297,6 +334,7 @@ def run_self_tests() -> dict[str, str]:
         VariationalReshaper("flatten", (1,), add_kl=True, latent_dim_ratio=0.1)
     except ValueError:
         pass
+    # This invalid case should already have raised: An empty latent width must fail.
     else:
         raise AssertionError("An empty latent width must fail.")
 

@@ -1,4 +1,9 @@
-"""Channels-last image upsampling layers for convolutional networks."""
+"""Channels-last image upsampling layers for convolutional networks.
+
+ImageUpsample enlarges image grids through interpolation, interpolation followed
+by convolution, or transposed convolution. Deferred building resolves output
+channels and adds learned projection only for the selected mode.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -12,7 +17,25 @@ from diffusion.layers.convolution.residual_block import _split_inputs
 
 @register_canonical_keras_serializable(package="continual_learning")
 class ImageUpsample(ArgumentSaverLayer):
-    """Increase both spatial image dimensions by a configurable integer stride."""
+    """Increase both spatial image dimensions by a configurable integer stride.
+
+    Attributes:
+        output_dim (int | None): Requested filters, resolved from input channels at build
+            time when omitted.
+        scaling_layer (tf.keras.layers.Layer | None): Selected interpolator/convolution
+            pipeline, completed during build.
+        projection (tf.keras.layers.Conv2D | None): Optional 1x1 channel projection in
+            interpolation-only mode.
+
+    Inputs:
+        Floating channels-last image features [B, H, W, C], or an image/condition
+        pair whose condition is ignored. Channels must be known at build time.
+
+    Outputs:
+        Floating image features [B, H * strides, W * strides, output_dim] under the layer's compute policy.
+        Constructor filters=None preserves C; interpolation otherwise adds
+        a 1x1 projection when learned spatial scaling does not already set width.
+    """
 
     def __init__(
         self, 
@@ -28,12 +51,18 @@ class ImageUpsample(ArgumentSaverLayer):
 
         Args:
             filters (int | None): Output channels; ``None`` preserves input width.
+                Defaults to ``None``.
             scaling_method (str): ``"interpolate"``, ``"cnn_interpolate"``, or
                 ``"cnn_transpose"``.
+                Defaults to ``'interpolate'``.
             interpolation (str): Keras image-interpolation method.
+                Defaults to ``'bilinear'``.
             kernel_size (int): Positive learned-scaler kernel size.
+                Defaults to ``3``.
             strides (int): Positive spatial enlargement factor.
+                Defaults to ``2``.
             activation_func (str): Keras activation for learned projections.
+                Defaults to ``'linear'``.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -46,12 +75,16 @@ class ImageUpsample(ArgumentSaverLayer):
 
         self.output_dim = self.filters
         self.projection = None
+        # Interpolation modes need an interpolator; transposed convolution performs its own
+        # resize.
         self.interpolator = layers.UpSampling2D(
             size=(self.strides, self.strides), 
             interpolation=self.interpolation, 
             dtype=self.dtype_policy, 
             name=f"{self.name}/interpolator"
         ) if self.scaling_method != "cnn_transpose" else None
+        # Pure interpolation is immediately usable; learned scaling is completed during
+        # build.
         self.scaling_layer = self.interpolator if self.scaling_method == "interpolate" \
                             else None
 
@@ -64,6 +97,9 @@ class ImageUpsample(ArgumentSaverLayer):
 
         Returns:
             None: Valid arguments complete without a value.
+
+        Raises:
+            ValueError: If scaling_method does not name an implemented strategy.
         """
 
         # Restrict scaling to the three implemented upsampling strategies.
@@ -88,6 +124,8 @@ class ImageUpsample(ArgumentSaverLayer):
             None: Keras build state is updated in place.
         """
 
+        # Extract image shape from a paired image/condition signature; otherwise use the
+        # tensor shape directly.
         image_shape = input_shape[0] if (
             isinstance(input_shape, (tuple, list))
             and len(input_shape) == 2
@@ -98,6 +136,8 @@ class ImageUpsample(ArgumentSaverLayer):
         if input_dim is None:
             raise ValueError("ImageUpsample requires known input channels.")
 
+        # Preserve input channels when filters is omitted; otherwise use the requested
+        # width.
         self.output_dim = int(input_dim) if self.filters is None else self.filters
         # Build transposed convolution for directly learned upsampling.
         if self.scaling_method == "cnn_transpose":
@@ -146,9 +186,15 @@ class ImageUpsample(ArgumentSaverLayer):
             inputs (tf.Tensor | tuple[tf.Tensor, tf.Tensor]): Image tensor or
                 image-condition pair; the condition is ignored by this layer.
             training (bool | tf.Tensor | None): Optional Keras training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Spatially enlarged channels-last image features.
+
+        Notes:
+            The image input is [B, H, W, C]; the result is [B, H * strides, W * strides, output_dim]. Outputs follow the
+            layer compute policy and condition tensors never influence this scaler.
         """
 
         x, _ = _split_inputs(inputs)
@@ -157,6 +203,7 @@ class ImageUpsample(ArgumentSaverLayer):
             x, 
             training=training
         )
+        # Apply the optional channel projection; otherwise retain the resized features.
         x = self.projection(
             x, 
             training=training
@@ -198,6 +245,7 @@ def run_self_tests() -> dict[str, str]:
         ImageUpsample(scaling_method="unknown")
     except ValueError:
         pass
+    # This invalid case should already have raised: Unknown upsampling methods must fail.
     else:
         raise AssertionError("Unknown upsampling methods must fail.")
 

@@ -1,5 +1,20 @@
 
-"""Aggregate runtime self-tests and repository-wide static contract checks."""
+"""Repository self-test registry and Python source contract inspection.
+
+The static API parses Git-tracked and non-ignored Python sources, checks
+module/class/public-function documentation and function annotations, and
+rejects production assert statements that disappear under Python -O. It counts
+statement-level branches but does not enforce adjacent comment text. Notebook
+cells are outside this check. No TensorFlow imports are needed for static use.
+
+run_project_self_tests additionally imports every module in
+PROJECT_SELF_TEST_CLASSES, verifies exact locally defined class coverage, and
+runs its embedded tests. The registry maps module-name strings to tuples of
+class-name strings; importing this file defines it without running tests.
+Direct execution runs the full suite, mutating random seeds and Keras state.
+The public functions return coverage/result dictionaries or raise aggregated
+assertion failures; verbose=True prints progress during runtime self-tests.
+"""
 
 import ast
 import io
@@ -10,13 +25,23 @@ from pathlib import Path
 
 
 def _project_python_files() -> tuple[Path, ...]:
-    """Return tracked and non-ignored Python sources in the working tree.
+    """Discover repository Python sources through Git without importing them.
+
+    The repository root is resolved from this module. Git contributes both cached
+    paths and untracked paths that are not ignored; patterns select .py files only.
+    A per-command safe.directory option permits this workspace without changing
+    the user's Git configuration. The output is consumed in Git's reported order.
 
     Args:
         None.
 
     Returns:
-        tuple[Path, ...]: Absolute project ``.py`` paths in Git's stable order.
+        tuple[Path, ...]: Absolute Python paths, including test modules, suitable
+        for read-only source parsing. No files are created or changed.
+
+    Raises:
+        subprocess.CalledProcessError: Git cannot enumerate the working tree.
+        OSError: The Git executable cannot be started.
     """
 
     root = Path(__file__).resolve().parent
@@ -40,13 +65,21 @@ def _project_python_files() -> tuple[Path, ...]:
 
 
 def _run_static_checker_self_tests() -> None:
-    """Exercise branch and runtime-assert parsing.
+    """Check synthetic branch locations and production-assert classification.
+
+    One in-memory source contains if/elif/else headers with expected line numbers.
+    Another distinguishes a production assertion from assertions under a function
+    ending in self_tests and from the same source in a tests directory. The
+    synthetic snippets are parsed, never executed or written to disk.
 
     Args:
         None.
 
     Returns:
-        None.
+        None: Every expected source location matched its parser result.
+
+    Raises:
+        AssertionError: A parser returns unexpected branch or assertion locations.
     """
 
     branch_source = """# choose a path
@@ -87,15 +120,23 @@ def _if_branch_locations(
 ) -> tuple[tuple[int, str], ...]:
     """Locate statement-level if, elif, and associated else headers.
 
+    AST If nodes identify the branches while lexical tokens distinguish elif from
+    a nested if. An else token is accepted only at its parent's indentation and
+    between that branch's final body statement and its first alternative statement.
+    Ternary expressions and comprehension filters are not included. Inputs are
+    read without mutation and must represent the same Python source.
+
     Args:
-        tree (ast.AST): Parsed Python module tree.
-        source (str): Original module source used to recover keyword tokens.
+        tree (ast.AST): Module tree parsed from source, with source locations.
+        source (str): Original Python text used to recover keyword positions.
 
     Returns:
-        tuple[tuple[int, str], ...]: Sorted unique ``(line, keyword)`` pairs.
+        tuple[tuple[int, str], ...]: Sorted, deduplicated pairs of one-based source
+        line and keyword (if, elif, or else). An unbranched module returns ().
     """
 
     tokens = tuple(tokenize.generate_tokens(io.StringIO(source).readline))
+    # Retain only lexical branch keywords; identifiers in strings are not branch tokens.
     keyword_tokens = tuple(
         token
         for token in tokens
@@ -117,6 +158,7 @@ def _if_branch_locations(
             continue
 
         first_else_node = node.orelse[0]
+        # Inspect the alternative keyword only for an AST If node; other statements begin an else body.
         first_keyword = (
             keyword_at.get((first_else_node.lineno, first_else_node.col_offset))
             if isinstance(first_else_node, ast.If)
@@ -126,6 +168,7 @@ def _if_branch_locations(
         if first_keyword == "elif":
             continue
 
+        # Match else at the parent indentation and within this branch’s source interval.
         candidates = (
             token
             for token in keyword_tokens
@@ -248,6 +291,7 @@ def assert_static_contracts() -> dict[str, int]:
                 + tuple(node.args.args)
                 + tuple(node.args.kwonlyargs)
             )
+            # Implicit instance/class receivers do not require explicit annotations.
             explicit_parameters = tuple(
                 parameter
                 for parameter in parameters
@@ -260,6 +304,7 @@ def assert_static_contracts() -> dict[str, int]:
             if node.args.kwarg is not None:
                 explicit_parameters += (node.args.kwarg,)
 
+            # Collect only explicit parameters whose implementation annotation is absent.
             missing_annotations = tuple(
                 parameter.arg
                 for parameter in explicit_parameters
@@ -375,6 +420,7 @@ def run_project_self_tests(
         verbose (bool): Print one PASS/FAIL line per module and a final class
             count.  ``False`` suppresses progress output but does not suppress
             exceptions.
+            Defaults to ``True``.
 
     Returns:
         dict[str, dict[str, str]]: Ordered-by-registration module results.  A
@@ -418,6 +464,7 @@ def run_project_self_tests(
             tf.random.set_seed(1729)
 
             module = importlib.import_module(module_name)
+            # Count classes defined in this module under their own names, excluding imports and aliases.
             defined_names = {
                 name
                 for name, value in vars(module).items()

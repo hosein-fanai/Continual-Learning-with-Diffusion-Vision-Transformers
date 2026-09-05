@@ -1,4 +1,10 @@
-"""Shared factories for condition-aware normalization and feed-forward layers."""
+"""Shared factories for condition-aware normalization and feed-forward layers.
+
+BaseLayer stores shared normalization and MLP settings and creates policy-aware
+AdaLNZero or dense projection sublayers for token processors. Optional overrides
+resolve against instance defaults, and disabled factories return None to denote
+an identity path.
+"""
 
 from tensorflow.keras import layers, models
 
@@ -18,28 +24,35 @@ class BaseLayer(ArgumentSaverLayer):
     implement ``call`` itself.
 
     Args:
-        use_layer_norm: Whether :meth:`_create_layer_norm` creates an adaptive
+        use_layer_norm (bool): Whether :meth:`_create_layer_norm` creates an adaptive
             normalization layer. If false, the factory returns ``None``.
-        ln_dim: Default normalized feature width. It is required when layer
+            Defaults to ``False``.
+        ln_dim (int | None): Default normalized feature width. It is required when layer
             normalization is enabled unless ``ln_no_adaptation=True``.
-        ln_mlp_ratio: Optional hidden-width ratio for the conditioning MLP in
+            Defaults to ``None``.
+        ln_mlp_ratio (float | None): Optional hidden-width ratio for the conditioning MLP in
             each adaptive normalization layer. ``None`` uses only Swish and a
             final projection.
-        ln_no_adaptation: Make created normalizers ordinary non-affine layer
+            Defaults to ``None``.
+        ln_no_adaptation (bool): Make created normalizers ordinary non-affine layer
             normalization layers and ignore their condition input.
-        mlp_ratio: Optional hidden-width ratio for :meth:`_create_mlp`. ``None``
+            Defaults to ``False``.
+        mlp_ratio (float | None): Optional hidden-width ratio for :meth:`_create_mlp`. ``None``
             produces a single output projection when ``mlp_output_dim`` is set.
-        mlp_activation_func: Keras activation name or callable for the optional
+            Defaults to ``None``.
+        mlp_activation_func (str): Keras activation name or callable for the optional
             hidden dense layer, for example ``"swish"``, ``"gelu"``, or
             ``"relu"``.
-        mlp_output_dim: Default output width. ``None`` disables the MLP and
+            Defaults to ``'swish'``.
+        mlp_output_dim (int | None): Default output width. ``None`` disables the MLP and
             makes the factory represent an identity operation.
-        **kwargs: Standard ``tf.keras.layers.Layer`` options such as ``name``,
+            Defaults to ``None``.
+        **kwargs (Any): Standard ``tf.keras.layers.Layer`` options such as ``name``,
             ``dtype``, and ``trainable``.
 
     Attributes:
-        prev_output_dim: Input width recorded by the latest MLP factory call.
-        output_dim: Effective output width recorded by that call.
+        prev_output_dim (int | None): Input width recorded by the latest MLP factory call.
+        output_dim (int | None): Effective output width recorded by that call.
 
     Inputs:
         No direct tensor input; subclasses call the protected layer factories.
@@ -65,17 +78,25 @@ class BaseLayer(ArgumentSaverLayer):
         Args:
             use_layer_norm (bool): Whether normalization factories create
                 :class:`AdaLNZero` layers.
-            ln_dim (int | None): Default normalized feature width.
-            ln_mlp_ratio (float | None): Optional conditioning-MLP width ratio.
+                Defaults to ``False``.
+            ln_dim (int | None): Normalized feature width. Defaults to ``None``, valid when normalization is
+                disabled or plain normalization infers width; adaptive normalization requires an explicit
+                width.
+            ln_mlp_ratio (float | None): Conditioning hidden-width ratio. Defaults to ``None``, using Swish
+                followed directly by the modulation projection.
             ln_no_adaptation (bool): Whether created normalizers ignore their
                 condition input.
-            mlp_ratio (float | None): Optional feed-forward hidden-width ratio.
+                Defaults to ``False``.
+            mlp_ratio (float | None): Feed-forward hidden-width ratio. Defaults to ``None``, omitting the
+                hidden layer while retaining any requested final projection.
             mlp_activation_func (str): Keras hidden-layer activation name.
-            mlp_output_dim (int | None): Optional feed-forward output width.
+                Defaults to ``'swish'``.
+            mlp_output_dim (int | None): Feed-forward output width. Defaults to ``None``, so the factory
+                returns None for an identity transformation.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(**kwargs)
@@ -91,8 +112,10 @@ class BaseLayer(ArgumentSaverLayer):
                 ``use_layer_norm``, ``ln_no_adaptation``, and ``ln_dim``.
 
         Returns:
-            ``None``. An ``AssertionError`` is raised when adaptive
-            normalization is requested without a feature width.
+            None: Valid settings return normally.
+
+        Raises:
+            ValueError: If adaptive normalization is requested without a feature width.
         """
 
         # Adaptive normalization requires an explicitly known feature width.
@@ -119,29 +142,45 @@ class BaseLayer(ArgumentSaverLayer):
         Args:
             dim (int | None): Normalized channel width. ``None`` uses
                 ``self.ln_dim``.
+                Defaults to ``None``.
             gate_dim (int | None): Gate width. ``None`` uses ``self.ln_dim``; callers that
                 override ``dim`` and need a matching gate should pass it too.
+                Defaults to ``None``.
             mlp_ratio (float | None): Conditioning hidden-width ratio. ``None`` uses
                 ``self.ln_mlp_ratio``.
+                Defaults to ``None``.
             return_gate (bool): Whether the normalizer also returns a residual gate.
-            no_adaptation (bool | None): Override the instance default. ``True`` ignores the
-                condition and makes the gate the scalar ``1.0``.
-            use_layer_norm (bool | None): Override whether a layer is created.
+                Defaults to ``True``.
+            no_adaptation (bool | None): Plain-normalization override. Defaults to ``None``, inheriting
+                self.ln_no_adaptation; True ignores conditions and uses scalar-one gates.
+            use_layer_norm (bool | None): Whether to construct a normalizer. Defaults to ``None``,
+                inheriting self.use_layer_norm; False returns None.
             name (str | None): Optional Keras name; ``None`` derives one from this layer.
+                Defaults to ``None``.
 
         Returns:
-            ``AdaLNZero | None``. The layer consumes ``(features, condition)``;
+            AdaLNZero | None:. The layer consumes ``(features, condition)``;
             ``None`` tells the caller to leave features unchanged.
         """
 
+        # Inherit the stored normalization width when no per-call width override is
+        # supplied.
         dim = self.ln_dim if dim is None else dim
+        # Inherit the stored gate width when no per-call override is supplied.
         gate_dim = self.ln_dim if gate_dim is None else gate_dim
+        # Omit the conditioning hidden layer only when neither call nor instance supplies
+        # its ratio.
         mlp_ratio = None if mlp_ratio is None and self.ln_mlp_ratio is None \
                     else mlp_ratio or self.ln_mlp_ratio
+        # Inherit plain/adaptive normalization mode unless the caller explicitly overrides
+        # it.
         no_adaptation = self.ln_no_adaptation if no_adaptation is None else no_adaptation
+        # Inherit the normalization toggle unless the caller explicitly overrides it.
         use_layer_norm = self.use_layer_norm if use_layer_norm is None else use_layer_norm
+        # Derive the child name from its owner when no explicit name is supplied.
         name = f"{self.name}/layer_norm" if name is None else name
 
+        # Create a normalizer only when enabled; None denotes an identity path.
         layer_norm = AdaLNZero(
             dim=dim, 
             gate_dim=gate_dim, 
@@ -166,24 +205,28 @@ class BaseLayer(ArgumentSaverLayer):
         Args:
             prev_output_dim (int | None): Positive input width. ``None`` is
                 permitted only when no output projection is configured.
-            mlp_ratio (float | None): Hidden-width ratio overriding ``self.mlp_ratio``. When
-                non-``None``, the first dense layer has
-                ``int(prev_output_dim * mlp_ratio)`` units.
-            mlp_activation_func (str | None): Keras activation for the hidden dense layer.
-            mlp_output_dim (int | None): Final width overriding ``self.mlp_output_dim``.
-                ``None`` disables the MLP entirely.
+            mlp_ratio (float | None): Hidden-width ratio. Defaults to ``None``, inheriting self.mlp_ratio;
+                if both are None, only the final projection is created. A resolved ratio gives
+                int(prev_output_dim * ratio) hidden units.
+            mlp_activation_func (str | None): Hidden-layer activation. Defaults to ``None``, inheriting
+                self.mlp_activation_func; unused when the resolved hidden ratio is None.
+            mlp_output_dim (int | None): Final projection width. Defaults to ``None``, inheriting
+                self.mlp_output_dim; the MLP is disabled only if the resolved instance/call width is None.
 
         Returns:
-            ``tf.keras.Sequential | None``. A configured ratio produces
+            tf.keras.Sequential | None:. A configured ratio produces
             ``Dense(hidden, activation) -> Dense(output)``; a ``None`` ratio
             produces one ``Dense(output)``; a ``None`` output width returns
             ``None``. The factory also records ``prev_output_dim`` and the
             effective ``output_dim`` on this object.
         """
 
+        # Use the stored feed-forward ratio when the call leaves it unspecified.
         mlp_ratio = self.mlp_ratio if mlp_ratio is None else mlp_ratio
+        # Use the stored hidden activation when the call leaves it unspecified.
         mlp_activation_func = self.mlp_activation_func if mlp_activation_func is None \
                             else mlp_activation_func
+        # Use the stored output width when the call leaves it unspecified.
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
 
         # Treat a missing input width as valid only for a disabled MLP.
@@ -244,6 +287,7 @@ def run_self_tests() -> dict[str, str]:
         BaseLayer(use_layer_norm=True)
     except ValueError:
         pass
+    # This invalid case should already have raised: Adaptive normalization requires ln_dim.
     else:
         raise AssertionError("Adaptive normalization requires ln_dim.")
 

@@ -1,4 +1,9 @@
-"""Batch-granularity early stopping for progressive training stages."""
+"""Batch-granularity early stopping for progressive training stages.
+
+BatchLossPlateau monitors a minimizing metric at batch boundaries and stops the
+bound model after sustained non-improvement. Each new callback owns an independent
+best value and patience counter, matching progressive curriculum stage lifetimes.
+"""
 
 from tensorflow.keras import callbacks
 
@@ -14,13 +19,16 @@ class BatchLossPlateau(callbacks.Callback):
     whenever a harder timestep interval is introduced.
 
     Args:
-        monitor: Key read from the Keras batch ``logs`` mapping, commonly
+        monitor (str): Key read from the Keras batch ``logs`` mapping, commonly
             ``"noise_loss"`` or another scalar training metric.
-        patience: Positive number of consecutive non-improving batches
+            Defaults to ``'noise_loss'``.
+        patience (int): Positive number of consecutive non-improving batches
             tolerated before training is stopped, matching Keras callback
             patience semantics.
-        min_delta: Non-negative improvement margin. A value is improving only
+            Defaults to ``200``.
+        min_delta (float): Non-negative improvement margin. A value is improving only
             when ``current < best - min_delta``.
+            Defaults to ``0.0``.
 
     Inputs:
         Keras supplies a zero-based integer batch index and an optional mapping
@@ -29,6 +37,12 @@ class BatchLossPlateau(callbacks.Callback):
     Outputs:
         Callback hooks return ``None``. On a plateau, the callback sets
         ``model.stop_training`` to ``True``.
+
+    Attributes:
+        best (float): Smallest sufficiently improved observed metric, initially positive
+            infinity.
+        wait (int): Consecutive non-improving batch count, initially zero.
+        monitor (str): Metric key selected by the constructor.
     """
 
     def __init__(
@@ -41,12 +55,15 @@ class BatchLossPlateau(callbacks.Callback):
 
         Args:
             monitor (str): Metric key read from the Keras batch-log mapping.
+                Defaults to ``'noise_loss'``.
             patience (int): Positive number of non-improving batches tolerated.
+                Defaults to ``200``.
             min_delta (float): Non-negative minimum decrease that counts as an
                 improvement.
+                Defaults to ``0.0``.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__()
@@ -58,8 +75,10 @@ class BatchLossPlateau(callbacks.Callback):
         self.monitor = monitor
         self.patience = int(patience)
         self.min_delta = float(min_delta)
+        # Require at least one non-improving batch before plateau stopping.
         if self.patience < 1:
             raise ValueError("patience must be positive.")
+        # Reject an invalid improvement margin before monitoring begins.
         if not np.isfinite(self.min_delta) or self.min_delta < 0.:
             raise ValueError("min_delta must be finite and nonnegative.")
         self.best = np.inf
@@ -78,12 +97,14 @@ class BatchLossPlateau(callbacks.Callback):
             logs (dict[str, Any] | None): Optional mapping from metric name to
                 a scalar numeric value. Missing ``monitor`` keys leave all
                 state unchanged; values must convert to Python ``float``.
+                Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
-            ``None``. ``best`` and ``wait`` are updated in place, and the bound
+            None: ``best`` and ``wait`` are updated in place, and the bound
             model may have ``stop_training=True`` assigned.
         """
 
+        # Create a local empty mapping only when Keras supplies no log mapping.
         logs = {} if logs is None else logs
 
         current = logs.get(self.monitor, None)
@@ -161,6 +182,7 @@ def run_self_tests() -> dict[str, str]:
             BatchLossPlateau(**invalid_options)
         except ValueError:
             pass
+        # This invalid case should already have raised: Invalid plateau options accepted:.
         else:
             raise AssertionError(
                 f"Invalid plateau options accepted: {invalid_options}"

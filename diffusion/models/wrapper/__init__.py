@@ -1,8 +1,13 @@
-"""Shared type aliases for diffusion training and sampling wrappers.
+"""Share wrapper selectors and topology-aware copying for diffusion networks.
 
-Wrappers orchestrate raw networks from ``diffusion.models.transformer`` rather
-than replacing them: they own schedules, noising, losses, Keras steps, EMA, and
-sampling while raw networks own architecture and tensor features.
+Wrappers own schedules, noising, losses, Keras training steps, EMA snapshots,
+and sampling; compatible transformer, convolutional, and composite networks
+own architecture and features. The aliases define raw/EMA selection,
+conditional/unconditional auxiliary objectives, and curriculum clustering.
+
+copy_network_weights_by_layer aligns active layers after class or depth
+growth, including renamed composite decoder and terminal classifier layers.
+Importing this module does not create models or copy any weights.
 """
 
 from tensorflow.keras import models
@@ -30,16 +35,27 @@ def copy_network_weights_by_layer(
     replacement. Copying each active layer separately keeps expanded label and
     classifier heads aligned without depending on that global order.
 
+    Pairs active top-level layers by name, then additionally pairs composite
+    decoder internals and terminal classifier components. Each matched pair must
+    have the same ordered weight shapes; both models must receive complete coverage.
+    The operation changes target values in place without cloning layers, changing
+    topology, or transferring optimizer state. A later mismatch can leave earlier
+    pairs already copied; copying is not rolled back on failure.
+
     Args:
-        source_network (tf.keras.Model): Trained classifier network.
-        target_network (tf.keras.Model): Fresh topology-equivalent clone.
+        source_network (tf.keras.Model): Built source network with the weights to preserve;
+            transformer,
+            convolutional, or compatible composite implementations are accepted.
+        target_network (tf.keras.Model): Built clone with topology-equivalent active layers
+            and assignable
+            variables. Source and target architecture objects are not replaced.
 
     Returns:
         None: Every target weight receives its matching source value.
 
     Raises:
-        ValueError: If same-named layers have different weight shapes or the
-        active layers do not cover every model weight.
+        ValueError: Matched layers have different ordered weight shapes or matched
+            active layers do not cover every model weight in both networks.
     """
 
     source_layers = {
@@ -48,6 +64,7 @@ def copy_network_weights_by_layer(
     target_layers = {
         layer.name: layer for layer in target_network.layers
     }
+    # Pair only active layer names shared by the source and target.
     layer_pairs = [
         (source_layers[name], target_layer)
         for name, target_layer in target_layers.items()
@@ -63,6 +80,7 @@ def copy_network_weights_by_layer(
         source_decoder_layers = {
             layer.name: layer for layer in source_decoder.layers
         }
+        # Pair decoder internals by shared names when outer model names differ.
         layer_pairs.extend(
             (source_decoder_layers[name], target_layer)
             for name, target_layer in {
@@ -78,6 +96,7 @@ def copy_network_weights_by_layer(
     ):
         source_terminal = source_network.clf_layers_dicts[-1]
         target_terminal = target_network.clf_layers_dicts[-1]
+        # Match terminal classifier components that survive depth-dependent renaming.
         layer_pairs.extend(
             (source_terminal[name], target_layer)
             for name, target_layer in target_terminal.items()

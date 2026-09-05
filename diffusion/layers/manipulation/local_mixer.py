@@ -1,4 +1,10 @@
-"""Depthwise-convolutional local mixing for transformer token sequences."""
+"""Depthwise-convolutional local mixing for transformer token sequences.
+
+LocalMixer introduces spatial locality through depthwise and optional pointwise
+convolution over square patch grids. Shape-preserving paths add a gated residual;
+resized paths return local features directly. Prefix tokens, positional merging,
+and final projections follow the shared token-layer protocols.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -19,31 +25,40 @@ class LocalMixer(BaseEmbedding):
     features. Position and MLP processing occur after this mixing.
 
     Args:
-        use_layer_norm: Whether to apply condition-adaptive normalization before
+        use_layer_norm (bool): Whether to apply condition-adaptive normalization before
             convolution. Disabled normalization uses ``x`` and a scalar-one
             gate directly.
-        kernel_size: Positive depthwise kernel side length.
-        strides: Positive depthwise stride. ``1`` enables a residual only when
+            Defaults to ``True``.
+        kernel_size (int): Positive depthwise kernel side length.
+            Defaults to ``3``.
+        strides (int): Positive depthwise stride. ``1`` enables a residual only when
             the configured padding and kernel preserve the grid; larger values
             spatially reduce the sequence.
-        padding: Keras padding mode, normally ``"same"`` or ``"valid"``. A
+            Defaults to ``1``.
+        padding (str): Keras padding mode, normally ``"same"`` or ``"valid"``. A
             stride-one residual requires output and input token counts to match,
             so use ``"same"`` (or an effectively size-preserving kernel).
-        depth_multiplier: Positive number of depthwise filters per input channel.
-        pointwise_dim_ratio: Positive output multiplier for the optional 1x1
+            Defaults to ``'same'``.
+        depth_multiplier (int): Positive number of depthwise filters per input channel.
+            Defaults to ``1``.
+        pointwise_dim_ratio (int): Positive output multiplier for the optional 1x1
             convolution.
-        use_pointwise: If true, project depthwise channels to
+            Defaults to ``1``.
+        use_pointwise (bool): If true, project depthwise channels to
             ``dim * pointwise_dim_ratio``; otherwise retain
             ``dim * depth_multiplier`` channels.
-        zero_init: Keep the initial residual correction at zero. Adaptive
+            Defaults to ``True``.
+        zero_init (bool): Keep the initial residual correction at zero. Adaptive
             residual mixing uses its learned zero gate; other configurations
             zero-initialize the depthwise kernel.
-        circumvent_tokens: Number of leading non-spatial tokens excluded from
+            Defaults to ``True``.
+        circumvent_tokens (bool | int): Number of leading non-spatial tokens excluded from
             convolution. ``True`` retains the original one-token mode.
-        **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size``. Positional/MLP options can change the final channel
-            width. ``use_layer_norm`` and ``ln_dim`` are supplied internally
-            and must not be repeated.
+            width. ``use_layer_norm`` is supplied here. A serialized ``ln_dim`` must
+            equal ``dim`` (or be None) when present.
 
     Inputs:
         Pair ``(x, cond)`` with floating tokens ``[batch, tokens, dim]``. The
@@ -60,6 +75,14 @@ class LocalMixer(BaseEmbedding):
     Serialization:
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
+
+    Attributes:
+        add_residual (bool): Whether configured stride and padding preserve the source grid.
+        depthwise (tf.keras.layers.DepthwiseConv2D): Spatial mixing of each input channel.
+        pointwise (tf.keras.layers.Conv2D | None): Optional channel mixing after depthwise
+            convolution.
+        output_grid_size (int): Configured spatial output side.
+        output_dim (int): Final feature width after all projections and positional merging.
     """
 
     def __init__(
@@ -79,20 +102,29 @@ class LocalMixer(BaseEmbedding):
 
         Args:
             use_layer_norm (bool): Whether to normalize before convolution.
+                Defaults to ``True``.
             kernel_size (int): Positive depthwise kernel size.
+                Defaults to ``3``.
             strides (int): Positive depthwise stride.
+                Defaults to ``1``.
             padding (str): Keras ``"same"`` or ``"valid"`` padding.
+                Defaults to ``'same'``.
             depth_multiplier (int): Positive depthwise channel multiplier.
+                Defaults to ``1``.
             pointwise_dim_ratio (int): Positive pointwise channel multiplier.
+                Defaults to ``1``.
             use_pointwise (bool): Whether to apply the pointwise convolution.
+                Defaults to ``True``.
             zero_init (bool): Whether to initialize the local correction at
                 zero.
+                Defaults to ``True``.
             circumvent_tokens (bool | int): Number of leading tokens to
                 preserve; ``True`` preserves one.
+                Defaults to ``False``.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(
@@ -105,8 +137,12 @@ class LocalMixer(BaseEmbedding):
             "LocalMixer requires grid_size."
         )
 
+        # Use the pointwise channel multiplier when enabled; otherwise keep depthwise output
+        # channels.
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
+        # Same padding rounds the strided grid up; valid padding removes the
+        # convolution/pooling border.
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
@@ -114,6 +150,8 @@ class LocalMixer(BaseEmbedding):
         self.add_residual = self.strides == 1 and \
                             self.output_grid_size == self.grid_size
 
+        # Allocate a residual-width gate for shape-preserving mixing, or zero gate channels
+        # for resized paths.
         self.layer_norm = self._create_layer_norm(
             gate_dim=self.output_dim if self.add_residual else 0, 
             return_gate=True
@@ -125,6 +163,8 @@ class LocalMixer(BaseEmbedding):
             and not self.ln_no_adaptation
         )
 
+        # Zero-initialize the local kernel when no adaptive zero gate supplies the requested
+        # zero correction.
         self.depthwise = layers.DepthwiseConv2D(
             kernel_size=self.kernel_size, 
             strides=self.strides, 
@@ -134,6 +174,7 @@ class LocalMixer(BaseEmbedding):
             dtype=self.dtype_policy, 
             name=f"{self.name}/depthwise"
         )
+        # Create the pointwise channel projection only when pointwise mixing is enabled.
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
@@ -141,6 +182,8 @@ class LocalMixer(BaseEmbedding):
             dtype=self.dtype_policy, 
             name=f"{self.name}/pointwise"
         ) if self.use_pointwise else None
+        # Create a width projector only for a shape-preserving residual with changed
+        # channels.
         self.residual_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -151,11 +194,15 @@ class LocalMixer(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
+        # Project the residual to its configured width only when a projector exists.
         residual_token_dim = self.output_dim if self.residual_projector is not None \
                             else self.dim
+        # Concatenated positions double the component width; disabled or additive positions
+        # preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
+        # Project preserved prefix tokens only when their post-merge channel width differs.
         self.residual_token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -178,9 +225,11 @@ class LocalMixer(BaseEmbedding):
                 following the class input contract.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to normalization,
                 convolutions, positional projection, and MLP layers.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` with floating compute dtype. For input grid side
+            tf.Tensor: with floating compute dtype. For input grid side
             ``g``, ``same`` padding produces ``ceil(g / strides)``; ``valid``
             produces ``floor((g - kernel_size) / strides) + 1``. A leading
             class token is added back when configured.
@@ -188,11 +237,15 @@ class LocalMixer(BaseEmbedding):
 
         x, cond = inputs
 
+        # Use configured normalization; otherwise preserve incoming features and any
+        # identity gate.
         h, gate = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else (x, 1.)
         prefix_tokens_num = int(self.circumvent_tokens)
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
         h = h[:, prefix_tokens_num:, :] if self.circumvent_tokens else h
 
         h_shape = tf.shape(h)
@@ -212,6 +265,7 @@ class LocalMixer(BaseEmbedding):
             h, 
             training=training
         )
+        # Mix depthwise output channels only when pointwise convolution is configured.
         h = self.pointwise(
             h, 
             training=training
@@ -225,14 +279,19 @@ class LocalMixer(BaseEmbedding):
             output_grid_size * output_grid_size, 
             h.shape[-1]
         ))
+        # Project the residual to its configured width only when a projector exists.
         x = self.residual_projector(
             x, 
             training=training
         ) if self.residual_projector is not None else x
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
         x, x_token = (
             x[:, prefix_tokens_num:, :], 
             x[:, :prefix_tokens_num, :]
         ) if self.circumvent_tokens else (x, None)
+        # Add the gated local correction only when the spatial grid is preserved; otherwise
+        # return resized features.
         x = x + gate * h if self.add_residual else h
 
         x = self._pos_merger(
@@ -240,14 +299,18 @@ class LocalMixer(BaseEmbedding):
             output_grid_size=output_grid_size, 
             training=training
         )
+        # Adjust preserved prefix width only when the post-merge projection exists.
         x_token = self.residual_token_projector(
             x_token,
             training=training
         ) if self.residual_token_projector is not None else x_token
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
         x = tf.concat([
             x_token,
             x
         ], axis=1) if self.circumvent_tokens else x
+        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training
@@ -278,6 +341,8 @@ def run_self_tests() -> dict[str, str]:
         for use_pointwise in (False, True):
             for zero_init in (False, True):
                 for circumvent_tokens in (False, True):
+                    # Include a leading special token only in the prefix-preservation test
+                    # case.
                     token_count = 17 if circumvent_tokens else 16
                     inputs = tf.ones((2, token_count, 2), dtype=tf.float32)
                     layer = LocalMixer(
@@ -419,6 +484,8 @@ def run_self_tests() -> dict[str, str]:
         identity_layer((tf.ones((1, 15, 2)), None))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Non-square spatial token counts must
+    # fail.
     else:
         raise AssertionError("Non-square spatial token counts must fail.")
 

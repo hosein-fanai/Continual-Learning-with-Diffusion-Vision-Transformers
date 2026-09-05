@@ -1,4 +1,10 @@
-"""Selection, merging, normalization, and projection of saved features."""
+"""Selection, merging, normalization, and projection of saved features.
+
+FeatureHandler selects stored activations by Python indices, appends optional
+secondary features, and combines them by concatenation or addition. Shared
+normalization and MLP factories can transform the merged tensor for skip
+connections; an empty selection produces None.
+"""
 
 import tensorflow as tf
 
@@ -18,18 +24,22 @@ class FeatureHandler(BaseLayer):
     tensors from ``second_list`` are appended after the selected features.
 
     Args:
-        ids: Default list of integer feature indices. ``None`` defers the
+        ids (list[int] | None): Default list of integer feature indices. ``None`` defers the
             choice to :meth:`call`; in that case every call must pass ``ids``.
             An empty list plus an empty ``second_list`` returns ``None``.
-        connect_axis: Tensor axis used for ``connect_type="concat"``. All
+            Defaults to ``None``.
+        connect_axis (int): Tensor axis used for ``connect_type="concat"``. All
             dimensions other than this axis must match.
-        connect_type: ``"concat"`` concatenates selected tensors;
+            Defaults to ``-1``.
+        connect_type (MergeType): ``"concat"`` concatenates selected tensors;
             ``"add"`` sums them and therefore requires broadcast-compatible
             shapes.
-        grid_size: Optional square token-grid side produced by the merge. This
+            Defaults to ``'concat'``.
+        grid_size (int | None): Optional square token-grid side produced by the merge. This
             is metadata for downstream spatial-shape inference and does not
             alter feature selection or merging.
-        **kwargs: :class:`BaseLayer` options. Useful keys include
+            Defaults to ``None``.
+        **kwargs (Any): :class:`BaseLayer` options. Useful keys include
             ``use_layer_norm``, ``ln_dim``, ``ln_mlp_ratio``,
             ``ln_no_adaptation``, ``mlp_ratio``, ``mlp_activation_func``, and
             ``mlp_output_dim``, followed by standard Keras layer options.
@@ -45,6 +55,12 @@ class FeatureHandler(BaseLayer):
     Outputs:
         The merged floating ``tf.Tensor``, optionally normalized/projected, or
         ``None`` when no tensors were selected.
+
+    Attributes:
+        layer_norm (AdaLNZero | None): Optional normalizer applied after merging.
+        mlp (tf.keras.Sequential | None): Optional projection of merged features.
+        output_dim (int | None): Resolved projected width or configured input width.
+        grid_size (int | None): Optional spatial-grid metadata; does not alter computation.
     """
 
     def __init__(
@@ -60,14 +76,17 @@ class FeatureHandler(BaseLayer):
         Args:
             ids (list[int] | None): Default feature indices, or ``None`` to
                 require call-specific indices.
+                Defaults to ``None``.
             connect_axis (int): Concatenation axis.
+                Defaults to ``-1``.
             connect_type (MergeType): Either ``"concat"`` or ``"add"``.
-            grid_size (int | None): Optional output token-grid side retained
-                for downstream architecture inference.
+                Defaults to ``'concat'``.
+            grid_size (int | None): Optional output spatial-grid metadata. Defaults to ``None``, leaving
+                shape metadata unspecified; no tensor transformation depends on it.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(**kwargs)
@@ -89,7 +108,7 @@ class FeatureHandler(BaseLayer):
                 ``connect_type``.
 
         Returns:
-            ``None``. Invalid modes or a projected MLP without ``ln_dim`` raise
+            None: Invalid modes or a projected MLP without ``ln_dim`` raise
             ``ValueError``.
         """
 
@@ -121,20 +140,26 @@ class FeatureHandler(BaseLayer):
             features_list (Sequence[tf.Tensor]): Indexable feature sequence.
             second_list (Sequence[tf.Tensor] | None): Optional tensors appended to the selected
                 primary features. ``None`` means no secondary features.
-            ids (list[int] | None): Optional call-specific indices overriding ``self.ids``.
-                Negative and duplicate indices follow Python list semantics.
-            cond (tf.Tensor | None): Optional condition tensor shaped ``[batch, condition_dim]``.
-                It is required only by adaptive layer normalization.
+                Defaults to ``None``.
+            ids (list[int] | None): Call-specific feature indices. Defaults to ``None``, inheriting
+                self.ids; if both are None, raise ValueError. Negative and repeated indices follow Python
+                list semantics.
+            cond (tf.Tensor | None): Condition shaped [batch, condition_dim]. Defaults to ``None``, valid
+                with disabled/plain normalization; adaptive normalization requires a compatible condition.
             training (bool | tf.Tensor | None): Optional Keras training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor | None``. Concatenation preserves tensor dtype and
+            tf.Tensor | None:. Concatenation preserves tensor dtype and
             changes only ``connect_axis``; addition follows TensorFlow
             broadcasting. A configured MLP changes the last dimension to
             ``mlp_output_dim``.
         """
 
+        # Use no secondary features when the caller omits the secondary list.
         second_list = [] if second_list is None else second_list
+        # Inherit constructor feature indices unless the call supplies its own selection.
         ids = self.ids if ids is None else ids
 
         # Require call-time IDs when selection was deferred at construction.
@@ -159,10 +184,13 @@ class FeatureHandler(BaseLayer):
         else:
             x = sum(selected_features)
 
+        # Use configured normalization; otherwise preserve incoming features and any
+        # identity gate.
         x = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else x
+        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training
@@ -196,6 +224,8 @@ def run_self_tests() -> dict[str, str]:
             FeatureHandler(ids=[0], connect_type=invalid_mode, ln_dim=2)
         except ValueError:
             pass
+        # This invalid case should already have raised: Unknown feature merge modes must
+        # fail.
         else:
             raise AssertionError("Unknown feature merge modes must fail.")
 
@@ -224,6 +254,8 @@ def run_self_tests() -> dict[str, str]:
         deferred(features)
     except ValueError:
         pass
+    # This invalid case should already have raised: A deferred selector requires call-time
+    # ids.
     else:
         raise AssertionError("A deferred selector requires call-time ids.")
 
@@ -247,12 +279,15 @@ def run_self_tests() -> dict[str, str]:
         concat([tf.ones((1, 2, 2)), tf.ones((1, 3, 3))], ids=[0, 1])
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Incompatible concatenation shapes must
+    # fail.
     else:
         raise AssertionError("Incompatible concatenation shapes must fail.")
     try:
         add(features, ids=[99])
     except IndexError:
         pass
+    # This invalid case should already have raised: Out-of-range feature IDs must fail.
     else:
         raise AssertionError("Out-of-range feature IDs must fail.")
 

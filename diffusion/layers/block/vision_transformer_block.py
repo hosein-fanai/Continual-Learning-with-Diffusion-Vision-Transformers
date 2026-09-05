@@ -1,4 +1,10 @@
-"""Condition-adaptive vision-transformer residual blocks."""
+"""Condition-adaptive vision-transformer residual blocks.
+
+VisionTransformerBlock composes adaptive normalization, multi-head attention, and
+an MLP with gated residuals and independent stochastic-depth streams. Optional
+external queries/values support cross-attention, and learned projections reconcile
+configured residual widths.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -26,34 +32,48 @@ class VisionTransformerBlock(BaseLayer):
     back to it.
 
     Args:
-        mlp_ratio: Hidden-width ratio for the feed-forward branch. ``4`` gives
+        mlp_ratio (float | None): Hidden-width ratio for the feed-forward branch. ``4`` gives
             a ``4 * query_dim`` hidden layer; ``None`` leaves only its final
             dense projection.
-        mlp_activation_func: Keras activation for the feed-forward hidden layer.
-        dim: Input token width and adaptive-normalization width.
-        key_dim: Per-head query/key width. ``None`` uses ``dim // num_heads``;
+            Defaults to ``4``.
+        mlp_activation_func (str): Keras activation for the feed-forward hidden layer.
+            Defaults to ``'gelu'``.
+        dim (int): Input token width and adaptive-normalization width.
+            Defaults to ``32``.
+        key_dim (int | None): Per-head query/key width. ``None`` uses ``dim // num_heads``;
             the resolved value must be positive.
-        value_dim: Optional per-head value width accepted by Keras
+            Defaults to ``None``.
+        value_dim (int | None): Optional per-head value width accepted by Keras
             ``MultiHeadAttention``. ``None`` uses ``key_dim``.
-        query_dim: Attention residual/output width. ``None`` uses ``dim``.
-        num_heads: Positive number of attention heads.
-        gate_query_flag: If true, size the attention gate to ``query_dim``;
+            Defaults to ``None``.
+        query_dim (int | None): Attention residual/output width. ``None`` uses ``dim``.
+            Defaults to ``None``.
+        num_heads (int): Positive number of attention heads.
+            Defaults to ``4``.
+        gate_query_flag (bool): If true, size the attention gate to ``query_dim``;
             otherwise size it to ``dim``. External-query attention normally
             needs the former, while decoder self-attention uses the latter.
-        drop_prob: Stochastic-depth probability in ``[0, 1)`` for each branch.
-        drop_per_sample: Use independent path masks per example when true, or
+            Defaults to ``True``.
+        drop_prob (float): Stochastic-depth probability in ``[0, 1)`` for each branch.
+            Defaults to ``0.0``.
+        drop_per_sample (bool): Use independent path masks per example when true, or
             one path decision for the full batch when false.
-        grid_size: Optional square token-grid side retained as architecture
+            Defaults to ``True``.
+        grid_size (int | None): Optional square token-grid side retained as architecture
             metadata for later spatial reshapers. It does not alter attention.
-        **kwargs: Remaining :class:`BaseLayer`/Keras options. Supported layer
+            Defaults to ``None``.
+        **kwargs (Any): Remaining :class:`BaseLayer`/Keras options. Supported layer
             keys include ``ln_mlp_ratio``, ``ln_no_adaptation``, and
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
             ``trainable``. ``use_layer_norm``, ``ln_dim``, ``mlp_ratio``, and
             ``mlp_activation_func`` are set explicitly here. Serialized
-            ``use_layer_norm`` is ignored and fixed to true; ``ln_dim=dim`` is
-            accepted while conflicting widths are rejected. ``ln_no_adaptation=True``
+            ``use_layer_norm`` is ignored and fixed to true; any supplied ``ln_dim``
+            is discarded and reconstructed from ``dim``. ``ln_no_adaptation=True``
             replaces zero gates with scalar-one gates and makes the initial
             block non-identity.
+        seed (int | None): Optional component seed used to derive distinct
+            attention and MLP stochastic-depth streams.
+            Defaults to ``None``.
 
     Inputs:
         Pair ``(x, cond)`` where ``x`` is floating
@@ -67,6 +87,15 @@ class VisionTransformerBlock(BaseLayer):
     Serialization:
         ``from_config(get_config())`` is supported. Constructor-controlled
         normalization keys are discarded before the base class is initialized.
+
+    Attributes:
+        mha (tf.keras.layers.MultiHeadAttention): First attention branch with the
+            configured gate/output width.
+        mha_layer_norm (AdaLNZero): Pre-attention normalizer and condition gate.
+        mlp (tf.keras.Sequential): Feed-forward branch with resolved mlp_output_dim.
+        mha_drop_path (DropPath): Stochastic depth for attention residuals.
+        mlp_drop_path (DropPath): Independent stochastic depth for feed-forward residuals.
+        output_dim (int): Final MLP width used by later architecture stages.
     """
 
     def __init__(
@@ -89,23 +118,35 @@ class VisionTransformerBlock(BaseLayer):
 
         Args:
             mlp_ratio (float | None): Optional feed-forward hidden-width ratio.
+                Defaults to ``4``.
             mlp_activation_func (str): Keras feed-forward activation name.
+                Defaults to ``'gelu'``.
             dim (int): Input and normalization feature width.
-            key_dim (int | None): Optional per-head query/key width.
-            value_dim (int | None): Optional per-head value width.
-            query_dim (int | None): Optional attention output width.
+                Defaults to ``32``.
+            key_dim (int | None): Per-head query/key width. Defaults to ``None``, resolving to dim //
+                num_heads; the effective width must be positive.
+            value_dim (int | None): Per-head value width. Defaults to ``None``, letting Keras use key_dim.
+            query_dim (int | None): Width used for the attention-to-MLP residual. Defaults to ``None``,
+                using dim.
             num_heads (int): Positive attention-head count.
+                Defaults to ``4``.
             gate_query_flag (bool): Whether the attention gate uses query width.
+                Defaults to ``True``.
             drop_prob (float): Stochastic-depth probability in ``[0, 1)``.
+                Defaults to ``0.0``.
             drop_per_sample (bool): Whether each example receives its own path mask.
+                Defaults to ``True``.
             seed (int | None): Optional component seed used to derive distinct
                 attention and MLP stochastic-depth streams.
-            grid_size (int | None): Optional output token-grid side retained
-                for downstream architecture inference.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
+            grid_size (int | None): Spatial-grid metadata for later reshape stages. Defaults to ``None``,
+                leaving grid metadata unspecified; attention itself does not use it.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         kwargs.pop("use_layer_norm", None)
@@ -124,15 +165,24 @@ class VisionTransformerBlock(BaseLayer):
             "validation"
         )
 
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         self.seed = None if self.seed is None else int(self.seed)
+        # Infer per-head key/query width from model width and head count when omitted.
         self.key_dim = self.dim // self.num_heads if self.key_dim is None else self.key_dim
+        # Keep the original feature width unless an MLP output width is configured.
         self.mlp_output_dim = self.dim if self.mlp_output_dim is None else self.mlp_output_dim
+        # Use the original feature width when attention output width is omitted.
         self.query_dim = self.dim if self.query_dim is None else self.query_dim
 
+        # Use query-width gates and attention outputs when enabled; otherwise retain the
+        # input width.
         self.mha_layer_norm = self._create_layer_norm(
             gate_dim=self.query_dim if self.gate_query_flag else self.dim, 
             name=f"{self.name}/mha_layer_norm"
         )
+        # Use query-width gates and attention outputs when enabled; otherwise retain the
+        # input width.
         self.mha = layers.MultiHeadAttention(
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
@@ -141,6 +191,7 @@ class VisionTransformerBlock(BaseLayer):
             dtype=self.dtype_policy, 
             name="mha"
         )
+        # Create an attention residual projector only when the resolved query width changes.
         self.mha_residual_projector = layers.Dense(
             self.query_dim, 
             dtype=self.dtype_policy, 
@@ -162,6 +213,7 @@ class VisionTransformerBlock(BaseLayer):
         self.mlp = self._create_mlp(
             self.query_dim
         )
+        # Create an MLP residual projector only when feed-forward output width changes.
         self.mlp_residual_projector = layers.Dense(
             self.mlp_output_dim, 
             dtype=self.dtype_policy, 
@@ -208,6 +260,10 @@ class VisionTransformerBlock(BaseLayer):
             (x, cond), 
             training=training
         )
+        # Use normalized local tokens for omitted queries; otherwise use the supplied query
+        # tensor.
+        # Use normalized local tokens for omitted values; otherwise attend to the supplied
+        # source tensor.
         h = self.mha(
             query=h if queries is None else queries, 
             value=h if values is None else values, 
@@ -215,6 +271,7 @@ class VisionTransformerBlock(BaseLayer):
             training=training
         )
         h = tf.cast(h, x.dtype)
+        # Project the residual only when its channel width differs from the branch output.
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -242,9 +299,10 @@ class VisionTransformerBlock(BaseLayer):
                 dense layers, and DropPath.
 
         Returns:
-            ``tf.Tensor`` shaped ``[batch, tokens, mlp_output_dim]``.
+            tf.Tensor: shaped ``[batch, tokens, mlp_output_dim]``.
         """
 
+        # Bring the first attention output to query width before the feed-forward branch.
         x = self.mha_residual_projector(
             x,
             training=training
@@ -257,6 +315,7 @@ class VisionTransformerBlock(BaseLayer):
             h, 
             training=training
         )
+        # Project the residual only when its channel width differs from the branch output.
         x = self.mlp_residual_projector(
             x, 
             training=training
@@ -283,12 +342,20 @@ class VisionTransformerBlock(BaseLayer):
                 the class input contract.
             queries (tf.Tensor | None): Optional replacement attention queries. ``None`` selects
                 normalized ``x`` (ordinary self-attention).
+                Defaults to ``None``.
+                None selects the normalized current token sequence.
             values (tf.Tensor | None): Optional replacement values. ``None`` selects normalized
                 ``x``; supplying values enables cross-attention-like behavior.
+                Defaults to ``None``.
+                None selects normalized current tokens as keys/values.
             mask (tf.Tensor | None): Optional Keras attention mask broadcastable to
                 ``[batch, query_tokens, value_tokens]``.
+                Defaults to ``None``.
+                None leaves the attention branch unmasked; causal masking is not enabled automatically.
             training (bool | tf.Tensor | None): Optional training flag. Stochastic depth runs only when
                 this is true.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Floating tokens shaped
@@ -373,6 +440,8 @@ def run_self_tests() -> dict[str, str]:
                     assert tf.reduce_all(tf.math.is_finite(output))
                 assert (block.mha_residual_projector is not None)
                 assert (block.mlp_residual_projector is not None)
+                # Expect a query-width gate in query-gated mode, or an input-width gate
+                # otherwise.
                 expected_gate = 6 if gate_query_flag else 4
                 assert block.mha_layer_norm.gate_dim == expected_gate
 
@@ -430,12 +499,15 @@ def run_self_tests() -> dict[str, str]:
             VisionTransformerBlock(dim=4, drop_prob=invalid_probability)
         except ValueError:
             pass
+        # This invalid case should already have raised: Invalid stochastic-depth
+        # probabilities must fail.
         else:
             raise AssertionError("Invalid stochastic-depth probabilities must fail.")
     try:
         VisionTransformerBlock(dim=4, num_heads=0)
     except (ZeroDivisionError, ValueError):
         pass
+    # This invalid case should already have raised: num_heads=0 must fail.
     else:
         raise AssertionError("num_heads=0 must fail.")
     try:
@@ -445,6 +517,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: An incompatible attention mask must
+    # fail.
     else:
         raise AssertionError("An incompatible attention mask must fail.")
 

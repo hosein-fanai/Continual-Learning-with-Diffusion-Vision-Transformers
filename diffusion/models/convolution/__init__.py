@@ -1,4 +1,11 @@
-"""Public models and tensor contracts for convolutional diffusion networks."""
+"""Public convolutional diffusion model exports and shared tensor aliases.
+
+UNet and UNetClassifier are imported lazily through __getattr__ so raw models,
+wrappers, and layer registries can share contracts without import cycles.
+UNetInputs names the image/timestep/label triple; UNetFullOutput describes the
+five-part noise, condition, feature, regularizer, and latent-statistics return.
+DTypeLike admits a dtype string, TensorFlow dtype, or Keras dtype policy.
+"""
 
 import tensorflow as tf
 

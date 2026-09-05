@@ -1,4 +1,9 @@
-"""Conditioned, zero-initialized adaptive layer-normalization primitives."""
+"""Conditioned, zero-initialized adaptive layer-normalization primitives.
+
+AdaLNZero combines non-affine layer normalization with condition-derived shifts,
+scales, and optional residual gates. Its final conditioning projection starts at
+zero; plain-normalization mode omits adaptation and supplies an identity gate.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -19,20 +24,25 @@ class AdaLNZero(ArgumentSaverLayer):
     gradually during training.
 
     Args:
-        dim: Size of the last axis of ``x`` and of the shift/scale vectors.
+        dim (int | None): Size of the last axis of ``x`` and of the shift/scale vectors.
             It may be ``None`` only when ``no_adaptation=True``.
-        gate_dim: Number of gate channels. ``None`` uses ``dim``. It may differ
+        gate_dim (int | None): Number of gate channels. ``None`` uses ``dim``. It may differ
             from ``dim`` when the gated branch projects to another width.
-        mlp_ratio: If provided, insert a dense hidden layer of width
+            Defaults to ``None``.
+        mlp_ratio (float | None): If provided, insert a dense hidden layer of width
             ``int(dim * mlp_ratio)`` before the zero-initialized projection.
             ``None`` applies only a Swish activation before that projection.
-        return_gate: Whether :meth:`call` returns ``(features, gate)`` instead
+            Defaults to ``None``.
+        return_gate (bool): Whether :meth:`call` returns ``(features, gate)`` instead
             of only the modulated features.
-        no_adaptation: If true, omit the conditioning MLP, ignore ``cond``, and
+            Defaults to ``True``.
+        no_adaptation (bool): If true, omit the conditioning MLP, ignore ``cond``, and
             return plain normalized features. The accompanying gate, when
             requested, is the scalar ``1.0`` rather than a learned tensor.
-        epsilon: Small positive float added to the normalization variance.
-        **kwargs: Standard ``tf.keras.layers.Layer`` options, including
+            Defaults to ``False``.
+        epsilon (float): Small positive float added to the normalization variance.
+            Defaults to ``1e-06``.
+        **kwargs (Any): Standard ``tf.keras.layers.Layer`` options, including
             ``name``, ``dtype``, and ``trainable``.
 
     Inputs:
@@ -44,6 +54,14 @@ class AdaLNZero(ArgumentSaverLayer):
         A floating tensor shaped like ``x``. If ``return_gate=True``, the
         output is ``(features, gate)`` where an adaptive gate has shape
         ``[batch, 1, gate_dim]`` and is intended to broadcast over tokens.
+
+    Attributes:
+        norm (tf.keras.layers.LayerNormalization): Non-affine normalizer using the layer
+            policy.
+        mlp (tf.keras.Sequential | None): Condition-to-shift/scale/gate projection, absent
+            in plain mode.
+        gate_dim (int | None): Resolved residual-gate width; unused when adaptation is
+            disabled.
     """
 
     def __init__(
@@ -63,19 +81,30 @@ class AdaLNZero(ArgumentSaverLayer):
                 layer, or ``None`` for inferred-width plain normalization.
             gate_dim (int | None): Optional residual-gate width; ``None`` uses
                 ``dim``.
-            mlp_ratio (float | None): Optional conditioning-MLP width ratio.
+                Defaults to ``None``.
+            mlp_ratio (float | None): Conditioning-MLP hidden-width ratio. Defaults to ``None``, using Swish
+                and the final zero-initialized projection without a hidden Dense layer.
             return_gate (bool): Whether :meth:`call` returns a residual gate.
+                Defaults to ``True``.
             no_adaptation (bool): Whether to omit condition-driven modulation.
+                Defaults to ``False``.
             epsilon (float): Positive variance stabilizer for normalization.
+                Defaults to ``1e-06``.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
+
+        Raises:
+            TypeError: If adaptive mode receives dim=None and cannot size its projection.
+            ValueError: If Keras rejects feature widths or normalization settings.
         """
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
+        # Honor an explicit residual-gate width; otherwise match the normalized feature
+        # width.
         self.gate_dim = self.gate_dim if self.gate_dim is not None else self.dim
 
         self.norm = layers.LayerNormalization(
@@ -90,7 +119,10 @@ class AdaLNZero(ArgumentSaverLayer):
         if self.no_adaptation:
             self.mlp_output_dim = None
             self.mlp = None
+        # Adaptive normalization constructs the condition-to-modulation network.
         else:
+            # Reserve extra conditioning outputs only when a learned residual gate is
+            # requested.
             self.mlp_output_dim = self.dim * 2 + (
                 self.gate_dim if self.return_gate else 0
             )
@@ -135,9 +167,11 @@ class AdaLNZero(ArgumentSaverLayer):
                 layer's compute dtype.
             training (bool | tf.Tensor | None): Optional Python boolean or
                 symbolic Keras training flag forwarded to the nested layers.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` with the shape and dtype of normalized ``x``, or a
+            tf.Tensor: with the shape and dtype of normalized ``x``, or a
             ``tuple[tf.Tensor, tf.Tensor | float]`` when ``return_gate`` is
             enabled. See the class-level output contract for gate shapes.
         """
@@ -255,6 +289,8 @@ def run_self_tests() -> dict[str, str]:
         incompatible((x, tf.ones((3, 2))))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Mismatched feature and condition batches
+    # must fail.
     else:
         raise AssertionError("Mismatched feature and condition batches must fail.")
 

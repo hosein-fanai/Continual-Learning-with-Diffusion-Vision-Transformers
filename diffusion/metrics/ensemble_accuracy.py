@@ -1,4 +1,15 @@
-"""Accuracy based on class predictions ensembled across diffusion noise levels."""
+"""Accumulate class accuracy after averaging diffusion-timestep predictions.
+
+EnsembleAccuracy binds a trained classifier wrapper and combines primary,
+optional token-regularizer, and independent distillation-head outputs over
+integer timesteps [0, max_t). It supports uniform or normalized SNR weighting
+and vectorized or memory-bounded timestep groups. Seeded noise is stateless
+per timestep, making the two compute modes comparable for the same input batch.
+
+Methods return score/probability tensors and update a Keras categorical
+accuracy tracker; evaluate does not reset existing metric state. Importing
+starts no model work; run_self_tests explicitly exercises the implementation.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import metrics
@@ -32,40 +43,35 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify``, ``q_sample``, ``network``, ``ema_network``, and
-    ``get_network``. Weighted
-    evaluation also requires ``get_noise_and_signal_rates``. Each selected inner
+    ``noisify`` and ``get_network``. Weighted evaluation also requires
+    ``get_noise_and_signal_rates``. Each selected inner
     network must expose ``num_classes`` and the project's five-or-six-value
     ``predict_class(full_return=True)`` interface. Seeded mode additionally
     requires ``q_sample`` so stateless per-timestep noise can be applied without
     advancing TensorFlow's stateful RNG counters.
 
-    Args:
-        diffusion_clf: A ``DiffusionClassifier``-compatible wrapper exposing
-            callable ``noisify``, ``q_sample``, and ``get_network`` methods.
-        network_name: ``"ema"`` or ``"raw"`` network selector.
-        compute_type: ``"chunked"`` for bounded memory or ``"batched"`` for
-            one larger network call.
-        weighted: If true, use normalized signal-to-noise-ratio weights so
-            cleaner timesteps contribute more. If false, use a uniform mean.
-        max_t: Positive number of evaluated timesteps, no greater than the
-            wrapper's total ``timesteps``. Timestep ``max_t`` itself is excluded.
-        t_chunk_size: Positive number of timesteps per call in chunked mode.
-            Values larger than ``max_t`` simply produce one chunk.
-        seed: Optional master seed for mode-invariant per-timestep Gaussian
-            noising streams, or ``None`` for configured/default randomness.
-        clf_acc_coef: Nonnegative coefficient for primary class predictions.
-        clf_distil_acc_coef: Nonnegative coefficient for distillation-head
-            predictions. A positive value requires that optional output.
-        ctr_acc_coef: Nonnegative coefficient for the mean of available
-            classifier-regularizer predictions. A positive value requires at
-            least one such output.
-        name: Keras metric name.
-        separate_probas: If true, predict once per CFG label. The null-label
-            scores contribute to every class and each real label contributes
-            only to its corresponding class before a final softmax.
-        **kwargs: Standard ``tf.keras.metrics.Metric`` options, notably
-            ``dtype``.
+    Attributes:
+        diffusion_clf (object): Bound diffusion-classifier wrapper; constructor
+            defaults and interface requirements are detailed in __init__.
+        network (tf.keras.Model): Selected raw/EMA network object captured at metric
+            construction; disabled wrapper EMA may resolve to its raw network.
+        network_name (NetworkName): Requested raw/EMA selector.
+        compute_type (ComputeType): chunked or batched prediction route.
+        ensemble_predict (Callable): Bound implementation for the selected compute mode.
+        weighted (bool): Whether to use schedule-derived SNR weights instead of a uniform
+            mean.
+        max_t (int): Exclusive integer ensemble horizon; must be positive.
+        t_chunk_size (int): Positive maximum timesteps per chunked call.
+        clf_acc_coef (float): Primary probability coefficient; weights are not divided
+            by their sum when combining heads.
+        clf_distil_acc_coef (float): Independent distillation-head coefficient.
+        ctr_acc_coef (float): Coefficient of the mean available regularizer predictions.
+        separate_probas (bool): Combine null predictions with each class-conditioned
+            diagonal and apply softmax after timestep aggregation.
+        seed (int | None): Effective master noise seed, inherited from the wrapper
+            when omitted. None after fallback uses advancing stateful noising.
+        tracker (tf.keras.metrics.SparseCategoricalAccuracy): Running weighted correct
+            and example counts; reset_state clears them.
 
     Inputs:
         Clean floating images ``x`` shaped
@@ -100,23 +106,50 @@ class EnsembleAccuracy(metrics.Metric):
                 ``timesteps``, callable ``noisify``/``q_sample``, raw/EMA
                 members, and ``get_network``.
             network_name (NetworkName): ``"ema"`` or ``"raw"`` selector.
+                Defaults to ``'ema'``.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
+                Defaults to ``'chunked'``.
             weighted (bool): Whether timesteps use normalized SNR weights.
-            max_t (int): Positive number of timesteps to ensemble.
-            t_chunk_size (int): Positive timesteps per chunked network call.
+                Defaults to ``False``.
+            max_t (int): Positive exclusive timestep horizon, no greater than
+                wrapper.timesteps.
+                Values are integer-normalized after the upper-bound check.
+                Defaults to ``128``.
+            t_chunk_size (int): Positive timesteps per chunk; values above max_t produce one
+                chunk.
+                Batched mode does not use this limit.
+                Defaults to ``16``.
             clf_acc_coef (float): Coefficient for primary class predictions.
+                Defaults to ``1.0``.
             clf_distil_acc_coef (float): Coefficient for distillation-head
                 predictions.
+                Defaults to ``0.0``.
             ctr_acc_coef (float): Coefficient for averaged classifier
                 regularizer predictions.
+                Defaults to ``0.0``.
             separate_probas (bool): Whether to combine separate null and
                 class-conditioned CFG predictions.
-            seed (int | None): Optional master noising seed.
-            name (str | None): Keras metric name.
-            **kwargs (Any): Standard Keras metric options.
+                Defaults to ``False``.
+            seed (int | None): Independent ensemble noise seed; None inherits
+                diffusion_clf.seed. If
+                that is also None, no stateless master stream is installed.
+                Defaults to ``None``.
+            name (str | None): Keras metric name. None delegates automatic naming to Keras.
+                Defaults to ``'ensemble_accuracy'``.
+            **kwargs (Any): Keras Metric options, empty by default. dtype defaults to the
+                wrapper
+                policy variable dtype, or the global policy variable dtype when absent;
+                an explicit dtype overrides that choice.
 
         Returns:
-            ``None``.
+            None: Captures the selected network, resolves the effective seed, binds the
+            prediction implementation, and creates a zeroed accuracy tracker.
+
+        Raises:
+            ValueError: Network/compute selection is unsupported, max_t exceeds the
+                wrapper horizon, head coefficients have a nonpositive sum, CFG is disabled,
+                separate conditioning lacks its required label vocabulary, or the seed is
+                invalid.
         """
 
         kwargs.setdefault(
@@ -132,6 +165,7 @@ class EnsembleAccuracy(metrics.Metric):
             **kwargs
         )
 
+        # Reject selectors that cannot identify a supported raw or EMA prediction copy.
         if network_name not in get_args(NetworkName):
             raise ValueError(
                 f"network_name must be {get_args(NetworkName)}."
@@ -160,6 +194,7 @@ class EnsembleAccuracy(metrics.Metric):
         self.clf_acc_coef = float(clf_acc_coef)
         self.clf_distil_acc_coef = float(clf_distil_acc_coef)
         self.ctr_acc_coef = float(ctr_acc_coef)
+        # Inherit the wrapper seed only when no independent ensemble seed is supplied.
         self.seed = effective_seed(seed=(
             getattr(diffusion_clf, "seed", None) 
             if seed is None else seed
@@ -181,6 +216,7 @@ class EnsembleAccuracy(metrics.Metric):
                 "compute_type can either be chunked or batched."
             )
 
+        # Separate conditioning requires exactly one null label plus one label per predicted class.
         if self.separate_probas and (
             not getattr(self.network, "use_cfg", False)
             or getattr(
@@ -206,6 +242,7 @@ class EnsembleAccuracy(metrics.Metric):
                 timesteps, and unconditional labels.
             training (bool | tf.Tensor | None): Mode forwarded to
                 ``network.predict_class``.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor: Coefficient-weighted class scores shaped
@@ -257,6 +294,8 @@ class EnsembleAccuracy(metrics.Metric):
                     "Classifier regularizer predictions must be a list or tuple."
                 )
 
+            # Average only existing regularizer heads; absent depth outputs contribute no
+            # prediction.
             ctr_preds = [
                 tf.cast(pred, self.dtype)
                 for pred in regs_list
@@ -285,6 +324,7 @@ class EnsembleAccuracy(metrics.Metric):
                 self.dtype
             ) * self.clf_distil_acc_coef
 
+        # Combine each class-conditioned diagonal with the null-condition score for every class.
         if self.separate_probas:
             total_pred = tf.reshape(total_pred, (
                     batch_size, 
@@ -302,8 +342,13 @@ class EnsembleAccuracy(metrics.Metric):
     def _get_timestep_weights(self) -> tf.Tensor:
         """Return uniform or normalized SNR weights for all ensemble steps.
 
+        Args:
+            None.
+
         Returns:
-            tf.Tensor: One nonnegative weight per timestep, shaped ``[max_t]``.
+            tf.Tensor: Metric-dtype vector [max_t]. Unweighted mode returns ones;
+            weighted mode returns softmax(log SNR), using epsilon-clamped signal/noise
+            powers. Predictors divide by sum(weights), so both routes produce a mean.
         """
 
         # Preserve a uniform mean when schedule-aware weighting is disabled.
@@ -341,11 +386,16 @@ class EnsembleAccuracy(metrics.Metric):
         start: int, 
         count: int
     ) -> tf.Tensor:
-        """Create one chunk-boundary-invariant block of noisy replicas.
+        """Create a noisy timestep block, preserving seeded streams across chunking.
 
         Each logical timestep owns a child seed derived only from the master
         seed and timestep ID. Batched and chunked prediction therefore request
         identical noising streams regardless of their network-call grouping.
+
+        Mode-invariance applies when an effective seed exists and the input batch
+        shape/order is unchanged. Without one, wrapper.noisify supplies advancing
+        stateful random noise. The seed does not include an example identifier, so
+        changing evaluation batch partitioning need not preserve each example's noise.
 
         Args:
             x (tf.Tensor): Clean images shaped ``[batch,height,width,channels]``.
@@ -396,8 +446,12 @@ class EnsembleAccuracy(metrics.Metric):
     def reset_state(self) -> None:
         """Reset correct-example and example-count accumulators to zero.
 
+        Args:
+            None.
+
         Returns:
-            ``None``.
+            None: Clears the delegated tracker's accumulated correct and example weights;
+            network selection and ensemble configuration remain intact.
         """
 
         self.tracker.reset_state()
@@ -411,15 +465,17 @@ class EnsembleAccuracy(metrics.Metric):
         """Accumulate sparse categorical accuracy statistics.
 
         Args:
-            y_true (tf.Tensor): Sparse dataset labels shaped ``[batch]`` or
-                ``[batch, 1]``. Dynamic classifiers map their observed labels
-                to the wrapper's zero-based class IDs here.
+            y_true (tf.Tensor): Already mapped zero-based sparse targets [B] or [B,1]. This
+                low-level
+                method does not map original dataset labels; test_step performs that
+                mapping for dynamic wrappers.
             y_pred (tf.Tensor): Floating scores shaped ``[batch, num_classes]``. Scores may
                 be logits or probabilities because accuracy uses ``argmax``.
             sample_weight (tf.Tensor | None): Optional per-example weights.
+                Defaults to ``None``.
 
         Returns:
-            ``None``. Internal correct and total counts are updated in place.
+            None: Internal correct and total counts are updated in place.
         """
 
         # TensorFlow 2.10 misreads a one-column prediction as binary output.
@@ -435,6 +491,9 @@ class EnsembleAccuracy(metrics.Metric):
     def result(self) -> tf.Tensor:
         """Return cumulative accuracy.
 
+        Args:
+            None.
+
         Returns:
             tf.Tensor: Scalar floating value from the internal sparse categorical
             accuracy tracker.
@@ -449,11 +508,18 @@ class EnsembleAccuracy(metrics.Metric):
     ) -> tf.Tensor:
         """Average predictions for all examples and timesteps in one call.
 
+        The returned mean is in metric dtype and need not sum to one when head
+        coefficients do not sum to one. With separate_probas=True a final softmax
+        normalizes the null-plus-class-conditioned scores. This method does not update
+        accuracy counts; use test_step or update_state to accumulate a metric.
+
         Args:
             x (tf.Tensor): Clean floating image tensor
                 ``[batch, height, width, channels]``.
-            training (bool | tf.Tensor | None): Optional flag forwarded to ``network.predict_class``.
+            training (bool | tf.Tensor | None): Optional flag forwarded to
+                ``network.predict_class``.
                 Normally false for metric evaluation.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor: Floating scores shaped ``[batch, num_classes]`` containing
@@ -493,6 +559,8 @@ class EnsembleAccuracy(metrics.Metric):
 
         total_pred = tf.reduce_sum(cls_pred, axis=1) / denominator
 
+        # Separate conditioning uses a final softmax; ordinary head mixtures retain their weighted
+        # scores.
         return tf.nn.softmax(
             total_pred, 
             axis=-1
@@ -508,12 +576,15 @@ class EnsembleAccuracy(metrics.Metric):
         Args:
             x (tf.Tensor): Clean floating image tensor
                 ``[batch, height, width, channels]``.
-            training (bool | tf.Tensor | None): Optional flag forwarded to ``network.predict_class``.
+            training (bool | tf.Tensor | None): Optional flag forwarded to
+                ``network.predict_class``.
+                Defaults to ``None``.
 
         Returns:
-            ``tf.Tensor`` in the metric's configured dtype and shape
-            ``[batch, num_classes]``. Only ``batch * t_chunk_size`` noised
-            images are materialized per iteration.
+            tf.Tensor: Metric-dtype scores [B, num_classes]. Only B*t_chunk_size
+            noisy replicas are built at a time (the final chunk may be shorter). With
+            separate_probas=True a final softmax normalizes the combined conditional
+            scores; otherwise the coefficient-weighted timestep mean is returned.
         """
 
         batch_size = tf.shape(x)[0]
@@ -564,6 +635,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         total_pred = pred_sum / denominator
 
+        # Apply final softmax only for separately conditioned class scores.
         return tf.nn.softmax(
             total_pred, 
             axis=-1
@@ -577,18 +649,24 @@ class EnsembleAccuracy(metrics.Metric):
     ) -> tf.Tensor:
         """Update accuracy from one labeled image batch.
 
+        Dynamic original labels are mapped through the wrapper's seen_classes before
+        accuracy accumulation. Prediction receives the default training=None argument,
+        so Keras context governs it; ordinary eager evaluation uses inference behavior.
+
         Args:
             y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
                 ``[batch, 1]``.
             x (tf.Tensor): Clean floating images shaped
                 ``[batch, height, width, channels]``.
             sample_weight (tf.Tensor | None): Optional per-example weights.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor: Scalar floating cumulative accuracy.
         """
 
         y_pred = self.ensemble_predict(x)
+        # Map original dataset labels to dense classifier targets only for a dynamic vocabulary.
         if getattr(self.network, "dynamic_num_classes", False):
             y_true = self.diffusion_clf._map_classes(y_true)
         self.update_state(
@@ -614,10 +692,16 @@ class EnsembleAccuracy(metrics.Metric):
                 ``(images, labels, sample_weight)`` batches. ``len(dataset)``
                 must work.
             verbose (bool): Print batch progress when true.
+                Defaults to ``True``.
 
         Returns:
             np.generic: NumPy scalar containing cumulative sparse categorical
             accuracy.
+
+        Raises:
+            ValueError: A dataset batch contains neither two nor three items.
+            TypeError: The iterable has no usable finite length or its batches are
+                malformed.
         """
 
         dataset_len = len(dataset)
@@ -660,14 +744,21 @@ class EnsembleAccuracy(metrics.Metric):
 def run_self_tests() -> dict[str, str]:
     """Test all ensembling and state paths of :class:`EnsembleAccuracy`.
 
+    Uses deterministic Python network/wrapper fixtures and synthetic tensors,
+    including explicitly seeded stateless noise; no model training or dataset
+    download is required. Captures forwarding calls in local lists and suppresses
+    one evaluation progress display. TensorFlow assertion failures propagate.
+
     Args:
         None.
 
     Returns:
-        dict[str, str]: A one-entry mapping after network selection, both compute
-        strategies, head coefficients, missing-head errors, weighting, chunk
-        boundaries, seeds, training flags, metric state, evaluation looping,
-        invalid modes, and numeric boundaries pass.
+        dict[str, str]: Exactly {"EnsembleAccuracy": "passed"} after every numerical,
+        forwarding, state, label-mapping, and invalid-input regression succeeds.
+
+    Raises:
+        AssertionError: A fixture prediction/state differs from expectation or an
+            invalid-input probe unexpectedly succeeds.
     """
 
     import contextlib
@@ -690,15 +781,23 @@ def run_self_tests() -> dict[str, str]:
         """Return deterministic primary, regularizer, and distillation scores.
 
         Args:
-            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Replicated images,
-                timesteps, and labels.
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images [R,H,W,C], timestep IDs
+                [R], and CFG labels [R]. Images are
+                ignored; timesteps/labels plus mode flags are copied to predict_calls.
+            max_encoder_num (int | None): Unused network-depth compatibility argument
+                accepted by the prediction
+                fixture so the metric can request its ordinary full-network interface.
+                Defaults to ``-1``.
             full_return (bool): Return the common classifier output tuple.
+                Defaults to ``False``.
             training (bool | None): Optional flag recorded for forwarding
                 verification.
+                Defaults to ``None``.
 
         Returns:
-            tf.Tensor | tuple: Primary scores, or the six-value classifier
-            output tuple with regularizer and distillation predictions.
+            tf.Tensor | tuple: Float32 one-hot primary scores [R,3] selecting t modulo
+            3. Full return is (primary, None, [], [token, None], (None, None), distil),
+            with token selecting (t+1) modulo 3 and distil selecting (t+2) modulo 3.
         """
 
         _, timesteps, labels = inputs
@@ -738,6 +837,7 @@ def run_self_tests() -> dict[str, str]:
             timesteps (tf.Tensor): Integer timestep tensor paired with
                 ``images``.
             seed (int | None): Optional random seed supplied by the metric.
+                Defaults to ``None``.
 
         Returns:
             tuple[tf.Tensor]: A one-item tuple containing ``images``.
@@ -802,7 +902,8 @@ def run_self_tests() -> dict[str, str]:
             timesteps (tf.Tensor): Schedule indices to gather.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor]: Signal and noise amplitudes.
+            tuple[tf.Tensor, tf.Tensor]: Same-shaped float32 signal and noise amplitudes
+            sqrt(alpha_bar[t]) and sqrt(1-alpha_bar[t]) from the eight-entry fixture curve.
         """
 
         alpha_bar = tf.gather(
@@ -821,12 +922,16 @@ def run_self_tests() -> dict[str, str]:
         """Aggregate the deterministic class IDs with expected weights.
 
         Args:
-            max_t (int): Number of leading timesteps to aggregate.
+            max_t (int): Number of leading entries of the eight-step fixture curve; tests
+                use
+                values between one and eight inclusive.
             weighted (bool): Whether to normalize by timestep SNR.
             offset (int): Class-ID offset for an auxiliary prediction head.
+                Defaults to ``0``.
 
         Returns:
-            np.ndarray: Expected three-class prediction vector.
+            np.ndarray: Float32 vector [3] containing normalized uniform or SNR-weighted
+            counts for (t+offset) modulo 3 over the selected leading timesteps.
         """
 
         weights = np.ones((max_t,), dtype=np.float32)
@@ -996,14 +1101,22 @@ def run_self_tests() -> dict[str, str]:
         """Return label-dependent scores for the separate-probability test.
 
         Args:
-            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images, timesteps,
-                and CFG label IDs.
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images [R,H,W,C], timestep IDs
+                [R], and CFG IDs [R] in [0,10].
+                Images are ignored; normalized labels are appended to conditioned_calls.
+            max_encoder_num (int | None): Unused network-depth compatibility argument
+                accepted by the prediction
+                fixture so the metric can request its ordinary full-network interface.
+                Defaults to ``-1``.
             full_return (bool): Return the common classifier output tuple.
+                Defaults to ``False``.
             training (bool | None): Unused prediction-mode flag.
+                Defaults to ``None``.
 
         Returns:
-            tf.Tensor | tuple: Scores selected by CFG label, optionally wrapped
-            in the classifier full-return structure.
+            tf.Tensor | tuple: Float32 scores [R,10] from the selected row of the fixed
+            11x10 table, plus 0.5 at the timestep-modulo-10 column. Full return wraps
+            scores as (scores, None, [], [None], (None, None)); no distillation head exists.
         """
 
         del training
@@ -1019,6 +1132,8 @@ def run_self_tests() -> dict[str, str]:
             ) * 0.5
         )
 
+        # Expose auxiliary outputs only when the conditioned prediction fixture requests full
+        # return.
         return (
             classes, None, [], [None], (None, None)
         ) if full_return else classes
@@ -1094,6 +1209,7 @@ def run_self_tests() -> dict[str, str]:
         EnsembleAccuracy(wrapper, separate_probas=True, max_t=1)
     except ValueError:
         pass
+    # Separate conditioned scoring must require one null label plus every class label.
     else:
         raise AssertionError("separate_probas must require CFG labels.")
 
@@ -1126,6 +1242,7 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError:
         pass
+    # Selectors outside the supported network names must be rejected.
     else:
         raise AssertionError("Unknown network names must fail.")
 
@@ -1149,7 +1266,16 @@ def run_self_tests() -> dict[str, str]:
     dynamic_map_calls = []
 
     def map_dynamic_classes(classes: tf.Tensor) -> tf.Tensor:
-        """Map observed dataset labels to contiguous classifier indices."""
+        """Record original labels and map class 5 to zero and every other class to one.
+
+        Args:
+            classes (tf.Tensor): Original sparse integer labels [B]. Test data uses
+                class 5; any different value deliberately selects the second column.
+
+        Returns:
+            tf.Tensor: Same-shaped, same-dtype zero/one targets. Appends a NumPy copy
+            of the input to dynamic_map_calls so tests can verify label remapping.
+        """
 
         dynamic_map_calls.append(classes.numpy().copy())
         return tf.where(
@@ -1170,6 +1296,7 @@ def run_self_tests() -> dict[str, str]:
         ema_network=dynamic_network,
         noisify=noisify,
         q_sample=q_sample,
+        # Every requested selector resolves to this fixture's dynamic network.
         get_network=lambda name: dynamic_network,
         _map_classes=map_dynamic_classes,
     )
@@ -1201,12 +1328,14 @@ def run_self_tests() -> dict[str, str]:
     )
     no_cfg_wrapper = SimpleNamespace(
         timesteps=8,
+        # Both raw and EMA names resolve to the same deliberately CFG-free fixture.
         get_network=lambda name: no_cfg_network,
     )
     try:
         EnsembleAccuracy(no_cfg_wrapper, max_t=1)
     except ValueError as error:
         assert "use_cfg=True" in str(error)
+    # A network without CFG must not interpret ordinary class zero as unconditional.
     else:
         raise AssertionError(
             "An ensemble without an unconditional CFG label must fail."
@@ -1216,12 +1345,14 @@ def run_self_tests() -> dict[str, str]:
         EnsembleAccuracy(wrapper, max_t=9)
     except ValueError:
         pass
+    # Ensemble horizons extending past the trained schedule must be rejected.
     else:
         raise AssertionError("max_t above wrapper timesteps must fail.")
     try:
         EnsembleAccuracy(wrapper, compute_type="all-at-once", max_t=2)
     except ValueError:
         pass
+    # Ensemble computation must reject modes other than chunked or batched.
     else:
         raise AssertionError("Unknown compute strategies must fail.")
 
@@ -1238,6 +1369,7 @@ def run_self_tests() -> dict[str, str]:
             EnsembleAccuracy(wrapper, **invalid_kwargs)
         except ValueError:
             pass
+        # A nonpositive sum of ensemble-head coefficients must be rejected.
         else:
             raise AssertionError("Invalid ensemble math must fail.")
 
@@ -1246,6 +1378,7 @@ def run_self_tests() -> dict[str, str]:
             EnsembleAccuracy(wrapper, max_t=1, seed=invalid_seed)
         except (TypeError, ValueError):
             pass
+        # Ensemble seeds outside the supported unsigned 32-bit range must fail.
         else:
             raise AssertionError("Invalid ensemble seeds must fail.")
 
@@ -1260,12 +1393,19 @@ def run_self_tests() -> dict[str, str]:
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Images, timesteps,
                 and labels used to build deterministic test predictions.
+            max_encoder_num (int | None): Unused network-depth compatibility argument
+                accepted by the prediction
+                fixture so the metric can request its ordinary full-network interface.
+                Defaults to ``-1``.
             full_return (bool): Return the common classifier output tuple.
+                Defaults to ``False``.
             training (bool | None): Unused prediction-mode flag.
+                Defaults to ``None``.
 
         Returns:
-            tf.Tensor | tuple: Primary scores, or a classifier tuple whose
-            optional prediction heads are unavailable.
+            tf.Tensor | tuple: Float32 one-hot scores [R,3] selecting the timestep modulo
+            3, or (scores, None, [], [None], (None, None)) with no usable regularizer or
+            distillation prediction. This fixture exercises enabled-but-missing head errors.
         """
 
         del training
@@ -1273,6 +1413,7 @@ def run_self_tests() -> dict[str, str]:
             tf.math.floormod(inputs[1], 3), 3, dtype=tf.float32
         )
 
+        # Return the incomplete auxiliary tuple only when testing the full-return interface.
         return (
             classes, None, [], [None], (None, None)
         ) if full_return else classes
@@ -1317,6 +1458,7 @@ def run_self_tests() -> dict[str, str]:
             missing_metric.ensemble_predict(images)
         except ValueError:
             pass
+        # A positive auxiliary coefficient must reject its missing prediction head.
         else:
             raise AssertionError(
                 f"A missing head weighted by {coefficient} must fail."
@@ -1357,7 +1499,9 @@ def run_self_tests() -> dict[str, str]:
             timesteps (tf.Tensor): Schedule indices to gather.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor]: Signal and noise amplitudes.
+            tuple[tf.Tensor, tf.Tensor]: Signal [1.0,0.5] and noise [0.0,sqrt(0.75)]
+            gathered at the requested zero/one indices, preserving the index tensor shape.
+            The exact zero tests finite SNR weighting at a noiseless first timestep.
         """
 
         signal = tf.gather(tf.constant([1.0, 0.5]), timesteps)

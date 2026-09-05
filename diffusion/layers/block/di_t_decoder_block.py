@@ -1,4 +1,9 @@
-"""Decoder block combining causal self-attention and cross-attention."""
+"""Decoder block combining causal self-attention and cross-attention.
+
+DiTDecoderBlock extends the shared transformer block with a second attention
+branch for encoder/source features. Its public call applies an optional causal
+mask only to the first self-attention branch, then cross-attention and the MLP.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -22,7 +27,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
     and independent DropPath layers.
 
     Args:
-        **kwargs: :class:`VisionTransformerBlock` constructor options such as
+        **kwargs (Any): :class:`VisionTransformerBlock` constructor options such as
             ``dim``, ``query_dim``, ``num_heads``, ``key_dim``, ``value_dim``,
             ``mlp_ratio``, ``drop_prob``, ``drop_per_sample``,
             ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, and
@@ -42,6 +47,12 @@ class DiTDecoderBlock(VisionTransformerBlock):
         ``from_config(get_config())`` is supported. The decoder discards the
         serialized ``gate_query_flag`` because this branch always fixes it to
         ``False``; its parent handles normalization keys similarly.
+
+    Attributes:
+        mha2 (tf.keras.layers.MultiHeadAttention): Second attention branch, output width
+            query_dim.
+        mha_layer_norm2 (AdaLNZero): Normalizer and gate for cross-attention.
+        mha_drop_path2 (DropPath): Independent stochastic-depth layer for cross-attention.
     """
 
     def __init__(
@@ -55,7 +66,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
                 layer options documented by the class contract.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         kwargs.pop("gate_query_flag", None)
@@ -111,7 +122,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             training (bool | tf.Tensor | None): Optional Keras training flag.
 
         Returns:
-            ``tf.Tensor`` with the residual shape, normally
+            tf.Tensor: with the residual shape, normally
             ``[batch, target_tokens, query_dim]``.
         """
 
@@ -119,6 +130,10 @@ class DiTDecoderBlock(VisionTransformerBlock):
             (x, cond), 
             training=training
         )
+        # Use normalized local tokens for omitted queries; otherwise use the supplied query
+        # tensor.
+        # Use normalized local tokens for omitted values; otherwise attend to the supplied
+        # source tensor.
         h = self.mha2(
             query=h if queries is None else queries, 
             value=h if values is None else values, 
@@ -126,6 +141,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             training=training
         )
         h = tf.cast(h, x.dtype)
+        # Project the residual only when its channel width differs from the branch output.
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -152,12 +168,20 @@ class DiTDecoderBlock(VisionTransformerBlock):
                 the class input contract.
             queries (tf.Tensor | None): Optional replacement queries for only the second attention
                 branch; token count must match the residual sequence.
+                Defaults to ``None``.
+                None selects the normalized current token sequence.
             values (tf.Tensor | None): Optional encoder/source values for the second attention
                 branch. ``None`` uses the current decoder tokens.
+                Defaults to ``None``.
+                None selects normalized current tokens as keys/values.
             causal_mask (tf.Tensor | None): Optional self-attention mask broadcastable to
                 ``[batch, target_tokens, target_tokens]``. A lower-triangular
                 boolean mask implements autoregressive attention.
+                Defaults to ``None``.
+                None leaves the attention branch unmasked; causal masking is not enabled automatically.
             training (bool | tf.Tensor | None): Optional training flag.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Floating decoder tokens shaped
@@ -281,6 +305,7 @@ def run_self_tests() -> dict[str, str]:
         )
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: An incompatible causal mask must fail.
     else:
         raise AssertionError("An incompatible causal mask must fail.")
 

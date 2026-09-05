@@ -14,13 +14,19 @@ from common.config import load_config
 
 
 def build_parser() -> ArgumentParser:
-    """Create the repository command-line parser.
+    """Create the repository command-line parser without parsing arguments.
+
+    The required positional config argument names a YAML file. --train/-t is a
+    store_true switch: absent means configuration validation only, present means
+    execute training after loading. ArgumentParser supplies standard --help output.
+    This helper neither opens the config nor imports the training pipeline.
 
     Args:
         None.
 
     Returns:
-        ArgumentParser: Parser for a YAML config path and optional training flag.
+        ArgumentParser: A new independently configurable parser with config and
+        train destinations; train defaults to False when arguments are parsed.
     """
 
     parser = ArgumentParser(
@@ -41,14 +47,23 @@ def build_parser() -> ArgumentParser:
 
 
 def cli(argv: Sequence[str] | None = None) -> int:
-    """Load a configuration and optionally run training.
+    """Load a YAML configuration and optionally execute its training pipeline.
+
+    Without --train/-t, successful loading and Config construction complete the
+    command. With the flag, common.train.main builds, trains, evaluates, and saves
+    the configured experiment. The function returns a status; script execution
+    turns it into the process exit code through SystemExit.
 
     Args:
-        argv (Sequence[str] | None): Optional arguments excluding the executable
-            name. ``None`` reads process arguments from ``sys.argv``.
+        argv (Sequence[str] | None): Arguments excluding the executable name.
+            None reads process arguments from sys.argv. Defaults to None.
 
     Returns:
-        int: Zero after successful configuration loading or training.
+        int: Zero after successful loading or training. No model is returned.
+
+    Raises:
+        SystemExit: ArgumentParser displays help or rejects missing/invalid options.
+        Exception: File, YAML, Config, or training failures propagate to the caller.
     """
 
     args = build_parser().parse_args(argv)

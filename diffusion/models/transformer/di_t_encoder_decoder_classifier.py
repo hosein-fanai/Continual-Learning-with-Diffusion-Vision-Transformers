@@ -52,6 +52,21 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         encoder (DiTClassifier): Read-only alias returning ``self``.
         decoder (DiTDecoder): Decoder receiving encoder condition/features.
         supports_teacher_forcing (bool): Always ``True``.
+
+    Attributes:
+        encoder (DiTClassifier): This inherited encoder/classifier object, exposed
+            without storing a self-reference in Keras tracking.
+        decoder (DiTDecoder): Attached denoising image-output branch. Decoder KL
+            and auxiliary losses are excluded from the generic wrapper contract.
+        layers_dicts (list[dict[str, tf.keras.layers.Layer]]): Main encoder stages.
+        clf_layers_dicts (list[dict[str, tf.keras.layers.Layer]]): Classifier stages
+            plus their terminal extraction connector, inherited from DiTClassifier.
+        classifier (tf.keras.Sequential): Primary probability head; the optional
+            distil_classifier remains an independent parallel probability head.
+        encoder_kwargs (dict[str, object]): Copied nested encoder/classifier
+            settings; flat constructor values override matching keys.
+        decoder_kwargs (dict[str, object]): Copied nested decoder settings before
+            derived feature metadata and synchronization defaults are applied.
     """
 
     def __init__(
@@ -64,41 +79,32 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """Initialize the encoder/classifier state and attached decoder.
 
         Args:
-            encoder_kwargs (dict[str, object] | None): Optional nested
-                :class:`DiTClassifier` arguments.  Every
-                ``DiffusionTransformer`` and ``DiTClassifier`` constructor key
-                is valid, including all routing dictionaries, component option
-                dictionaries, ``clf_*`` settings, dimensions, conditions,
-                tokens, and Keras model options.  Flat values in ``**kwargs``
-                override equal nested keys.  ``None`` means use flat arguments
-                and classifier defaults.
-                ``use_unpatchify`` is forced to false because the decoder owns
-                the composite output head.  For noise-based classification the
-                parent validation is satisfied during initialization without
-                retaining or building its otherwise unused output layer.
-            decoder_kwargs (dict[str, object] | None): :class:`DiTDecoder`
-                arguments. Encoder feature dimensions and grids are derived
-                from the actual classifier encoder; explicitly supplied
-                metadata must match. Shared image, class, timestep, patch,
-                token-width, and condition-width settings default to the
-                encoder values.  Decoder symbolic building is managed by this
-                composite, so a supplied ``build`` value is ignored.
-                ``shift_inputs`` defaults to ``False`` for wrapper-compatible
-                denoising; pass ``True`` to right-shift teacher-forcing tokens.
-                The outer dtype policy is inherited unless ``dtype`` is set
-                explicitly here. Image size/channels must match the encoder and
-                ``use_unpatchify`` must be true. Configure KL bottlenecks and
-                token regularizers on the encoder, where unchanged classifier
-                wrappers read their loss metadata. ``cond_dim`` must match the
-                encoder unless ``decoder_separate_cond=True``; any decoder
-                timestep/label tables must cover the encoder ID ranges.
-                Feature-width merges and encoder features used as cross-
-                attention queries require matching encoder/decoder class and
-                distillation token settings; attention values may differ in
-                length.
-            build (bool): Build a four-input symbolic graph immediately.
-                ``False`` defers it until Keras first calls the model or until
-                :meth:`build` is invoked explicitly.
+            encoder_kwargs (dict[str, object] | None): Optional nested :class:`DiTClassifier` arguments.
+                Every ``DiffusionTransformer`` and ``DiTClassifier`` constructor key is valid, including
+                all routing dictionaries, component option dictionaries, ``clf_*`` settings, dimensions,
+                conditions, tokens, and Keras model options. Flat values in ``**kwargs`` override equal
+                nested keys. ``None`` means use flat arguments and classifier defaults.
+                ``use_unpatchify`` is forced to false because the decoder owns the composite output
+                head. For noise-based classification the parent validation is satisfied during
+                initialization without retaining or building its otherwise unused output layer. Defaults
+                to ``None``.
+            decoder_kwargs (dict[str, object] | None): :class:`DiTDecoder` arguments. Encoder feature
+                dimensions and grids are derived from the actual classifier encoder; explicitly supplied
+                metadata must match. Shared image, class, timestep, patch, token-width, and
+                condition-width settings default to the encoder values. Decoder symbolic building is
+                managed by this composite, so a supplied ``build`` value is ignored. ``shift_inputs``
+                defaults to ``False`` for wrapper-compatible denoising; pass ``True`` to right-shift
+                teacher-forcing tokens. The outer dtype policy is inherited unless ``dtype`` is set
+                explicitly here. Image size/channels must match the encoder and ``use_unpatchify`` must
+                be true. Configure KL bottlenecks and token regularizers on the encoder, where unchanged
+                classifier wrappers read their loss metadata. ``cond_dim`` must match the encoder unless
+                ``decoder_separate_cond=True``; any decoder timestep/label tables must cover the encoder
+                ID ranges. Feature-width merges and encoder features used as cross- attention queries
+                require matching encoder/decoder class and distillation token settings; attention values
+                may differ in length. Defaults to ``None``.
+            build (bool): Build a four-input symbolic graph immediately. ``False`` defers it until Keras
+                first calls the model or until :meth:`build` is invoked explicitly. Defaults to
+                ``True``.
             **kwargs (object): Flat ``DiffusionTransformer``/``DiTClassifier``
                 arguments plus standard Keras ``Model`` keys such as ``name``,
                 ``dtype``, ``trainable``, and ``dynamic``.  Flat keys take
@@ -113,9 +119,11 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 constructed encoder, its output violates the wrapper image
                 contract, or decoder-only auxiliary losses are requested.
         """
+        # Copy nested encoder/classifier settings or start from independent defaults.
         saved_encoder_kwargs = (
             {} if encoder_kwargs is None else deepcopy(encoder_kwargs)
         )
+        # Copy nested decoder settings or start from independent defaults.
         saved_decoder_kwargs = (
             {} if decoder_kwargs is None else deepcopy(decoder_kwargs)
         )
@@ -175,6 +183,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         }
         for key, value in inferred_metadata.items():
             supplied = decoder_config.get(key)
+            # Normalize list metadata before validating it against the constructed encoder.
             matches = (
                 isinstance(supplied, (list, tuple))
                 and list(supplied) == value
@@ -241,9 +250,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """Build the composite with its four configured symbolic inputs.
 
         Args:
-            input_shape (tuple | None): Accepted for the Keras build protocol
-                but ignored; :meth:`_build_model` derives shapes from the active
-                resolution.  Three- and four-input eager calls remain valid.
+            input_shape (tuple | None): Accepted for the Keras build protocol but ignored;
+                :meth:`_build_model` derives shapes from the active resolution. Three- and four-input
+                eager calls remain valid. Defaults to ``None``.
 
         Returns:
             None: Encoder, classifier, decoder, and output-head variables are
@@ -257,8 +266,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """Create the four-input encoder/teacher-forcing symbolic interface.
 
         Args:
-            call_model (bool): Populate ``outputs`` through :meth:`call` when
-                true; otherwise create only the symbolic inputs.
+            call_model (bool): Populate ``outputs`` through :meth:`call` when true; otherwise create
+                only the symbolic inputs. Defaults to ``True``.
 
         Returns:
             list[tf.TensorShape]: Shapes for encoder images
@@ -298,6 +307,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         )
 
         self.inputs = (noisy_images, times, labels, decoder_images)
+        # Call the symbolic composite only when requested during construction.
         self.outputs = self.call(self.inputs) if call_model else None
         return [input_layer.shape for input_layer in self.inputs]
 
@@ -319,11 +329,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 images are ``[B,H_d,W_d,C_d]``; times and labels are ``[B]``.
                 In the three-input form, ``encoder_images`` also feeds the
                 decoder and therefore must satisfy both image interfaces.
-            full_return (bool): Include the established transformer,
-                classifier, and decoder intermediate fields.
-            training (bool | None): Keras training mode for all branches.
-            min_depth (int): First encoder depth to execute. With three inputs,
-                values above zero initialize the decoder from a zero image.
+            full_return (bool): Include the established transformer, classifier, and decoder
+                intermediate fields. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): First encoder depth to execute. With three inputs, values above zero
+                initialize the decoder from a zero image. Defaults to ``0``.
 
         Returns:
             tf.Tensor | dict[str, object]: At ``min_depth=0``, contains decoder
@@ -418,11 +431,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Args:
             inputs (tuple[tf.Tensor, ...]): Three- or four-tensor input with the
                 same normalization as :meth:`call`.
-            full_return (bool): Return the base-compatible five-item tuple
-                ``(noises, cond, features_list, regs_list, z_vals_list)``.
-            training (bool | None): Keras training mode.
-            min_depth (int): First encoder stage. With three inputs, values
-                above zero initialize the decoder from a zero image.
+            full_return (bool): Return the base-compatible five-item tuple ``(noises, cond,
+                features_list, regs_list, z_vals_list)``. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
+            min_depth (int): First encoder stage. With three inputs, values above zero initialize the
+                decoder from a zero image. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Decoder image/noise ``[B,H,W,C]``, optionally
@@ -566,8 +582,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """Grow encoder, classifier, and decoder class outputs together.
 
         Args:
-            source_network (object | None): Optional already-expanded raw
-                joint network used to initialize new EMA rows and output.
+            source_network (object | None): Optional already-expanded raw joint network used to
+                initialize new EMA rows and output. Defaults to ``None``.
 
         Returns:
             None: Both label vocabularies and the classifier head grow by one,
@@ -575,6 +591,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """
 
         DiTClassifier.add_class(self, source_network=source_network)
+        # Use the matching source decoder to initialize its appended class column when supplied.
         self.decoder.add_class(
             source_network=(
                 source_network.decoder if source_network is not None else None
@@ -605,11 +622,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             inputs (tuple[tf.Tensor, ...]): Three- or four-tensor composite
                 input.  The decoder image is ignored for feature-based
                 classification and used when ``aggregate_from_noises=True``.
-            max_encoder_num (int | None): Encoder loop stop; ``None`` uses the
-                configured maximum and ``-1`` executes all stages.
-            full_return (bool): Include classifier condition, features,
-                regularizers, and latent statistics.
-            training (bool | None): Keras training mode.
+            max_encoder_num (int | None): Encoder loop stop; ``None`` uses the configured maximum and
+                ``-1`` executes all stages. Defaults to ``-1``.
+            full_return (bool): Include classifier condition, features, regularizers, and latent
+                statistics. Defaults to ``False``.
+            training (bool | None): Keras execution mode: True enables training behavior such as dropout
+                and normalization updates; False selects inference behavior; None inherits the enclosing
+                Keras learning context. Variational sampling, when configured, remains active
+                independently of this flag. Defaults to ``None``.
 
         Returns:
             tf.Tensor | tuple: Class probabilities ``[B,num_classes]`` or the
@@ -636,11 +656,13 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 training=training, 
             )
 
+        # Use the inferred encoder limit only when classification receives no explicit limit.
         max_encoder_num = (
             self.max_encoder_num
             if max_encoder_num is None
             else max_encoder_num
         )
+        # Use an explicit teacher-forcing decoder image when a four-input tuple provides it.
         decoder_images = inputs[3] if len(inputs) == 4 else base_inputs[0]
         _, encoder_cond, encoder_features, _, _ = self.encode(
             base_inputs, 
@@ -677,8 +699,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         """Synchronize the active encoder and decoder resolutions.
 
         Args:
-            resolution (int | None): Positive size divisible by both patch
-                sizes.  ``None`` restores each branch's configured image size.
+            resolution (int | None): Positive size divisible by both patch sizes. ``None`` restores each
+                branch's configured image size. Defaults to ``None``.
 
         Returns:
             None: Encoder/classifier and decoder active resolutions are
@@ -691,14 +713,19 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 def run_self_tests() -> dict[str, str]:
     """Run functional API tests for the encoder-decoder classifier.
 
-    Args:
-        None.
-
     Returns:
         dict[str, str]: ``{"DiTEncoderDecoderClassifier": "passed"}`` after
         inheritance, material three/four-input routing, decoder context,
         classifier modes, symbolic build, resolution execution, wrapper
         training, growth, gradients, and serialization pass.
+
+    The checks construct small TensorFlow models, reset Keras session state, and
+    seed random streams. Successful completion returns the named pass mapping;
+    failed numerical, shape, serialization, or invalid-input expectations raise.
+
+    Raises:
+        AssertionError: If a regression expectation fails.
+        tf.errors.InvalidArgumentError: If a TensorFlow numerical assertion fails.
     """
 
     tf.keras.backend.clear_session()
@@ -862,6 +889,7 @@ def run_self_tests() -> dict[str, str]:
     )
     tf.debugging.assert_near(computed_classes[0], predicted_classes)
 
+    # Select decoder output-projection weights for the decoder-gradient regression.
     decoder_head_kernels = [
         variable for variable in model.decoder.trainable_variables
         if "unpatchifier/ffn/kernel" in variable.name
@@ -934,6 +962,8 @@ def run_self_tests() -> dict[str, str]:
         gradient_by_id[id(variable)] is not None
         for variable in model.decoder.trainable_variables
     )
+    # Exclude decoder variables when checking which encoder/classifier weights received
+    # gradients.
     assert any(
         gradient is not None
         for variable, gradient in zip(model.trainable_variables, gradients)
@@ -1067,6 +1097,7 @@ def run_self_tests() -> dict[str, str]:
         "encoder_model/unpatchifier" in variable.name
         for variable in aggregate_model.trainable_variables
     )
+    # Locate the decoder output projection for the resumed-gradient regression.
     aggregate_head_kernels = [
         variable for variable in aggregate_model.decoder.trainable_variables
         if "unpatchifier/ffn/kernel" in variable.name
@@ -1077,6 +1108,7 @@ def run_self_tests() -> dict[str, str]:
         tf.linspace(-0.5, 0.5, tf.size(aggregate_head_kernel)), 
         aggregate_head_kernel.shape, 
     ))
+    # Locate the classifier adaptive-normalization bias for the classifier-gradient regression.
     aggregate_gate_biases = [
         variable for variable in aggregate_model.trainable_variables
         if "clf_depth_1_encoder_block/mha_layer_norm/"
@@ -1132,6 +1164,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError as error:
         assert "decoder use_unpatchify=True" in str(error)
+    # Fail this regression if no exception occurs: {method.__name__} must reject malformed input
+    # arity.
     else:
         raise AssertionError(
             "Noise-based classification must require decoder unpatchification"
@@ -1151,6 +1185,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError as error:
             assert "encoder and decoder image_size/channels" in str(error)
+        # Fail this regression if no exception occurs: {method.__name__} must reject malformed
+        # input arity.
         else:
             raise AssertionError(
                 "Noise-based classification must require matching image metadata"
@@ -1171,6 +1207,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except ValueError as error:
         assert "final token grid" in str(error)
+    # Fail this regression if no exception occurs: {method.__name__} must reject malformed input
+    # arity.
     else:
         raise AssertionError(
             "Noise-based classification must require a restored decoder grid"
@@ -1327,6 +1365,8 @@ def run_self_tests() -> dict[str, str]:
                 method(malformed_inputs, training=False)
             except ValueError as error:
                 assert "inputs must contain images, times, labels" in str(error)
+            # Fail this regression if no exception occurs: {method.__name__} must reject
+            # malformed input arity.
             else:
                 raise AssertionError(
                     f"{method.__name__} must reject malformed input arity"
@@ -1373,6 +1413,7 @@ def run_self_tests() -> dict[str, str]:
         })
     except ValueError:
         pass
+    # Fail this regression if no exception occurs: Invalid branch growth must fail preflight.
     else:
         raise AssertionError("Invalid branch growth must fail preflight.")
     assert (

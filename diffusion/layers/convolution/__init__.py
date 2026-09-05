@@ -1,4 +1,10 @@
-"""Reusable channels-last convolution layers for diffusion networks."""
+"""Reusable channels-last convolution layers for diffusion networks.
+
+Public convolution layers are imported and cached only when accessed through this
+package. Exports cover residual stacks, image resizing, tracked stage containers,
+and optional variational flatten/unflatten models; implementation modules define
+complete constructor and tensor contracts.
+"""
 
 from importlib import import_module
 

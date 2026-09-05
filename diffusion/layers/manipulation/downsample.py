@@ -1,4 +1,9 @@
-"""Spatial downsampling for flattened square token grids."""
+"""Spatial downsampling for flattened square token grids.
+
+Downsample separates optional prefix tokens, converts a square token grid to an
+image, applies pooling or strided convolution, and restores the sequence. Position
+merging and optional channel projections preserve compatibility with later stages.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -26,30 +31,38 @@ class Downsample(BaseEmbedding):
     restores/project the class token, and optionally applies an MLP.
 
     Args:
-        use_layer_norm: Whether to create condition-adaptive normalization
+        use_layer_norm (bool): Whether to create condition-adaptive normalization
             before spatial scaling. If enabled with normal adaptation,
             :meth:`call` requires ``cond``.
-        scaling_method: ``"avg_pooling"`` or ``"max_pooling"`` preserves
+            Defaults to ``True``.
+        scaling_method (ScalingMethod): ``"avg_pooling"`` or ``"max_pooling"`` preserves
             ``dim`` channels; ``"cnn_stride"`` learns a convolution and emits
             ``dim * cnn_dim_ratio`` channels.
-        strides: Positive integer spatial stride. Pooling uses Keras's default
+            Defaults to ``'avg_pooling'``.
+        strides (int): Positive integer spatial stride. Pooling uses Keras's default
             2x2 window. Convolution uses ``cnn_kernel_size``.
-        padding: Keras 2-D padding mode, normally ``"same"`` or ``"valid"``.
-        cnn_dim_ratio: Positive integer channel multiplier used only by
+            Defaults to ``2``.
+        padding (str): Keras 2-D padding mode, normally ``"same"`` or ``"valid"``.
+            Defaults to ``'same'``.
+        cnn_dim_ratio (int): Positive integer channel multiplier used only by
             ``"cnn_stride"``.
-        cnn_kernel_size: Positive convolution kernel side used only by
+            Defaults to ``1``.
+        cnn_kernel_size (int): Positive convolution kernel side used only by
             ``"cnn_stride"``.
-        cnn_activation_func: Keras activation for the strided convolution;
+            Defaults to ``3``.
+        cnn_activation_func (str): Keras activation for the strided convolution;
             ``"linear"`` leaves it unbounded.
-        circumvent_tokens: Number of leading non-spatial tokens excluded from
+            Defaults to ``'linear'``.
+        circumvent_tokens (bool | int): Number of leading non-spatial tokens excluded from
             downsampling and projected when widths change. ``True`` preserves
             one token.
-        **kwargs: :class:`BaseEmbedding` options. Required keys are ``dim`` and
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseEmbedding` options. Required keys are ``dim`` and
             ``grid_size`` (at least 2). Positional keys include
             ``pos_embed_type``, ``pos_merger_type``, and
             ``pos_interpolation_method``; MLP keys include ``mlp_ratio`` and
-            ``mlp_output_dim``. ``use_layer_norm`` and ``ln_dim`` are supplied
-            here and must not be repeated.
+            ``mlp_output_dim``. ``use_layer_norm`` is supplied here. A serialized ``ln_dim`` must
+            equal ``dim`` (or be None) when present.
 
     Inputs:
         Pair ``(x, cond)``. ``x`` is floating ``[batch, tokens, dim]``. The
@@ -59,13 +72,22 @@ class Downsample(BaseEmbedding):
         when adaptive normalization is active.
 
     Outputs:
-        Floating tensor ``[batch, reduced_tokens, output_dim]``. A leading
-        class token adds one to ``reduced_tokens``. Positional concatenation
+        Floating tensor ``[batch, reduced_tokens, output_dim]``. Preserved
+        prefix tokens add int(circumvent_tokens) to ``reduced_tokens``. Positional concatenation
         doubles the pre-MLP width; ``mlp_output_dim`` can replace it.
 
     Serialization:
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
+
+    Attributes:
+        scaling_layer (tf.keras.layers.Layer): Pooling or strided convolution over the
+            spatial token grid.
+        output_grid_size (int): Configured spatial output side from padding/stride/window
+            geometry.
+        token_projector (tf.keras.layers.Dense | None): Optional width adjustment for
+            bypassed prefix tokens.
+        output_dim (int): Final channel count after position merging and optional MLP.
     """
 
     def __init__(
@@ -84,18 +106,26 @@ class Downsample(BaseEmbedding):
 
         Args:
             use_layer_norm (bool): Whether to normalize before scaling.
+                Defaults to ``True``.
             scaling_method (ScalingMethod): Pooling or strided-convolution mode.
+                Defaults to ``'avg_pooling'``.
             strides (int): Positive spatial stride.
+                Defaults to ``2``.
             padding (str): Keras ``"same"`` or ``"valid"`` padding.
+                Defaults to ``'same'``.
             cnn_dim_ratio (int): Positive convolutional channel multiplier.
+                Defaults to ``1``.
             cnn_kernel_size (int): Positive convolution kernel size.
+                Defaults to ``3``.
             cnn_activation_func (str): Keras convolution activation.
+                Defaults to ``'linear'``.
             circumvent_tokens (bool | int): Number of leading tokens to
                 preserve; ``True`` preserves one.
+                Defaults to ``False``.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(
@@ -112,6 +142,8 @@ class Downsample(BaseEmbedding):
         # receive the grid that this layer actually produces.
         window_size = self.cnn_kernel_size if self.scaling_method == "cnn_stride" \
                     else 2
+        # Same padding rounds the strided grid up; valid padding removes the
+        # convolution/pooling border.
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" else (
@@ -164,9 +196,12 @@ class Downsample(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
+        # Concatenated positions double the component width; disabled or additive positions
+        # preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
+        # Project bypassed tokens only when spatial processing changes their channel width.
         self.token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -188,9 +223,11 @@ class Downsample(BaseEmbedding):
                 following the class input contract.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to normalization,
                 convolution, positional projection, and MLP layers.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` with floating compute dtype. For an actual input grid
+            tf.Tensor: with floating compute dtype. For an actual input grid
             ``g``, ``same`` padding yields side ``ceil(g / strides)``. With
             ``valid`` padding, pooling yields
             ``floor((g - 2) / strides) + 1`` and convolution yields
@@ -200,11 +237,15 @@ class Downsample(BaseEmbedding):
 
         x, cond = inputs
 
+        # Use configured normalization; otherwise preserve incoming features and any
+        # identity gate.
         x = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else x
         prefix_tokens_num = int(self.circumvent_tokens)
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
         x, token = (
             x[:, prefix_tokens_num:, :], 
             x[:, :prefix_tokens_num, :]
@@ -241,6 +282,9 @@ class Downsample(BaseEmbedding):
             output_grid_size=output_grid_size, 
             training=training
         )
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
+        # Match prefix-token width to spatial output only when projection is required.
         x = tf.concat([
             self.token_projector(
                 token, 
@@ -248,6 +292,7 @@ class Downsample(BaseEmbedding):
             ) if self.token_projector is not None else token, 
             x
         ], axis=1) if self.circumvent_tokens else x
+        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training
@@ -277,6 +322,7 @@ def run_self_tests() -> dict[str, str]:
     for mode in modes:
         for use_layer_norm in (False, True):
             for circumvent_tokens in (False, True):
+                # Include a leading special token only in the prefix-preservation test case.
                 token_count = 17 if circumvent_tokens else 16
                 layer = Downsample(
                     dim=2, 
@@ -295,7 +341,10 @@ def run_self_tests() -> dict[str, str]:
                     (tf.ones((2, token_count, 2)), condition), 
                     training=True
                 )
+                # Expect learned channel expansion for strided convolution, or unchanged
+                # channels for pooling.
                 expected_channels = 4 if mode == "cnn_stride" else 2
+                # Include a leading special token only in the prefix-preservation test case.
                 expected_tokens = 5 if circumvent_tokens else 4
                 assert output.shape == (2, expected_tokens, expected_channels)
                 assert (layer.layer_norm is not None) is use_layer_norm
@@ -361,6 +410,8 @@ def run_self_tests() -> dict[str, str]:
             Downsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
         except (AssertionError, ValueError):
             pass
+        # This invalid case should already have raised: Downsampling requires grid_size >=
+        # 2.
         else:
             raise AssertionError("Downsampling requires grid_size >= 2.")
     for invalid_mode in ("median_pooling", "", None):
@@ -372,6 +423,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # This invalid case should already have raised: Unknown downsampling modes must
+        # fail.
         else:
             raise AssertionError("Unknown downsampling modes must fail.")
 
@@ -384,6 +437,7 @@ def run_self_tests() -> dict[str, str]:
         malformed((tf.ones((1, 15, 2)), None))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Non-square token grids must fail.
     else:
         raise AssertionError("Non-square token grids must fail.")
 

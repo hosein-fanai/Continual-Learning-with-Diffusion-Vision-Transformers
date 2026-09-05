@@ -1,4 +1,9 @@
-"""Trackable mapping container for depth-wise Keras layers."""
+"""Trackable mapping container for depth-wise Keras layers.
+
+LayerDict provides stable mapping access to child layers while exposing their
+variables to Keras checkpoints. Insertions and replacements refresh serialized
+constructor metadata; execution remains the responsibility of the owning model.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -17,6 +22,14 @@ class LayerDict(ArgumentSaverLayer):
     ``LayerDict`` intentionally leaves execution to its owning model. It exists
     to provide dictionary-style stage access while exposing all child weights
     through the ordinary Keras ``trainable_variables`` property.
+
+    Attributes:
+        _execution_order (list[str]): Mutable insertion order underlying the public tuple
+            property.
+        _layers_dict (dict[str, tf.keras.layers.Layer]): Live child layers keyed by public
+            names.
+        _tracked_attribute_names (dict[str, str]): Stable Keras attribute name for each
+            public key.
     """
 
     def __init__(
@@ -28,10 +41,12 @@ class LayerDict(ArgumentSaverLayer):
         """Track the supplied layers in a stable public key order.
 
         Args:
-            layers_dict (Mapping[str, layers.Layer] | None): Optional mapping of
-                public keys to child Keras layers.
+            layers_dict (Mapping[str, tf.keras.layers.Layer | Mapping] | None): Child layers keyed by public
+                names; serialized layer mappings are also deserialized. Defaults to ``None``, creating an
+                empty container. The source mapping is copied, while live layer objects remain shared.
             execution_order (list[str] | tuple[str, ...] | None): Optional exact
                 key order; ``None`` preserves mapping insertion order.
+                Defaults to ``None``.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -39,12 +54,14 @@ class LayerDict(ArgumentSaverLayer):
         """
 
         super().__init__(**kwargs)
+        # Start an empty stage without supplied layers; otherwise copy the layer mapping.
         source = {} if layers_dict is None else dict(layers_dict)
         for key, value in source.items():
             # Recreate layers supplied by the inherited from_config method.
             if isinstance(value, Mapping):
                 source[key] = tf.keras.layers.deserialize(dict(value))
 
+        # Use mapping insertion order unless an explicit execution order is supplied.
         order = list(source) if execution_order is None else list(execution_order)
         # Require the execution order to contain each key exactly once.
         if len(order) != len(set(order)) or set(order) != set(source):
@@ -139,6 +156,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             layers.Layer: Tracked layer stored under ``key``.
+
+        Raises:
+            KeyError: If no child layer is stored under key.
         """
 
         return self._layers_dict[key]
@@ -220,7 +240,8 @@ class LayerDict(ArgumentSaverLayer):
 
         Args:
             key (str): Public child-layer key.
-            default (Any | None): Value returned when ``key`` is absent.
+            default (Any | None): Value returned when key is absent. Defaults to ``None``; returned as
+                supplied without inserting a new layer.
 
         Returns:
             layers.Layer | Any: Stored child layer or ``default``.
@@ -265,6 +286,7 @@ def run_self_tests() -> dict[str, str]:
         LayerDict({"a": first}, execution_order=("missing",))
     except ValueError:
         pass
+    # This invalid case should already have raised: Invalid execution orders must fail.
     else:
         raise AssertionError("Invalid execution orders must fail.")
 

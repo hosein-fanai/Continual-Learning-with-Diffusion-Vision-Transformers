@@ -1,4 +1,9 @@
-"""Epoch-end validation against raw rather than EMA diffusion weights."""
+"""Epoch-end validation against raw rather than EMA diffusion weights.
+
+RawNetworkValidationCallback performs an additional evaluation with raw network
+weights and appends val_raw_* metrics to epoch logs. It relies on diffusion
+wrappers accepting keyword evaluation inputs and the network_name selector.
+"""
 
 from tensorflow.keras import callbacks
 
@@ -15,11 +20,12 @@ class RawNetworkValidationCallback(callbacks.Callback):
     sufficient.
 
     Args:
-        val_x: Validation input accepted by the bound model's ``evaluate``
+        val_x (Any): Validation input accepted by the bound model's ``evaluate``
             method, such as an image tensor/NumPy array or a ``tf.data.Dataset``.
             When it is a dataset yielding ``(x, y)``, leave ``val_y`` as
             ``None``.
-        val_y: Optional validation targets accepted by ``model.evaluate``.
+        val_y (Any | None): Optional validation targets accepted by ``model.evaluate``.
+            Defaults to ``None``.
 
     Inputs:
         Stored validation inputs/targets plus Keras epoch indices and log
@@ -31,6 +37,11 @@ class RawNetworkValidationCallback(callbacks.Callback):
         the supplied epoch ``logs`` mapping. Both populated and empty mappings
         are mutated in place; when Keras supplies ``None``, results are computed
         but no external mapping exists to observe them.
+
+    Attributes:
+        val_x (Any): Validation inputs retained by reference for each epoch evaluation.
+        val_y (Any | None): Optional separate targets; None when inputs already include
+            targets.
     """
 
     def __init__(
@@ -45,9 +56,10 @@ class RawNetworkValidationCallback(callbacks.Callback):
                 model's ``evaluate`` method.
             val_y (Any | None): Optional validation targets. Leave this as
                 ``None`` when ``val_x`` already yields input-target pairs.
+                Defaults to ``None``.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__()
@@ -69,12 +81,14 @@ class RawNetworkValidationCallback(callbacks.Callback):
                 Each raw result named ``key`` is stored under
                 ``"val_raw_" + key``. A passed mapping, including an empty one,
                 is mutated in place.
+                Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
-            ``None``. The bound model's ``evaluate`` call is executed with
+            None: The bound model's ``evaluate`` call is executed with
             ``verbose=0`` and ``return_dict=True``.
         """
 
+        # Create a local empty mapping only when Keras supplies no log mapping.
         logs = {} if logs is None else logs
 
         raw_results = self.model.evaluate(
@@ -142,9 +156,20 @@ def run_self_tests() -> dict[str, str]:
     assert empty_logs == {"val_raw_noise_loss": 0.5}
 
     class V2StyleModel:
-        """Expose classifier-V2 control arguments before Keras inputs."""
+        """Record evaluation arguments using the classifier-V2 positional control layout.
+
+        Attributes:
+            call (tuple[bool, str | None, dict[str, Any]] | None): Last evaluation
+                control values and keyword data, or None before evaluation.
+        """
 
         def __init__(self) -> None:
+            """Initialize an empty evaluation-call record for the callback regression.
+
+            Returns:
+                None: The new model double has call=None.
+            """
+
             self.call = None
 
         def evaluate(
@@ -153,7 +178,21 @@ def run_self_tests() -> dict[str, str]:
             test_part: str | None = None,
             **kwargs: Any
         ) -> dict[str, float]:
-            """Record positional controls and keyword evaluation inputs."""
+            """Record controls and keyword inputs, then return a fixed validation loss.
+
+            Args:
+                eval_both (bool): Whether the caller requests both model branches.
+                    Defaults to False; recorded without changing the fixed output.
+                    Defaults to ``False``.
+                test_part (str | None): Optional evaluated branch selector. Defaults to
+                    None; recorded without selecting a real network.
+                    Defaults to ``None``.
+                **kwargs (Any): Evaluation data and Keras options, retained in call for
+                    assertions about keyword forwarding.
+
+            Returns:
+                dict[str, float]: A new mapping containing loss=0.125.
+            """
 
             self.call = (eval_both, test_part, kwargs)
             return {"loss": 0.125}

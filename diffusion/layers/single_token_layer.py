@@ -1,4 +1,10 @@
-"""Learned or input-provided single-token embeddings."""
+"""Learned or input-provided single-token embeddings.
+
+SingleTokenLayer supplies learned or input-backed class/BOS/condition tokens and
+optionally merges learned positional vectors. It reuses BaseEmbedding projection
+and dtype rules, broadcasts learned tokens to the runtime batch, and records
+constructor settings for Keras reconstruction.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import initializers
@@ -20,17 +26,22 @@ class SingleTokenLayer(BaseEmbedding):
     channels.
 
     Args:
-        with_pos_embed: If true, force a learned ``"new_weight"`` positional
+        with_pos_embed (bool): If true, force a learned ``"new_weight"`` positional
             vector and batch-broadcast the trainable token through the merge.
             If false, disable positional embeddings.
-        input_as_token: If true, use the second call input shaped
+            Defaults to ``True``.
+        input_as_token (bool): If true, use the second call input shaped
             ``[batch, token_dim]``. If false, ignore that input and use one
             trainable token shaped ``[1, 1, embed_dim]``.
-        **kwargs: :class:`BaseEmbedding` arguments. Required ``dim`` sets the
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseEmbedding` arguments. Required ``dim`` sets the
             target width. Common keys are ``pos_merger_type``,
             ``embed_freq_dim``, ``mlp_ratio``, ``mlp_output_dim``, ``name``,
             and ``dtype``. ``pos_embed_type`` is overridden by
             ``with_pos_embed``.
+        seed (int | None): Optional component seed for the learned token's
+            random-normal initializer.
+            Defaults to ``None``.
 
     Inputs:
         Pair ``(images, token)``. ``images`` may be any tensor with batch as
@@ -45,6 +56,13 @@ class SingleTokenLayer(BaseEmbedding):
     Serialization:
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
+
+    Attributes:
+        token (tf.Variable | None): Learned [1, 1, embed_dim] token, absent for supplied
+            tokens.
+        token_mlp (tf.keras.Sequential | None): Optional projection of raw token vectors.
+        pos_embed (tf.Variable | None): Learned positional token, absent when disabled.
+        output_dim (int): Final token width after projection and positional merging.
     """
 
     def __init__(
@@ -59,30 +77,47 @@ class SingleTokenLayer(BaseEmbedding):
         Args:
             with_pos_embed (bool): Whether to add or concatenate a learned
                 positional token.
+                Defaults to ``True``.
             input_as_token (bool): Whether the second call input supplies the
                 token instead of a trainable weight.
+                Defaults to ``False``.
             seed (int | None): Optional component seed for the learned token's
                 random-normal initializer.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(**kwargs)
         self._save_init_args(locals())
         derive_seed(self.seed, "single_token", "validation")
 
+        # Split target channels between token and position only for concatenated positional
+        # tokens.
         component_dim = self.dim // 2 if self.with_pos_embed and self.pos_merger_type == "concat" \
                         else self.dim
+        # Add the default ratio-one projection only when a raw frequency width needs
+        # projection and no ratio is set.
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
+        # Project raw frequency features to the target component width unless an output
+        # width is explicit.
         self.mlp_output_dim = component_dim if self.mlp_output_dim is None and self.embed_freq_dim is not None \
                             else self.mlp_output_dim
+        # Use a learned positional token when enabled; otherwise disable position merging.
         self.pos_embed_type = "new_weight" if self.with_pos_embed else None
+        # Use the target width for embeddings unless a separate raw frequency width is
+        # configured.
         self.embed_dim = component_dim if self.embed_freq_dim is None else self.embed_freq_dim
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         self.seed = None if self.seed is None else int(self.seed)
 
+        # Create trainable token content only when the caller will not supply token vectors.
         self.token = self.add_weight(
             shape=(1, 1, self.embed_dim), 
             initializer=initializers.RandomNormal(
@@ -96,6 +131,8 @@ class SingleTokenLayer(BaseEmbedding):
             trainable=True, 
             name=f"{self.name}/token_embeddings"
         ) if not self.input_as_token else None
+        # Project supplied tokens to component width by default; otherwise use the
+        # configured token projection.
         self.token_mlp = self._create_mlp(
             self.embed_dim, 
             mlp_output_dim=component_dim
@@ -105,10 +142,12 @@ class SingleTokenLayer(BaseEmbedding):
         self.pos_embed = self._create_embeddings(
             output_grid_size=1
         )
+        # Build a positional projection only when a positional table exists.
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
         ) if self.pos_embed is not None else None
 
+        # Count both content and positional channels only when a table is concatenated.
         self.output_dim *= 2 if self.pos_embed is not None and self.pos_merger_type == "concat" \
                         else 1
 
@@ -124,20 +163,25 @@ class SingleTokenLayer(BaseEmbedding):
                 described by the class contract.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to token and
                 positional projection MLPs.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
-            ``tf.Tensor`` of token embeddings. Its last dimension is ``dim``
+            tf.Tensor: of token embeddings. Its last dimension is ``dim``
             for the usual additive setup and, for concatenation, twice
             ``dim // 2`` unless an MLP overrides the component widths.
         """
 
         images, token = inputs
 
+        # Add a token axis to supplied vectors, or repeat the learned token across the image
+        # batch.
         x = token[:, None, :] if self.input_as_token else tf.repeat(
             self.token,
             tf.shape(images)[0],
             axis=0,
         )
+        # Project token content when configured; otherwise retain the resolved token values.
         x = self.token_mlp(
             x, 
             training=training
@@ -252,6 +296,8 @@ def run_self_tests() -> dict[str, str]:
         SingleTokenLayer(dim=4, pos_merger_type="invalid")
     except ValueError:
         pass
+    # This invalid case should already have raised: Invalid positional merge modes must
+    # fail.
     else:
         raise AssertionError("Invalid positional merge modes must fail.")
 

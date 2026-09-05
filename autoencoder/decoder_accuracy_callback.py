@@ -1,4 +1,10 @@
-"""Epoch callback for measuring the class fidelity of VAE generations."""
+"""Epoch callback for measuring the class fidelity of VAE generations.
+
+DecoderAccuracyCallback samples the bound conditional VAE after each epoch,
+classifies generated features without target leakage, and appends an exact-match
+accuracy to Keras logs. Epoch-derived seeds isolate generation streams; the
+module also exposes a small executable regression suite.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +27,15 @@ class DecoderAccuracyCallback(callbacks.Callback):
     Attributes:
         samples_per_class (int): Generated examples requested for each class;
             initialized from the constructor value.
+            Defaults to ``500``.
         classifier (tf.keras.Model | Callable): Maps generated vectors to class
             scores; initialized from the constructor value.
+
+    Notes:
+        seed defaults to None in the constructor. Explicit seeds derive independent
+        epoch streams; None forwards no callback seed and lets the bound VAE apply
+        its own generation default. Accuracy accumulation uses classifier variable
+        dtype, then model variable dtype, then the global variable dtype as fallback.
     """
 
     def __init__(
@@ -34,15 +47,19 @@ class DecoderAccuracyCallback(callbacks.Callback):
         """Initialize generation count and evaluation classifier.
 
         Args:
-            classifier (tf.keras.Model | Callable): Callable accepting
-                ``(x_gen, training=False)`` and returning scores shaped
-                ``[samples, classes]``.
+            classifier (tf.keras.Model | Callable): Maps generated [samples, data_dim] vectors to [samples,
+                classes] scores. Keras layers receive training=False; plain callables receive only the
+                sample tensor.
             samples_per_class (int): Number of generations
                 requested for each class previously seen by the attached VAE.
+                Defaults to ``500``.
             seed (int | None): Optional experiment seed. A stable epoch-specific
                 child seed is passed to the VAE so callback sampling is
                 reproducible without repeating the same latent batch every
                 epoch.
+                Defaults to ``None``.
+                None forwards no callback seed, letting the bound VAE use its own generation
+                seed default.
 
         Returns:
             None.
@@ -55,6 +72,8 @@ class DecoderAccuracyCallback(callbacks.Callback):
         # Validate once and retain the master seed for deterministic epoch
         # streams. ``derive_seed`` also normalizes NumPy integral values.
         derive_seed(seed, "decoder_accuracy", 0)
+        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
+        # integer.
         self.seed = None if seed is None else int(seed)
 
     def on_epoch_end(
@@ -70,13 +89,16 @@ class DecoderAccuracyCallback(callbacks.Callback):
             logs (dict[str, object] | None): Epoch log mapping. Any supplied
                 dictionary receives ``"decoder_accuracy"`` as a NumPy scalar;
                 ``None`` is replaced locally.
+                Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
             None.
 
         Raises:
-            ValueError: If the attached model has no seen conditional classes
-                or generated/classifier shapes are incompatible.
+            ValueError: If the attached model generates no conditional samples.
+            tf.errors.InvalidArgumentError: If generated labels and classifier
+                predictions have incompatible shapes.
+            AttributeError: If the callback has not been bound to a model.
         """
 
         # Create a log mapping when Keras supplies no mapping.
@@ -159,6 +181,7 @@ def run_self_tests() -> dict[str, str]:
             samples_per_class (int): Requested examples per class.
             onehot_y_output (bool): Requested label encoding flag.
             seed (int | None): Epoch-derived callback seed.
+                Defaults to ``None``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Class-coded features and integer IDs.
@@ -184,6 +207,7 @@ def run_self_tests() -> dict[str, str]:
         Args:
             inputs (tf.Tensor): Class-coded features shaped ``[batch, 1]``.
             training (bool): Inference flag supplied by the callback.
+                Defaults to ``False``.
 
         Returns:
             tf.Tensor: Two-class one-hot scores.
@@ -227,6 +251,7 @@ def run_self_tests() -> dict[str, str]:
         Args:
             inputs (tf.Tensor): Class-coded features shaped ``[batch, 1]``.
             training (bool): Inference flag supplied by the callback.
+                Defaults to ``False``.
 
         Returns:
             tf.Tensor: Scores always selecting class zero.
@@ -285,6 +310,7 @@ def run_self_tests() -> dict[str, str]:
             samples_per_class (int): Requested count; unused.
             onehot_y_output (bool): Requested label encoding flag.
             seed (int | None): Optional callback seed; unused.
+                Defaults to ``None``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Empty features and labels.
@@ -304,6 +330,8 @@ def run_self_tests() -> dict[str, str]:
         empty_callback.on_epoch_end(0, {"sentinel": True})
     except ValueError:
         pass
+    # This invalid case should already have raised: An empty generated batch must fail
+    # clearly.
     else:
         raise AssertionError("An empty generated batch must fail clearly.")
 
@@ -319,6 +347,7 @@ def run_self_tests() -> dict[str, str]:
             samples_per_class (int): Requested count; unused.
             onehot_y_output (bool): Requested label encoding flag; unused.
             seed (int | None): Optional callback seed; unused.
+                Defaults to ``None``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Two samples and three labels.
@@ -339,6 +368,8 @@ def run_self_tests() -> dict[str, str]:
         assert incompatible_logs == {"sentinel": True}, (
             "A shape failure must occur before the callback mutates logs."
         )
+    # This invalid case should already have raised: Incompatible label and prediction shapes
+    # must fail.
     else:
         raise AssertionError("Incompatible label and prediction shapes must fail.")
 
@@ -347,6 +378,8 @@ def run_self_tests() -> dict[str, str]:
         unattached.on_epoch_end(0, {"sentinel": True})
     except AttributeError:
         pass
+    # This invalid case should already have raised: An unattached callback must not generate
+    # data.
     else:
         raise AssertionError("An unattached callback must not generate data.")
 

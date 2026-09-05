@@ -1,4 +1,10 @@
-"""Joint conditional variational autoencoder and classifier model."""
+"""Joint conditional variational autoencoder and classifier model.
+
+VAEClassifier jointly optimizes conditional reconstruction, Gaussian KL, and
+classification from the original input. It extends the dense VAE generation and
+training APIs while keeping the discriminative branch independent of the supplied
+one-hot condition. Import registers the model with Keras serialization.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +37,7 @@ class VAEClassifier(VariationalAutoencoder):
             from ``classifier``.
         alpha (float): Classification-loss multiplier initialized from
             ``alpha``.
+            Defaults to ``1.0``.
         generative_loss_tracker (tf.keras.metrics.Mean): Running mean of the
             reconstruction plus beta-weighted KL objective.
         clf_loss_tracker (tf.keras.metrics.Mean): Running mean categorical
@@ -61,6 +68,7 @@ class VAEClassifier(VariationalAutoencoder):
                 component; its trainable weights participate in optimization.
             alpha (float): Finite, nonnegative coefficient applied to mean
                 categorical cross-entropy.
+                Defaults to ``1.0``.
             **kwargs (object): VAE options ``data_dim``, ``latent_dim``,
                 ``hiddens_dims``, ``hiddens_kwargs``, ``last_activation``,
                 ``beta``, and ``compile_args``, plus Keras model options such as
@@ -78,12 +86,19 @@ class VAEClassifier(VariationalAutoencoder):
             TypeError: If ``conditioned`` or ``class_num`` is included in
                 ``kwargs``, or another unsupported key is supplied.
             ValueError: If ``alpha`` would invalidate the training objective.
+
+        Notes:
+            compile defaults to True; False skips compilation. All remaining VAE
+            constructor defaults follow VariationalAutoencoder.__init__, including
+            seed=None and beta=0.25. This wrapper replaces the default optimizer with
+            Adam and fixes conditioning to True with the supplied class_num.
         """
 
         # Keep conditioning and class width controlled by this wrapper.
         if "conditioned" in kwargs or "class_num" in kwargs:
             raise TypeError("VAEClassifier fixes conditioned=True and class_num.")
         alpha = float(alpha)
+        # Reject classification weights that would make the joint objective invalid.
         if not np.isfinite(alpha) or alpha < 0.:
             raise ValueError("alpha must be finite and nonnegative.")
         compile_model = kwargs.pop("compile", True)
@@ -223,6 +238,8 @@ class VAEClassifier(VariationalAutoencoder):
             metrics. Keras resets them between epochs/evaluations.
         """
 
+        # Include compiled metrics once their container exists; otherwise expose only local
+        # trackers.
         compiled_metrics = self.compiled_metrics.metrics \
             if self.compiled_metrics is not None else []
 
@@ -248,6 +265,7 @@ class VAEClassifier(VariationalAutoencoder):
                 ``[batch, data_dim]`` and ``[batch, class_num]``.
             training (bool | tf.Tensor): Keras training flag forwarded to the
                 VAE and to a Keras-layer classifier.
+                Defaults to ``False``.
 
         Returns:
             tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
@@ -290,6 +308,16 @@ class VAEClassifier(VariationalAutoencoder):
             ``generative_loss``, ``kl_loss``, ``recon_loss``, ``clf_loss``, and
             ``clf_accuracy``. Configured reconstruction metrics are included as
             additional keys.
+
+        Notes:
+            A third sample_weight component is accepted and broadcast over batch rows.
+            Classification and KL use weight-normalized means (zero for all-zero
+            weights); reconstruction follows the compiled Keras reduction. The total
+            is reconstruction + beta * KL + alpha * classification. Running loss
+            trackers weight batch objectives by batch size; accuracy and reconstruction
+            metrics receive row weights. test_step updates metrics and samples the
+            latent without applying gradients; train_step also updates trainable model
+            weights and training-mode normalization statistics.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)
@@ -301,6 +329,8 @@ class VAEClassifier(VariationalAutoencoder):
             )
 
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+            # Use unweighted rows when no weights are supplied; otherwise broadcast weights
+            # across the batch.
             row_sample_weight = None if sample_weight is None else tf.broadcast_to(
                 tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
                 tf.shape(x)[:1],
@@ -321,6 +351,8 @@ class VAEClassifier(VariationalAutoencoder):
                 tf.cast(y, stable_dtype),
                 tf.cast(y_pred, stable_dtype),
             )
+            # Average unweighted class losses; otherwise normalize their weighted sum by
+            # total weight.
             clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
                 else tf.math.divide_no_nan(
                     tf.reduce_sum(clf_rows * row_sample_weight),
@@ -391,6 +423,16 @@ class VAEClassifier(VariationalAutoencoder):
             ``generative_loss``, ``kl_loss``, ``recon_loss``, ``clf_loss``, and
             ``clf_accuracy``. Configured reconstruction metrics are included as
             additional keys.
+
+        Notes:
+            A third sample_weight component is accepted and broadcast over batch rows.
+            Classification and KL use weight-normalized means (zero for all-zero
+            weights); reconstruction follows the compiled Keras reduction. The total
+            is reconstruction + beta * KL + alpha * classification. Running loss
+            trackers weight batch objectives by batch size; accuracy and reconstruction
+            metrics receive row weights. test_step updates metrics and samples the
+            latent without applying gradients; train_step also updates trainable model
+            weights and training-mode normalization statistics.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)
@@ -401,6 +443,8 @@ class VAEClassifier(VariationalAutoencoder):
         )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        # Use unweighted rows when no weights are supplied; otherwise broadcast weights
+        # across the batch.
         row_sample_weight = None if sample_weight is None else tf.broadcast_to(
             tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
             tf.shape(x)[:1],
@@ -421,6 +465,8 @@ class VAEClassifier(VariationalAutoencoder):
             tf.cast(y, stable_dtype),
             tf.cast(y_pred, stable_dtype),
         )
+        # Average unweighted class losses; otherwise normalize their weighted sum by total
+        # weight.
         clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
             else tf.math.divide_no_nan(
                 tf.reduce_sum(clf_rows * row_sample_weight),
@@ -490,7 +536,8 @@ class VAEClassifier(VariationalAutoencoder):
 
         Returns:
             dict[str, list[float]]: Keras epoch history.  Automatically created
-            early stopping monitors ``"val_clf_accuracy"``; a decoder-accuracy
+            early stopping monitors ``"val_clf_accuracy"`` when validation is supplied,
+            otherwise ``"clf_accuracy"``; a decoder-accuracy
             callback is always prepended unless callback construction fails.
 
         Raises:
@@ -505,6 +552,8 @@ class VAEClassifier(VariationalAutoencoder):
                 "Reserved VAEClassifier.train options: " + str(sorted(reserved))
             )
 
+        # Monitor validation classification accuracy when validation exists, or training
+        # accuracy otherwise.
         monitor = "val_clf_accuracy" if kwargs.get("validation_data") is not None \
                 else "clf_accuracy"
 
@@ -562,6 +611,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except TypeError:
         pass
+    # This invalid case should already have raised: VAEClassifier must reject a conditioned
+    # override.
     else:
         raise AssertionError("VAEClassifier must reject a conditioned override.")
 
@@ -598,6 +649,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # This invalid case should already have raised: Invalid classification loss weights
+        # must fail.
         else:
             raise AssertionError("Invalid classification loss weights must fail.")
 
@@ -612,6 +665,8 @@ def run_self_tests() -> dict[str, str]:
         )
     except TypeError:
         pass
+    # This invalid case should already have raised: Unknown Keras model options must be
+    # rejected.
     else:
         raise AssertionError("Unknown Keras model options must be rejected.")
 
@@ -911,6 +966,8 @@ def run_self_tests() -> dict[str, str]:
         bad_model.test_step((x, y))
     except (ValueError, tf.errors.InvalidArgumentError):
         pass
+    # This invalid case should already have raised: Classifier output width must match
+    # one-hot labels.
     else:
         raise AssertionError("Classifier output width must match one-hot labels.")
 
@@ -918,6 +975,8 @@ def run_self_tests() -> dict[str, str]:
         model.test_step((x, tf.constant([0, 2])))
     except (ValueError, tf.errors.InvalidArgumentError):
         pass
+    # This invalid case should already have raised: VAEClassifier train/test labels must be
+    # one-hot.
     else:
         raise AssertionError("VAEClassifier train/test labels must be one-hot.")
 
@@ -989,6 +1048,7 @@ def run_self_tests() -> dict[str, str]:
             )
         except TypeError:
             pass
+        # This invalid case should already have raised: Reserved training key must fail.
         else:
             raise AssertionError(
                 f"Reserved training key {reserved_name!r} must fail."
@@ -1005,6 +1065,8 @@ def run_self_tests() -> dict[str, str]:
             )
         except TypeError:
             pass
+        # This invalid case should already have raised: Duplicate positional training key
+        # must fail.
         else:
             raise AssertionError(
                 f"Duplicate positional training key {duplicate_name!r} must fail."

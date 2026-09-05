@@ -45,39 +45,29 @@ from typing import Iterable, Literal, TypeAlias
 
 
 class ScheduleKind(str, Enum):
-    """Names of the supported schedule families.
+    """Names of the ten supported forward-noise schedule families.
 
-    Values
-    ------
-    LINEAR
-        Linearly interpolate beta from ``beta_start`` to ``beta_end``.
-    SCALED_LINEAR
-        Linearly interpolate ``sqrt(beta)`` and square the result.
-    COSINE
-        Discretize the ``squaredcos_cap_v2`` cumulative-alpha curve from
-        ``num_steps + 1`` interval edges, matching improved-diffusion.
-    CLIPPED_COSINE
-        Interpolate cosine angles between configured signal bounds.
-    SIGMOID
-        Interpolate beta through a centered sigmoid between ``beta_start``
-        and ``beta_end``, following the common Diffusers-style schedule.
-    LOGISTIC
-        Discretize a smooth S-shaped cumulative-alpha decay curve.
-    QUADRATIC
-        Increase beta quadratically over normalized time.
-    VE
-        Increase sigma geometrically from ``sigma_min`` to ``sigma_max``.
-    KARRAS
-        Use a rho-shaped interpolation in sigma space.
-    SUB_VP
-        Use ``1 - alpha_bar(t)`` from a cosine signal-power curve, the
-        sub-variance-preserving marginal standard deviation.
+    Members also behave as strings and can be passed directly to make_schedule.
+    Their values are the accepted serialized scheduler names; no schedule arrays
+    are allocated by selecting an enum value.
 
-    Notes
-    -----
-    Members inherit from ``str``.  Consequently either
-    ``ScheduleKind.LINEAR`` or its value ``"linear"`` can be passed through
-    string-oriented APIs such as :func:`make_schedule`.
+    Attributes:
+        LINEAR (ScheduleKind): ``"linear"`` interpolates beta endpoints directly.
+        SCALED_LINEAR (ScheduleKind): ``"scaled_linear"`` interpolates square-root
+            beta endpoints and squares the result.
+        COSINE (ScheduleKind): ``"squaredcos_cap_v2"`` discretizes normalized
+            squared-cosine signal power over num_steps + 1 interval edges.
+        CLIPPED_COSINE (ScheduleKind): ``"clipped_cosine"`` sweeps cosine angles
+            between configured signal-amplitude bounds on an endpoint-exclusive grid.
+        SIGMOID (ScheduleKind): ``"sigmoid"`` interpolates beta through a centered
+            logistic transition; its endpoints approach the configured bounds.
+        QUADRATIC (ScheduleKind): ``"quadratic"`` increases beta quadratically in time.
+        VE (ScheduleKind): ``"ve"`` increases native sigma geometrically between endpoints.
+        KARRAS (ScheduleKind): ``"karras"`` interpolates native sigma in inverse-rho space.
+        SUB_VP (ScheduleKind): ``"sub_vp"`` uses cosine signal power and the native
+            sub-VP marginal standard deviation ``1 - alpha_bar``.
+        LOGISTIC (ScheduleKind): ``"logistic"`` applies a centered logistic decay
+            directly to cumulative signal power rather than beta.
     """
 
     LINEAR = "linear"
@@ -94,50 +84,45 @@ class ScheduleKind(str, Enum):
 
 @dataclass(frozen=True)
 class ScheduleConfig:
-    """Immutable parameters for one discretized noise schedule.
+    """Store immutable parameters for one discretized forward-noise schedule.
 
-    Parameters
-    ----------
-    kind : ScheduleKind, default=ScheduleKind.LINEAR
-        Schedule family.  Pass an enum member when constructing this class;
-        :func:`make_schedule` accepts the corresponding string instead.
-    num_steps : int, default=1000
-        Number of discrete points.  Generation functions require at least 2.
-    beta_start, beta_end : float, default=1e-4 and 2e-2
-        Bounds used by ``linear``, ``scaled_linear``, ``sigmoid``, and
-        ``quadratic``. Values are expected to describe valid variances; final
-        values are clipped to ``[clip_min, clip_max]``. For ``sigmoid`` they
-        are asymptotic bounds rather than exact finite-grid endpoints.
-    cosine_s : float, default=0.008
-        Offset in the cosine cumulative-alpha curve.  Larger values change
-        the amount of early-time noise.
-    min_sqrt_alpha_bar, max_sqrt_alpha_bar : float, default=0.02 and 0.95
-        Signal-amplitude bounds used only by ``clipped_cosine``.  They must
-        satisfy ``0 < min < max < 1``.
-    sigma_min, sigma_max : float, default=0.002 and 80.0
-        Sigma endpoints used by ``ve`` and ``karras``.  Both should be
-        positive; ``sigma_max`` normally exceeds ``sigma_min``.
-    rho : float, default=7.0
-        Curvature for ``karras``.  It must be nonzero because its reciprocal
-        is evaluated; positive values are the intended input.
-    snr_shift : float, default=0.0
-        Additive log-SNR shift applied by compatible schedules.  ``0`` leaves
-        the curve unchanged, a positive value preserves more signal at a
-        given step, and a negative value introduces more noise.
-    logistic_k : float, default=10.0
-        Steepness of ``sigmoid`` and ``logistic`` transitions.  Larger
-        positive values concentrate their change near the midpoint.
-    clip_min, clip_max : float, default=1e-8 and 0.999
-        Inclusive numerical bounds for beta-like results.  Use values inside
-        ``(0, 1)`` to keep conversion helpers valid.
+    Construction records values without validation; schedule generation and
+    schedule_timesteps call _validate_config before using them. Every numerical
+    field is validated, including fields irrelevant to the selected family.
+    Changing an irrelevant valid field therefore leaves that family's curve
+    unchanged. Create a new configuration to change a frozen instance.
 
-    Notes
-    -----
-    Fields irrelevant to the selected ``kind`` do not alter its curve, but all
-    fields are still validated so every instance represents a numerically
-    usable schedule configuration. For example, changing a positive finite
-    ``rho`` has no effect on a ``linear`` schedule. Instances are frozen, so
-    create a new config rather than assigning a field after construction.
+    Attributes:
+        kind (ScheduleKind): Schedule family; its matching string value also compares
+            equal to the enum. Defaults to ``ScheduleKind.LINEAR``.
+        num_steps (int): Number of discrete output points/transitions; requires at
+            least two in generation APIs. Defaults to ``1000``.
+        beta_start (float): Positive lower beta bound for linear, scaled-linear,
+            quadratic, and sigmoid families. Defaults to ``0.0001``.
+        beta_end (float): Upper beta bound satisfying beta_start <= beta_end < 1.
+            Sigmoid approaches these bounds on its finite grid. Defaults to ``0.02``.
+        cosine_s (float): Nonnegative time offset used by cosine and sub-VP
+            signal-power curves. Defaults to ``0.008``.
+        min_sqrt_alpha_bar (float): Lower clipped-cosine signal-amplitude endpoint;
+            requires 0 < min_sqrt_alpha_bar < max_sqrt_alpha_bar < 1.
+            Defaults to ``0.02``.
+        max_sqrt_alpha_bar (float): Upper clipped-cosine signal-amplitude endpoint.
+            Defaults to ``0.95``.
+        sigma_min (float): Positive first native VE/Karras noise-to-data ratio.
+            Defaults to ``0.002``.
+        sigma_max (float): Last native VE/Karras ratio, at least sigma_min.
+            Defaults to ``80.0``.
+        rho (float): Positive Karras interpolation curvature. Defaults to ``7.0``.
+        snr_shift (float): Additive log-SNR shift; positive preserves more signal,
+            negative adds noise, zero preserves the base curve. Direct native
+            VE/Karras sigma generation ignores it; beta-equivalent generation
+            applies it. Defaults to ``0.0``.
+        logistic_k (float): Positive sigmoid/logistic sharpness; larger values
+            concentrate change near the midpoint. Defaults to ``10.0``.
+        clip_min (float): Lower final beta clamp, strictly above zero and below
+            clip_max. Defaults to ``1e-08``.
+        clip_max (float): Upper final beta clamp, strictly below one.
+            Defaults to ``0.999``.
     """
 
     kind: ScheduleKind = ScheduleKind.LINEAR
@@ -194,6 +179,7 @@ def _validate_config(config: ScheduleConfig) -> None:
         config.sigma_min, config.sigma_max, config.rho,
         config.snr_shift, config.logistic_k, config.clip_min, config.clip_max,
     )
+    # Reject nonfinite curve parameters before they contaminate generated schedule arrays.
     if not np.all(np.isfinite(numeric_values)):
         raise ValueError("All numeric schedule parameters must be finite.")
 
@@ -203,6 +189,7 @@ def _validate_config(config: ScheduleConfig) -> None:
     # Require an ordered, probabilistically valid beta range.
     if not 0.0 < config.beta_start <= config.beta_end < 1.0:
         raise ValueError("Expected 0 < beta_start <= beta_end < 1.")
+    # Negative cosine offsets violate the configured monotone forward-process domain.
     if config.cosine_s < 0.0:
         raise ValueError("cosine_s must be non-negative.")
     # Require ordered clipped-cosine signal bounds inside (0, 1).
@@ -225,43 +212,34 @@ def _validate_config(config: ScheduleConfig) -> None:
 
 
 def _as_float64(x: np.ndarray | Iterable[float]) -> np.ndarray:
-    """Convert an array or finite iterable to a ``float64`` NumPy array.
+    """Convert NumPy-compatible numeric values to float64 without scaling.
 
-    Parameters
-    ----------
-    x : numpy.ndarray or iterable of float
-        Numeric values of any NumPy-compatible shape.  Integer values are
-        converted rather than rounded or normalized.
+    Args:
+        x (np.ndarray | Iterable[float]): Numeric array or materialized sequence of
+            any shape. A lazy generator must first be materialized for np.asarray.
 
-    Returns
-    -------
-    numpy.ndarray
-        An array with the same shape as ``x`` and dtype ``float64``.
+    Returns:
+        np.ndarray: Same-shaped float64 values. An existing float64 array may be
+        returned without copying; input values are never modified.
     """
 
     return np.asarray(x, dtype=np.float64)
 
 
 def betas_to_alpha_bar(betas: np.ndarray) -> np.ndarray:
-    """Convert per-step variances to cumulative retained-signal power.
+    """Convert discrete variances to cumulative retained-signal power.
 
-    Parameters
-    ----------
-    betas : numpy.ndarray
-        One-dimensional beta values, each strictly inside ``(0, 1)``.  For
-        example, ``[0.1, 0.2]`` represents per-step alpha values ``[0.9,
-        0.8]``.
+    Args:
+        betas (np.ndarray): Nonempty finite one-dimensional variances strictly
+            inside (0, 1); for example [0.1, 0.2].
 
-    Returns
-    -------
-    numpy.ndarray
-        ``float64`` cumulative products of ``1 - betas`` with the same shape;
-        the example input returns ``[0.9, 0.72]``.
+    Returns:
+        np.ndarray: Float64 cumulative products ``cumprod(1 - betas)`` shaped
+        like betas; the example produces [0.9, 0.72]. Inputs are unchanged.
 
-    Raises
-    ------
-    ValueError
-        If any beta is zero, negative, or at least one.
+    Raises:
+        ValueError: The input is empty, nonfinite, not one-dimensional, or contains
+            a value outside the open probability interval.
     """
 
     betas = _as_float64(betas)
@@ -281,33 +259,28 @@ def alpha_bar_to_betas(
     clip_min: float = 1e-8, 
     clip_max: float = 0.999
 ) -> np.ndarray:
-    """Convert a cumulative signal trajectory to per-step beta values.
+    """Convert a nonincreasing signal-power trajectory to discrete variances.
 
-    Parameters
-    ----------
-    alpha_bar : numpy.ndarray
-        One-dimensional, monotonically non-increasing retained-signal values.
-        Inputs are clipped to ``[1e-12, 1]`` before validation.  The first
-        beta is ``1 - alpha_bar[0]``; later betas are
-        ``1 - alpha_bar[t] / alpha_bar[t - 1]``.
-    clip_min, clip_max : float, default=1e-8 and 0.999
-        Bounds applied to every returned beta.  They prevent exact zero and
-        one values by default.
+    Values are clipped to [1e-12, 1] before checking monotonicity. The first beta
+    is 1 - alpha_bar[0]; subsequent betas are 1 - alpha_bar[t]/alpha_bar[t-1].
+    Final beta clipping means inverse conversion may only approximate the source
+    curve at a clamp boundary. The input is not modified.
 
-    Returns
-    -------
-    numpy.ndarray
-        ``float64`` beta schedule with the same shape as ``alpha_bar``.
+    Args:
+        alpha_bar (np.ndarray): Nonempty finite one-dimensional cumulative signal
+            powers; increases above 1e-12 after clipping are rejected.
+        clip_min (float): Positive lower beta clamp below clip_max.
+            Defaults to ``1e-08``.
+        clip_max (float): Upper beta clamp strictly below one.
+            Defaults to ``0.999``.
 
-    Raises
-    ------
-    ValueError
-        If the clipped trajectory increases between adjacent steps.
+    Returns:
+        np.ndarray: Float64 beta values of the same shape in [clip_min, clip_max].
+        For alpha_bar=[0.9, 0.72], returns approximately [0.1, 0.2].
 
-    Examples
-    --------
-    ``alpha_bar_to_betas(np.array([0.9, 0.72]))`` returns approximately
-    ``array([0.1, 0.2])``.
+    Raises:
+        ValueError: Shape, finiteness, monotonicity, or 0 < clip_min < clip_max < 1
+            is violated.
     """
 
     alpha_bar = _as_float64(alpha_bar)
@@ -334,20 +307,16 @@ def alpha_bar_to_betas(
 
 
 def alpha_bar_to_sigmas(alpha_bar: np.ndarray) -> np.ndarray:
-    """Convert retained-signal power to VP corruption amplitudes.
+    """Convert VP retained-signal power to bounded corruption amplitude.
 
-    Parameters
-    ----------
-    alpha_bar : numpy.ndarray
-        Numeric cumulative-alpha values.  Values outside ``[0, 1]`` are
-        clipped, so negative entries become sigma ``1`` and entries above one
-        become sigma ``0``.
+    Args:
+        alpha_bar (np.ndarray): Numeric values of any shape. Values below zero or
+            above one are clipped; NaN values propagate through the conversion.
 
-    Returns
-    -------
-    numpy.ndarray
-        ``float64`` values computed as ``sqrt(1 - alpha_bar)`` with the same
-        shape as the input.
+    Returns:
+        np.ndarray: Same-shaped float64 ``sqrt(1 - clip(alpha_bar, 0, 1))``.
+        Negative inputs become one and inputs above one become zero. These are
+        bounded VP amplitudes, not unbounded VE/Karras noise-to-data ratios.
     """
 
     alpha_bar = np.clip(_as_float64(alpha_bar), 0.0, 1.0)
@@ -360,29 +329,26 @@ def sigmas_to_betas(
     clip_min: float = 1e-8, 
     clip_max: float = 0.999
 ) -> np.ndarray:
-    """Convert raw noise-to-data ratios to an equivalent VP beta schedule.
+    """Convert native noise-to-data ratios to an equivalent VP beta trajectory.
 
-    Parameters
-    ----------
-    sigmas : numpy.ndarray
-        One-dimensional, finite, non-negative, monotonically non-decreasing raw
-        noise-to-data ratios. They are mapped through
-        ``alpha_bar = 1 / (1 + sigma**2)``. This preserves VE/Karras magnitudes
-        above one; the corresponding bounded VP noise amplitude is
-        ``sigma / sqrt(1 + sigma**2)``.
-    clip_min, clip_max : float
-        Strictly ordered beta bounds inside ``(0, 1)``.
+    The relation ``alpha_bar = 1 / (1 + sigma**2)`` preserves ratios above one.
+    Their bounded VP corruption amplitude is sigma/sqrt(1 + sigma**2).
 
-    Returns
-    -------
-    numpy.ndarray
-        Beta values in ``[clip_min, clip_max]`` with the same shape as
-        ``sigmas``.
+    Args:
+        sigmas (np.ndarray): Nonempty, finite, nonnegative, one-dimensional,
+            nondecreasing native noise-to-data ratios.
+        clip_min (float): Positive lower beta clamp below clip_max.
+            Defaults to ``1e-08``.
+        clip_max (float): Upper beta clamp strictly below one.
+            Defaults to ``0.999``.
 
-    Raises
-    ------
-    ValueError
-        If sigma values decrease or any array/bound invariant is invalid.
+    Returns:
+        np.ndarray: Same-shaped float64 beta values clipped to [clip_min, clip_max].
+        Clipping cumulative powers/betas can make inverse reconstruction approximate.
+
+    Raises:
+        ValueError: Shape, finiteness, sigma ordering/nonnegativity, or beta bounds
+            violate the conversion contract.
     """
 
     sigmas = _as_float64(sigmas)
@@ -400,22 +366,17 @@ def sigmas_to_betas(
 
 
 def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
-    """Add a scalar offset to a curve in log signal-to-noise space.
+    """Translate a signal curve in log-SNR space with a stable logistic inverse.
 
-    Parameters
-    ----------
-    alpha_bar : numpy.ndarray
-        Retained-signal powers.  With a nonzero shift, values are clipped away
-        from exactly zero and one before conversion.
-    snr_shift : float
-        Offset applied as ``SNR' = SNR * exp(snr_shift)``.  Zero returns the
-        original object unchanged; positive values increase ``alpha_bar`` and
-        negative values decrease it.
+    Args:
+        alpha_bar (np.ndarray): Retained-signal powers of any shape. A nonzero
+            shift first converts to float64 and clips to [1e-12, 1 - 1e-12].
+        snr_shift (float): Log-SNR offset satisfying SNR_new = SNR * exp(snr_shift).
+            Positive values preserve more signal; negative values add noise.
 
-    Returns
-    -------
-    numpy.ndarray
-        Shifted retained-signal powers with the input shape.
+    Returns:
+        np.ndarray: Same-shaped shifted float64 signal power for a nonzero shift.
+        Zero returns the original object unchanged, preserving its dtype and values.
     """
 
     # Preserve the original signal curve when no SNR shift is requested.
@@ -431,20 +392,18 @@ def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
 
 
 def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
-    """Evaluate the normalized squared-cosine signal curve.
+    """Evaluate a squared-cosine signal curve normalized at the first sample.
 
-    Parameters
-    ----------
-    t : numpy.ndarray
-        Typically normalized times in ``[0, 1]``.  Values are not clipped.
-    s : float, default=0.008
-        Time offset that softens the curve near zero.
+    Args:
+        t (np.ndarray): Nonempty time array, normally a one-dimensional float64 grid
+            in [0, 1]. Times are not clipped by this helper.
+        s (float): Time offset in ``cos(((t+s)/(1+s))*pi/2)**2``; generation APIs
+            require it to be nonnegative.
+            Defaults to ``0.008``.
 
-    Returns
-    -------
-    numpy.ndarray
-        ``cos(((t + s) / (1 + s)) * pi / 2) ** 2``, normalized by its first
-        entry.  The output has the same shape as ``t``.
+    Returns:
+        np.ndarray: Squared-cosine values divided by the first entry, with t's
+        shape. Schedule grids produce float64 values beginning at one.
     """
 
     f = np.cos(((t + s) / (1.0 + s)) * (pi / 2.0)) ** 2
@@ -453,21 +412,18 @@ def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
 
 
 def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
-    """Evaluate a centered logistic map after clipping time to ``[0, 1]``.
+    """Evaluate a stable centered logistic transition on clipped normalized time.
 
-    Parameters
-    ----------
-    t : numpy.ndarray
-        Times of any shape.  Values below zero behave as zero and values above
-        one behave as one.
-    k : float, default=10.0
-        Transition steepness.  ``k=0`` returns ``0.5`` everywhere; positive
-        values rise with time and negative values fall.
+    Args:
+        t (np.ndarray): Numeric times of any shape; values outside [0, 1] use the
+            nearest endpoint.
+        k (float): Transition steepness. Zero returns 0.5 everywhere; positive
+            values rise and negative values fall. Generation APIs require k > 0.
+            Defaults to ``10.0``.
 
-    Returns
-    -------
-    numpy.ndarray
-        Logistic values with the same shape as ``t``.
+    Returns:
+        np.ndarray: Same-shaped ``sigmoid(k * (clip(t, 0, 1) - 0.5))``. Finite
+        endpoints need not equal zero/one. Float64 schedule grids retain float64.
     """
 
     x = np.clip(t, 0.0, 1.0)
@@ -477,40 +433,33 @@ def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
 
 
 def generate_betas(config: ScheduleConfig) -> np.ndarray:
-    """Generate per-step beta values for a configured schedule.
+    """Generate discrete forward variances for any supported schedule family.
 
-    Parameters
-    ----------
-    config : ScheduleConfig
-        Complete schedule configuration.  ``kind`` selects the algorithm:
-        beta endpoints affect ``linear``, ``scaled_linear``, ``sigmoid``, and
-        ``quadratic``; cosine fields affect cosine-based schedules;
-        ``logistic_k`` affects S-shaped schedules; and sigma/rho fields affect
-        ``ve`` and ``karras``.
+    Linear, scaled-linear, quadratic, and sigmoid families interpolate beta.
+    Cosine and sub-VP sample num_steps + 1 cumulative-power interval edges;
+    clipped cosine samples angles on arange(num_steps)/num_steps, excluding its
+    final angle. Logistic samples a declining cumulative-power sigmoid.
+    VE/Karras convert native sigma through alpha_bar = 1/(1 + sigma**2).
+    Every family supports a cumulative log-SNR shift before final beta conversion.
 
-    Returns
-    -------
-    numpy.ndarray
-        One-dimensional ``float64`` array of length ``config.num_steps``.
-        Values are clipped to the configured beta bounds. For ``ve`` and
-        ``karras``, raw sigma is converted with
-        ``alpha_bar = 1 / (1 + sigma**2)``. Cosine and ``sub_vp`` beta values
-        use ratios over ``num_steps + 1`` curve edges, producing exactly
-        ``num_steps`` diffusion transitions.
+    Args:
+        config (ScheduleConfig): Complete curve controls. Meaningful fields are
+            documented on ScheduleConfig; all numerical fields are validated,
+            even those not used by the chosen family.
 
-    Raises
-    ------
-    ValueError
-        If fewer than two steps are requested, ``clipped_cosine`` signal
-        bounds are unordered/outside ``(0, 1)``, the selected kind is not
-        supported, or a derived cumulative-alpha trajectory is increasing.
+    Returns:
+        np.ndarray: Float64 variances shaped [config.num_steps], clipped to
+        [clip_min, clip_max]. Cosine and sub-VP return the same beta-equivalent
+        signal curve, although their native sigma definitions differ.
 
-    Examples
-    --------
-    A two-endpoint linear ramp can be created with
-    ``generate_betas(ScheduleConfig(num_steps=4, beta_start=1e-4,
-    beta_end=2e-2))``.  Selecting ``ScheduleKind.KARRAS`` instead makes
-    ``sigma_min``, ``sigma_max``, and ``rho`` the meaningful controls.
+    Raises:
+        ValueError: Shared configuration invariants, the selected family, or a
+            derived signal-power trajectory are invalid.
+
+    Examples:
+        ``generate_betas(ScheduleConfig(num_steps=4, beta_end=0.01))`` creates
+        a four-point linear ramp. Choosing ScheduleKind.KARRAS instead makes
+        sigma_min, sigma_max, and rho the active native-curve controls.
     """
 
     _validate_config(config)
@@ -546,6 +495,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
             ) * (t**2)
 
         betas = np.clip(betas, config.clip_min, config.clip_max)
+        # An unshifted beta-space ramp needs no cumulative-alpha round trip.
         if config.snr_shift == 0.0:
             return betas
 
@@ -679,38 +629,26 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
 
 def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
-    """Generate corruption amplitudes for a configured schedule.
+    """Generate native or VP corruption amplitudes in increasing-time order.
 
-    Parameters
-    ----------
-    config : ScheduleConfig
-        Complete schedule configuration.  ``ve`` geometrically interpolates
-        ``sigma_min`` to ``sigma_max``; ``karras`` additionally uses ``rho``;
-        and ``sub_vp`` returns ``1 - alpha_bar`` from a shifted cosine
-        signal-power curve. Other kinds are generated as betas and converted
-        through cumulative alpha.
+    VE uses geometric interpolation and Karras uses inverse-rho interpolation
+    between their exact native sigma endpoints; these two direct paths ignore
+    snr_shift. Sub-VP returns 1 - alpha_bar on an endpoint-inclusive cosine grid
+    after any SNR shift. Other families convert generate_betas output through
+    cumulative alpha to sqrt(1 - alpha_bar).
 
-    Returns
-    -------
-    numpy.ndarray
-        One-dimensional ``float64`` array of length ``config.num_steps``.
-        VE and Karras values may exceed one and retain their configured
-        endpoints. Sub-VP and beta-derived values stay in ``[0, 1]``.
+    Args:
+        config (ScheduleConfig): Curve controls, validated in full before selecting
+            a generation path. See ScheduleConfig for all fields and defaults.
 
-    Raises
-    ------
-    ValueError
-        If fewer than two steps are requested or delegated beta generation
-        rejects the configuration.
+    Returns:
+        np.ndarray: Float64 array shaped [config.num_steps]. VE/Karras preserve
+        unbounded native noise-to-data ratios; sub-VP and other families return
+        amplitudes in [0, 1]. The grid and native sub-VP marginal can differ from
+        make_schedule's beta-equivalent VP outputs.
 
-    Notes
-    -----
-    ``generate_sigmas`` preserves natural VE/Karras magnitudes and evaluates
-    the continuous sub-VP marginal on an endpoint-inclusive ``num_steps``
-    grid. By contrast, ``make_schedule`` reports amplitudes reconstructed from
-    a ``num_steps``-transition beta-equivalent curve. Call this function
-    directly when a sigma-space sampler needs values such as ``sigma_max=80``
-    or sub-VP's exact zero/noise endpoints.
+    Raises:
+        ValueError: Shared invariants or delegated beta-generation requirements fail.
     """
 
     _validate_config(config)
@@ -771,19 +709,18 @@ def generate_sigmas(config: ScheduleConfig) -> np.ndarray:
 
 
 def schedule_timesteps(config: ScheduleConfig) -> np.ndarray:
-    """Return evenly spaced normalized times, including both endpoints.
+    """Return normalized increasing times with both zero and one included.
 
-    Parameters
-    ----------
-    config : ScheduleConfig
-        The shared schedule invariants are validated; ``num_steps`` must be an
-        integer of at least two.
+    Args:
+        config (ScheduleConfig): Schedule controls; all shared numerical invariants
+            are checked, though only num_steps determines the returned grid.
 
-    Returns
-    -------
-    numpy.ndarray
-        ``float64`` array equivalent to
-        ``numpy.linspace(0, 1, config.num_steps)``.
+    Returns:
+        np.ndarray: Float64 ``linspace(0, 1, config.num_steps)`` shaped [num_steps].
+        These plotting coordinates are separate from integer wrapper timestep IDs.
+
+    Raises:
+        ValueError: The schedule configuration violates shared numerical invariants.
     """
 
     _validate_config(config)
@@ -796,51 +733,37 @@ def make_schedule(
     num_steps: int = 1000, 
     **kwargs: float
 ) -> dict[str, np.ndarray]:
-    """Build all common VP arrays from a schedule name.
+    """Build six consistent VP schedule arrays from a serialized family name.
 
-    Parameters
-    ----------
-    kind : str or ScheduleKind
-        One of ``"linear"``, ``"scaled_linear"``,
-        ``"squaredcos_cap_v2"``, ``"clipped_cosine"``, ``"sigmoid"``,
-        ``"quadratic"``, ``"ve"``, ``"karras"``, ``"sub_vp"``, or
-        ``"logistic"``.  Enum members also work because
-        :class:`ScheduleKind` inherits from ``str``.
-    num_steps : int, default=1000
-        Number of entries in every returned array; it must be at least two.
-    **kwargs : float
-        Optional :class:`ScheduleConfig` fields.  Allowed keys are
-        ``beta_start``, ``beta_end``, ``cosine_s``,
-        ``min_sqrt_alpha_bar``, ``max_sqrt_alpha_bar``, ``sigma_min``,
-        ``sigma_max``, ``rho``, ``snr_shift``, ``logistic_k``, ``clip_min``,
-        and ``clip_max``.  Values are numeric and have the meanings documented
-        on :class:`ScheduleConfig`.  ``kind`` and ``num_steps`` must be passed
-        as the named parameters, not repeated in ``kwargs``.  Unknown keys
-        cause the dataclass constructor to raise ``TypeError``.
+    All outputs are reconstructed from one clipped beta trajectory. In particular,
+    sigmas is the bounded VP amplitude, including for VE/Karras and sub-VP;
+    use generate_sigmas directly when the native marginal is required.
 
-    Returns
-    -------
-    dict[str, numpy.ndarray]
-        A dictionary with exactly six ``float64`` arrays of shape
-        ``(num_steps,)``: ``"betas"``, ``"alpha_bar"`` (cumulative
-        ``1-beta``), ``"sqrt_alpha_bar"``,
-        ``"sqrt_one_minus_alpha_bar"``, ``"sigmas"`` (identical to the
-        preceding noise-amplitude array), and normalized ``"timesteps"``.
+    Args:
+        kind (str | ScheduleKind): Case-sensitive family value: linear,
+            scaled_linear, squaredcos_cap_v2, clipped_cosine, sigmoid, quadratic,
+            ve, karras, sub_vp, or logistic. Enum members are also accepted.
+        num_steps (int): Number of entries in each output, at least two.
+            Defaults to ``1000``.
+        **kwargs (float): ScheduleConfig overrides, empty by default: beta_start,
+            beta_end, cosine_s, min_sqrt_alpha_bar, max_sqrt_alpha_bar, sigma_min,
+            sigma_max, rho, snr_shift, logistic_k, clip_min, and clip_max. Omitted
+            fields retain their ScheduleConfig defaults; kind/num_steps cannot
+            be supplied twice.
 
-    Raises
-    ------
-    ValueError
-        If ``kind`` is unknown or schedule parameters fail validation.
-    TypeError
-        If ``kwargs`` contains a key not declared by :class:`ScheduleConfig`.
+    Returns:
+        dict[str, np.ndarray]: Six float64 arrays shaped [num_steps]: betas,
+        alpha_bar=cumprod(1-betas), sqrt_alpha_bar, sqrt_one_minus_alpha_bar,
+        sigmas (equal to sqrt_one_minus_alpha_bar), and normalized timesteps.
 
-    Examples
-    --------
-    ``make_schedule("linear", 100, beta_end=0.01)`` customizes a beta-space
-    ramp. ``make_schedule("karras", 20, sigma_min=0.01, sigma_max=10,
-    rho=5)`` accepts sigma-space controls. Its returned ``"sigmas"`` are the
-    bounded VP-equivalent amplitudes; :func:`generate_sigmas` returns the raw
-    Karras noise-to-data ratios, including the natural maximum of ``10``.
+    Raises:
+        ValueError: The family name or numerical schedule parameters are invalid.
+        TypeError: A keyword is unknown or supplied more than once.
+
+    Examples:
+        ``make_schedule('linear', 100, beta_end=0.01)`` customizes a beta ramp.
+        ``make_schedule('karras', 20, sigma_min=0.01, sigma_max=10, rho=5)``
+        returns bounded VP-equivalent amplitudes derived from the native ratios.
     """
 
     cfg = ScheduleConfig(kind=ScheduleKind(kind), num_steps=num_steps, **kwargs)
@@ -875,17 +798,27 @@ def save_schedule_plots(
     per-step alpha, common complements, native sigma, SNR, log-SNR, a combined
     signal/noise-coefficient view, and a combined beta/one-minus-beta view.
 
+    Supported metric names are betas, alphas, alpha_bar, one_minus_alpha_bar,
+    sqrt_alpha_bar, sqrt_one_minus_alpha_bar, sigmas, native_sigmas, snr, log_snr,
+    sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar, and betas_with_one_minus_betas.
+    Repeated names are written once in first-requested order. Matplotlib figures
+    use an offscreen canvas and are cleared after saving.
+
     Args:
         output_dir (str | pathlib.Path): Directory in which the PNG files are
             created. Missing parent directories are created. Existing files
             with the generated names are replaced.
+            Defaults to ``'schedule_plots'``.
         num_steps (int): Number of points in each schedule; defaults to 1000
             and must satisfy :class:`ScheduleConfig` validation.
+            Defaults to ``1000``.
         dpi (int): Positive output resolution in dots per inch; defaults to
             150.
+            Defaults to ``150``.
         metrics (Iterable[str] | None): Statistic names to save, in the
             requested order. ``None`` saves every available statistic. A
             single string is also accepted as one statistic name.
+            Defaults to ``None``.
         schedule_kwargs (float): Optional :class:`ScheduleConfig` field
             overrides shared by every schedule, such as ``beta_end``,
             ``sigma_max``, or ``snr_shift``. Do not repeat ``kind`` or
@@ -1018,6 +951,7 @@ def save_schedule_plots(
     # Require at least one output statistic.
     if not selected_metric_names:
         raise ValueError("metrics must contain at least one statistic name.")
+    # Report only requested plot metrics absent from the supported metric registry.
     unknown_metrics = tuple(
         metric_name
         for metric_name in selected_metric_names

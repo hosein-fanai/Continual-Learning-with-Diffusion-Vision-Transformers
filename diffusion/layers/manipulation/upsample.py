@@ -1,4 +1,9 @@
-"""Spatial upsampling for flattened square token grids."""
+"""Spatial upsampling for flattened square token grids.
+
+Upsample doubles a square token grid along both spatial axes through interpolation
+or learned convolution. Optional prefix tokens bypass resizing and are projected
+to the merged channel width before the final MLP.
+"""
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -27,23 +32,30 @@ class Upsample(BaseEmbedding):
     Positional merging and an optional MLP run after resizing.
 
     Args:
-        use_layer_norm: Whether to normalize/adapt tokens before resizing.
-        scaling_method: One of ``"cnn_transpose"``, ``"interpolate"``, or
+        use_layer_norm (bool): Whether to normalize/adapt tokens before resizing.
+            Defaults to ``True``.
+        scaling_method (ScalingMethod): One of ``"cnn_transpose"``, ``"interpolate"``, or
             ``"cnn_interpolate"``.
-        scaling_interpolation_method: Keras ``UpSampling2D`` method used by the
+            Defaults to ``'cnn_transpose'``.
+        scaling_interpolation_method (str): Keras ``UpSampling2D`` method used by the
             interpolation modes, commonly ``"nearest"`` or ``"bilinear"``.
-        cnn_dim_ratio: Positive integer channel multiplier for modes containing
+            Defaults to ``'nearest'``.
+        cnn_dim_ratio (int): Positive integer channel multiplier for modes containing
             a convolution. Pure interpolation preserves ``dim`` channels.
-        cnn_kernel_size: Positive kernel side for the transposed or post-resize
+            Defaults to ``1``.
+        cnn_kernel_size (int): Positive kernel side for the transposed or post-resize
             convolution.
-        cnn_activation_func: Keras convolution activation; ``"linear"`` leaves
+            Defaults to ``2``.
+        cnn_activation_func (str): Keras convolution activation; ``"linear"`` leaves
             results unbounded.
-        circumvent_tokens: Number of leading non-spatial tokens excluded from
+            Defaults to ``'linear'``.
+        circumvent_tokens (bool | int): Number of leading non-spatial tokens excluded from
             resizing and prepended afterward. ``True`` preserves one token.
-        **kwargs: :class:`BaseEmbedding` options. ``dim`` and positive
+            Defaults to ``False``.
+        **kwargs (Any): :class:`BaseEmbedding` options. ``dim`` and positive
             ``grid_size`` are required. Positional, MLP, normalization, and
-            standard Keras options are accepted; ``use_layer_norm`` and
-            ``ln_dim`` are supplied internally and must not be repeated.
+            standard Keras options are accepted; ``use_layer_norm`` is supplied here. A serialized ``ln_dim`` must
+            equal ``dim`` (or be None) when present.
 
     Inputs:
         Pair ``(x, cond)``. ``x`` is floating ``[batch, tokens, dim]`` and its
@@ -59,6 +71,14 @@ class Upsample(BaseEmbedding):
     Serialization:
         ``from_config(get_config())`` is supported; inherited normalization
         width is reconstructed from ``dim``.
+
+    Attributes:
+        scaling_layer (tf.keras.layers.Layer): Factor-two spatial
+            interpolation/convolution pipeline.
+        output_grid_size (int): Twice the configured source-grid side.
+        token_projector (tf.keras.layers.Dense | None): Optional width adjustment for
+            bypassed prefix tokens.
+        output_dim (int): Final channel count after position merging and optional MLP.
     """
 
     def __init__(
@@ -76,17 +96,24 @@ class Upsample(BaseEmbedding):
 
         Args:
             use_layer_norm (bool): Whether to normalize before scaling.
+                Defaults to ``True``.
             scaling_method (ScalingMethod): Learned or interpolation resize mode.
+                Defaults to ``'cnn_transpose'``.
             scaling_interpolation_method (str): Keras interpolation method.
+                Defaults to ``'nearest'``.
             cnn_dim_ratio (int): Positive convolutional channel multiplier.
+                Defaults to ``1``.
             cnn_kernel_size (int): Positive convolution kernel size.
+                Defaults to ``2``.
             cnn_activation_func (str): Keras convolution activation.
+                Defaults to ``'linear'``.
             circumvent_tokens (bool | int): Number of leading tokens to
                 preserve; ``True`` preserves one.
+                Defaults to ``False``.
             **kwargs (Any): Typed :class:`BaseEmbedding` and Keras options.
 
         Returns:
-            ``None``.
+            None: No value is returned.
         """
 
         super().__init__(
@@ -157,9 +184,12 @@ class Upsample(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
+        # Concatenated positions double the component width; disabled or additive positions
+        # preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
+        # Project bypassed tokens only when spatial processing changes their channel width.
         self.token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -181,6 +211,8 @@ class Upsample(BaseEmbedding):
                 following the class input contract.
             training (bool | tf.Tensor | None): Optional Keras training flag forwarded to every nested
                 normalization, convolution, and dense layer.
+                Defaults to ``None``. Keras resolves the surrounding call context; this flag is
+                forwarded to child layers.
 
         Returns:
             tf.Tensor: Floating tokens shaped
@@ -191,11 +223,15 @@ class Upsample(BaseEmbedding):
 
         x, cond = inputs
     
+        # Use configured normalization; otherwise preserve incoming features and any
+        # identity gate.
         x = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else x
         prefix_tokens_num = int(self.circumvent_tokens)
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
         x, token = (
             x[:, prefix_tokens_num:, :], 
             x[:, :prefix_tokens_num, :]
@@ -232,6 +268,9 @@ class Upsample(BaseEmbedding):
             output_grid_size=output_grid_size,
             training=training
         )
+        # Keep configured prefix tokens outside spatial processing and restore them in
+        # sequence order.
+        # Match prefix-token width to spatial output only when projection is required.
         x = tf.concat([
             self.token_projector(
                 token, 
@@ -239,6 +278,7 @@ class Upsample(BaseEmbedding):
             ) if self.token_projector is not None else token, 
             x
         ], axis=1) if self.circumvent_tokens else x
+        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training
@@ -266,6 +306,8 @@ def run_self_tests() -> dict[str, str]:
         for interpolation in ("nearest", "bilinear"):
             for use_layer_norm in (False, True):
                 for circumvent_tokens in (False, True):
+                    # Include a leading special token only in the prefix-preservation test
+                    # case.
                     token_count = 5 if circumvent_tokens else 4
                     layer = Upsample(
                         dim=2, 
@@ -282,7 +324,11 @@ def run_self_tests() -> dict[str, str]:
                     output = layer(
                         (tf.ones((2, token_count, 2)), condition), training=True,
                     )
+                    # Pure interpolation preserves channels; convolution modes apply the
+                    # configured multiplier.
                     expected_channels = 2 if mode == "interpolate" else 4
+                    # Include a leading special token only in the prefix-preservation test
+                    # case.
                     expected_tokens = 17 if circumvent_tokens else 16
                     assert output.shape == (2, expected_tokens, expected_channels)
                     assert (layer.layer_norm is not None) is use_layer_norm
@@ -339,6 +385,8 @@ def run_self_tests() -> dict[str, str]:
             Upsample(dim=2, grid_size=invalid_grid, pos_embed_type=None)
         except AssertionError:
             pass
+        # This invalid case should already have raised: Upsampling requires a positive grid
+        # size.
         else:
             raise AssertionError("Upsampling requires a positive grid size.")
     for invalid_mode in ("pixel_shuffle", "", None):
@@ -350,6 +398,7 @@ def run_self_tests() -> dict[str, str]:
             )
         except ValueError:
             pass
+        # This invalid case should already have raised: Unknown upsampling modes must fail.
         else:
             raise AssertionError("Unknown upsampling modes must fail.")
 
@@ -357,6 +406,7 @@ def run_self_tests() -> dict[str, str]:
         pure_interpolation((tf.ones((1, 3, 1)), None))
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
+    # This invalid case should already have raised: Non-square token grids must fail.
     else:
         raise AssertionError("Non-square token grids must fail.")
 
