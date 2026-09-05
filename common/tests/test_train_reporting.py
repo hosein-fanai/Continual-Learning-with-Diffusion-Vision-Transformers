@@ -1,4 +1,15 @@
-"""Integration tests for final visual reporting in continual bundles."""
+"""Regression checks for training/reporting dispatch and visual artifact controls.
+
+Small continual detail mappings, patched training paths, and a fake diffusion sampler
+isolate report output, paths, task-specific seeds, image/GIF selection, and Config
+propagation. The tests use temporary destinations and inspect calls rather than launching a
+full HPO study.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +30,15 @@ from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 
 class _FakeDiffusion:
-    """Minimal diffusion sampling protocol used by reporting tests."""
+    """Minimal diffusion sampling protocol used by reporting tests.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Returns:
+        _FakeDiffusion: A new local test fixture with independent instance state.
+    """
 
     swap_noise_image = False
     test_network_name = "raw"
@@ -46,17 +65,37 @@ class _FakeDiffusion:
 
         self.calls.append(dict(kwargs))
         images = np.zeros((1, 2, 2, 1), dtype=np.float32)
-        # Select the test action required by this condition.
+        # GIF requests need intermediate frames as well as final images.
         if kwargs.get("return_x_ts"):
             return images, [images], [images]
         return images
 
 
 class TrainReportingTests(unittest.TestCase):
-    """Verify continual visual artifacts and isolated report RNG streams."""
+    """Verify continual visual artifacts and isolated report RNG streams.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_singleton_validation_accuracy_is_warning_free(self) -> None:
-        """Keep an undefined first-task validation score as NaN."""
+        """Keep an undefined first-task validation score as NaN.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         inputs = tf.keras.Input((1,))
         classifier = tf.keras.Model(inputs, tf.keras.layers.Dense(1)(inputs))
@@ -101,7 +140,15 @@ class TrainReportingTests(unittest.TestCase):
         self.assertTrue(np.isnan(history["task_val_accuracy"][0]))
 
     def test_direct_vae_train_materializes_dataset_rows(self) -> None:
-        """Pass raw aligned rows to the VAE resampling training API."""
+        """Pass raw aligned rows to the VAE resampling training API.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         images = np.arange(12, dtype="float32").reshape(4, 3)
         labels = np.eye(2, dtype="float32")[[0, 1, 0, 1]]
@@ -131,7 +178,15 @@ class TrainReportingTests(unittest.TestCase):
         self.assertEqual(train_args.kwargs["batch_size"], 128)
 
     def test_configured_continual_seed_is_forwarded_once(self) -> None:
-        """Use the effective training seed without duplicate keyword routing."""
+        """Use the effective training seed without duplicate keyword routing.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         inputs = tf.keras.Input((1,))
         classifier = tf.keras.Model(
@@ -186,6 +241,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: The input YAML excludes the post-training weight path.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         inputs = tf.keras.Input((1,))
@@ -238,6 +296,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: The helper invocation is asserted in place.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         replay_model = object()
@@ -279,7 +340,15 @@ class TrainReportingTests(unittest.TestCase):
         )
 
     def test_continual_report_all_nan_means_are_warning_free(self) -> None:
-        """Undefined singleton summaries remain NaN without RuntimeWarning."""
+        """Undefined singleton summaries remain NaN without RuntimeWarning.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         bundle = {"generative_model": None, "continual_details": {}}
         with tempfile.TemporaryDirectory() as temporary, \
@@ -313,6 +382,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: Sampling and GIF arguments are asserted in place.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         model = _FakeDiffusion()
@@ -349,6 +421,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: The result-path error precedes plotting side effects.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with patch("common.train.plot_history") as plot_history:
@@ -376,6 +451,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: A no-output report completes without creating paths.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         result = report(
@@ -399,6 +477,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: A missing output path fails before model sampling.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         model = _FakeDiffusion()
@@ -422,6 +503,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: Weight persistence reports its path dependency directly.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with self.assertRaisesRegex(TypeError, "weight saving"):
@@ -438,6 +522,9 @@ class TrainReportingTests(unittest.TestCase):
 
         Returns:
             None: Unknown selection fails before dataset construction.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with patch("common.train.get_datasets") as get_datasets:
@@ -447,7 +534,15 @@ class TrainReportingTests(unittest.TestCase):
         get_datasets.assert_not_called()
 
     def test_direct_main_reports_and_returns_concrete_results_path(self) -> None:
-        """Propagate training's timestamped artifact directory in direct mode."""
+        """Propagate training's timestamped artifact directory in direct mode.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         concrete_path = "results/2026-09-05_12-00-00"
         history = {"loss": [1.0]}
@@ -458,7 +553,23 @@ class TrainReportingTests(unittest.TestCase):
             _run_state: dict[str, object],
             **kwargs: object,
         ) -> dict[str, list[float]]:
-            """Publish the simulated concrete path and return fake history."""
+            """Publish the simulated resolved result path and return fixed history.
+
+            The closure uses concrete_path and history from the surrounding test. It lets
+            main/report propagation be checked without constructing a training dataset or
+            updating model weights.
+
+            Args:
+                *args (object): Accepted train_model positional inputs; ignored and empty by
+                    default.
+                _run_state (dict[str, object]): Required keyword-only mutable handoff
+                    mapping whose results_path is set to the concrete destination.
+                **kwargs (object): Other training options, accepted but ignored; empty by
+                    default.
+
+            Returns:
+                dict[str, list[float]]: The surrounding history mapping by identity.
+            """
 
             del args, kwargs
             _run_state["results_path"] = concrete_path
@@ -488,6 +599,6 @@ class TrainReportingTests(unittest.TestCase):
         self.assertIs(result["history"], history)
 
 
-# Select the test action required by this condition.
+# Run this module's tests when executed directly.
 if __name__ == "__main__":
     unittest.main()

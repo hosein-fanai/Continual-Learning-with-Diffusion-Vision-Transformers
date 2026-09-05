@@ -1,4 +1,14 @@
-"""Pure NumPy tests for safe and legacy sample-archive handling."""
+"""Regression checks for numeric sample archives, CSV output, and GIF inputs.
+
+Temporary files exercise ordinary numeric NPY/NPZ storage, explicit trusted legacy-pickle
+migration, feature metadata, and output-shape/error contracts. Object arrays and empty image
+sequences verify that unsupported input is not silently accepted.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -13,13 +23,28 @@ from common.utils import create_gif, load_samples, save_samples
 
 
 class SampleArchiveTests(unittest.TestCase):
-    """Verify safe defaults and explicit legacy-pickle migration."""
+    """Verify safe defaults and explicit legacy-pickle migration.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_numeric_npy_round_trip_never_needs_pickle(self) -> None:
         """Keep homogeneous arrays in ordinary non-pickled NPY format.
 
         Returns:
             None: Numeric values and format magic are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         values = np.arange(12, dtype=np.float32).reshape(3, 4)
@@ -37,6 +62,9 @@ class SampleArchiveTests(unittest.TestCase):
 
         Returns:
             None: Container format, ordering, shapes, and values are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         bundle = np.empty(3, dtype=object)
@@ -60,6 +88,9 @@ class SampleArchiveTests(unittest.TestCase):
 
         Returns:
             None: Rejection, warning, and safe re-save are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         legacy = np.empty(2, dtype=object)
@@ -88,6 +119,9 @@ class SampleArchiveTests(unittest.TestCase):
 
         Returns:
             None: Both malformed container forms raise clear errors.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with tempfile.TemporaryDirectory() as directory:
@@ -108,6 +142,9 @@ class SampleArchiveTests(unittest.TestCase):
 
         Returns:
             None: Save/load boundary failures are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         bundle = np.empty(1, dtype=object)
@@ -125,7 +162,15 @@ class SampleArchiveTests(unittest.TestCase):
             )
 
     def test_create_gif_rejects_an_empty_frame_sequence(self) -> None:
-        """Report the documented error before indexing an absent first frame."""
+        """Report the documented error before indexing an absent first frame.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "empty.gif"

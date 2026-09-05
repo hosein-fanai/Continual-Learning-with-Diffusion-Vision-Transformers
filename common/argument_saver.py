@@ -72,6 +72,7 @@ class ArgumentSaver:
             rename (Mapping[str, str] | None): Attribute-only renames. ``None``
                 uses ``{"build": "build_"}``, which creates ``self.build_``
                 while retaining the constructor key ``"build"`` in config.
+                Defaults to ``None``.
 
         Returns:
             dict[str, object]: The cumulative ``_init_config`` dictionary.
@@ -82,6 +83,7 @@ class ArgumentSaver:
             ``enabled`` and exposes its value as ``self.is_enabled``.
         """
 
+        # Rename the reserved build argument by default; honor an explicit rename map.
         rename = {"build": "build_"} if rename is None else rename
         # Initialize cumulative configuration storage on the first save.
         if not hasattr(self, "_init_config"):
@@ -139,6 +141,7 @@ class ArgumentSaver:
         config.setdefault("trainable", self.trainable)
         config.setdefault("dtype", self.dtype_policy.name)
         config.setdefault("dynamic", self.dynamic)
+        # Copy mutable constructor metadata; preserve immutable/object-valued arguments.
         saved_config = {
             name: (
                 deepcopy(value)

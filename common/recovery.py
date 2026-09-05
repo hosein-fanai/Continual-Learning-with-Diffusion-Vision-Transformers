@@ -64,22 +64,28 @@ _TF_PREFIX_NAME = "ckpt"
 
 @dataclass(frozen=True)
 class TaskCheckpoint:
-    """Decoded state from one committed task checkpoint.
+    """Hold decoded state from one immutable committed task checkpoint.
+
+    The frozen dataclass fixes the top-level field bindings; contained mappings and
+    arrays remain ordinary mutable objects. ``load_task_checkpoint`` constructs it
+    for read-only inspection or after optional TensorFlow restoration. The ``state``
+    property adds the cursor, schedule, RNG state, and fingerprint to experiment data.
 
     Attributes:
-        task_dir: Concrete committed checkpoint directory.
-        completed_task_index: Zero-based index of the last completed task.
-        next_task_index: First task that still needs to run.
-        class_order: Authoritative resolved class order for the run.
-        task_groups: Authoritative resolved groups introduced per task.
-        experiment_state: Caller-owned serializable metrics and orchestration
-            state.
-        rng_state: State returned by :func:`capture_rng_state`, when supplied.
-        replay_state: Decoded replay samples, capacity, and private RNG state;
-            ``None`` when the run has no replay buffer.
-        fingerprint: Optional caller-defined run/configuration fingerprint.
-        restore_status: TensorFlow checkpoint restore status, or ``None`` when
-            the checkpoint was inspected without trackables.
+        task_dir (Path): Concrete directory containing the committed task state.
+        completed_task_index (int): Zero-based index of the last completed task.
+        next_task_index (int): First task still to execute, normally completed index + 1.
+        class_order (tuple[object, ...]): Authoritative original class introduction order.
+        task_groups (tuple[tuple[object, ...], ...]): Classes introduced by each task.
+        experiment_state (dict[str, object]): Caller-owned histories, measurements,
+            and orchestration metadata after removing schema-owned fields.
+        rng_state (dict[str, object]): Portable RNG snapshot, or an empty mapping
+            when no snapshot was supplied to the writer.
+        replay_state (dict[str, object] | None): Decoded replay items, capacity, RNG,
+            and optional strategy metadata; None for runs without replay storage.
+        fingerprint (str | None): Optional immutable run/configuration identity.
+        restore_status (object | None): TensorFlow checkpoint status after restoration.
+            Defaults to None for inspection without TensorFlow trackables.
     """
 
     task_dir: Path
@@ -114,27 +120,40 @@ class TaskCheckpoint:
 
 
 def _encode_json(value: object) -> object:
-    """Encode supported Python/NumPy values into strict JSON data.
+    """Encode supported Python/NumPy state into JSON-compatible data without pickle.
+
+    Ordinary scalars, lists, and string-key mappings remain readable JSON. NumPy
+    scalars normalize to Python values; arrays retain dtype/shape/base64 bytes.
+    Paths, bytes, tuples, sets, and nonfinite floats use explicit type tags. Literal
+    mappings containing the reserved tag key are escaped to preserve their meaning.
+    Input containers and arrays are not mutated.
 
     Args:
-        value (object): Supported value to encode.
+        value (object): A supported scalar, non-object ndarray, Path, bytes, tuple,
+            set, list, or string-key mapping; nested values follow the same rules.
 
     Returns:
-        object: Strictly JSON-compatible encoded value.
+        object: A tree containing only JSON-compatible primitives, lists, and
+        dictionaries. Tagged values can be reconstructed by ``_decode_json``.
+
+    Raises:
+        TypeError: If arrays have object dtype, mappings have non-string keys, or
+            an unsupported runtime object is encountered.
     """
 
-    # Select the recovery action required by this condition.
+    # Preserve scalar values that JSON represents directly.
     if value is None or isinstance(value, (bool, str, int)):
         return value
 
-    # Select the recovery action required by this condition.
+    # Encode exceptional floating values using explicit recovery tags.
     if isinstance(value, float):
         # Strict JSON cannot represent non-finite IEEE values.
         if math.isnan(value):
             return {"__recovery_type__": "float", "value": "nan"}
 
-        # Select the recovery action required by this condition.
+        # Preserve positive versus negative infinity in the float tag.
         if math.isinf(value):
+            # Choose the infinity tag from the original value's sign.
             return {
                 "__recovery_type__": "float",
                 "value": "inf" if value > 0 else "-inf"
@@ -142,15 +161,15 @@ def _encode_json(value: object) -> object:
 
         return value
 
-    # Select the recovery action required by this condition.
+    # Convert NumPy scalars through their equivalent Python values.
     if isinstance(value, np.generic):
         return _encode_json(value.item())
 
-    # Select the recovery action required by this condition.
+    # Encode array dtype, shape, and contiguous bytes together.
     if isinstance(value, np.ndarray):
         contiguous = np.ascontiguousarray(value)
 
-        # Select the recovery action required by this condition.
+        # Reject object arrays whose bytes contain process-local object references.
         if contiguous.dtype.hasobject:
             raise TypeError(
                 "Object-dtype arrays are not recovery-serializable."
@@ -163,28 +182,28 @@ def _encode_json(value: object) -> object:
             "data": base64.b64encode(contiguous.tobytes()).decode("ascii")
         }
 
-    # Select the recovery action required by this condition.
+    # Store filesystem paths with a recoverable path type tag.
     if isinstance(value, Path):
         return {
             "__recovery_type__": "path",
             "value": str(value)
         }
 
-    # Select the recovery action required by this condition.
+    # Encode byte strings as base64 for JSON storage.
     if isinstance(value, bytes):
         return {
             "__recovery_type__": "bytes",
             "data": base64.b64encode(value).decode("ascii")
         }
 
-    # Select the recovery action required by this condition.
+    # Preserve tuple identity with a tagged sequence.
     if isinstance(value, tuple):
         return {
             "__recovery_type__": "tuple",
             "items": [_encode_json(item) for item in value]
         }
 
-    # Select the recovery action required by this condition.
+    # Sort encoded set members to obtain deterministic serialized order.
     if isinstance(value, set):
         encoded_items = [_encode_json(item) for item in value]
         encoded_items.sort(key=_stable_json_dumps)
@@ -194,15 +213,15 @@ def _encode_json(value: object) -> object:
             "items": encoded_items
         }
 
-    # Select the recovery action required by this condition.
+    # Encode list elements while retaining ordinary JSON list structure.
     if isinstance(value, list):
         return [_encode_json(item) for item in value]
 
-    # Select the recovery action required by this condition.
+    # Encode mapping values while preserving string keys.
     if isinstance(value, Mapping):
         encoded = {}
         for key, item in value.items():
-            # Select the recovery action required by this condition.
+            # Reject mapping keys that cannot be represented as JSON object keys.
             if not isinstance(key, str):
                 raise TypeError("Recovery mapping keys must be strings.")
 
@@ -223,33 +242,44 @@ def _encode_json(value: object) -> object:
 
 
 def _decode_json(value: object) -> object:
-    """Decode values emitted by :func:`_encode_json`.
+    """Reconstruct Python/NumPy state emitted by the recovery JSON encoder.
+
+    Tagged arrays are decoded into owned writable copies after verifying payload
+    size against shape and dtype. Tagged tuples, sets, paths, bytes, and exceptional
+    floats recover their original kinds. Untagged mappings/lists are decoded
+    recursively, and escaped literal mappings do not interpret their own tag key.
 
     Args:
-        value (object): JSON-compatible encoded value.
+        value (object): Parsed JSON-compatible value produced by ``_encode_json``.
 
     Returns:
-        object: Decoded Python or NumPy value.
+        object: Reconstructed primitive/container/NumPy value. Arrays retain the
+        encoded shape and dtype and do not share the encoded byte buffer.
+
+    Raises:
+        ValueError: If an array's encoded size is inconsistent or its type tag is
+            unknown, or if a malformed encoded value cannot be reconstructed.
+        KeyError: If a tagged record lacks a field required by its encoding.
     """
 
-    # Select the recovery action required by this condition.
+    # Decode ordinary lists element by element.
     if isinstance(value, list):
         return [_decode_json(item) for item in value]
 
-    # Select the recovery action required by this condition.
+    # Return scalar JSON values without tag interpretation.
     if not isinstance(value, dict):
         return value
 
     type_name = value.get("__recovery_type__")
 
-    # Select the recovery action required by this condition.
+    # Decode untagged dictionaries as ordinary mappings.
     if type_name is None:
         return {
             key: _decode_json(item)
             for key, item in value.items()
         }
 
-    # Select the recovery action required by this condition.
+    # Restore a tagged NaN or signed infinity.
     if type_name == "float":
         return {
             "nan": float("nan"),
@@ -257,14 +287,14 @@ def _decode_json(value: object) -> object:
             "-inf": float("-inf")
         }[value["value"]]
 
-    # Select the recovery action required by this condition.
+    # Reconstruct tagged arrays from their dtype, shape, and byte payload.
     if type_name == "ndarray":
         dtype = np.dtype(value["dtype"])
         shape = tuple(int(size) for size in value["shape"])
         raw = base64.b64decode(value["data"].encode("ascii"))
         expected_size = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
 
-        # Select the recovery action required by this condition.
+        # Reject array payloads whose bytes do not match the declared shape.
         if len(raw) != expected_size:
             raise ValueError(
                 "Encoded ndarray byte length does not match its shape."
@@ -272,19 +302,19 @@ def _decode_json(value: object) -> object:
 
         return np.frombuffer(raw, dtype=dtype).reshape(shape).copy()
 
-    # Select the recovery action required by this condition.
+    # Reconstruct a tagged filesystem path.
     if type_name == "path":
         return Path(value["value"])
 
-    # Select the recovery action required by this condition.
+    # Decode a tagged byte string from base64.
     if type_name == "bytes":
         return base64.b64decode(value["data"].encode("ascii"))
 
-    # Select the recovery action required by this condition.
+    # Reconstruct a tagged tuple without changing its container type.
     if type_name == "tuple":
         return tuple(_decode_json(item) for item in value["items"])
 
-    # Select the recovery action required by this condition.
+    # Reconstruct a tagged set from its decoded members.
     if type_name == "set":
         return set(_decode_json(item) for item in value["items"])
 
@@ -299,13 +329,22 @@ def _decode_json(value: object) -> object:
 
 
 def _stable_json_dumps(value: object) -> str:
-    """Return a deterministic, strict JSON representation.
+    """Serialize already encoded recovery state to canonical compact JSON text.
+
+    Keys are sorted and separators contain no extra whitespace. Unicode text is
+    retained directly. Nonfinite floats must already be represented by encoder tags;
+    raw NaN/Inf values are rejected so fingerprints never depend on nonstandard JSON.
 
     Args:
-        value (object): JSON-compatible value to serialize.
+        value (object): JSON-compatible primitive/container tree, normally returned
+            by ``_encode_json``. Raw arrays and other custom objects are unsupported.
 
     Returns:
-        str: Canonically ordered compact JSON text.
+        str: Deterministic JSON text with no trailing newline.
+
+    Raises:
+        TypeError: If a value is not JSON-serializable.
+        ValueError: If the tree contains raw nonfinite floats or circular references.
     """
 
     return json.dumps(
@@ -318,13 +357,22 @@ def _stable_json_dumps(value: object) -> str:
 
 
 def fingerprint_state(value: object) -> str:
-    """Return a stable SHA-256 fingerprint for serializable state.
+    """Return a stable SHA-256 identity for supported serializable experiment state.
+
+    The value is encoded without pickle, serialized as canonical sorted JSON, and
+    hashed as UTF-8. Array dtype/shape/content and tagged container types participate
+    in the identity; no files are read or written and inputs are not mutated.
 
     Args:
-        value (object): Supported recovery state to fingerprint.
+        value (object): Python/NumPy state accepted by ``_encode_json``, including
+            nested string-key mappings, sequences, non-object arrays, and scalars.
 
     Returns:
-        str: Lowercase hexadecimal SHA-256 digest.
+        str: A 64-character lowercase hexadecimal SHA-256 digest.
+
+    Raises:
+        TypeError: If the value contains unsupported objects, object arrays, or
+            mappings whose keys are not strings.
     """
 
     encoded = _encode_json(value)
@@ -335,13 +383,27 @@ def fingerprint_state(value: object) -> str:
 
 
 def _qualified_name(value: object) -> str:
-    """Return a stable module-qualified type or callable name."""
+    """Return a stable module-qualified identity for a class, instance, or callable.
 
+    Functions with module/qualified-name metadata use their own identity; ordinary
+    instances and other callable objects fall back to their class identity. This
+    avoids embedding process-dependent repr strings in recovery fingerprints.
+
+    Args:
+        value (object): Class, callable, or instance whose semantic type is described.
+
+    Returns:
+        str: ``"module.qualified_name"`` for the callable or object's type.
+    """
+
+    # Use a class directly; use its type when describing an instance.
     candidate = value if isinstance(value, type) else type(value)
+    # Prefer the callable's own identity when the value is a function or bound callable.
     if callable(value) and not isinstance(value, type):
         module = getattr(value, "__module__", None)
         qualname = getattr(value, "__qualname__", None)
 
+        # Use the callable's module and qualified name when both are available.
         if module is not None and qualname is not None:
             return f"{module}.{qualname}"
 
@@ -349,8 +411,26 @@ def _qualified_name(value: object) -> str:
 
 
 def _array_recovery_descriptor(value: object) -> dict[str, object] | None:
-    """Describe array content compactly for compatibility checks."""
+    """Describe an optional numeric array by shape, dtype, and a SHA-256 content digest.
 
+    The hash includes the NumPy dtype string, shape, and contiguous payload bytes,
+    so equal bytes with different shapes/dtypes remain distinct. Empty arrays retain
+    shape/dtype identity without attempting to cast an empty memoryview. No file is
+    written and the supplied array is not mutated.
+
+    Args:
+        value (object): NumPy-compatible array or None for an absent input. Object
+            dtypes are unsupported because their bytes contain Python pointers.
+
+    Returns:
+        dict[str, object] | None: ``shape`` as a dimension list, ``dtype`` as its
+        NumPy string, and ``sha256`` as a hexadecimal digest; None for absent input.
+
+    Raises:
+        TypeError: If the normalized array has an object dtype.
+    """
+
+    # Preserve an absent optional array descriptor.
     if value is None:
         return None
 
@@ -376,37 +456,48 @@ def _array_recovery_descriptor(value: object) -> dict[str, object] | None:
 
 
 def _artifact_recovery_descriptor(path: str) -> dict[str, object] | None:
-    """Hash a model template without binding it to a filesystem location."""
+    """Fingerprint a model artifact without binding its identity to its absolute path.
 
+    Files are hashed incrementally. Directories are represented by sorted relative
+    file paths, sizes, and content hashes; empty directories contribute no records.
+    This function reads artifacts but does not create, load as code, or modify them.
+
+    Args:
+        path (str): Model file/directory path. An empty string means no artifact.
+
+    Returns:
+        dict[str, object] | None: A file descriptor with ``kind``, ``size``, and
+        ``sha256``; a directory descriptor with ``kind`` and a ``files`` list; a
+        ``{"kind": "missing"}`` descriptor for a nonexistent nonempty path; or
+        None when no path was supplied.
+
+    Raises:
+        OSError: If an existing artifact cannot be inspected or read.
+    """
+
+    # Leave an unspecified model artifact out of the recovery descriptor.
     if not path:
         return None
 
     artifact = Path(path)
 
+    # Fingerprint a single model artifact file by size and content.
     if artifact.is_file():
-        digest = hashlib.sha256()
-        with artifact.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-
         return {
             "kind": "file",
             "size": artifact.stat().st_size,
-            "sha256": digest.hexdigest()
+            "sha256": _sha256_file(artifact)
         }
 
+    # Fingerprint directory artifacts using their ordered relative file records.
     if artifact.is_dir():
         files = []
+        # Include regular files only, leaving directory entries out of the artifact digest.
         for child in sorted(item for item in artifact.rglob("*") if item.is_file()):
-            digest = hashlib.sha256()
-            with child.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    digest.update(chunk)
-
             files.append({
                 "path": child.relative_to(artifact).as_posix(),
                 "size": child.stat().st_size,
-                "sha256": digest.hexdigest()
+                "sha256": _sha256_file(child)
             })
 
         return {"kind": "directory", "files": files}
@@ -415,7 +506,19 @@ def _artifact_recovery_descriptor(path: str) -> dict[str, object] | None:
 
 
 def _model_weight_descriptor(model: object) -> list[dict[str, object]] | None:
-    """Hash configured initial weights that may seed future tasks."""
+    """Fingerprint a model's currently materialized weights in their existing order.
+
+    Only initialized weight values are inspected. The helper does not build a model,
+    create optimizer slots, or mutate variables; caller-owned initializers and
+    teachers can therefore contribute exact content to a run fingerprint.
+
+    Args:
+        model (object): Keras-like model exposing eager ``weights``, or None.
+
+    Returns:
+        list[dict[str, object]] | None: One shape/dtype/SHA-256 descriptor per weight,
+        an empty list for a model without weights, or None for an absent model.
+    """
 
     # Preserve the absence of an optional initial classifier or teacher.
     if model is None:
@@ -432,8 +535,35 @@ def _recovery_descriptor(
     active_ids: set[int] | None = None,
     strip_config_names: bool = False
 ) -> object:
-    """Convert configuration objects to stable, JSON-safe descriptions."""
+    """Convert configuration objects into deterministic, compact recovery descriptions.
 
+    Primitive values retain their meaning; arrays are content-hashed, containers are
+    traversed recursively, and Keras objects use their constructor configuration.
+    Sets and non-string-key mappings are ordered by stable fingerprints. Active
+    reference cycles are marked rather than traversed repeatedly. Unknown objects
+    contribute a qualified type name, not full state or process-local identity.
+
+    Args:
+        value (object): Configuration value, array, container, callable, or object
+            exposing ``get_config`` to describe.
+        active_ids (set[int] | None): Recursion guard. Defaults to None to create
+            a fresh set; nested calls temporarily add/remove IDs in the supplied set.
+        strip_config_names (bool): Defaults to False. True omits mapping entries
+            named ``name`` and rounds floating configuration scalars to seven
+            significant digits to normalize Keras float32 constructor round trips.
+            Keras model/layer/optimizer configs enable this normalization internally.
+
+    Returns:
+        object: Nested primitive/list/dictionary description suitable for
+        ``fingerprint_state``. This is compatibility metadata, not a reconstruction
+        format or a substitute for a TensorFlow model checkpoint.
+
+    Raises:
+        TypeError: If an array has an unsupported object dtype.
+        ValueError: If a provided ``get_config`` method cannot produce its config.
+    """
+
+    # Keep directly serializable scalar configuration values unchanged.
     if value is None or isinstance(value, (bool, str, int)):
         return value
 
@@ -442,13 +572,16 @@ def _recovery_descriptor(
         # Keras may materialize the same constructor scalar through float32 on
         # a compiled object (for example 0.9 -> 0.899999976). Seven significant
         # digits preserve float32 semantics while keeping the descriptor stable.
+        # Round Keras float32 configuration scalars only during name-stripped normalization.
         return float(format(value, ".7g")) if strip_config_names else value
 
+    # Normalize NumPy scalar configuration values through their Python equivalents.
     if isinstance(value, np.generic):
         return _recovery_descriptor(
             value.item(), active_ids, strip_config_names
         )
 
+    # Fingerprint array configuration values by content instead of embedding them.
     if isinstance(value, np.ndarray):
         return _array_recovery_descriptor(value)
 
@@ -456,11 +589,14 @@ def _recovery_descriptor(
     if isinstance(value, tf.dtypes.DType):
         return {"type": "tensorflow.DType", "name": value.name}
 
+    # Represent TensorFlow shapes by their portable dimension list.
     if isinstance(value, tf.TensorShape):
         return {"type": "tensorflow.TensorShape", "shape": value.as_list()}
 
+    # Create a recursion guard for the first call; reuse it for nested objects.
     active_ids = set() if active_ids is None else active_ids
     object_id = id(value)
+    # Represent a repeated active object as a cycle instead of recursing again.
     if object_id in active_ids:
         return {"type": _qualified_name(value), "cycle": True}
 
@@ -471,6 +607,7 @@ def _recovery_descriptor(
             # Ordinary string-key mappings remain readable in the checkpoint.
             # Use direct JSON objects when every mapping key is a string.
             if all(isinstance(key, str) for key in value):
+                # Omit generated Keras names only when name-stripped configuration is requested.
                 return {
                     key: _recovery_descriptor(
                         value[key],
@@ -496,6 +633,7 @@ def _recovery_descriptor(
 
             return {"mapping": entries}
 
+        # Describe ordered sequences recursively in their existing order.
         if isinstance(value, (list, tuple)):
             return [
                 _recovery_descriptor(item, active_ids, strip_config_names)
@@ -534,6 +672,7 @@ def _recovery_descriptor(
                 )
             }
 
+        # Record other callables by qualified name when they have no configuration API.
         if callable(value):
             return {"callable": _qualified_name(value)}
 
@@ -545,8 +684,21 @@ def _recovery_descriptor(
 
 
 def _model_topology_descriptor(model: object) -> dict[str, object] | None:
-    """Describe a Keras topology without including mutable values."""
+    """Describe a model's constructor configuration and initialized variable topology.
 
+    The result records shapes, dtypes, and trainability without reading mutable
+    weight values. It does not build missing layers or change the supplied model.
+
+    Args:
+        model (object): Keras-like object with optional ``weights``, or None.
+
+    Returns:
+        dict[str, object] | None: ``object`` contains its recovery configuration;
+        ``weights`` lists shape/dtype/trainable records in weight order. None
+        preserves an absent optional model.
+    """
+
+    # Preserve an absent optional model topology.
     if model is None:
         return None
 
@@ -565,12 +717,26 @@ def _model_topology_descriptor(model: object) -> dict[str, object] | None:
 def _trackable_topology_descriptor(
     trackables: dict[str, object]
 ) -> dict[str, object]:
-    """Describe model and optimizer structures before strict restore."""
+    """Describe named model/optimizer structures before strict checkpoint restoration.
+
+    Names are processed in sorted order. Both method-based and property-based Keras
+    ``variables`` APIs are accepted, and no variable values are changed or recorded.
+
+    Args:
+        trackables (dict[str, object]): Dependency names mapped to built models,
+            optimizers, or other objects exposing a variable collection.
+
+    Returns:
+        dict[str, object]: Each name maps to an ``object`` recovery description and
+        an ordered ``variables`` list of shape/dtype/trainable records. Objects
+        without variables contribute an empty list.
+    """
 
     result: dict[str, object] = {}
     for name in sorted(trackables):
         value = trackables[name]
         variables_attr = getattr(value, "variables", None)
+        # Call method-based variable APIs; read property-based variable collections directly.
         variables = variables_attr() if callable(variables_attr) \
                     else list(variables_attr or [])
         result[name] = {
@@ -586,11 +752,29 @@ def _trackable_topology_descriptor(
 
 
 def _progressive_depth_specs(fit_kwargs: dict[str, object]) -> list[object]:
-    """Resolve persistent depth additions made by one progressive task."""
+    """Resolve persistent depth additions made by a progressive training specification.
+
+    ``depths_only`` uses the entire ``depths`` sequence; timestep/resolution-only
+    curricula add no depth. Explicit stage sequences accept ``"depth"``, depth
+    mappings, sets containing depth, and ``("depth", specification)`` pairs.
+    Missing inline specifications use the corresponding stage index in ``depths``.
+
+    Args:
+        fit_kwargs (dict[str, object]): Progressive fit arguments. Relevant keys
+            are ``stage_tasks`` and optional stage-aligned ``depths``.
+
+    Returns:
+        list[object]: Depth specifications in execution order, excluding stages
+        that do not alter persistent topology. No source configuration is mutated.
+
+    Raises:
+        ValueError: If a depth stage has neither an inline nor a stage-indexed spec.
+    """
 
     stage_tasks = fit_kwargs.get("stage_tasks")
     depths = fit_kwargs.get("depths")
 
+    # A depth-only curriculum uses the complete configured depth sequence.
     if stage_tasks == "depths_only":
         return list(depths or [])
 
@@ -598,6 +782,7 @@ def _progressive_depth_specs(fit_kwargs: dict[str, object]) -> list[object]:
     if stage_tasks in ("timesteps_only", "resolutions_only"):
         return []
 
+    # Ignore non-sequence curricula that do not describe explicit depth stages.
     if not isinstance(stage_tasks, Sequence) or isinstance(stage_tasks, str):
         return []
 
@@ -606,21 +791,27 @@ def _progressive_depth_specs(fit_kwargs: dict[str, object]) -> list[object]:
         has_depth = False
         depth_spec = None
 
+        # A bare depth stage obtains its specification from the separate depths sequence.
         if task == "depth":
             has_depth = True
+        # A depth mapping carries its own optional depth specification.
         elif isinstance(task, dict) and "depth" in task:
             has_depth = True
             depth_spec = task["depth"]
+        # A set containing depth requests the corresponding stage-indexed specification.
         elif isinstance(task, (set, frozenset)) and "depth" in task:
             has_depth = True
+        # A two-item depth pair supplies its specification inline.
         elif isinstance(task, (tuple, list)) and len(task) == 2 \
         and task[0] == "depth":
             has_depth = True
             depth_spec = task[1]
 
+        # Skip stages that do not add persistent depth.
         if not has_depth:
             continue
 
+        # Resolve an unspecified depth from its stage-indexed configuration.
         if depth_spec is None:
             # Fail rather than guessing a topology that might partially restore.
             if depths is None or stage_index >= len(depths):
@@ -637,14 +828,23 @@ def _progressive_depth_specs(fit_kwargs: dict[str, object]) -> list[object]:
 
 
 def _write_json(path: Path, value: object) -> None:
-    """Write strict JSON and flush it before returning.
+    """Encode, write, and flush one recovery JSON file to durable storage.
+
+    The destination is opened for replacement, written as canonical UTF-8 JSON plus
+    one newline, flushed, and fsynced. Parent directories must already exist. Atomic
+    publication is the calling checkpoint writer's responsibility.
 
     Args:
-        path (Path): Destination JSON path.
-        value (object): Supported value to encode and write.
+        path (Path): Destination file, normally inside a private task directory.
+        value (object): State accepted by ``_encode_json``; unsupported values are
+            rejected before the destination is opened.
 
     Returns:
-        None.
+        None: The JSON file is written; no in-memory input is changed.
+
+    Raises:
+        TypeError: If the state cannot be encoded safely.
+        OSError: If opening, writing, flushing, or syncing the destination fails.
     """
 
     encoded = _encode_json(value)
@@ -656,13 +856,21 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _read_json(path: Path) -> object:
-    """Read and decode one recovery JSON file.
+    """Read a UTF-8 recovery JSON file and reconstruct its supported Python values.
+
+    This helper parses/decodes the file only. Schema, task identity, path, and
+    checksum checks belong to the checkpoint validation functions.
 
     Args:
-        path (Path): Recovery JSON path to read.
+        path (Path): Existing recovery JSON file to open in text mode.
 
     Returns:
-        object: Decoded recovery value.
+        object: Decoded Python/NumPy state returned by ``_decode_json``.
+
+    Raises:
+        OSError: If the file cannot be opened/read.
+        ValueError: If JSON text or a tagged recovery value is malformed.
+        KeyError: If an encoded tagged value omits a required field.
     """
 
     with path.open("r", encoding="utf-8") as stream:
@@ -670,23 +878,24 @@ def _read_json(path: Path) -> object:
 
 
 def _sha256_file(path: Path) -> str:
-    """Hash one file without loading it fully into memory.
+    """Hash an existing file incrementally without loading its complete contents.
+
+    The file is read in 1 MiB chunks and is not modified. The resulting identity
+    covers its bytes only, excluding path, timestamps, and other filesystem metadata.
 
     Args:
-        path (Path): File whose bytes should be hashed.
+        path (Path): Readable file whose raw content should be hashed.
 
     Returns:
-        str: Lowercase hexadecimal SHA-256 digest.
+        str: A 64-character lowercase hexadecimal SHA-256 content digest.
+
+    Raises:
+        OSError: If the file cannot be opened or read.
     """
 
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            # Select the recovery action required by this condition.
-            if not chunk:
-                break
-
+        while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
 
     return digest.hexdigest()
@@ -697,16 +906,29 @@ def _validate_schedule(
     class_order: Sequence[object],
     task_groups: Sequence[Sequence[object]]
 ) -> tuple[list[object], list[list[object]]]:
-    """Normalize and validate an authoritative resolved task schedule.
+    """Normalize a resolved class schedule and validate a completed-task cursor.
+
+    The class order and every task group must be nonempty, the cursor must identify
+    an existing task, and flattening task groups must equal the unique class order.
+    Comparison uses the recovery encoding so supported NumPy scalar labels remain
+    portable. This helper does not shuffle, regroup, or mutate the input schedule.
 
     Args:
-        completed_task_index (int): Zero-based completed-task cursor.
-        class_order (Sequence[object]): Resolved class introduction order.
-        task_groups (Sequence[Sequence[object]]): Resolved classes per task.
+        completed_task_index (int): Zero-based index of a completed task; normalized
+            with int and required to lie in ``[0, len(task_groups))``.
+        class_order (Sequence[object]): Already resolved unique class introduction
+            order, using labels supported by the recovery serializer.
+        task_groups (Sequence[Sequence[object]]): Ordered nonempty class groups whose
+            concatenation equals class_order exactly.
 
     Returns:
-        tuple[list[object], list[list[object]]]: Portable normalized class order
-        and task groups.
+        tuple[list[object], list[list[object]]]: Portable class order and task groups,
+        with NumPy scalar labels converted through their Python equivalents.
+
+    Raises:
+        ValueError: If the schedule is empty, duplicated, inconsistent, or has an
+            invalid completed-task cursor.
+        TypeError: If labels cannot be represented by the recovery serializer.
     """
 
     completed_task_index = int(completed_task_index)
@@ -714,15 +936,15 @@ def _validate_schedule(
     normalized_order = list(class_order)
     normalized_groups = [list(group) for group in task_groups]
 
-    # Select the recovery action required by this condition.
+    # Reject a checkpoint schedule with no classes.
     if not normalized_order:
         raise ValueError("class_order must not be empty.")
 
-    # Select the recovery action required by this condition.
+    # Reject a schedule with no tasks or with an empty task group.
     if not normalized_groups or any(not group for group in normalized_groups):
         raise ValueError("task_groups must contain only nonempty groups.")
 
-    # Select the recovery action required by this condition.
+    # Require the completed cursor to identify one of the scheduled tasks.
     if completed_task_index < 0 or completed_task_index >= len(normalized_groups):
         raise ValueError(
             "completed_task_index must identify a task in task_groups."
@@ -736,11 +958,11 @@ def _validate_schedule(
         _stable_json_dumps(_encode_json(item)) for item in flattened
     ]
 
-    # Select the recovery action required by this condition.
+    # Require task-group expansion to match the declared class order exactly.
     if encoded_flattened != encoded_order:
         raise ValueError("Flattening task_groups must equal class_order exactly.")
 
-    # Select the recovery action required by this condition.
+    # Reject repeated classes in the introduction schedule.
     if len(set(encoded_order)) != len(encoded_order):
         raise ValueError("class_order must contain unique labels.")
 
@@ -759,30 +981,42 @@ def capture_rng_state(
     tensorflow_generator: object | None = None,
     include_tensorflow_global: bool = False
 ) -> dict[str, object]:
-    """Capture Python, NumPy, and optional TensorFlow generator state.
+    """Capture Python, NumPy, and optional TensorFlow generator state without advancing it.
 
-    TensorFlow's legacy stateful ``tf.random.*`` operation counters and a live
-    ``tf.data`` iterator are not representable by this JSON snapshot.  Exact
-    task-boundary recovery should therefore reseed every incomplete task from a
-    derived task seed.  An explicit ``tf.random.Generator`` is trackable and may
-    also be passed here for a portable diagnostic snapshot.
+    Legacy stateful ``tf.random.*`` counters and live tf.data iterators are not
+    representable by this JSON snapshot. Exact task-boundary recovery therefore
+    reseeds each restarted incomplete task from its derived task seed. Explicit
+    TensorFlow generators are trackable and can also have their state recorded here.
+
     Args:
-        numpy_generator (np.random.Generator | None): Optional local NumPy
-            generator to snapshot.
-        python_rng (random.Random | None): Optional local Python RNG to snapshot.
-        include_globals (bool): Whether to capture Python and NumPy global RNGs.
-        tensorflow_generator (object | None): Optional TensorFlow generator to
-            snapshot.
-        include_tensorflow_global (bool): Whether to resolve and capture the
-            TensorFlow global generator.
+        numpy_generator (np.random.Generator | None): Local NumPy generator to
+            snapshot. Defaults to None to omit local NumPy state.
+        python_rng (random.Random | None): Local Python RNG to snapshot. Defaults
+            to None to omit local Python state.
+        include_globals (bool): Defaults to True to capture process-wide Python
+            and NumPy RNGs; False records only requested local/TensorFlow state.
+        tensorflow_generator (object | None): TensorFlow Generator-like object
+            exposing state and algorithm. Defaults to None to omit TensorFlow
+            state unless global-generator capture is requested.
+        include_tensorflow_global (bool): Defaults to False. True resolves the
+            TensorFlow global generator and uses it instead of any explicitly
+            supplied tensorflow_generator.
 
     Returns:
-        dict[str, object]: Portable RNG-state snapshot.
+        dict[str, object]: Versioned snapshot containing only requested available
+        entries: ``python_global``/``python_local`` RNG tuples, ``numpy_global``
+        legacy RandomState fields, ``numpy_local`` bit-generator name/state, and
+        ``tensorflow_generator`` algorithm ID/state array. The state is accepted by
+        the recovery serializer; it is not written to disk by this function.
+
+    Raises:
+        RuntimeError: If global TensorFlow capture is requested but its API is
+            unavailable, or TensorFlow cannot initialize/access its global generator.
     """
 
     state: dict[str, object] = {"schema_version": SCHEMA_VERSION}
 
-    # Select the recovery action required by this condition.
+    # Capture Python and NumPy process-wide RNGs when global state is requested.
     if include_globals:
         state["python_global"] = random.getstate()
         numpy_state = np.random.get_state()
@@ -794,23 +1028,23 @@ def capture_rng_state(
             "cached_gaussian": numpy_state[4]
         }
 
-    # Select the recovery action required by this condition.
+    # Capture the supplied local Python RNG without changing global state.
     if python_rng is not None:
         state["python_local"] = python_rng.getstate()
 
-    # Select the recovery action required by this condition.
+    # Capture the supplied NumPy generator and its bit-generator type.
     if numpy_generator is not None:
         state["numpy_local"] = {
             "bit_generator": type(numpy_generator.bit_generator).__name__,
             "state": numpy_generator.bit_generator.state
         }
 
-    # Select the recovery action required by this condition.
+    # Resolve TensorFlow's global generator only when explicitly requested.
     if include_tensorflow_global:
         experimental = getattr(tf.random, "experimental", None)
         getter = getattr(experimental, "get_global_generator", None)
 
-        # Select the recovery action required by this condition.
+        # Report TensorFlow versions that lack the global-generator getter.
         if getter is None:
             raise RuntimeError(
                 "This TensorFlow version has no global Generator API."
@@ -818,10 +1052,11 @@ def capture_rng_state(
 
         tensorflow_generator = getter()
 
-    # Select the recovery action required by this condition.
+    # Capture TensorFlow state when an explicit or global generator is available.
     if tensorflow_generator is not None:
         generator_state = np.asarray(tensorflow_generator.state.numpy())
         algorithm = tensorflow_generator.algorithm
+        # Read tensor-valued algorithm IDs through numpy; convert scalar IDs directly.
         algorithm = int(algorithm.numpy()) if hasattr(algorithm, "numpy") \
                     else int(algorithm)
         state["tensorflow_generator"] = {
@@ -841,38 +1076,56 @@ def restore_rng_state(
     tensorflow_generator: object | None = None,
     restore_tensorflow_global: bool = False
 ) -> dict[str, object]:
-    """Restore a snapshot from :func:`capture_rng_state`.
+    """Restore a portable RNG snapshot and return its local generator objects.
 
-    Missing local generator objects are constructed and returned.  Supplied
-    objects are restored in place so existing learner/buffer references remain
-    valid.
+    Supplied local objects are updated in place. Missing local objects are created
+    only when their corresponding state is present. Global Python/NumPy restoration
+    is independently selectable, and TensorFlow global installation is opt-in.
+    Missing snapshot entries are left unchanged; no random draws are generated.
+
     Args:
-        state (Mapping[str, object]): Snapshot from :func:`capture_rng_state`.
-        numpy_generator (np.random.Generator | None): Optional NumPy generator
-            to restore in place.
-        python_rng (random.Random | None): Optional Python RNG to restore in
-            place.
-        restore_globals (bool): Whether to restore Python and NumPy globals.
-        tensorflow_generator (object | None): Optional TensorFlow generator to
-            restore in place.
-        restore_tensorflow_global (bool): Whether to install the restored
-            TensorFlow generator as the global generator.
+        state (Mapping[str, object]): Versioned snapshot from ``capture_rng_state``
+            or its decoded checkpoint representation.
+        numpy_generator (np.random.Generator | None): Existing local generator to
+            restore. Defaults to None to construct the saved bit-generator family
+            when local NumPy state exists.
+        python_rng (random.Random | None): Existing local Python RNG to restore.
+            Defaults to None to create one when local Python state exists.
+        restore_globals (bool): Defaults to True to restore available global
+            Python/NumPy entries; False leaves both process-wide RNGs unchanged.
+        tensorflow_generator (object | None): Existing TensorFlow generator to
+            restore. Defaults to None to create one from saved algorithm/state when
+            TensorFlow state exists. A supplied generator must use the same algorithm.
+        restore_tensorflow_global (bool): Defaults to False. True also installs a
+            restored TensorFlow generator globally; absent TensorFlow state is ignored.
 
     Returns:
-        dict[str, object]: Local generators that were restored or constructed.
+        dict[str, object]: Restored local objects under ``python_rng``,
+        ``numpy_generator``, and/or ``tensorflow_generator``. Keys appear only for
+        snapshot entries that existed. Global Python/NumPy states are not returned.
+
+    Raises:
+        ValueError: If the snapshot schema, NumPy bit-generator family, TensorFlow
+            algorithm, or supplied RNG state is incompatible.
+        RuntimeError: If TensorFlow global installation is requested but unavailable.
+
+    Side Effects:
+        Selected global RNGs and supplied local generators are mutated. Restoration
+        is sequential; this function does not roll back earlier RNGs if a later
+        malformed entry fails validation.
     """
 
-    # Select the recovery action required by this condition.
+    # Reject RNG snapshots written with an unsupported schema.
     if int(state.get("schema_version", -1)) != SCHEMA_VERSION:
         raise ValueError("Unsupported RNG-state schema version.")
 
     restored: dict[str, object] = {}
 
-    # Select the recovery action required by this condition.
+    # Restore Python's global RNG only when requested and present in the snapshot.
     if restore_globals and "python_global" in state:
         random.setstate(state["python_global"])
 
-    # Select the recovery action required by this condition.
+    # Restore NumPy's global RNG only when requested and present in the snapshot.
     if restore_globals and "numpy_global" in state:
         numpy_state = state["numpy_global"]
         np.random.set_state((
@@ -883,28 +1136,29 @@ def restore_rng_state(
             float(numpy_state["cached_gaussian"])
         ))
 
-    # Select the recovery action required by this condition.
+    # Restore a local Python RNG when the snapshot contains one.
     if "python_local" in state:
+        # Create a missing local RNG; otherwise restore the supplied instance in place.
         python_rng = random.Random() if python_rng is None else python_rng
         python_rng.setstate(state["python_local"])
         restored["python_rng"] = python_rng
 
-    # Select the recovery action required by this condition.
+    # Restore a local NumPy generator when the snapshot contains one.
     if "numpy_local" in state:
         numpy_state = state["numpy_local"]
         bit_generator_name = str(numpy_state["bit_generator"])
 
-        # Select the recovery action required by this condition.
+        # Construct a missing NumPy generator using the saved bit-generator family.
         if numpy_generator is None:
             bit_generator_type = getattr(np.random, bit_generator_name, None)
-            # Select the recovery action required by this condition.
+            # Reject snapshots naming a bit-generator family unavailable in NumPy.
             if bit_generator_type is None:
                 raise ValueError(
                     f"NumPy has no bit generator named {bit_generator_name!r}."
                 )
 
             numpy_generator = np.random.Generator(bit_generator_type())
-        # Select the recovery action required by this condition.
+        # Reject a supplied NumPy generator whose algorithm differs from the snapshot.
         elif type(numpy_generator.bit_generator).__name__ != bit_generator_name:
             raise ValueError(
                 "Supplied NumPy generator uses a different bit-generator type."
@@ -913,23 +1167,24 @@ def restore_rng_state(
         numpy_generator.bit_generator.state = numpy_state["state"]
         restored["numpy_generator"] = numpy_generator
 
-    # Select the recovery action required by this condition.
+    # Restore TensorFlow generator state when it was included in the snapshot.
     if "tensorflow_generator" in state:
         tf_state = state["tensorflow_generator"]
         algorithm = int(tf_state["algorithm"])
         values = tf.convert_to_tensor(tf_state["state"], dtype=tf.int64)
-        # Select the recovery action required by this condition.
+        # Construct a missing TensorFlow generator from the saved algorithm and state.
         if tensorflow_generator is None:
             tensorflow_generator = tf.random.Generator.from_state(
                 values,
                 alg=algorithm
             )
-        # Handle the complementary recovery case.
+        # Restore a supplied TensorFlow generator after checking its algorithm.
         else:
             current_algorithm = tensorflow_generator.algorithm
+            # Normalize tensor-valued algorithm IDs through numpy and scalar IDs directly.
             current_algorithm = int(current_algorithm.numpy()) if hasattr(current_algorithm, "numpy") \
                                 else int(current_algorithm)
-            # Select the recovery action required by this condition.
+            # Reject restoration into a TensorFlow generator using a different algorithm.
             if current_algorithm != algorithm:
                 raise ValueError(
                     "Supplied TensorFlow generator uses a different algorithm."
@@ -939,12 +1194,12 @@ def restore_rng_state(
 
         restored["tensorflow_generator"] = tensorflow_generator
 
-        # Select the recovery action required by this condition.
+        # Install the restored generator globally only when requested.
         if restore_tensorflow_global:
             experimental = getattr(tf.random, "experimental", None)
             setter = getattr(experimental, "set_global_generator", None)
 
-            # Select the recovery action required by this condition.
+            # Report TensorFlow versions that lack the global-generator setter.
             if setter is None:
                 raise RuntimeError(
                     "This TensorFlow version has no global Generator API."
@@ -958,23 +1213,32 @@ def restore_rng_state(
 def _validate_trackables(
     trackables: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    """Normalize checkpoint objects and reject unstable dependency names.
+    """Normalize named checkpoint dependencies and reject unstable dependency names.
+
+    None-valued entries are omitted. Remaining names must be strings matching a
+    Python-style identifier; actual TensorFlow trackability is checked when the
+    TensorFlow checkpoint object is constructed, not by this normalization helper.
 
     Args:
-        trackables (Mapping[str, object] | None): Named TensorFlow checkpoint
-            dependencies.
+        trackables (Mapping[str, object] | None): Dependency names mapped to model,
+            optimizer, variable, or RNG objects. None means no TensorFlow payload.
 
     Returns:
-        dict[str, object]: Non-null trackables with validated names.
+        dict[str, object]: Fresh mapping of non-None dependency values by validated
+        name. The dependency objects themselves are retained by reference.
+
+    Raises:
+        ValueError: If a remaining dependency name is not a valid identifier.
     """
 
+    # Exclude absent optional objects from the TensorFlow dependency mapping.
     normalized = {
         name: value
         for name, value in dict(trackables or {}).items()
         if value is not None
     }
     for name in normalized:
-        # Select the recovery action required by this condition.
+        # Reject dependency names that are not stable Python-style identifiers.
         if not isinstance(name, str) or not _TRACKABLE_NAME_PATTERN.fullmatch(name):
             raise ValueError(
                 f"Invalid TensorFlow checkpoint dependency name: {name!r}."
@@ -987,18 +1251,32 @@ def _write_replay_archive(
     task_dir: Path,
     replay_buffer: object
 ) -> dict[str, object]:
-    """Write a homogeneous replay buffer to a non-pickle NumPy archive.
+    """Write replay samples as a non-pickled NPZ and return their manifest metadata.
+
+    Each sample-label component is stacked independently, so items within each
+    component must have homogeneous shape. Empty buffers use empty placeholder
+    arrays. A state_dict-capable buffer contributes insertion-strategy counters and
+    class allocations without duplicating samples, capacity, or RNG fields.
 
     Args:
-        task_dir (Path): Temporary task-checkpoint directory.
-        replay_buffer (object): Replay buffer exposing samples, capacity, and
-            private RNG state.
+        task_dir (Path): Existing private task directory that receives ``replay.npz``.
+        replay_buffer (object): Buffer exposing ``buffer`` sample-label pairs,
+            ``maxlen``, and a private ``_rng`` with getstate. Optional state_dict
+            provides reservoir/class-balanced continuation metadata.
 
     Returns:
-        dict[str, object]: Replay archive metadata for the task manifest.
+        dict[str, object]: ``path``, ``count``, ``maxlen``, and ``rng_state`` fields
+        plus optional ``strategy_state``. The array payload is stored separately in
+        the NPZ under ``x`` and ``y`` with their original stacked dtypes/shapes.
+
+    Raises:
+        TypeError: If the buffer interface/items are unsupported or arrays contain
+            object dtypes.
+        ValueError: If replay items cannot be stacked into homogeneous arrays.
+        OSError: If the archive cannot be written.
     """
 
-    # Select the recovery action required by this condition.
+    # Require replay storage, capacity, and private RNG before writing an archive.
     if not hasattr(replay_buffer, "buffer") \
     or not hasattr(replay_buffer, "maxlen") \
     or not hasattr(replay_buffer, "_rng"):
@@ -1008,11 +1286,11 @@ def _write_replay_archive(
 
     items = list(replay_buffer.buffer)
 
-    # Select the recovery action required by this condition.
+    # Reject replay entries that are not sample-label pairs.
     if any(not isinstance(item, (tuple, list)) or len(item) != 2 for item in items):
         raise TypeError("Every replay-buffer item must be an (x, y) pair.")
 
-    # Select the recovery action required by this condition.
+    # Stack nonempty replay items into homogeneous sample and label arrays.
     if items:
         try:
             x_values = np.stack([np.asarray(item[0]) for item in items])
@@ -1021,14 +1299,14 @@ def _write_replay_archive(
             raise ValueError(
                 "Replay-buffer x and y items must have homogeneous shapes."
             ) from error
-    # Handle the complementary recovery case.
+    # Represent an empty replay buffer with empty placeholder arrays.
     else:
         # Dtypes/shapes are immaterial for an empty buffer and become defined by
         # the first post-resume insertion.
         x_values = np.empty((0,), dtype=np.float32)
         y_values = np.empty((0,), dtype=np.uint8)
 
-    # Select the recovery action required by this condition.
+    # Reject replay arrays that would require object serialization.
     if x_values.dtype.hasobject or y_values.dtype.hasobject:
         raise TypeError("Object-dtype replay items cannot be saved safely.")
 
@@ -1059,23 +1337,35 @@ def _read_replay_archive(
     task_dir: Path,
     metadata: Mapping[str, object] | None
 ) -> dict[str, object] | None:
-    """Read replay samples and metadata from one committed task directory.
+    """Load numeric replay arrays and combine them with their checkpoint metadata.
+
+    The archive name must be local to the task directory, pickle loading is disabled,
+    and both arrays must match the declared count. Per-item array values are copied
+    so returned items own their mutable data independently of the loaded arrays.
 
     Args:
-        task_dir (Path): Committed task-checkpoint directory.
-        metadata (Mapping[str, object] | None): Replay manifest metadata.
+        task_dir (Path): Existing committed checkpoint directory containing the NPZ.
+        metadata (Mapping[str, object] | None): Manifest fields ``path``, ``count``,
+            ``maxlen``, and ``rng_state`` with optional ``strategy_state``. None
+            represents a checkpoint without replay storage.
 
     Returns:
-        dict[str, object] | None: Decoded replay state, or ``None`` when absent.
+        dict[str, object] | None: ``items`` as sample-label pairs, ``maxlen``,
+        ``rng_state``, and optional ``strategy_state``; None when metadata is absent.
+
+    Raises:
+        ValueError: If the archive name is unsafe, row counts differ from metadata,
+            or NumPy cannot load the archive without pickle.
+        OSError: If the replay archive cannot be opened or read.
     """
 
-    # Select the recovery action required by this condition.
+    # Return no replay state when the checkpoint has no replay metadata.
     if metadata is None:
         return None
 
     archive_name = str(metadata["path"])
 
-    # Select the recovery action required by this condition.
+    # Reject replay archive names that escape the checkpoint directory.
     if Path(archive_name).name != archive_name:
         raise ValueError("Replay archive path must be a local filename.")
     with np.load(task_dir / archive_name, allow_pickle=False) as archive:
@@ -1084,7 +1374,7 @@ def _read_replay_archive(
 
     expected_count = int(metadata["count"])
 
-    # Select the recovery action required by this condition.
+    # Require both replay arrays to match the manifest's sample count.
     if len(x_values) != expected_count or len(y_values) != expected_count:
         raise ValueError("Replay archive count does not match its metadata.")
 
@@ -1092,7 +1382,9 @@ def _read_replay_archive(
     for index in range(expected_count):
         x_item = x_values[index]
         y_item = y_values[index]
+        # Copy array-valued samples; keep immutable scalar samples as stored.
         x_item = x_item.copy() if hasattr(x_item, "copy") else x_item
+        # Copy array-valued labels; keep immutable scalar labels as stored.
         y_item = y_item.copy() if hasattr(y_item, "copy") else y_item
         items.append((x_item, y_item))
 
@@ -1112,14 +1404,29 @@ def restore_replay_buffer(
     replay_buffer: object,
     replay_state: Mapping[str, object]
 ) -> object:
-    """Restore replay contents and private RNG state into an existing buffer.
+    """Restore retained items and private RNG/strategy state into an existing buffer.
+
+    Modern buffers receive one complete load_state_dict call, preserving reservoir
+    counters without reinserting saved items. Older FIFO-compatible buffers use their
+    clear/extend/private-RNG interface. Saved capacity must match the target; an old
+    FIFO-only interface cannot restore a non-FIFO strategy checkpoint.
 
     Args:
-        replay_buffer (object): Existing replay buffer to mutate in place.
-        replay_state (Mapping[str, object]): Decoded checkpoint replay state.
+        replay_buffer (object): Target ReplayBuffer or compatible legacy FIFO object.
+            Modern targets expose load_state_dict; legacy targets require clear,
+            extend, maxlen, and a private RNG supporting setstate.
+        replay_state (Mapping[str, object]): Decoded ``items``, ``maxlen``, and
+            ``rng_state`` fields plus optional ``strategy_state``. Missing strategy
+            metadata is interpreted as schema-version-1 FIFO state.
 
     Returns:
-        object: The restored replay buffer.
+        object: The same replay_buffer object after in-place restoration.
+
+    Raises:
+        TypeError: If the target lacks a required interface or cannot restore the
+            checkpoint's insertion strategy.
+        ValueError: If capacity, strategy metadata, counters, items, or RNG state
+            are incompatible with the target buffer.
     """
 
     strategy_state = replay_state.get("strategy_state")
@@ -1128,6 +1435,7 @@ def restore_replay_buffer(
     # New replay buffers restore counters directly rather than replaying saved
     # items through a reservoir policy, which would change their probabilities.
     if callable(state_loader):
+        # Use saved strategy metadata when present; interpret older checkpoints as FIFO.
         combined_state = {
             "maxlen": replay_state["maxlen"],
             "items": replay_state["items"],
@@ -1143,7 +1451,7 @@ def restore_replay_buffer(
 
         return replay_buffer
 
-    # Select the recovery action required by this condition.
+    # Reject non-FIFO recovery when the target buffer lacks strategy-state loading.
     if strategy_state is not None \
     and str(strategy_state.get("strategy", "fifo")) != "fifo":
         raise TypeError(
@@ -1156,7 +1464,7 @@ def restore_replay_buffer(
         raise TypeError(
             "replay_buffer must expose clear, extend, maxlen, and _rng."
         )
-    # Select the recovery action required by this condition.
+    # Require matching capacity before restoring a legacy replay buffer.
     if getattr(replay_buffer, "maxlen", None) != replay_state["maxlen"]:
         raise ValueError("Replay-buffer capacity differs from the checkpoint.")
 
@@ -1167,13 +1475,18 @@ def restore_replay_buffer(
 
 
 def _task_directory_name(task_index: int) -> str:
-    """Return the canonical sortable directory name for one task.
+    """Format a zero-based task index as a canonical sortable checkpoint directory name.
+
+    At least four decimal digits are retained, with larger indices growing beyond
+    four digits. The enclosing checkpoint APIs validate that the index is usable;
+    this formatting helper does not inspect or create directories.
 
     Args:
-        task_index (int): Zero-based task index.
+        task_index (int): Zero-based completed-task index, such as 0 or 12.
 
     Returns:
-        str: Canonical sortable task-directory name.
+        str: ``"task-0000"`` for zero, ``"task-0012"`` for twelve, and the
+        corresponding zero-padded name for other indices.
     """
 
     return f"task-{task_index:04d}"
@@ -1199,41 +1512,70 @@ def save_task_checkpoint(
     are materialized schedule values, not stochastic schedule options. A
     committed task directory is immutable; an existing directory with the same
     task index raises ``FileExistsError``.
+
+    Creates the root if necessary, writes manifest/replay/TensorFlow payloads
+    in a unique temporary directory, seals their checksums, and renames the
+    directory into place before updating ``latest.json``. The input state and
+    live RNGs are not mutated. A failure while updating the latest pointer can
+    leave a valid committed task discoverable by directory scanning.
+
     Args:
         checkpoint_root (str | os.PathLike[str]): Root checkpoint directory.
         completed_task_index (int): Zero-based index of the completed task.
-        state (Mapping[str, object]): Caller-owned experiment and schedule state.
-        trackables (Mapping[str, object] | None): Named TensorFlow dependencies.
+        state (Mapping[str, object]): Experiment state supported by the recovery
+            JSON codec. Reserved cursor, schedule, RNG, and fingerprint entries
+            are stored in schema fields; other entries become experiment state.
+        trackables (Mapping[str, object] | None): Named TensorFlow models,
+            optimizers, or other checkpoint dependencies. Defaults to ``None``;
+            ``None`` or an empty mapping omits the TensorFlow payload.
         class_order (Sequence[object] | None): Optional explicit class order.
+            Defaults to ``None``, reading the required value from ``state``.
         task_groups (Sequence[Sequence[object]] | None): Optional explicit task
-            grouping.
-        rng_state (Mapping[str, object] | None): Optional RNG-state snapshot.
-        replay_buffer (object | None): Optional replay buffer to archive.
-        fingerprint (str | None): Optional immutable run fingerprint.
+            grouping whose flattened order must match ``class_order``.
+            Defaults to ``None``, reading the required grouping from ``state``.
+        rng_state (Mapping[str, object] | None): Snapshot from
+            ``capture_rng_state``. Defaults to ``None``, using
+            ``state.get("rng_state")`` or an empty mapping when absent. This
+            function does not capture the current RNGs automatically.
+        replay_buffer (object | None): Buffer exposing the replay ``state_dict``
+            protocol. Defaults to ``None``, omitting the replay archive.
+        fingerprint (str | None): Immutable run fingerprint to persist.
+            Defaults to ``None``, reading ``state.get("fingerprint")``;
+            if that is also absent, no run fingerprint is recorded.
 
     Returns:
-        Path: Newly committed task-checkpoint directory.
+        Path: Newly committed ``task-NNNN`` directory under ``checkpoint_root``.
+
+    Raises:
+        TypeError: If state, dependencies, fingerprint, or encoded values have
+            unsupported types.
+        ValueError: If the schedule, task cursor, dependency names, or replay
+            state is invalid.
+        FileExistsError: If the completed task directory already exists.
+        OSError: If checkpoint payloads or commit metadata cannot be written.
     """
 
-    # Select the recovery action required by this condition.
+    # Reject checkpoint state that is not a mapping.
     if not isinstance(state, Mapping):
         raise TypeError("state must be a mapping.")
 
     state = dict(state)
+    # Prefer an explicitly supplied class order; otherwise read it from state.
     class_order = state.get("class_order") if class_order is None else class_order
+    # Prefer explicit task groups; otherwise read them from state.
     task_groups = state.get("task_groups") if task_groups is None else task_groups
 
-    # Select the recovery action required by this condition.
+    # Require a resolved class order and task grouping before saving.
     if class_order is None or task_groups is None:
         raise ValueError(
             "state must contain resolved class_order and task_groups."
         )
 
-    # Select the recovery action required by this condition.
+    # Use RNG state embedded in experiment state when no separate snapshot was supplied.
     if rng_state is None:
         rng_state = state.get("rng_state")
 
-    # Select the recovery action required by this condition.
+    # Use the embedded run fingerprint when no explicit fingerprint was supplied.
     if fingerprint is None:
         fingerprint = state.get("fingerprint")
 
@@ -1256,7 +1598,7 @@ def save_task_checkpoint(
     )
     normalized_trackables = _validate_trackables(trackables)
 
-    # Select the recovery action required by this condition.
+    # Reject non-string run fingerprints while allowing an omitted fingerprint.
     if fingerprint is not None and not isinstance(fingerprint, str):
         raise TypeError("fingerprint must be a string or None.")
 
@@ -1264,7 +1606,7 @@ def save_task_checkpoint(
     root.mkdir(parents=True, exist_ok=True)
     target = root / _task_directory_name(int(completed_task_index))
 
-    # Select the recovery action required by this condition.
+    # Refuse to replace an already committed task directory.
     if target.exists():
         raise FileExistsError(f"Task checkpoint already exists: {target}")
 
@@ -1275,7 +1617,7 @@ def save_task_checkpoint(
 
     try:
         checkpoint_prefix = None
-        # Select the recovery action required by this condition.
+        # Write a TensorFlow checkpoint when model or optimizer dependencies exist.
         if normalized_trackables:
             tf_directory = temporary / _TF_DIRECTORY_NAME
             tf_directory.mkdir()
@@ -1288,14 +1630,14 @@ def save_task_checkpoint(
             ).as_posix()
 
         replay_metadata = None
-        # Select the recovery action required by this condition.
+        # Write replay samples only when the run has a replay buffer.
         if replay_buffer is not None:
             replay_metadata = _write_replay_archive(temporary, replay_buffer)
 
         # Hash every external payload before the manifest is sealed.
         payload_files = {}
         for path in sorted(temporary.rglob("*")):
-            # Select the recovery action required by this condition.
+            # Hash files only, excluding temporary subdirectory entries from the payload manifest.
             if path.is_file():
                 relative = path.relative_to(temporary).as_posix()
                 payload_files[relative] = _sha256_file(path)
@@ -1355,53 +1697,68 @@ def save_task_checkpoint(
 
 
 def _validate_committed_task(task_dir: Path) -> dict[str, object]:
-    """Validate hashes/schema for one task directory and return its manifest.
+    """Authenticate a committed task directory and return its decoded manifest.
+
+    Validation covers the directory/commit marker, state checksum and schema,
+    completed/next cursors, exact resolved schedule, dependency names, TensorFlow
+    prefix and shard presence, replay declaration, and exact payload file set.
+    Every declared payload must remain local, regular, and checksum-matching. Files
+    are read for validation but never loaded into a live TensorFlow object graph.
 
     Args:
-        task_dir (Path): Candidate committed task directory.
+        task_dir (Path): Candidate ``task-NNNN`` directory containing state.json,
+            COMMITTED, and any declared TensorFlow/replay payloads.
 
     Returns:
-        dict[str, object]: Validated task manifest.
+        dict[str, object]: Decoded manifest with cursor, schedule, fingerprint,
+        trackable/prefix declarations, experiment/RNG state, replay metadata, and
+        payload hashes. No files or model/RNG objects are changed.
+
+    Raises:
+        ValueError: If commitment, schema, names, paths, checksums, or state
+            invariants are invalid.
+        OSError: If required checkpoint files cannot be read.
+        KeyError: If a malformed manifest omits required schema fields.
     """
 
     match = _TASK_DIRECTORY_PATTERN.fullmatch(task_dir.name)
 
-    # Select the recovery action required by this condition.
+    # Reject paths that are not genuine task checkpoint directories.
     if match is None or not task_dir.is_dir() or task_dir.is_symlink():
         raise ValueError(f"Not a task checkpoint directory: {task_dir}")
 
     state_path = task_dir / _STATE_NAME
     committed_path = task_dir / _COMMITTED_NAME
 
-    # Select the recovery action required by this condition.
+    # Reject checkpoints missing either the state file or commit marker.
     if not state_path.is_file() or not committed_path.is_file():
         raise ValueError(f"Task checkpoint is not committed: {task_dir}")
 
     committed = _read_json(committed_path)
 
-    # Select the recovery action required by this condition.
+    # Reject commit markers written with an unsupported schema version.
     if int(committed.get("schema_version", -1)) != SCHEMA_VERSION:
         raise ValueError("Unsupported COMMITTED schema version.")
 
     state_sha256 = _sha256_file(state_path)
 
-    # Select the recovery action required by this condition.
+    # Reject state files whose checksum disagrees with the commit marker.
     if committed.get("state_sha256") != state_sha256:
         raise ValueError("Task checkpoint state checksum is invalid.")
 
     manifest = _read_json(state_path)
 
-    # Select the recovery action required by this condition.
+    # Reject checkpoint manifests written with an unsupported schema version.
     if int(manifest.get("schema_version", -1)) != SCHEMA_VERSION:
         raise ValueError("Unsupported task-checkpoint schema version.")
 
     directory_task_index = int(match.group(1))
 
-    # Select the recovery action required by this condition.
+    # Require the manifest's completed task to match the directory name.
     if int(manifest["completed_task_index"]) != directory_task_index:
         raise ValueError("Task directory index differs from its manifest.")
 
-    # Select the recovery action required by this condition.
+    # Require the next-task cursor to follow the completed task exactly.
     if int(manifest["next_task_index"]) != directory_task_index + 1:
         raise ValueError("Task cursor is inconsistent in the manifest.")
 
@@ -1415,7 +1772,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
         "task_groups": normalized_groups
     })
 
-    # Select the recovery action required by this condition.
+    # Reject a schedule whose fingerprint disagrees with its recorded contents.
     if manifest.get("schedule_fingerprint") != schedule_fingerprint:
         raise ValueError("Task schedule fingerprint is invalid.")
 
@@ -1425,7 +1782,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
     # checkpoint whose index or data shard was only partly written.
     trackable_names = manifest.get("trackable_names")
 
-    # Select the recovery action required by this condition.
+    # Reject malformed, duplicate, or invalid TensorFlow dependency names.
     if not isinstance(trackable_names, list) or any(
         not isinstance(name, str)
         or _TRACKABLE_NAME_PATTERN.fullmatch(name) is None
@@ -1433,7 +1790,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
     ) or len(set(trackable_names)) != len(trackable_names):
         raise ValueError("Task checkpoint trackable names are invalid.")
 
-    # Select the recovery action required by this condition.
+    # Require dependency names in their canonical sorted order.
     if trackable_names != sorted(trackable_names):
         raise ValueError(
             "Task checkpoint trackable names are not canonical."
@@ -1441,37 +1798,37 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
 
     checkpoint_prefix = manifest.get("checkpoint_prefix")
 
-    # Select the recovery action required by this condition.
+    # Validate the TensorFlow prefix when the checkpoint declares one.
     if checkpoint_prefix is not None:
-        # Select the recovery action required by this condition.
+        # Reject TensorFlow prefixes that are not strings.
         if not isinstance(checkpoint_prefix, str):
             raise ValueError("TensorFlow checkpoint prefix is invalid.")
         prefix_path = Path(checkpoint_prefix)
-        # Select the recovery action required by this condition.
+        # Reject TensorFlow prefixes that escape the task directory.
         if prefix_path.is_absolute() or ".." in prefix_path.parts:
             raise ValueError("TensorFlow checkpoint prefix escapes task directory.")
 
-    # Select the recovery action required by this condition.
+    # Require TensorFlow dependencies and a checkpoint prefix to be declared together.
     if bool(trackable_names) != (checkpoint_prefix is not None):
         raise ValueError(
             "TensorFlow checkpoint prefix and trackable declaration disagree."
         )
 
-    # Select the recovery action required by this condition.
+    # Require experiment state to use the serializer's mapping representation.
     if not isinstance(manifest.get("experiment_state"), dict):
         raise ValueError("Task checkpoint experiment state must be a mapping.")
 
-    # Select the recovery action required by this condition.
+    # Require RNG state to use the serializer's mapping representation.
     if not isinstance(manifest.get("rng_state"), dict):
         raise ValueError("Task checkpoint RNG state must be a mapping.")
 
-    # Select the recovery action required by this condition.
+    # Reject a non-string run fingerprint while allowing an absent fingerprint.
     if manifest.get("fingerprint") is not None \
     and not isinstance(manifest.get("fingerprint"), str):
         raise ValueError("Task checkpoint run fingerprint is invalid.")
 
     payload_hashes = manifest.get("payload_sha256")
-    # Select the recovery action required by this condition.
+    # Reject malformed payload names or SHA-256 entries in the file manifest.
     if not isinstance(payload_hashes, dict) or any(
         not isinstance(relative, str) or not isinstance(expected_hash, str)
         or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
@@ -1482,6 +1839,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
     # The manifest is closed over the exact set of external payloads.  This
     # catches both deleted shards and unlisted partial/foreign files instead of
     # accepting whichever subset happens to remain on disk.
+    # Collect files only when comparing the actual and declared payload sets.
     actual_files = {
         path.relative_to(task_dir).as_posix()
         for path in task_dir.rglob("*")
@@ -1489,38 +1847,38 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
     }
     actual_payloads = actual_files - {_STATE_NAME, _COMMITTED_NAME}
 
-    # Select the recovery action required by this condition.
+    # Reject missing payload files and unlisted extra files.
     if set(payload_hashes) != actual_payloads:
         raise ValueError("Task checkpoint payload set differs from its manifest.")
 
-    # Select the recovery action required by this condition.
+    # Check TensorFlow shard completeness when a checkpoint prefix exists.
     if checkpoint_prefix is not None:
         index_name = checkpoint_prefix + ".index"
         data_prefix = checkpoint_prefix + ".data-"
-        # Select the recovery action required by this condition.
+        # Reject TensorFlow checkpoints missing an index or data shard.
         if index_name not in payload_hashes or not any(
             relative.startswith(data_prefix) for relative in payload_hashes
         ):
             raise ValueError("TensorFlow checkpoint is missing an index or data shard.")
 
     replay = manifest.get("replay")
-    # Select the recovery action required by this condition.
+    # Validate replay metadata when a replay archive is declared.
     if replay is not None:
-        # Select the recovery action required by this condition.
+        # Reject malformed replay metadata or a non-string replay path.
         if not isinstance(replay, dict) or not isinstance(replay.get("path"), str):
             raise ValueError("Replay checkpoint metadata is invalid.")
         replay_name = replay["path"]
-        # Select the recovery action required by this condition.
+        # Require the replay archive to be a declared local payload file.
         if Path(replay_name).name != replay_name or replay_name not in payload_hashes:
             raise ValueError("Replay checkpoint payload is missing or unsafe.")
 
     for relative, expected_hash in payload_hashes.items():
         relative_path = Path(relative)
-        # Select the recovery action required by this condition.
+        # Reject payload names that escape the task directory.
         if relative_path.is_absolute() or ".." in relative_path.parts:
             raise ValueError("Checkpoint payload path escapes its task directory.")
         payload_path = task_dir / relative_path
-        # Select the recovery action required by this condition.
+        # Reject symlinked, missing, or checksum-mismatched payload files.
         if payload_path.is_symlink() or not payload_path.is_file() \
         or _sha256_file(payload_path) != expected_hash:
             raise ValueError(
@@ -1546,31 +1904,31 @@ def find_latest_task_checkpoint(
     """
 
     supplied = Path(checkpoint_path)
-    # Select the recovery action required by this condition.
+    # Treat an explicit latest.json path as a request to search its parent directory.
     if supplied.name == _LATEST_NAME and supplied.is_file():
         supplied = supplied.parent
 
-    # Select the recovery action required by this condition.
+    # Validate and return a directly supplied task directory.
     if _TASK_DIRECTORY_PATTERN.fullmatch(supplied.name):
         _validate_committed_task(supplied)
         return supplied
 
-    # Select the recovery action required by this condition.
+    # Reject checkpoint roots that do not exist as directories.
     if not supplied.is_dir():
         raise FileNotFoundError(f"Checkpoint directory does not exist: {supplied}")
 
     latest_path = supplied / _LATEST_NAME
-    # Select the recovery action required by this condition.
+    # Try the latest-task index first when an index file exists.
     if latest_path.is_file():
         try:
             latest = _read_json(latest_path)
-            # Select the recovery action required by this condition.
+            # Reject unsupported index schemas and fall back to directory discovery.
             if int(latest.get("schema_version", -1)) != SCHEMA_VERSION:
                 raise ValueError("Unsupported latest-index schema version.")
 
             child_name = str(latest["task_dir"])
 
-            # Select the recovery action required by this condition.
+            # Reject unsafe or malformed task paths in the latest-task index.
             if Path(child_name).name != child_name \
             or _TASK_DIRECTORY_PATTERN.fullmatch(child_name) is None:
                 raise ValueError("latest.json contains an unsafe task path.")
@@ -1578,12 +1936,12 @@ def find_latest_task_checkpoint(
             candidate = supplied / child_name
             manifest = _validate_committed_task(candidate)
 
-            # Select the recovery action required by this condition.
+            # Reject index entries whose task cursor disagrees with the checkpoint manifest.
             if int(manifest["completed_task_index"]) \
             != int(latest["completed_task_index"]):
                 raise ValueError("latest.json task index is inconsistent.")
 
-            # Select the recovery action required by this condition.
+            # Reject index entries whose recorded state checksum is stale or corrupt.
             if _sha256_file(candidate / _STATE_NAME) != latest["state_sha256"]:
                 raise ValueError("latest.json state checksum is inconsistent.")
             # A crash can commit a newer task before updating latest.json.
@@ -1602,7 +1960,7 @@ def find_latest_task_checkpoint(
     for child in supplied.iterdir():
         match = _TASK_DIRECTORY_PATTERN.fullmatch(child.name)
 
-        # Select the recovery action required by this condition.
+        # Consider only directories whose names identify completed task slots.
         if match is not None and child.is_dir():
             candidates.append((int(match.group(1)), child))
 
@@ -1634,20 +1992,48 @@ def load_task_checkpoint(
     variables, and call it again with the complete mapping.  Under TensorFlow
     2.10 legacy optimizers normally require ``_create_all_weights(var_list)``
     before ``assert_consumed=True`` restoration.
+
+    Validates commitment and payload checksums before optional TensorFlow
+    restoration. Supplying dependencies changes their live variables; a later
+    restore assertion or replay-decoding failure does not roll those changes
+    back. RNG and replay state are returned for explicit restoration with
+    ``restore_rng_state`` and ``restore_replay_buffer``.
+
     Args:
-        checkpoint_path (str | os.PathLike[str]): Checkpoint path to resolve.
+        checkpoint_path (str | os.PathLike[str]): Checkpoint root, committed
+            task directory, or ``latest.json`` path. A root resolves to its
+            newest valid committed task.
         trackables (Mapping[str, object] | None): Optional TensorFlow objects to
-            restore.
+            restore, keyed by exactly the saved dependency names. Defaults to
+            ``None`` for inspection without live-object restoration. An empty
+            mapping is rejected when the checkpoint has TensorFlow dependencies.
         expected_class_order (Sequence[object] | None): Optional required class
-            order.
+            order. Defaults to ``None``, disabling schedule matching when
+            ``expected_task_groups`` is also ``None``; supply both together.
         expected_task_groups (Sequence[Sequence[object]] | None): Optional
-            required task grouping.
+            required task grouping. Defaults to ``None``; when provided,
+            ``expected_class_order`` must also be supplied and the complete
+            resolved schedule must match the saved schedule.
         expected_fingerprint (str | None): Optional required run fingerprint.
+            Defaults to ``None``, skipping run-fingerprint matching.
         assert_consumed (bool): Whether to require every checkpoint value to be
-            consumed by the supplied object graph.
+            consumed by the supplied object graph. Defaults to ``True``.
+            ``False`` still requires every supplied existing object to match,
+            while permitting unmatched saved values. Ignored during inspection.
 
     Returns:
-        TaskCheckpoint: Decoded task state and TensorFlow restore status.
+        TaskCheckpoint: Resolved directory, completed/next task indices, tuple
+        schedule, experiment/RNG mappings, optional replay state/fingerprint,
+        and TensorFlow restore status (``None`` for inspection).
+
+    Raises:
+        FileNotFoundError: If no valid committed task can be resolved.
+        ValueError: If the checkpoint, requested schedule/fingerprint, dependency
+            names, or replay payload is incompatible or malformed.
+        TypeError: If supplied dependencies do not meet the mapping protocol.
+        AssertionError: If TensorFlow restore matching fails under the selected
+            ``assert_consumed`` mode.
+        OSError: If checkpoint files cannot be read.
     """
 
     task_dir = find_latest_task_checkpoint(checkpoint_path)
@@ -1655,13 +2041,13 @@ def load_task_checkpoint(
     class_order = tuple(manifest["class_order"])
     task_groups = tuple(tuple(group) for group in manifest["task_groups"])
 
-    # Select the recovery action required by this condition.
+    # Require expected class order and task grouping together.
     if (expected_class_order is None) != (expected_task_groups is None):
         raise ValueError(
             "Expected class order and task groups must be supplied together."
         )
 
-    # Select the recovery action required by this condition.
+    # Validate the expected schedule when the caller supplies one.
     if expected_class_order is not None:
         _, expected_groups = _validate_schedule(
             int(manifest["completed_task_index"]),
@@ -1670,14 +2056,14 @@ def load_task_checkpoint(
         )
         expected_order = _decode_json(_encode_json(list(expected_class_order)))
 
-        # Select the recovery action required by this condition.
+        # Reject restoration when the requested schedule differs from the saved schedule.
         if fingerprint_state({
             "class_order": expected_order,
             "task_groups": expected_groups
         }) != manifest["schedule_fingerprint"]:
             raise ValueError("Requested continual schedule differs from checkpoint.")
 
-    # Select the recovery action required by this condition.
+    # Reject restoration when an expected run fingerprint does not match.
     if expected_fingerprint is not None \
     and manifest.get("fingerprint") != expected_fingerprint:
         raise ValueError("Run fingerprint differs from the checkpoint.")
@@ -1686,9 +2072,9 @@ def load_task_checkpoint(
     saved_trackable_names = set(manifest.get("trackable_names", []))
     restore_status = None
 
-    # Select the recovery action required by this condition.
+    # Restore TensorFlow state when the caller supplies dependencies.
     if normalized_trackables:
-        # Select the recovery action required by this condition.
+        # Require supplied TensorFlow dependency names to match the saved object graph.
         if set(normalized_trackables) != saved_trackable_names:
             raise ValueError(
                 "TensorFlow trackable names differ from the checkpoint: "
@@ -1698,26 +2084,26 @@ def load_task_checkpoint(
 
         prefix = manifest.get("checkpoint_prefix")
 
-        # Select the recovery action required by this condition.
+        # Reject a TensorFlow restore with no usable checkpoint prefix.
         if not isinstance(prefix, str):
             raise ValueError("Checkpoint manifest has no TensorFlow prefix.")
 
         prefix_path = Path(prefix)
 
-        # Select the recovery action required by this condition.
+        # Reject a TensorFlow restore prefix that escapes the task directory.
         if prefix_path.is_absolute() or ".." in prefix_path.parts:
             raise ValueError("TensorFlow checkpoint prefix escapes task directory.")
 
         checkpoint = tf.train.Checkpoint(**normalized_trackables)
         restore_status = checkpoint.read(str(task_dir / prefix_path))
 
-        # Select the recovery action required by this condition.
+        # Require every saved value to be consumed for strict restoration.
         if assert_consumed:
             restore_status.assert_consumed()
-        # Handle the complementary recovery case.
+        # For partial restoration, still require every supplied object to match.
         else:
             restore_status.assert_existing_objects_matched()
-    # Select the recovery action required by this condition.
+    # Reject explicitly empty dependencies when the checkpoint contains TensorFlow state.
     elif saved_trackable_names and trackables is not None:
         raise ValueError("The checkpoint requires nonempty TensorFlow trackables.")
 

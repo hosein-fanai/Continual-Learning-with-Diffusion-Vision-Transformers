@@ -1,4 +1,14 @@
-"""Focused correctness and recovery tests for replay insertion strategies."""
+"""Regression checks for FIFO, reservoir, and class-balanced replay policies.
+
+Deterministic streams and local reference recurrences verify retained samples, aligned
+labels, sample dtypes, quotas, and restorable RNG/state. Invalid state dictionaries exercise
+structural rejection without changing the live buffer.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -19,13 +29,28 @@ from common.replay_buffer import ReplayBuffer
 
 
 class ReplayStrategyTests(unittest.TestCase):
-    """Verify FIFO compatibility and deterministic reservoir policies."""
+    """Verify FIFO compatibility and deterministic reservoir policies.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_fifo_remains_the_exact_default(self) -> None:
         """Default construction retains historical deque and RNG behavior.
 
         Returns:
             None: FIFO contents and sampling are compared with Python directly.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         replay = ReplayBuffer(maxlen=3, seed=17)
@@ -39,7 +64,15 @@ class ReplayStrategyTests(unittest.TestCase):
         )
 
     def test_sampled_sparse_labels_keep_their_dtype(self) -> None:
-        """Sparse class IDs above 255 must not wrap during replay sampling."""
+        """Sparse class IDs above 255 must not wrap during replay sampling.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         replay = ReplayBuffer(maxlen=2, seed=23)
         labels = np.asarray([256, 511], dtype=np.int32)
@@ -60,6 +93,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: Retained items and deterministic continuation are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         capacity = 5
@@ -88,7 +124,15 @@ class ReplayStrategyTests(unittest.TestCase):
         self.assertEqual(replay.state_dict()["items_seen"], len(stream))
 
     def test_reservoir_state_continues_deterministically(self) -> None:
-        """Direct state restoration must reproduce subsequent replacements."""
+        """Direct state restoration must reproduce subsequent replacements.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         source = ReplayBuffer(3, seed=11, strategy="reservoir")
         source.extend(range(20))
@@ -104,6 +148,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: A broad deterministic frequency bound audits inclusion bias.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         inclusions = np.zeros(20, dtype=np.int32)
@@ -120,6 +167,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: Class counts, capacity, aliases, and one-hot parsing are tested.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         replay = ReplayBuffer(
@@ -151,6 +201,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: Capacity and one-item-per-selected-class invariants are checked.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         replay = ReplayBuffer(3, seed=53, strategy="class_balanced")
@@ -165,6 +218,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: Continued source and restored buffers remain exactly identical.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         source = ReplayBuffer(6, seed=67, strategy="class_balanced")
@@ -217,6 +273,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None: Both public validation branches are exercised.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with self.assertRaisesRegex(ValueError, "strategy"):
@@ -230,6 +289,9 @@ class ReplayStrategyTests(unittest.TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         source = ReplayBuffer(4, seed=79, strategy="class_balanced")
@@ -250,9 +312,11 @@ class ReplayStrategyTests(unittest.TestCase):
         )
 
         impossible_quota = deepcopy(valid_state)
+        # Choose a class-zero row to overfill its storage quota.
         zero_item = next(
             item for item in impossible_quota["items"] if item[1] == 0
         )
+        # Replace a class-one row so the class-zero quota becomes invalid.
         one_index = next(
             index
             for index, item in enumerate(impossible_quota["items"])

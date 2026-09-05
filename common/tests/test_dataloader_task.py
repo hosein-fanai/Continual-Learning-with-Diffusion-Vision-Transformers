@@ -1,4 +1,14 @@
-"""Focused task-boundary regressions for :mod:`common.dataloader`."""
+"""Regression checks for task selection and continual dataset setup.
+
+The tests check accepted task spelling, rejected tasks, sample limits, and the early
+continual-loader return used to size optimizer schedules. Dataset/model mocks keep these
+tests focused on orchestration rather than downloading images.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -15,13 +25,57 @@ from common.model import get_model
 
 
 class DatasetTaskValidationTests(unittest.TestCase):
-    """Keep direct dataset construction on the shared task vocabulary."""
+    """Keep direct dataset construction on the shared task vocabulary.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
+
+    def test_continual_only_sizes_the_deferred_training_pipeline(self) -> None:
+        """Resolve cosine sizing without constructing discarded task datasets.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
+
+        images = np.zeros((9, 28, 28), dtype="uint8")
+        labels = np.arange(9) % 2
+        config = Config(
+            dataset={"batch_size": 4, "pad": 2},
+            model={"name": "cnn", "show_network_summary": False},
+            training={"task": "continual"},
+            continually_learn={"class_num": 2},
+        )
+        with patch("common.dataloader.load_mnist") as loader, patch(
+            "common.dataloader.get_dataset"
+        ) as get_dataset:
+            loader.return_value = (images, labels, images, labels, images, labels)
+            result = get_datasets(config)
+
+        self.assertEqual(result, (loader, None))
+        self.assertEqual(config.dataset.trainset_len, 3)
+        get_dataset.assert_not_called()
 
     def test_unknown_direct_task_is_rejected_before_loading_data(self) -> None:
         """An unsupported direct task must not reach a dataset loader.
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with patch("common.dataloader.load_mnist") as load_mnist:
@@ -35,6 +89,9 @@ class DatasetTaskValidationTests(unittest.TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         config = Config()
@@ -52,7 +109,15 @@ class DatasetTaskValidationTests(unittest.TestCase):
             run_hpo(None, "cnn", n_trials=1)
 
     def test_vae_conditioning_selects_onehot_labels(self) -> None:
-        """Keep VAE factory inputs aligned with their conditioning mode."""
+        """Keep VAE factory inputs aligned with their conditioning mode.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         images = np.zeros((4, 28, 28), dtype="uint8")
         sparse = np.asarray([0, 1, 0, 1], dtype="uint8")

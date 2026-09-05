@@ -1,4 +1,12 @@
-"""Shared model factories, callbacks, optimizers, and weight-copy utilities."""
+"""Construct, compile, initialize, and copy the project's model families.
+
+The factories support legacy CNN/DNN classifiers, pretrained or saved classifier
+trunks, VAEs, and diffusion wrappers including DiffusionClassifierV2. Config mode
+resolves data dimensions, optimizer schedules, dtype policy, seeds, and continual
+classifier/replay bundles. Model implementations remain in their own packages.
+Optional actions include weight loading and architecture summaries; constructing
+a pretrained model may download its ImageNet weights through Keras.
+"""
 
 from __future__ import annotations
 
@@ -65,8 +73,10 @@ def get_compile_args(
         metrics (list[str | tf.keras.metrics.Metric]): Metrics evaluated by
             Keras.  ``["accuracy"]`` selects accuracy appropriate to the loss
             and target representation; ``[]`` disables extra metrics.
+            Defaults to ``('accuracy',)``.
         loss (str | tf.keras.losses.Loss | Callable): Keras loss identifier,
-            object, or callable.  The default expects integer class labels.
+            object, or callable. Defaults to
+            ``"sparse_categorical_crossentropy"``, which expects integer labels.
 
     Returns:
         dict[str, object]: A new mapping with exactly ``optimizer``, ``loss``,
@@ -96,17 +106,24 @@ def get_callbacks(
             ReduceLROnPlateau]``.  ``[0]`` returns only early stopping, ``[1]``
             only learning-rate reduction, and ``[0, 1]`` both.  Normal Python
             negative indexing and duplicates are honored.
+            Defaults to ``(0,)``.
         monitor (str): Key expected in epoch logs, such as ``"val_accuracy"``,
             ``"val_loss"``, or the project's ``"decoder_accuracy"``.
+            Defaults to ``'val_accuracy'``.
         mode (str): ``"min"``, ``"max"``, or ``"auto"`` direction used by
             both callbacks.
+            Defaults to ``'max'``.
         patience (int): Number of non-improving epochs tolerated by both
             callbacks.
+            Defaults to ``5``.
         min_delta (float): Minimum absolute change counted as improvement by
             both callbacks.
+            Defaults to ``0.01``.
         reducelr_factor (float): Multiplier applied by ``ReduceLROnPlateau``;
             normally a float strictly between 0 and 1.
+            Defaults to ``0.6``.
         verbose (int): Keras callback verbosity, commonly ``0`` or ``1``.
+            Defaults to ``1``.
 
     Returns:
         list[tf.keras.callbacks.Callback]: Newly created callbacks in the exact
@@ -148,11 +165,18 @@ def _make_optimizer(config: Config | None = None,
     Args:
         config (Config | None): Typed optimizer/training settings.  When
             supplied, direct keyword values are ignored.
-        **kwargs (object): Direct-mode values ``epochs``,
-            ``initial_learning_rate``, ``decay_steps``, ``name``, ``schedule``,
-            ``weight_decay``, ``momentum``, ``clipnorm``, and ``trainset_len``.
-            Direct mode defaults to a constant learning rate because no
-            dataset length is necessarily available.
+            Defaults to ``None``, using direct optimizer options.
+        **kwargs (object): Direct optimizer settings. ``name`` defaults to
+            ``"adam"`` and accepts ``adam``, ``nadam``, ``rmsprop``, ``sgd``,
+            ``adamw``, or an optimizer object to return unchanged.
+            ``initial_learning_rate`` defaults to ``0.005``. ``schedule``
+            defaults to ``"constant"``; None is also constant, and ``"cosine"``
+            uses ``decay_steps`` (default None). An omitted cosine duration
+            is ``epochs`` (default 10) times ``trainset_len`` (default None,
+            required for this inference). ``weight_decay`` defaults to None
+            (zero for AdamW); nonzero decay requires AdamW. ``momentum``
+            defaults to ``0.0`` and applies only to SGD/RMSprop. ``clipnorm``
+            defaults to None and otherwise enables Keras per-gradient clipping.
 
     Returns:
         tf.keras.optimizers.Optimizer | object: The requested Keras optimizer,
@@ -162,6 +186,11 @@ def _make_optimizer(config: Config | None = None,
         ValueError: If a schedule/optimizer is unsupported, cosine decay lacks
             a positive duration, or weight decay is paired with a non-AdamW
             optimizer.
+
+    Side Effects:
+        Config mode records an inferred cosine duration in
+        ``config.optimizer.decay_steps``. Every constructed optimizer starts
+        with fresh iteration/slot state.
     """
 
     from tensorflow.keras import optimizers
@@ -194,6 +223,7 @@ def _make_optimizer(config: Config | None = None,
     if not isinstance(name, str):
         return name
 
+    # Normalize a string schedule name while preserving the None constant-rate choice.
     schedule = schedule.lower() if isinstance(schedule, str) else schedule
     # Derive a cosine duration from epochs and prepared dataset length.
     if schedule == "cosine" and decay_steps is None:
@@ -237,6 +267,7 @@ def _make_optimizer(config: Config | None = None,
         # TensorFlow 2.10 exposes AdamW below the experimental namespace.
         if adamw is None:
             adamw = optimizers.experimental.AdamW
+        # Use zero AdamW decay when no explicit regularization strength was supplied.
         return adamw(
             weight_decay=0. if weight_decay is None else weight_decay,
             **optimizer_kwargs
@@ -283,29 +314,37 @@ def _get_classifier_model(
             ``32x32x3`` images; ``DNN``
             consumes 2,048-element feature vectors; ``hp-tuned`` clones a saved
             model's architecture except for its original output layer.
+            Defaults to ``'CNN'``.
         model_path (str | os.PathLike): Keras model path required by
             ``"hp-tuned"`` and ignored by other model types.
+            Defaults to ``''``.
         dropout_rate (float): Fraction dropped before the final classifier;
             normally in ``[0, 1)``.
+            Defaults to ``0.0``.
         num_last_not_frozen (int | None): For Xception, the number of trailing
             layers left trainable. Earlier layers are frozen; ``0`` freezes the
             complete convolutional base and ``None`` leaves the base trainable.
+            Defaults to ``3``.
         resize (tuple[int, int]): ``(height, width)`` used to resize images and
             define Xception's input size.  Xception imposes its own minimum-size
             requirements.
-        compile_args (Mapping[str, object]): Overrides or extends defaults
+            Defaults to ``(299, 299)``.
+        compile_args (Mapping[str, object] | None): Overrides or extends defaults
             ``{"optimizer": "adam", "loss":
             "sparse_categorical_crossentropy", "metrics": ["accuracy"]}``.
             Valid additional keys are those accepted by ``Model.compile``, for
             example ``{"optimizer": Adam(1e-4), "run_eagerly": True}``.
+            Defaults to ``None``, which uses the default compile mapping.
         use_loaded_opt (bool): In ``"hp-tuned"`` mode, replace any requested
             optimizer with a fresh optimizer reconstructed from the serialized
             optimizer configuration in ``model_path``. Slot variables and the
             iteration counter are intentionally not reused because the output
             head changes the optimized variable set. A saved model without a
             compiled optimizer is rejected. Ignored by other modes.
+            Defaults to ``False``.
         verbose (bool | int): Truthy values print ``model.summary()``.
-        architecture_kwargs (Mapping[str, object]): Optional architecture
+            Defaults to ``1``.
+        architecture_kwargs (Mapping[str, object] | None): Optional architecture
             controls for ``CNN`` or ``DNN``.  An empty mapping preserves the
             original models exactly.  CNN controls are ``input_shape``
             (default ``(32, 32, 3)``), ``conv_filters`` (``(64, 128, 128,
@@ -318,8 +357,10 @@ def _get_classifier_model(
             ``kernel_initializer`` (``"glorot_uniform"``).  Multidimensional
             DNN inputs are flattened before the dense blocks.  Nonempty
             mappings are rejected for ``pretrained`` and ``hp-tuned`` models.
+            Defaults to ``None``, which selects the original architecture.
         seed (int | None): Optional experiment seed used to derive independent
             dropout streams for each constructed classifier branch.
+            Defaults to ``None``, leaving dropout seeds unspecified.
 
     Returns:
         tf.keras.Sequential: A built, compiled classifier mapping a batch of
@@ -359,9 +400,6 @@ def _get_classifier_model(
     }
     architecture_kwargs = dict(architecture_kwargs or {})
     stable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
-    # Validate the optional seed once before constructing seeded sublayers.
-    derive_seed(seed, "classifier", "dropout", "validation")
-
     # Keep custom local architectures separate from saved/pretrained models.
     if architecture_kwargs and model_type in ("pretrained", "hp-tuned"):
         raise ValueError(
@@ -377,6 +415,7 @@ def _get_classifier_model(
             include_top=False, 
             input_shape=(resize[0], resize[1], 3)
         )
+        # Keep all pretrained layers trainable for None; otherwise freeze the earlier layers.
         frozen_layers = 0 if num_last_not_frozen is None else (
             len(conv_base.layers) - num_last_not_frozen
         )
@@ -443,173 +482,106 @@ def _get_classifier_model(
             outputs,
             name=cloned_model.name,
         )
-    # Build a configurable convolutional classifier.
-    elif model_type == "cnn":
-        # Preserve the compact legacy CNN when no architecture is supplied.
-        if not architecture_kwargs:
-            model = models.Sequential([
-                layers.Conv2D(64, 7, padding="same", activation="relu", input_shape=(32, 32, 3)), 
-                layers.Conv2D(64, 3, padding="same", activation="relu"), 
-                layers.MaxPooling2D(2), 
-                layers.Conv2D(128, 3, padding="same", activation="relu"), 
-                layers.Conv2D(128, 3, padding="same", activation="relu"), 
-                layers.MaxPooling2D(2), 
-                layers.Conv2D(128, 3, padding="same", activation="relu"), 
-                layers.Conv2D(128, 3, padding="same", activation="relu"), 
-                layers.MaxPooling2D(2), 
-                layers.Conv2D(256, 3, padding="same", activation="relu"), 
-                layers.GlobalAveragePooling2D(), 
-                layers.Dropout(
-                    dropout_rate, 
-                    seed=derive_seed(seed, "classifier", "cnn", "legacy", "dropout")
-                ), 
-                layers.Dense(
-                    class_num, 
-                    activation="softmax", 
-                    dtype=stable_dtype
-                )
-            ])
-        # Merge user overrides into explicit CNN architecture defaults.
-        else:
-            cnn_defaults = {
-                "input_shape": (32, 32, 3), 
-                "conv_filters": (64, 128, 128, 256), 
-                "conv_depths": (2, 2, 2, 1), 
-                "kernel_size": 3, 
-                "first_kernel_size": 7, 
-                "activation": "relu", 
-                "use_batch_norm": False, 
-                "pooling": "max", 
-                "global_pooling": "avg"
-            }
-            unknown = sorted(set(architecture_kwargs) - set(cnn_defaults))
-        # Reject unrecognized CNN architecture keys.
-            if unknown:
-                raise TypeError("Unsupported CNN architecture options: " + str(unknown))
-            architecture = {
-                **cnn_defaults, 
-                **architecture_kwargs
-            }
+    # Build CNN and DNN families from their shared configurable architecture path.
+    elif model_type in {"cnn", "dnn"}:
+        defaults = {
+            "cnn": {
+                "input_shape": (32, 32, 3),
+                "conv_filters": (64, 128, 128, 256),
+                "conv_depths": (2, 2, 2, 1),
+                "kernel_size": 3,
+                "first_kernel_size": 7,
+                "activation": "relu",
+                "use_batch_norm": False,
+                "pooling": "max",
+                "global_pooling": "avg",
+            },
+            "dnn": {
+                "input_shape": (2048,),
+                "hidden_dims": (),
+                "activation": "relu",
+                "use_batch_norm": False,
+                "kernel_initializer": "glorot_uniform",
+            },
+        }[model_type]
+        unknown = sorted(set(architecture_kwargs) - set(defaults))
+        # Reject architecture keys outside the selected classifier family's options.
+        if unknown:
+            raise TypeError(
+                f"Unsupported {model_type.upper()} architecture options: {unknown}"
+            )
+        architecture = {**defaults, **architecture_kwargs}
+        input_shape = tuple(architecture["input_shape"])
+        model_layers = [layers.InputLayer(input_shape=input_shape)]
+
+        # Construct convolutional stages for a CNN.
+        if model_type == "cnn":
             conv_filters = architecture["conv_filters"]
             conv_depths = architecture["conv_depths"]
-
-        # Keep convolutional widths aligned with their stage depths.
+            # Require one depth entry for every convolutional filter stage.
             if len(conv_filters) != len(conv_depths):
                 raise ValueError("conv_filters and conv_depths must have equal lengths.")
-        # Restrict intermediate pooling to max or average pooling.
+            # Reject unsupported intermediate pooling methods.
             if architecture["pooling"] not in ("max", "avg"):
                 raise ValueError("pooling must be 'max' or 'avg'.")
-        # Restrict final spatial reduction to max or average pooling.
+            # Reject unsupported final spatial pooling methods.
             if architecture["global_pooling"] not in ("max", "avg"):
                 raise ValueError("global_pooling must be 'max' or 'avg'.")
-
-            pooling_layer = layers.MaxPooling2D if architecture["pooling"] == "max" \
-                            else layers.AveragePooling2D
-            global_pooling_layer = layers.GlobalAveragePooling2D \
-                                if architecture["global_pooling"] == "avg" \
-                                else layers.GlobalMaxPooling2D
-            model_layers = [
-                layers.InputLayer(input_shape=architecture["input_shape"])
-            ]
-
-            for stage_id, (filters, depth) in enumerate(zip(
-                conv_filters, conv_depths
-            )):
+            pooling_layer = {
+                "max": layers.MaxPooling2D,
+                "avg": layers.AveragePooling2D,
+            }[architecture["pooling"]]
+            global_pooling_layer = {
+                "max": layers.GlobalMaxPooling2D,
+                "avg": layers.GlobalAveragePooling2D,
+            }[architecture["global_pooling"]]
+            for stage_id, (filters, depth) in enumerate(zip(conv_filters, conv_depths)):
                 for block_id in range(depth):
+                    # Use the initial kernel size for the first convolution and the regular size thereafter.
                     model_layers.append(layers.Conv2D(
-                        filters, 
+                        filters,
                         architecture["first_kernel_size"] if stage_id == block_id == 0
-                        else architecture["kernel_size"], 
-                        padding="same", 
-                        activation=architecture["activation"]
+                        else architecture["kernel_size"],
+                        padding="same",
+                        activation=architecture["activation"],
                     ))
-            # Normalize convolutional activations when configured.
+                    # Append batch normalization only when enabled for the convolutional trunk.
                     if architecture["use_batch_norm"]:
                         model_layers.append(layers.BatchNormalization())
-
-            # Downsample between convolutional stages, not after the final stage.
+                # Downsample between stages, leaving the final stage at its current resolution.
                 if stage_id < len(conv_filters) - 1:
                     model_layers.append(pooling_layer(2))
-
-            model_layers.extend([
-                global_pooling_layer(), 
-                layers.Dropout(
-                    dropout_rate,
-                    seed=derive_seed(seed, "classifier", "cnn", "dropout"),
-                ),
-                layers.Dense(
-                    class_num,
-                    activation="softmax",
-                    dtype=stable_dtype,
-                )
-            ])
-            model = models.Sequential(model_layers)
-    # Build a configurable dense classifier.
-    elif model_type == "dnn":
-        # Preserve the compact legacy DNN when no architecture is supplied.
-        if not architecture_kwargs:
-            model = models.Sequential([
-                # layers.Flatten(input_shape=(10, 10, 2048)), 
-                # layers.GlobalAveragePooling2D(input_shape=(10, 10, 2048)), 
-                # layers.Dense(256, activation="relu"), 
-                layers.Dropout(
-                    dropout_rate, 
-                    input_shape=(2048,), 
-                    seed=derive_seed(seed, "classifier", "dnn", "legacy", "dropout")
-                ), 
-                layers.Dense(
-                    class_num, 
-                    activation="softmax", 
-                    dtype=stable_dtype
-                )
-            ])
-        # Merge user overrides into explicit DNN architecture defaults.
+            model_layers.append(global_pooling_layer())
+        # Construct dense hidden layers for the DNN family.
         else:
-            dnn_defaults = {
-                "input_shape": (2048,), 
-                "hidden_dims": (), 
-                "activation": "relu", 
-                "use_batch_norm": False, 
-                "kernel_initializer": "glorot_uniform"
-            }
-            unknown = sorted(set(architecture_kwargs) - set(dnn_defaults))
-        # Reject unrecognized DNN architecture keys.
-            if unknown:
-                raise TypeError("Unsupported DNN architecture options: " + str(unknown))
-            architecture = {
-                **dnn_defaults, 
-                **architecture_kwargs
-            }
-
-            input_shape = tuple(architecture["input_shape"])
-            model_layers = [layers.InputLayer(input_shape=input_shape)]
-        # Flatten structured inputs before dense hidden layers.
+            # Flatten structured DNN inputs before applying dense layers.
             if len(input_shape) > 1:
                 model_layers.append(layers.Flatten())
-
             for hidden_dim in architecture["hidden_dims"]:
                 model_layers.append(layers.Dense(
-                    hidden_dim, 
-                    activation=architecture["activation"], 
-                    kernel_initializer=architecture["kernel_initializer"]
+                    hidden_dim,
+                    activation=architecture["activation"],
+                    kernel_initializer=architecture["kernel_initializer"],
                 ))
-            # Normalize hidden activations when configured.
+                # Append batch normalization only when enabled for dense hidden layers.
                 if architecture["use_batch_norm"]:
                     model_layers.append(layers.BatchNormalization())
 
-            model_layers.extend([
-                layers.Dropout(
-                    dropout_rate,
-                    seed=derive_seed(seed, "classifier", "dnn", "dropout"),
-                ),
-                layers.Dense(
-                    class_num, 
-                    activation="softmax", 
-                    kernel_initializer=architecture["kernel_initializer"],
-                    dtype=stable_dtype,
-                )
-            ])
-            model = models.Sequential(model_layers)
+        # Retain the established child seeds for legacy and configured calls.
+        dropout_stream = ("legacy", "dropout") if not architecture_kwargs else ("dropout",)
+        model_layers.extend([
+            layers.Dropout(
+                dropout_rate,
+                seed=derive_seed(seed, "classifier", model_type, *dropout_stream),
+            ),
+            layers.Dense(
+                class_num,
+                activation="softmax",
+                kernel_initializer=architecture.get("kernel_initializer", "glorot_uniform"),
+                dtype=stable_dtype,
+            ),
+        ])
+        model = models.Sequential(model_layers)
     # Reject classifier families outside the supported implementations.
     else:
         raise ValueError(
@@ -617,7 +589,6 @@ def _get_classifier_model(
         )
 
     model.compile(**compile_args)
-    model.build(model.layers[0].input_shape)
 
     # Print the constructed classifier architecture when requested.
     if verbose:
@@ -641,11 +612,14 @@ def get_model(
         config (Config | int | dict[str, object] | None): A complete config,
             legacy positional class count, compatible root mapping, or ``None``
             for direct keywords.
+            Defaults to ``None``.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher
             forwarded to a diffusion-classifier wrapper. In automatic
             continual distillation it is optional and applies only to task one.
             It is deliberately separate from ``Config`` so YAML serialization
             remains safe.
+            Defaults to ``None``, providing no explicit initial teacher;
+            continual automatic distillation can create later task teachers.
         **kwargs (object): Direct selections such as ``model_name``/``name``,
             ``model_kwargs``, ``wrapper_name``, ``wrapper_kwargs``,
             ``classifier_name``, ``classifier_kwargs``, dataset shape/count
@@ -657,9 +631,37 @@ def get_model(
             checkpoint's zero-based ``seen_classes`` mapping then replays the saved class
             growth before weights are loaded.
 
+    Direct Defaults:
+        ``task="legacy"`` selects ordinary construction; ``continual`` returns
+        the classifier/replay bundle. ``model_name`` (aliases ``model_type``
+        and ``name``) defaults to ``dit_classifier`` when
+        ``with_classifier=True`` and ``diffusion_transformer`` otherwise.
+        ``dataset_name="mnist"``, ``return_features=False``, and ``pad=0``
+        supply class count, image geometry, and flattened width; explicit
+        ``class_num``, ``image_shape``, and ``flat_dim`` replace those defaults.
+        ``model_kwargs`` (alias ``kwargs``), ``wrapper_kwargs``, and
+        ``classifier_kwargs`` default to empty mappings and are copied before
+        use. ``wrapper_name=None`` infers the appropriate diffusion wrapper.
+        ``classifier_name=None`` selects DNN for VAE replay and CNN otherwise.
+        ``onehot_labels=False`` selects sparse classifier loss; conditioned
+        VAEs require their separate one-hot conditioning inputs.
+        ``loss_function="mse"``, ``show_network_summary=False``, and
+        ``weights_path=None`` disable summaries/weight restoration by default.
+        Optimizer arguments follow ``_make_optimizer``; the optimizer name
+        comes from ``optimizer_name`` or ``optimizer`` (default ``"adam"``).
+        ``seed=None`` keeps unseeded behavior, ``dtype_policy`` retains the
+        active Keras policy unless supplied, and ``deterministic_ops=False``
+        leaves process-wide determinism unchanged. For continual generative
+        families, ``use_buffer=False`` and
+        ``use_generative_model_classifier=False`` select generative replay
+        with an external classifier. ``use_distillation=False`` can also be
+        enabled through ``continually_learn_kwargs`` (default empty mapping).
+        The legacy positional classifier form follows ``_get_classifier_model``.
+
     Returns:
-        tf.keras.Model | dict[str, object]: A built and compiled classifier,
-            VAE, or diffusion wrapper. Continual tasks return ``classifier``,
+        tf.keras.Model | dict[str, object]: A constructed and compiled classifier,
+            VAE, or diffusion wrapper; some wrappers build lazily on first use.
+            Continual tasks return ``classifier``,
             ``classifier_name``, and ``generative_model``. A classifier-family
             ``model.name`` creates a classifier-only bundle; buffer replay and
             classifier-only bundles set ``generative_model`` to ``None``.
@@ -672,6 +674,12 @@ def get_model(
         ValueError: If a model, wrapper, optimizer, schedule, or architecture
             selection is unsupported, lacks required dataset sizing, or
             ``pad`` is negative/incompatible with the selected input type.
+
+    Side Effects:
+        Configured runtime settings install global RNG/dtype/determinism
+        controls before construction. Optimizer inference may update Config;
+        requested weight paths are read and selected summaries are printed.
+        Newly constructed optimizer state is not reused from a replaced head.
     """
 
     # Preserve the legacy positional class-count API.
@@ -687,6 +695,7 @@ def get_model(
         config = Config(**config)
 
     # Validate the task before runtime policy changes or model imports/builds.
+    # Read the configured task when present; otherwise use the direct task or legacy default.
     task = normalize_training_task(
         config.training.task
         if config is not None
@@ -703,6 +712,7 @@ def get_model(
     if config is not None or any(
         key in kwargs for key in ("seed", "dtype_policy", "deterministic_ops")
     ):
+        # Configured runs own dtype and determinism; direct runs use their explicit overrides.
         configure_runtime(
             runtime_seed, 
             config.training.dtype_policy if config is not None else kwargs.get(
@@ -762,6 +772,7 @@ def get_model(
     using_typed_model_config = False
     # Resolve model settings from direct keyword arguments.
     if config is None:
+        # Default to a classifier-capable diffusion network when with_classifier is enabled.
         default_model_name = "dit_classifier" if kwargs.get(
             "with_classifier", True
         ) else "diffusion_transformer"
@@ -812,6 +823,7 @@ def get_model(
         loss_function = config.model.loss_function
         # Size continual heads from the validated selected-class schedule.
         if task == "continual":
+            # Prefer the continual seed override and fall back to the training seed.
             continual_seed = config.continually_learn.seed if config.continually_learn.seed is not None \
                             else config.training.seed
             class_order, _ = resolve_continual_schedule(
@@ -856,6 +868,7 @@ def get_model(
             else:
                 section_name = _MODEL_SECTION_NAMES.get(model_name)
                 using_typed_model_config = section_name is not None
+                # Read a recognized typed model section; classifier-only families use empty options.
                 model_kwargs = getattr(config.model, section_name).kwargs() \
                     if section_name is not None else {}
 
@@ -864,22 +877,29 @@ def get_model(
                 wrapper_kwargs = deepcopy(config.model.wrapper_kwargs)
             # Otherwise obtain options from the matching typed wrapper section.
             else:
+                # Classifier networks default to classifier wrappers; generators use DiffusionModel.
                 default_wrapper_name = "diffusion_classifier" \
                     if model_name in _DIFFUSION_CLASSIFIER_MODELS \
                     else "diffusion_model"
+                # Resolve a wrapper section only for diffusion families.
                 wrapper_section_name = str(
                     wrapper_name or default_wrapper_name
                 ).lower() if model_name in _DIFFUSION_MODELS else None
+                # Look up the selected wrapper section when its name exists.
                 wrapper_section = getattr(
                     config.model, wrapper_section_name, None
                 ) if wrapper_section_name is not None else None
+                # Use typed wrapper arguments when available; otherwise retain empty defaults.
                 wrapper_kwargs = wrapper_section.kwargs() \
                     if wrapper_section is not None else {}
 
+    # Normalize an explicit wrapper name while preserving automatic selection via None.
     wrapper_name = None if wrapper_name is None else str(wrapper_name).lower()
+    # Normalize an explicit classifier name while preserving the family default via None.
     classifier_name = None if classifier_name is None \
         else str(classifier_name).lower()
 
+    # Reject continual VAEClassifier because its fixed head would expose future classes.
     if task == "continual" and model_name == "vae_classifier":
         raise ValueError(
             "Continual VAEClassifier is unsupported because its attached "
@@ -901,6 +921,7 @@ def get_model(
     # Direct mode reads continual-only options from the canonical nested map.
     else:
         continual_options = kwargs.get("continually_learn_kwargs", {})
+        # Read nested continual options only from a mapping; otherwise use empty defaults.
         continual_options = continual_options \
             if isinstance(continual_options, Mapping) else {}
         continual_self_distillation = bool(
@@ -954,12 +975,26 @@ def get_model(
     ) -> Any:
         """Build one configured standalone classifier.
 
+        Captures the resolved class count, geometry, seed, target encoding, and
+        optimizer settings from ``get_model``. Constructor mappings are copied;
+        CNN/DNN input shapes default to the resolved image/feature dimensions.
+
         Args:
-            name (str): Normalized classifier family name.
-            options (Mapping[str, object]): Classifier constructor overrides.
+            name (str): ``"cnn"``, ``"dnn"``, ``"pretrained"``, or
+                ``"hp-tuned"`` classifier family.
+            options (Mapping[str, object]): Overrides for the matching
+                ``_get_classifier_model`` arguments/defaults. ``class_num`` is
+                ignored in favor of the outer resolved count. Missing or
+                ``None`` architecture/compile mappings become empty mappings;
+                compile overrides replace inferred loss, optimizer, or metrics.
 
         Returns:
             tf.keras.Model: Built and compiled classifier.
+
+        Raises:
+            TypeError: If options contain unsupported constructor keys.
+            ValueError: If pretrained inputs lack three channels or model/
+                optimizer construction receives incompatible settings.
         """
 
         options = deepcopy(options)
@@ -998,6 +1033,7 @@ def get_model(
                 "The pretrained Xception classifier requires three-channel inputs."
             )
 
+        # Choose categorical cross-entropy for one-hot targets and sparse loss for IDs.
         loss = "categorical_crossentropy" if onehot_labels else \
             "sparse_categorical_crossentropy"
         compile_args = {
@@ -1029,11 +1065,22 @@ def get_model(
     def build_selected(name: str) -> Any:
         """Build the selected raw family and, when needed, its wrapper.
 
+        Uses copied outer model/wrapper options and the resolved geometry,
+        optimizer, seed, class count, teacher, and target encoding. Classifier
+        families use ``build_classifier``; VAEs receive dense dimensions;
+        diffusion backbones are wrapped according to the selected wrapper mode.
+
         Args:
-            name (str): Normalized model-family name.
+            name (str): Normalized classifier, VAE, or diffusion family accepted
+                by ``get_model``. Aliases are resolved by that enclosing API.
 
         Returns:
-            tf.keras.Model: Built and compiled selected model.
+            tf.keras.Model: Compiled classifier, VAE, or diffusion wrapper with
+            fresh optimizer state. Lazy wrappers may not yet have built weights.
+
+        Raises:
+            ValueError: If family/wrapper/teacher settings are incompatible.
+            TypeError: If constructor options are unsupported.
         """
 
         selected_kwargs = deepcopy(model_kwargs)
@@ -1095,6 +1142,7 @@ def get_model(
                 else:
                     raise ValueError("Continual VAE replay requires conditioned=True.")
 
+            # Attach a class width only when the VAE uses class conditioning.
             model = VariationalAutoencoder(
                 conditioned=conditioned, 
                 class_num=class_num if conditioned else None, 
@@ -1115,6 +1163,7 @@ def get_model(
         continual_diffusion = str(task).lower() == "continual"
         saved_seen_classes = wrapper_kwargs.get("seen_classes") or {}
         restoring_dynamic_diffusion = bool(saved_seen_classes)
+        # Leave dynamic/restored class counts unresolved; use the dataset width for fixed heads.
         dataset_dimensions = {
             "num_classes": (
                 None if continual_diffusion or restoring_dynamic_diffusion or (
@@ -1208,6 +1257,7 @@ def get_model(
             selected_wrapper_kwargs["test_steps"] = min(50, network.timesteps)
         # Select the wrapper implied by the raw network family.
         if selected_wrapper_name is None:
+            # Infer a classifier wrapper for classifier networks and a generator wrapper otherwise.
             selected_wrapper_name = "diffusion_classifier" \
                 if name in _DIFFUSION_CLASSIFIER_MODELS else "diffusion_model"
         # Prevent classifier wrappers from receiving generator-only networks.
@@ -1228,6 +1278,7 @@ def get_model(
         # Resolve automatic null masking from the raw network's CFG convention.
         if selected_wrapper_name == "diffusion_classifier_v2":
             selected_wrapper_kwargs["mask_by_nulls"] = False
+        # Infer null masking from CFG when classifier masking was not explicitly set.
         elif selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
         and selected_wrapper_kwargs.get("mask_by_nulls") is None:
             selected_wrapper_kwargs["mask_by_nulls"] = bool(network.use_cfg)
@@ -1260,6 +1311,12 @@ def get_model(
     def finalize_selected(selected_model: Any) -> Any:
         """Optionally summarize and initialize a selected model from weights.
 
+        Captures ``weights_path`` and ``show_network_summary`` from the factory.
+        An unbuilt VAE receives a correctly shaped dummy input before loading;
+        summaries use the wrapper when built and built components otherwise.
+        A missing weight path leaves initialization unchanged. Loading mutates
+        the selected model and summary requests print to standard output.
+
         Args:
             selected_model (tf.keras.Model): Newly constructed model.
 
@@ -1276,6 +1333,7 @@ def get_model(
 
             input_dtype = tf.as_dtype(selected_model.compute_dtype)
             x = tf.zeros((1, flat_dim), dtype=input_dtype)
+            # Supply one-hot conditioning to conditioned VAEs; use inputs alone otherwise.
             inputs = (
                 x, 
                 tf.one_hot([0], class_num, dtype=input_dtype)
@@ -1324,6 +1382,7 @@ def get_model(
                 "generative_model": None
             }
 
+        # Default VAE replay to a dense classifier and image replay to a CNN.
         selected_classifier_name = classifier_name or (
             "dnn" if model_name in _VAE_MODELS else "cnn"
         )
@@ -1333,6 +1392,7 @@ def get_model(
                 "pad is not supported for pretrained/hp-tuned classifiers."
             )
 
+        # Configured continual runs read their buffer flag; direct runs use the keyword flag.
         use_buffer = config.continually_learn.use_buffer \
                     if config is not None else kwargs.get("use_buffer", False)
         # Dynamic checkpoints need their paired persisted label mapping.
@@ -1347,6 +1407,7 @@ def get_model(
             selected_classifier_name, 
             classifier_kwargs
         )
+        # Skip generator construction for buffer replay; build it for generative replay.
         generative_model = None if use_buffer else build_selected(model_name)
         # Apply configured weights to the classifier in buffer-only mode.
         if generative_model is None:
@@ -1355,9 +1416,11 @@ def get_model(
         else:
             generative_model = finalize_selected(generative_model)
 
+            # Restore a paired classifier weight path only when it is recorded in a Config.
             classifier_weights_path = config.hpo.get(
                 "classifier_weights_path"
             ) if config is not None else None
+            # Read attached-classifier selection from Config or the direct keyword flag.
             use_replay_classifier = (
                 config.continually_learn.use_generative_model_classifier
                 if config is not None
@@ -1396,6 +1459,7 @@ def copy_model(
             non-final layer weight shapes must match.
         allow_truncate (bool): Copy only the destination-width prefix when the
             source is a full-width initializer.
+            Defaults to ``False``.
 
     Returns:
         None: ``new_model`` is modified in place.
@@ -1419,6 +1483,7 @@ def copy_model(
     new_last_layer_weights, new_last_layer_bias = new_model.layers[-1].get_weights()
 
     old_width = old_last_layer_bias.shape[0]
+    # A truncating initializer must already contain every destination class.
     if allow_truncate and old_width < new_last_layer_bias.shape[0]:
         raise ValueError(
             "A truncating initializer must cover every destination class."

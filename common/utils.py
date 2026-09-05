@@ -1,4 +1,11 @@
-"""Plotting, feature extraction, sample persistence, and experiment helpers."""
+"""Plot experiment outputs, extract features, and persist samples or search logs.
+
+The plotting helpers display figures or save static images, CSV histories, and
+GIF trajectories. Feature extraction uses a frozen Xception trunk and can save
+label-split metadata. Numeric sample archives default to non-pickled storage;
+legacy object arrays require explicit trust opt-in when loading. File writers
+use their supplied paths and generally expect parent directories to exist.
+"""
 
 from __future__ import annotations
 
@@ -65,16 +72,18 @@ def extract_features(
         file_name (str | os.PathLike | None): Optional base path without
             ``.npy``. When supplied, the feature arrays are saved as an ordered,
             non-pickled NumPy container via :func:`save_samples`.
+            Defaults to ``None``, returning features without saving an archive.
         split_seed (int): Seed that produced the label-aligned train/validation
             feature split. It is saved beside three-array archives so loading
             can reconstruct the identical label ordering.
+            Defaults to ``42``.
         validation_ratio (float): Fraction assigned to the saved validation
             feature array. It is stored with ``split_seed``.
+            Defaults to ``0.2``.
 
     Returns:
         list[numpy.ndarray]: One floating feature array per input dataset,
         normally shaped ``[samples, 2048]``.
-
     """
 
     from tensorflow.keras import models
@@ -112,27 +121,6 @@ def extract_features(
     return features_list
 
 
-def _normalize_feature_split_metadata(
-    split_seed: int, 
-    validation_ratio: float
-) -> tuple[int, float]:
-    """Normalize the reproducible label split stored with feature archives.
-
-    Args:
-        split_seed (int): NumPy-compatible random seed.
-        validation_ratio (float): Fraction assigned to validation features.
-
-    Returns:
-        tuple[int, float]: Normalized Python seed and validation fraction.
-
-    """
-
-    split_seed = int(split_seed)
-    validation_ratio = float(validation_ratio)
-
-    return split_seed, validation_ratio
-
-
 def save_feature_split_metadata(
     path: str | os.PathLike[str], 
     split_seed: int, 
@@ -144,21 +132,18 @@ def save_feature_split_metadata(
         path (str | os.PathLike): Feature-archive base path without ``.npy``.
         split_seed (int): Seed used for the stratified train/validation split.
         validation_ratio (float): Fraction assigned to validation features.
+            Defaults to ``0.2``.
 
     Returns:
         pathlib.Path: Written ``.metadata.json`` sidecar path.
     """
 
-    split_seed, validation_ratio = _normalize_feature_split_metadata(
-        split_seed, 
-        validation_ratio
-    )
     metadata_path = Path(os.fspath(path) + ".metadata.json")
     payload = {
         "format_version": 1, 
         "label_split": {
-            "random_state": split_seed, 
-            "validation_ratio": validation_ratio
+            "random_state": int(split_seed),
+            "validation_ratio": float(validation_ratio)
         }
     }
 
@@ -211,10 +196,7 @@ def load_feature_split_metadata(
             "validation_ratio."
         )
 
-    return _normalize_feature_split_metadata(
-        label_split["random_state"], 
-        label_split["validation_ratio"]
-    )
+    return int(label_split["random_state"]), float(label_split["validation_ratio"])
 
 
 def CL_plot(
@@ -232,6 +214,7 @@ def CL_plot(
             values; multiple pairs create comparison curves.
         class_counts (Sequence[int] | None): Optional seen-class count for each
             configured task. ``None`` preserves the legacy two-through-N axis.
+            Defaults to ``None``.
 
     Returns:
         None: Matplotlib displays the figure interactively.
@@ -243,6 +226,7 @@ def CL_plot(
     from matplotlib import pyplot as plt
 
 
+    # Use the legacy two-through-N class axis unless explicit task class counts were supplied.
     x_values = list(range(2, class_num+1)) if class_counts is None \
             else list(class_counts)
 
@@ -284,25 +268,36 @@ def plot_history(
             ``slice(*range_)``.  ``(0, None)`` plots all epochs, ``(5, 20)``
             plots zero-based entries 5--19, and ``(None, None, 2)`` plots every
             other epoch.  CSV output is not sliced.
+            Defaults to ``(0, None)``.
         metrics (Sequence[str] | None): Keys to plot; ``None`` considers every
             history key.
+            Defaults to ``None``.
         row (int | None): Positive subplot rows. ``None`` uses
             ``ceil(number_of_plots / col)``; an explicit value must provide
             enough cells for every requested metric.
+            Defaults to ``None``.
         col (int): Positive subplot columns; defaults to 3.
         figsize (tuple[float, float] | None): Matplotlib figure size in inches.
             ``None`` uses ``(20, row * 5)``.
+            Defaults to ``None``.
         x_ticks_rotation (float): Epoch tick-label rotation in degrees.
+            Defaults to ``90``.
         y_ticks_rotation (float): Value tick-label rotation in degrees.
+            Defaults to ``0``.
         show_all_x_ticks (bool): Show one tick per epoch unless a plotted range
             contains more than 50 epochs.
+            Defaults to ``True``.
         y_ticks_num (int | None): If truthy, place this many evenly spaced ticks
             between the combined training/validation minimum and maximum.
+            Defaults to ``None``, preserving Matplotlib's automatic y ticks.
         show_plots (bool): Display the figure; false closes it after saving.
+            Defaults to ``True``.
         plot_path (str | os.PathLike | None): Optional image destination.
+            Defaults to ``None``, skipping figure-file output.
         csv_path (str | os.PathLike | None): Optional CSV destination containing
             an added one-based ``epoch`` column and all unsliced history keys;
             shorter series are padded with missing values.
+            Defaults to ``None``, skipping CSV output.
 
     Returns:
         None.
@@ -367,6 +362,7 @@ def plot_history(
         min_ = min(values)
         max_ = max(values)
 
+        # Label validation-prefixed series as validation and other series as training.
         ax.plot(
             epochs, 
             values, 
@@ -452,9 +448,13 @@ def create_gif(
         images2 (Iterable[numpy.ndarray] | None): Optional second trajectory.
             Paired frames (using truncating ``zip``) are stacked vertically per
             sample with a 10-pixel white separator before horizontal tiling.
+            Defaults to ``None``, rendering only the first trajectory.
         duration (int): Milliseconds per frame passed to Pillow.
+            Defaults to ``100``.
         loop (int): GIF repeat count; ``0`` requests infinite looping.
+            Defaults to ``0``.
         verbose (bool | int): Print the destination when truthy.
+            Defaults to ``1``.
 
     Returns:
         None.
@@ -508,6 +508,7 @@ def create_gif(
 
         frames.append(image.convert("RGBA"))
 
+    # Reject an empty frame sequence before selecting the first GIF frame.
     if not frames:
         raise ValueError("At least one GIF frame is required.")
 
@@ -532,10 +533,10 @@ def show_img(x: object, y: Sequence[object] | None = None) -> None:
             ``[height, width]`` or ``[height, width, channels]``.
         y (Sequence[object] | None): Optional indexable label container.
             ``y[0]`` is displayed when present and non-``None``.
+            Defaults to ``None``.
 
     Returns:
         None: The image is shown interactively.
-
     """
 
     from matplotlib import pyplot as plt
@@ -566,10 +567,14 @@ def plot_images(
             channels.
         row (int): Positive minimum subplot row count. Additional rows are
             added when needed to fit every image.
+            Defaults to ``1``.
         col (int): Positive maximum number of subplot columns.
+            Defaults to ``11``.
         show_images (bool): Display the figure interactively.
+            Defaults to ``True``.
         save_path (str | os.PathLike | None): Optional image destination.  At
             least one of ``show_images`` or ``save_path`` must be enabled.
+            Defaults to ``None``, skipping figure-file output.
 
     Returns:
         None.
@@ -606,7 +611,9 @@ def plot_images(
     axes = np.atleast_1d(axes).ravel()
 
     for i in range(len(imgs)):
+        # Remove a singleton grayscale channel; preserve RGB/RGBA channels.
         image = imgs[i, :, :, 0] if imgs.shape[-1] == 1 else imgs[i]
+        # Use a grayscale colormap for one-channel images and native colors otherwise.
         axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None)
         axes[i].set_title(f"{i}")
         axes[i].axis("off")
@@ -751,6 +758,7 @@ def load_samples(
                 )
 
             try:
+                # Always disable pickle for safe bundles; use the explicit trust flag for legacy NPY.
                 loaded = np.load(
                     file, 
                     allow_pickle=False if is_safe_bundle else allow_pickle
@@ -822,13 +830,18 @@ def save_logs(
         model_name (str): Filename stem under ``./models/hyperas/logs``.
         i (int): Optimization iteration number included when both search-space
             values and names are nonempty.
-        search_space (Sequence[object]): Selected hyperparameter values.
-        names (Sequence[str]): Corresponding names.  ``zip`` silently truncates
-            to the shorter sequence.
-        metrics (Mapping[str, object]): Metric names and printable values.  An
+        search_space (Sequence[object] | None): Selected hyperparameter values.
+            Defaults to ``None``, treated as an empty sequence and omitting
+            the parameter/iteration block.
+        names (Sequence[str] | None): Corresponding names. ``zip`` silently
+            truncates to the shorter sequence. Defaults to ``None``, treated
+            as an empty sequence and omitting the parameter/iteration block.
+        metrics (Mapping[str, object] | None): Metric names and printable values.
+            Defaults to ``None``, treated as an empty mapping; ``None`` or an
             empty mapping omits the metric line.
         where_to (str): ``"file"`` appends to disk, ``"print"`` writes to
             stdout, and ``"both"`` does both.  Other values perform neither.
+            Defaults to ``'file'``.
 
     Returns:
         None.
@@ -838,8 +851,11 @@ def save_logs(
             not exist or is not writable.
     """
 
+    # Normalize an omitted search space to an empty sequence.
     search_space = () if search_space is None else search_space
+    # Normalize omitted parameter names to an empty sequence.
     names = () if names is None else names
+    # Normalize omitted metrics to an empty mapping.
     metrics = {} if metrics is None else metrics
     txt = ""
 

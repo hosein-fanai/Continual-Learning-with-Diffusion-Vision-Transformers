@@ -1,4 +1,15 @@
-"""Focused integration tests for optional continual research controls."""
+"""Integration checks for continual research controls and locked test isolation.
+
+Synthetic loaders mark the held-out test split with a sentinel, allowing guarded model/data
+calls to detect leakage during development. Small classifier templates and fake sampling
+protocols exercise baseline switches, exact exposure budgets, replay provenance, bounded
+sampling, manifest identity, and candidate-cache publication.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -52,6 +63,7 @@ def _assert_no_test_sentinel(data: object) -> None:
     # Inspect every batch while preserving the re-iterable dataset itself.
     if isinstance(data, tf.data.Dataset):
         for element in data:
+            # Unpack labeled batches; a bare image tensor is already the input.
             inputs = element[0] if isinstance(element, tuple) else element
             arrays.append(np.asarray(inputs))
     # Inspect an ordinary eager tensor or NumPy model input directly.
@@ -63,7 +75,19 @@ def _assert_no_test_sentinel(data: object) -> None:
 
 
 class ResearchControlTests(unittest.TestCase):
-    """Exercise baseline, exposure, split-isolation, and metadata contracts."""
+    """Exercise baseline, exposure, split-isolation, and metadata contracts.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     @staticmethod
     def _loader(
@@ -84,8 +108,8 @@ class ResearchControlTests(unittest.TestCase):
             **kwargs (object): Loader compatibility options.
 
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-            np.ndarray, np.ndarray]: Synthetic train, validation, and test pairs.
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            Synthetic train, validation, and test pairs.
         """
 
         del indices, kwargs
@@ -241,7 +265,15 @@ class ResearchControlTests(unittest.TestCase):
     def test_singleton_new_only_requires_effective_positive_replay(
         self,
     ) -> None:
-        """Reject replay flags and sources that cannot expose any old rows."""
+        """Reject replay flags and sources that cannot expose any old rows.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         unavailable_loader = Mock(
             side_effect=AssertionError("loader must not run")
@@ -334,6 +366,7 @@ class ResearchControlTests(unittest.TestCase):
             seed=17,
             phase="confirmation",
         )
+        # Select the first stream's run for manifest mismatch checks.
         planned_run = next(
             run for run in materialize_run_plan(manifest)
             if run["block_id"] == "stream-a"
@@ -378,19 +411,67 @@ class ResearchControlTests(unittest.TestCase):
     def test_diffusion_replay_sampling_is_bounded_and_deterministic(
         self,
     ) -> None:
-        """Generate candidates in ordered, batch-bounded RNG streams."""
+        """Generate candidates in ordered, batch-bounded RNG streams.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         class FakeDiffusion:
-            """Record the minimal diffusion sampling protocol."""
+            """Record the minimal diffusion sampling protocol.
+
+            This fixture implements only the interface required by its surrounding
+            regression tests. Construction and mutable state are described by ``__init__``;
+            it does not provide a general production replacement.
+
+            Args:
+                None.
+
+            Returns:
+                FakeDiffusion: A new local test fixture with independent instance state.
+            """
 
             test_network_name = "ema"
             use_cfg = True
 
             def __init__(self) -> None:
+                """Initialize the recorded diffusion sampling call list.
+
+                The enclosing class exposes EMA selection and CFG=True. Calls are recorded
+                locally without a model or random sampler.
+
+                Args:
+                    None.
+
+                Returns:
+                    None: The fixture state is initialized in place.
+                """
+
                 self.calls: list[dict[str, object]] = []
 
             def sample(self, **kwargs: object) -> tf.Tensor:
-                """Record one sampling request and return its labels."""
+                """Record a sampling request and return class labels as synthetic samples.
+
+                The fixture copies the labels before storing the call, so later caller
+                mutations cannot change the recorded evidence. Network and seed controls are
+                recorded for assertions but do not generate noise or images.
+
+                Args:
+                    **kwargs (object): Sampling keywords. labels is required and contains a
+                        one-dimensional numeric label array; network_name and seed are
+                        retained when supplied. The keyword mapping is otherwise empty by
+                        default, matching the variadic sampling interface.
+
+                Returns:
+                    tf.Tensor: Int64 label values reshaped to (number_of_labels, 1).
+
+                Raises:
+                    KeyError: The labels keyword was not supplied.
+                """
 
                 call = dict(kwargs)
                 call["labels"] = np.asarray(call["labels"]).copy()
@@ -443,7 +524,15 @@ class ResearchControlTests(unittest.TestCase):
         self.assertEqual(len(first), len(labels))
 
     def test_empty_diffusion_replay_skips_sampling(self) -> None:
-        """Preserve the loader-shaped empty view without model work."""
+        """Preserve the loader-shaped empty view without model work.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         model = Mock()
         empty = np.empty((0, 4, 4, 1), dtype="float32")
@@ -461,7 +550,15 @@ class ResearchControlTests(unittest.TestCase):
         model.sample.assert_not_called()
 
     def test_run_identity_authenticates_diffusion_scale(self) -> None:
-        """Bind preprocessing scale to checkpoints and replay-cache identity."""
+        """Bind preprocessing scale to checkpoints and replay-cache identity.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         with tempfile.TemporaryDirectory() as directory, patch(
             "common.learner.fingerprint_state",
@@ -479,6 +576,7 @@ class ResearchControlTests(unittest.TestCase):
             details["run_descriptor"]["data"]["diffusion_scale"],
             expected_scale,
         )
+        # Select the replay-cache fingerprint call by its training-input fields.
         cache_descriptor = next(
             call.args[0]
             for call in fingerprint_mock.call_args_list
@@ -596,7 +694,15 @@ class ResearchControlTests(unittest.TestCase):
     def test_fixed_step_dataset_is_finite_and_preserves_label_coverage(
         self,
     ) -> None:
-        """Bound repetition while retaining a full source pass for label scans."""
+        """Bound repetition while retaining a full source pass for label scans.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         features = tf.range(6, dtype=tf.float32)[:, None]
         labels = tf.constant([0, 0, 0, 0, 0, 1], dtype=tf.int32)
@@ -687,7 +793,7 @@ class ResearchControlTests(unittest.TestCase):
 
             Args:
                 model (tf.keras.Model): Model receiving the evaluation request.
-                x (object): Evaluation inputs.
+                x (object): Evaluation inputs. Defaults to ``None``.
                 *args (object): Remaining positional evaluation options.
                 **kwargs (object): Remaining keyword evaluation options.
 
@@ -926,6 +1032,9 @@ class ResearchControlTests(unittest.TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         samples = np.arange(8, dtype="float32").reshape((2, 4))

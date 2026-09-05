@@ -1,4 +1,15 @@
-"""End-to-end numeric-policy smokes for the custom model families."""
+"""Numeric-policy regressions for shared data/model factories and custom training.
+
+Small VAE and diffusion models exercise float64, float32, and mixed_float16 behavior,
+including loss scaling, output precision, dynamic heads, and separate V2 optimizers.
+Temporary model artifacts test weight and optimizer reconstruction. Tests restore a
+conservative float32 policy and clear Keras state afterward.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +62,19 @@ def _make_dit_network() -> DiTClassifier:
 
 
 class DtypeModelTests(unittest.TestCase):
-    """Ensure policies reach submodels and custom training steps."""
+    """Ensure policies reach submodels and custom training steps.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def tearDown(self) -> None:
         """Restore the conservative policy after each isolated smoke.
@@ -60,7 +83,7 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The Keras session is cleared and the global policy is float32.
         """
 
         tf.keras.backend.clear_session()
@@ -73,7 +96,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(7, "mixed_float16")
@@ -97,8 +121,11 @@ class DtypeModelTests(unittest.TestCase):
         """Load a SavedModel canonically after only importing its package.
 
         Returns:
-            None: A fresh process resolves the lazy Keras registration proxy
-            to the real ``VariationalAutoencoder`` class.
+            None: A fresh process resolves the lazy Keras registration proxy to the real
+            ``VariationalAutoencoder`` class.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         model = VariationalAutoencoder(
@@ -168,7 +195,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(11, "mixed_float16")
@@ -199,7 +227,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(13, "float64")
@@ -256,7 +285,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         expected = {
@@ -304,7 +334,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(19, "mixed_float16")
@@ -329,7 +360,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         expected = {
@@ -351,6 +383,7 @@ class DtypeModelTests(unittest.TestCase):
                 )
                 output = model(tf.ones((2, 4)), training=False)
 
+                # Select a hidden Dense layer, excluding the output head.
                 hidden = next(
                     layer for layer in model.layers
                     if isinstance(layer, tf.keras.layers.Dense)
@@ -364,8 +397,10 @@ class DtypeModelTests(unittest.TestCase):
         """Restore learned trunk weights without reusing stale optimizer slots.
 
         Returns:
-            None: Trunk weights, new head, optimizer reset, and one update are
-            asserted.
+            None: Trunk weights, new head, optimizer reset, and one update are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         configure_runtime(22, "float32")
@@ -412,7 +447,15 @@ class DtypeModelTests(unittest.TestCase):
         self.assertEqual(int(restored.optimizer.iterations), 1)
 
     def test_hp_tuned_preserves_functional_branching(self) -> None:
-        """Replace a Functional head without linearizing its graph."""
+        """Replace a Functional head without linearizing its graph.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         configure_runtime(25, "float32")
         inputs = tf.keras.layers.Input(shape=(4,))
@@ -446,7 +489,15 @@ class DtypeModelTests(unittest.TestCase):
         self.assertEqual(restored.output_shape[-1], 3)
 
     def test_vae_custom_steps_accept_sample_weights(self) -> None:
-        """Apply per-row weights in conditional VAE train and test steps."""
+        """Apply per-row weights in conditional VAE train and test steps.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         configure_runtime(26, "float32")
         x = tf.constant([[0., 0.], [1., 1.]], dtype=tf.float32)
@@ -505,6 +556,9 @@ class DtypeModelTests(unittest.TestCase):
 
         Returns:
             None: The missing optimizer is reported before model compilation.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         configure_runtime(23, "float32")
@@ -529,6 +583,9 @@ class DtypeModelTests(unittest.TestCase):
 
         Returns:
             None: The optimizer's clipping mode is asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         optimizer = _make_optimizer(
@@ -544,6 +601,9 @@ class DtypeModelTests(unittest.TestCase):
 
         Returns:
             None: Weight prefixes and destination iteration state are asserted.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         configure_runtime(24, "float32")
@@ -585,7 +645,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(22, "float32")
@@ -625,7 +686,8 @@ class DtypeModelTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         configure_runtime(23, "float64")
@@ -656,6 +718,6 @@ class DtypeModelTests(unittest.TestCase):
         self.assertEqual(replay_y.dtype, np.uint8)
 
 
-# Select the test action required by this condition.
+# Run this module's tests when executed directly.
 if __name__ == "__main__":
     unittest.main()

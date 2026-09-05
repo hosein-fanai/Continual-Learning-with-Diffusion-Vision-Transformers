@@ -1,4 +1,14 @@
-"""Focused tests for long-form continual-learning report artifacts."""
+"""Regression checks for continual CSV and TensorBoard report contracts.
+
+Complete, sparse, and empty detail mappings exercise stable table schemas, task/class/phase
+namespaces, missing metrics, and optional diagnostics. CSV checks use temporary directories;
+mocked summary writers expose TensorBoard calls without requiring an external service.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -41,8 +51,8 @@ def _details_fixture() -> dict[str, object]:
     """Return representative complete continual learner details.
 
     Returns:
-        dict[str, object]: Two-task histories, evaluations, schedules, metrics,
-        and test/validation accuracy matrices.
+        dict[str, object]: Two-task histories, evaluations, schedules, metrics, and
+        test/validation accuracy matrices.
     """
 
     return {
@@ -95,10 +105,30 @@ def _details_fixture() -> dict[str, object]:
 
 
 class ContinualReportingTests(unittest.TestCase):
-    """Verify complete, sparse, and TensorBoard continual report outputs."""
+    """Verify complete, sparse, and TensorBoard continual report outputs.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_continual_metric_math_is_nan_aware(self) -> None:
-        """A singleton acquisition row does not hide later observations."""
+        """A singleton acquisition row does not hide later observations.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         matrix = [
             [np.nan, np.nan, np.nan],

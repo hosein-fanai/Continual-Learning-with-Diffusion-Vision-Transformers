@@ -1,4 +1,10 @@
-"""Keras callback for adding the effective learning rate to epoch logs."""
+"""Record an optimizer's effective learning rate in Keras epoch logs.
+
+``LrLoggerCallback`` reads scalar learning rates or evaluates callable schedules
+at the optimizer's current iteration. It adds a Python float to the supplied
+log mapping, allowing ordinary history and TensorBoard callbacks to consume it.
+The callback changes neither optimizer configuration nor training weights.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ class LrLoggerCallback(callbacks.Callback):
                 dictionary is supplied it receives ``learning_rate``.  When
                 ``None`` is supplied a temporary dictionary is created, so no
                 value is returned to the caller.
+                Defaults to ``None``.
 
         Returns:
             None.

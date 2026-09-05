@@ -1,4 +1,15 @@
-"""Focused deterministic-stream and saved-feature metadata regressions."""
+"""Regression checks for component seeds and saved-feature label alignment.
+
+Small callbacks, layers, and model factories expose derived random streams. Synthetic
+feature archives verify split metadata, seeded reconstruction, and legacy compatibility
+against known label-coded arrays. Temporary artifacts keep persistence checks local to each
+test.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +44,19 @@ from diffusion.layers.single_token_layer import SingleTokenLayer
 
 
 class SeedPropagationTests(TestCase):
-    """Exercise every newly explicit component seed path."""
+    """Exercise every newly explicit component seed path.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def setUp(self: SeedPropagationTests) -> None:
         """Install a stable float32 baseline for each test.
@@ -51,6 +74,9 @@ class SeedPropagationTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         generated_seeds: list[int | None] = []
@@ -65,7 +91,7 @@ class SeedPropagationTests(TestCase):
             Args:
                 samples_per_class (int): Requested samples for each class.
                 onehot_y_output (bool): Whether one-hot labels were requested.
-                seed (int | None): Derived callback sampling seed.
+                seed (int | None): Derived callback sampling seed. Defaults to ``None``.
 
             Returns:
                 tuple[tf.Tensor, tf.Tensor]: Class-coded samples and labels.
@@ -114,6 +140,9 @@ class SeedPropagationTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         vae = VariationalAutoencoder(
@@ -157,6 +186,9 @@ class SeedPropagationTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         first_token = SingleTokenLayer(
@@ -223,6 +255,9 @@ class SeedPropagationTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         classifier = get_model(
@@ -232,6 +267,7 @@ class SeedPropagationTests(TestCase):
             seed=79,
             verbose=0,
         )
+        # Inspect the Dropout layer, which owns this stochastic seed.
         dropout = next(
             layer
             for layer in classifier.layers
@@ -263,6 +299,9 @@ class SeedPropagationTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         vae = VariationalAutoencoder(
@@ -299,7 +338,19 @@ class SeedPropagationTests(TestCase):
 
 
 class FeatureSplitMetadataTests(TestCase):
-    """Verify new metadata and legacy feature archives remain label-aligned."""
+    """Verify new metadata and legacy feature archives remain label-aligned.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     @staticmethod
     def _save_archive(path: Path, split_seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -384,6 +435,9 @@ class FeatureSplitMetadataTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with TemporaryDirectory() as temp_dir:
@@ -401,6 +455,9 @@ class FeatureSplitMetadataTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with TemporaryDirectory() as temp_dir:

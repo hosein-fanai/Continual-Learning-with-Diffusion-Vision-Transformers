@@ -120,9 +120,9 @@ so these otherwise inert dimensions are fixed to at most 50 steps, CFG 4, and
 eta 0. Final visualization settings remain reporting choices rather than HPO
 parameters.
 
-`swap_noise_image=True` is an immutable wrapper override for direct x0/VAE
+`swap_noise_image=True` is an immutable wrapper override for direct x_t/VAE
 prediction. These studies fix `image_loss_coef=0`, tune `kl_loss_coef` unless
-the override supplies one, and optimize reconstruction plus weighted
+the override supplies one, and optimize `x_t` prediction plus weighted
 main-latent KL. HPO validates the variational structure and ratio-list
 cardinality but passes a fixed KL coefficient through unchanged. These studies
 do not request denoising GIFs. DiT, DiT encoder-decoder, and DiT
@@ -132,11 +132,11 @@ a single-level example is
 "reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, "reshaper_kwargs":
 {"add_kl": True}}`; U-Net and U-Net classifier studies require
 `model_overrides={"reshaper_kwargs": {"add_kl": True}}`. Standalone
-`dit_classifier` and `dit_decoder` x0 studies are rejected because their raw
+`dit_classifier` and `dit_decoder` x_t studies are rejected because their raw
 call contracts cannot resume main-latent decoding. Noise distillation is also
-incompatible with x0 prediction.
+incompatible with x_t prediction.
 
-An x0 DiT depth is fixed by `model_overrides["depth"]`, when supplied, or
+An x_t DiT depth is fixed by `model_overrides["depth"]`, when supplied, or
 derived from the greatest positive stage ID in the fixed topology. An explicit
 depth must cover every referenced stage, and neither form creates a sampled
 2--6 depth parameter. Every topology contains actual encoder computation

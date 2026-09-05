@@ -191,6 +191,14 @@ independently with the master seed, or specified exactly with `class_order` and
 - attached VAE/diffusion classifiers;
 - previous-task student distillation and optional timestep-ensemble evaluation.
 
+The learner registers each task's complete class vocabulary before sampling
+its training pool, so small generator samples cannot reorder class logits.
+V2 automatically runs its generator and classifier phases;
+`train_classifier_separately` remains accepted for compatibility. Ordinary
+accuracy and its task matrix use the same predictions. Ensemble accuracy is
+task-balanced, and singleton-first classification scores remain unavailable
+until at least two classes have been introduced.
+
 For a diffusion classifier with an active distillation token and positive
 teacher loss, set `continually_learn.use_distillation=True`. Task one may start
 teacher-free; each following task snapshots the completed
@@ -281,6 +289,48 @@ inside interrupted continual trials. For continual diffusion classifiers,
 `run_hpo(..., use_distillation=True)` enables the token and loss search without
 requiring a live teacher; each trial creates later teachers from its selected
 raw/EMA completed-task snapshots.
+
+To optimize several continual metrics from EnsembleAccuracy with a distilled
+V2 classifier:
+
+```python
+study = run_hpo(
+    task="continual",
+    model_name="dit_classifier",
+    dataset_name="MNIST",
+    n_trials=10,
+    epochs=10,
+    class_num=4,
+    task_size=2,
+    use_distillation=True,
+    use_ensemble_accuracy=True,
+    ensemble_accuracy_kwargs={"max_t": 8, "t_chunk_size": 4},
+    objective_metrics=[
+        "final_average_accuracy",
+        "average_incremental_accuracy",
+        "average_forgetting",
+    ],
+    search_space_overrides={"wrapper_name": ["diffusion_classifier_v2"]},
+    results_path="results/distilled_v2_hpo",
+)
+```
+
+Directions are inferred as maximize, maximize, and minimize. Every objective
+comes from `validation_ensemble_accuracy_matrix`; test data is excluded from
+HPO evaluation. Trial `input_config.yaml` files use the ordinary Config APIs
+and can be loaded with `load_config` and executed with `main`. An undefined
+NaN objective fails its Optuna trial and allows subsequent trials to continue.
+
+Checkpoint descriptor schema 4 and HPO search version 10 distinguish these
+class-growth and scoring semantics from earlier runs. Start a new study for
+older artifacts; their scores must not be mixed into the corrected protocol.
+
+`python -m unittest common.tests.test_distilled_hpo_integration` runs a bounded
+regression with synthetic MNIST-shaped pixels, real V2 training, generated
+replay, noise and classifier distillation, four ensemble-based objectives,
+YAML round trips, CSV reports, and seeded chunked/batched ensemble equivalence.
+Run `python -m unittest discover -s common/tests` for the complete common suite
+in the project's TensorFlow 2.10 environment.
 
 ## Supporting modules
 

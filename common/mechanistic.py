@@ -12,47 +12,57 @@ import numpy as np
 from collections.abc import Sequence
 
 
-def _label_ids(labels: np.ndarray | Sequence[int]) -> np.ndarray:
-    """Convert sparse or one-hot labels to a one-dimensional integer array.
+def _label_ids(
+    labels: np.ndarray | Sequence[int],
+    class_num: int | None = None,
+) -> np.ndarray:
+    """Convert sparse vectors/columns or one-hot labels to integer IDs.
 
     Args:
-        labels (numpy.ndarray | Sequence[int]): Sparse labels or a rank-two
-            one-hot/probability matrix.
+        labels (numpy.ndarray | Sequence[int]): Sparse vector/column labels or
+            a rank-two one-hot/probability matrix with multiple columns.
+        class_num (int | None): Known prediction width, used to recognize a
+            one-column one-hot matrix for a one-class classifier.
+            Defaults to ``None``, interpreting one-column input as sparse IDs.
 
     Returns:
-        numpy.ndarray: Integer label IDs with shape ``[samples]``.
+        numpy.ndarray: ``int64`` label IDs with shape ``[samples]``; an existing
+        sparse int64 array may share storage. One-hot probabilities are decoded
+        by argmax without checking their normalization.
 
     Raises:
         ValueError: If labels are not rank one/two or contain nonfinite IDs.
     """
 
     values = np.asarray(labels)
-    # Convert matrix labels by selecting their represented class.
-    if values.ndim == 2:
-        # Argmax would silently turn NaN/Inf matrix entries into valid-looking IDs.
-        if not np.all(np.isfinite(values)):
-            raise ValueError("labels must contain only finite matrix values.")
-
-        values = np.argmax(values, axis=-1)
-    # Reject structures that cannot identify one class per sample.
-    elif values.ndim != 1:
+    # Reject label structures that cannot identify one class per sample.
+    if values.ndim not in (1, 2):
         raise ValueError("labels must be sparse rank-one or one-hot rank-two.")
-
+    # Check before argmax, which otherwise hides invalid probability entries.
     if not np.all(np.isfinite(values)):
         raise ValueError("labels must contain finite class IDs.")
 
-    return values.astype("int64", copy=False)
+    # Decode probability columns, including a known one-class one-hot target.
+    if values.ndim == 2 and (values.shape[1] != 1 or class_num == 1):
+        values = np.argmax(values, axis=-1)
+
+    return values.reshape(-1).astype("int64", copy=False)
 
 
 def _probability_matrix(probabilities: np.ndarray) -> np.ndarray:
     """Validate and return a floating multiclass probability matrix.
+
+    Values must be finite and within ``[0, 1]``. Every row must sum to one
+    within ``rtol=1e-5`` and ``atol=1e-7``; logits are never renormalized.
+    A single class is supported for the first task of a continual schedule.
 
     Args:
         probabilities (numpy.ndarray): Candidate probabilities shaped
             ``[samples, classes]``.
 
     Returns:
-        numpy.ndarray: Validated ``float64`` probabilities.
+        numpy.ndarray: Validated ``float64`` array with unchanged shape. The
+        result may share storage with a float64 input; values are not mutated.
 
     Raises:
         ValueError: If rank, width, finiteness, range, or row sums are invalid.
@@ -91,8 +101,10 @@ def calibration_metrics(
         labels (numpy.ndarray | Sequence[int]): Matching sparse or one-hot
             ground-truth labels.
         bins (int): Positive number of equal-width ECE bins.
+            Defaults to ``15``.
         epsilon (float): Positive lower probability bound used only inside
             logarithms.
+            Defaults to ``1e-12``.
 
     Returns:
         dict[str, float]: ``accuracy``, ``entropy``, ``nll``, ``brier`` and
@@ -103,7 +115,7 @@ def calibration_metrics(
     """
 
     probs = _probability_matrix(probabilities)
-    targets = _label_ids(labels)
+    targets = _label_ids(labels, class_num=probs.shape[1])
 
     bins = int(bins)
     epsilon = float(epsilon)
@@ -206,14 +218,26 @@ def class_centroid_drift(
 ) -> dict[str, object]:
     """Measure Euclidean representation-centroid movement for shared classes.
 
+    Each representation is converted to float64 and flattened after its sample
+    axis. For each class present in both snapshots, compute the L2 norm of the
+    difference between its sample-mean feature vectors. Classes contribute
+    equally to the overall mean, regardless of their sample counts.
+
     Args:
-        previous (numpy.ndarray): Earlier representations with samples in rows.
-        previous_labels (numpy.ndarray | Sequence[int]): Earlier class labels.
-        current (numpy.ndarray): Later representations with samples in rows.
-        current_labels (numpy.ndarray | Sequence[int]): Later class labels.
+        previous (numpy.ndarray): Earlier finite representations shaped
+            ``[N_old, ...]`` with at least one row.
+        previous_labels (numpy.ndarray | Sequence[int]): Aligned sparse labels
+            shaped ``[N_old]``/``[N_old, 1]`` or multi-column one-hot labels.
+        current (numpy.ndarray): Later finite representations shaped
+            ``[N_new, ...]`` with the same flattened feature width; sample
+            counts and row identities may differ between snapshots.
+        current_labels (numpy.ndarray | Sequence[int]): Labels for the current
+            rows in the same formats as ``previous_labels``.
 
     Returns:
-        dict[str, object]: Mean drift and a string-keyed per-class mapping.
+        dict[str, object]: ``mean_centroid_drift`` (float) and
+        ``per_class_centroid_drift`` (string class ID to float distance).
+        With no shared classes the mapping is empty and the mean is ``NaN``.
 
     Raises:
         ValueError: If arrays and labels are empty, misaligned, or incompatible.
@@ -243,6 +267,7 @@ def class_centroid_drift(
     }
     values = list(per_class.values())
 
+    # Average shared-class drift when available; mark no shared classes as undefined.
     return {
         "mean_centroid_drift": float(np.mean(values)) if values else float("nan"), 
         "per_class_centroid_drift": per_class
@@ -256,13 +281,20 @@ def _balanced_indices(
 ) -> np.ndarray:
     """Select a near-equal number of candidate indices from every class.
 
+    Shuffle candidates independently within each class, then consume one per
+    class per round in sorted class-ID order. Exhausted classes are skipped;
+    a partial final round favors earlier sorted classes. The local generator
+    advances, while labels remain unchanged.
+
     Args:
         labels (numpy.ndarray): Rank-one integer candidate labels.
-        budget (int): Number of indices to return.
+        budget (int): Nonnegative maximum number of indices to return. Zero
+            returns an empty array; a budget beyond available rows returns all.
         rng (numpy.random.Generator): Local generator used to randomize ties.
 
     Returns:
-        numpy.ndarray: Unique candidate indices with length ``budget``.
+        numpy.ndarray: Unique ``int64`` candidate indices in selection order,
+        with length ``min(budget, len(labels))`` for valid nonnegative budgets.
     """
 
     queues = {
@@ -305,20 +337,32 @@ def select_replay_candidates(
     no-gating behavior.
 
     Args:
-        samples (numpy.ndarray): Candidate replay examples.
-        labels (numpy.ndarray | Sequence[int]): Candidate conditioning labels.
+        samples (numpy.ndarray): Candidate replay examples shaped ``[N, ...]``;
+            non-sample dimensions and dtype are preserved in the selection.
+        labels (numpy.ndarray | Sequence[int]): Aligned sparse ``[N]``/
+            ``[N, 1]`` labels or multi-column one-hot conditioning labels.
         budget (int): Nonnegative maximum selected example count.
         strategy (str): ``all``, ``uniform``, ``random``, ``confidence``,
             ``surprise``, or ``confidence_surprise``.
+            Defaults to ``'all'``.
         probabilities (numpy.ndarray | None): Teacher probabilities required by
-            confidence/surprise strategies.
+            confidence/surprise strategies, shaped ``[N, classes]`` with class
+            columns indexed by label ID. Defaults to ``None``, valid only for
+            ``all``, ``uniform``, and ``random``; those modes ignore this input.
         seed (int | None): Local selection seed.
+            Defaults to ``None`` to initialize a local generator from entropy.
+            Global NumPy RNG state is not changed.
         surprise_weight (float): Weight in ``[0, 1]`` assigned to standardized
             surprise in the combined score.
+            Defaults to ``0.5``.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, dict[str, object]]: Selected samples,
-        selected integer labels, and gate-allocation diagnostics.
+        selected ``int64`` labels, and diagnostics containing strategy, candidate/
+        selected counts, and per-class allocations (string class IDs). Scored
+        strategies add selected score mean/std when the selection is nonempty.
+        At most ``min(budget, N)`` rows are returned; zero budget returns empty
+        arrays with preserved trailing sample dimensions.
 
     Raises:
         ValueError: If inputs or strategy parameters are invalid.
@@ -354,6 +398,7 @@ def select_replay_candidates(
         scores = None
     # Draw the matched uninformative control from the same candidate pool.
     elif strategy == "random":
+        # Draw random candidates for a nonzero budget; return no indices for zero budget.
         indices = rng.choice(len(x), size=selected_num, replace=False) \
             if selected_num else np.empty((0,), dtype="int64")
         scores = None
@@ -410,8 +455,13 @@ def select_replay_candidates(
 def _mean_pairwise_distance(values: np.ndarray) -> float:
     """Compute mean Euclidean distance over unique pairs of flattened rows.
 
+    Uses float64 squared norms and a Gram matrix, clips negative roundoff to
+    zero, and averages distances above the diagonal. Each unordered distinct
+    row pair receives equal weight; the calculation uses quadratic memory.
+
     Args:
-        values (numpy.ndarray): At least zero samples with arbitrary features.
+        values (numpy.ndarray): Numeric finite samples shaped ``[N, ...]``;
+            every non-sample dimension is flattened into the feature vector.
 
     Returns:
         float: Mean pair distance or ``NaN`` when fewer than two rows exist.
@@ -448,20 +498,37 @@ def replay_quality_metrics(
     """Measure replay consistency, coverage, diversity, and distribution drift.
 
     Args:
-        samples (numpy.ndarray): Selected replay examples.
-        labels (numpy.ndarray | Sequence[int]): Their conditioning labels.
+        samples (numpy.ndarray): Selected finite replay examples shaped
+            ``[N, ...]``; spatial/feature dimensions are flattened for distances.
+        labels (numpy.ndarray | Sequence[int]): Aligned sparse ``[N]``/
+            ``[N, 1]`` or multi-column one-hot conditioning labels.
         expected_classes (Sequence[int]): Old classes that replay should cover.
         probabilities (numpy.ndarray | None): Optional evaluator probabilities
-            used for label consistency and calibration.
+            shaped ``[N, classes]``, used for label consistency and calibration.
+            Defaults to ``None``, omitting those result fields.
         previous_samples (numpy.ndarray | None): Optional earlier replay pool.
+            Defaults to ``None``, disabling centroid drift. When supplied,
+            ``previous_labels`` must also be supplied and flattened feature
+            width must match the current pool when both are nonempty.
         previous_labels (numpy.ndarray | Sequence[int] | None): Labels aligned
             with ``previous_samples`` for centroid drift.
+            Defaults to ``None``; required exactly when the previous pool is
+            supplied, in the same label formats as ``labels``.
         max_diversity_samples (int): Positive cap on quadratic diversity work.
+            Defaults to ``512``.
         seed (int | None): Local seed for diversity subsampling.
+            Defaults to ``None`` for entropy-seeded local sampling, without
+            changing global NumPy RNG state.
 
     Returns:
-        dict[str, object]: Coverage, normalized label entropy, diversity,
-        optional calibration/consistency, and optional centroid drift.
+        dict[str, object]: ``sample_count``, fraction ``class_coverage``,
+        ``normalized_label_entropy`` (label entropy divided by log expected
+        class count), ``pixel_diversity`` (mean pairwise Euclidean distance), and
+        string-keyed ``class_counts``. One nonempty expected class has entropy
+        1; empty pools have undefined entropy/diversity, and no expected classes
+        gives undefined coverage (all represented by ``NaN``). Optional evaluator
+        input adds ``label_consistency`` and ``calibration``; nonempty current
+        and prior pools add ``distribution_drift`` from ``class_centroid_drift``.
 
     Raises:
         ValueError: If replay inputs, expected classes, or prior pairs conflict.
@@ -476,6 +543,7 @@ def replay_quality_metrics(
     if len(x) != len(y) or max_diversity_samples < 1:
         raise ValueError("samples/labels must align and diversity cap must be positive.")
 
+    # List represented classes for a nonempty replay pool; otherwise keep the list empty.
     present = sorted(np.unique(y).tolist()) if len(y) else []
     # Keep the normalized entropy denominator tied to the declared class set.
     unexpected = sorted(set(present) - set(expected))
@@ -486,6 +554,7 @@ def replay_quality_metrics(
             f"unexpected labels: {unexpected}."
         )
 
+    # Normalize coverage by expected classes; leave an empty class universe undefined.
     coverage = float(
         len(set(present) & set(expected)) / len(expected)
     ) if expected else float("nan")
@@ -506,6 +575,7 @@ def replay_quality_metrics(
         label_entropy = float("nan")
 
     rng = np.random.default_rng(seed)
+    # Subsample diversity inputs when replay exists; skip sampling an empty pool.
     diversity_indices = rng.choice(
         len(x), 
         size=min(len(x), int(max_diversity_samples)), 
@@ -525,10 +595,12 @@ def replay_quality_metrics(
         # Keep evaluator rows aligned with selected replay examples.
         if len(probs) != len(x):
             raise ValueError("probabilities must align with replay samples.")
+        # Measure label consistency for nonempty replay; mark an empty pool unavailable.
         result["label_consistency"] = float(np.mean(
             np.argmax(probs, axis=1) == y
         )) if len(y) else float("nan")
 
+        # Compute calibration only when replay examples exist.
         result["calibration"] = calibration_metrics(probs, y) if len(y) else {}
 
     has_previous_samples = previous_samples is not None

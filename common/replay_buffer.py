@@ -1,4 +1,11 @@
-"""Fixed-capacity replay storage used by the continual-learning workflow."""
+"""Manage continual-learning replay storage, candidate sampling, and cache reuse.
+
+``ReplayBuffer`` implements FIFO, global reservoir, and balanced per-class
+reservoir insertion with a private RNG and recoverable state. Array helpers
+prepare exact exposure counts and conditioning labels. Optional replay caches
+store numeric candidate pools in authenticated NPZ files and publish them
+atomically so repeated or concurrent runs cannot overwrite a different pool.
+"""
 
 from __future__ import annotations
 
@@ -45,19 +52,42 @@ def _sample_exact_rows(
     count: int | None, 
     rng: np.random.Generator
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Select an exact seeded exposure count from aligned arrays."""
+    """Select an exact number of aligned exposure rows with a caller-owned RNG.
+
+    Requests no larger than the pool sample without replacement; larger requests
+    sample with replacement. A None count returns all normalized input rows without
+    consuming the RNG, and zero returns shape-preserving empty array slices.
+
+    Args:
+        x (np.ndarray): Candidate samples shaped ``[N, ...]``.
+        y (np.ndarray): Corresponding sparse or one-hot labels with N leading rows.
+        count (int | None): Required nonnegative exposure count, or None for all rows.
+        rng (np.random.Generator): Local generator consumed only by actual sampling.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Aligned sample/label arrays preserving their
+        non-sample shapes and dtypes, with ``count`` rows or all N rows for None.
+
+    Raises:
+        ValueError: If row counts differ, positive exposure is requested from an
+            empty task, or NumPy rejects an invalid sampling count.
+    """
 
     x = np.asarray(x)
     y = np.asarray(y)
+    # Reject misaligned sample and label arrays before selecting exposure rows.
     if len(x) != len(y):
         raise ValueError("x and y must contain the same number of rows.")
 
+    # Keep the complete exposure pool when no count was requested.
     if count is None:
         return x, y
 
+    # Reject positive exposure requests when the source task is empty.
     if count > 0 and len(x) == 0:
         raise ValueError("cannot sample positive exposure from an empty task.")
 
+    # Return shape-preserving empty arrays for zero exposure.
     if count == 0:
         return x[:0], y[:0]
 
@@ -70,13 +100,32 @@ def _restore_replay_label_shape(
     label_ids: np.ndarray,
     reference_labels: np.ndarray
 ) -> np.ndarray:
-    """Represent selected integer IDs like the loader's original labels."""
+    """Represent selected integer labels like the loader's original label arrays.
+
+    Multi-column reference labels select one-hot encoding; a single column selects
+    sparse column IDs; vectors select sparse vectors. Labels are cast back to the
+    reference dtype without changing their selected order.
+
+    Args:
+        label_ids (np.ndarray): Selected class IDs, flattened to an int64 vector.
+        reference_labels (np.ndarray): Sparse vector/column or one-hot matrix used
+            only to determine output rank, categorical width, and dtype.
+
+    Returns:
+        np.ndarray: Labels shaped ``[N]``, ``[N, 1]``, or ``[N, C]`` according to
+        the reference representation, with the reference label dtype.
+
+    Raises:
+        IndexError: If an ID cannot index the reference one-hot class width.
+    """
 
     ids = np.asarray(label_ids, dtype="int64").reshape(-1)
     reference = np.asarray(reference_labels)
+    # Restore one-hot labels when the reference has multiple class columns.
     if reference.ndim == 2 and reference.shape[1] > 1:
         return np.eye(reference.shape[1], dtype=reference.dtype)[ids]
 
+    # Restore a sparse column when the reference labels have a column axis.
     if reference.ndim > 1:
         return ids[:, None].astype(reference.dtype, copy=False)
 
@@ -88,10 +137,26 @@ def _balanced_generation_labels(
     count: int,
     rng: np.random.Generator
 ) -> np.ndarray:
-    """Allocate an exact generated-replay count nearly equally by class."""
+    """Allocate an exact generated-replay budget nearly equally across old classes.
+
+    Each class receives ``count // len(classes)`` labels. A seeded random class
+    ordering allocates remainder examples, then the complete label sequence is
+    shuffled. Class allocations differ by at most one when the class IDs are unique.
+
+    Args:
+        classes (Sequence[int]): Old class IDs to condition on; must be nonempty
+            when count is positive.
+        count (int): Nonnegative number of conditioning labels to return.
+        rng (np.random.Generator): Local generator used for remainder allocation
+            and final ordering. A zero count does not consume it.
+
+    Returns:
+        np.ndarray: Int64 class IDs shaped ``[count]``; an empty vector for zero.
+    """
 
     classes = [int(class_id) for class_id in classes]
 
+    # Return no conditioning labels when the generation budget is zero.
     if count == 0:
         return np.empty((0,), dtype="int64")
 
@@ -107,7 +172,20 @@ def _balanced_generation_labels(
 
 
 def _cache_digest(value: np.ndarray) -> str:
-    """Hash one non-object array with dtype and shape metadata."""
+    """Hash a replay array using its dtype, shape, and contiguous numeric content.
+
+    The digest shares the recovery-array encoding, so cache validation agrees with
+    checkpoint fingerprinting. It reads the array without changing or persisting it.
+
+    Args:
+        value (np.ndarray): Numeric or other non-object replay array of any shape.
+
+    Returns:
+        str: Lowercase SHA-256 hexadecimal digest including array metadata.
+
+    Raises:
+        TypeError: If the array contains an object dtype.
+    """
 
     return _array_recovery_descriptor(value)["sha256"]
 
@@ -122,14 +200,53 @@ def _cached_replay_candidates(
     seed: int | None, 
     context_fingerprint: str | None = None
 ) -> tuple[np.ndarray, np.ndarray, str | None]:
-    """Read or atomically write one matched replay candidate pool."""
+    """Read or atomically publish one experiment-specific replay candidate pool.
+
+    ``off`` returns inputs without I/O; ``read`` requires a matching cache; ``write``
+    publishes a new pool or accepts an identical retry; ``read_write`` reads a
+    matching existing pool or publishes the supplied candidates when none exists.
+    Metadata and checksums authenticate reuse. Atomic no-replace publication lets a
+    concurrent winner remain authoritative instead of overwriting its samples.
+
+    Args:
+        x (np.ndarray): Candidate samples shaped ``[N, ...]`` with a non-object dtype.
+        y (np.ndarray): Aligned conditioning labels with N leading rows.
+        cache_dir (str | None): Cache root; None/empty is allowed only for ``off``.
+        cache_mode (str): Case-insensitive ``off``, ``read``, ``write``, or
+            ``read_write`` operation.
+        task_index (int): Zero-based task index used in metadata and the filename.
+        old_classes (Sequence[int]): Ordered original class IDs defining this pool.
+        seed (int | None): Recorded replay seed; None represents unseeded generation.
+            This helper performs no random sampling itself.
+        context_fingerprint (str | None): Experiment identity checked on reuse.
+            Defaults to None for the legacy namespace.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, str | None]: Selected candidate arrays and the
+        resolved archive path. ``off`` returns a None path; read modes return stored
+        arrays rather than the supplied candidates. Array dtypes/shapes are retained.
+
+    Raises:
+        ValueError: If the mode/path options, saved metadata, or checksums are invalid.
+        FileNotFoundError: If read mode requires an unavailable cache file.
+        FileExistsError: If a write would replace incompatible candidates or a
+            non-file path already occupies the archive destination.
+        OSError: If cache directories/files cannot be created, read, or published.
+
+    Side Effects:
+        Enabled modes create the cache root if needed. Publication writes a private
+        NPZ, creates its final hard link, and removes the temporary file. Existing
+        committed candidate files are not overwritten.
+    """
 
     cache_mode = str(cache_mode).lower()
+    # Reject cache modes outside the supported read/write vocabulary.
     if cache_mode not in ("off", "write", "read", "read_write"):
         raise ValueError("replay_cache_mode must be off, write, read, or read_write.")
     # Preserve the legacy no-I/O path exactly.
     if cache_mode == "off":
         return np.asarray(x), np.asarray(y), None
+    # Require a cache directory whenever cache I/O is enabled.
     if cache_dir is None or not str(cache_dir).strip():
         raise ValueError("replay_cache_dir is required when cache mode is enabled.")
 
@@ -142,87 +259,55 @@ def _cached_replay_candidates(
         create_root=True
     )
 
-    should_read = cache_mode == "read" or (
-        cache_mode == "read_write" and path.exists()
-    )
-    if should_read:
-        if not path.is_file():
-            raise FileNotFoundError(f"Replay cache does not exist: {path}")
-
-        with np.load(path, allow_pickle=False) as archive:
-            cached_x = archive["x"]
-            cached_y = archive["y"]
-            metadata = json.loads(str(archive["metadata"].item()))
-        expected = {
-            "schema_version": 1,
-            "task_index": int(task_index),
-            "old_classes": [int(class_id) for class_id in old_classes],
-            "candidate_count": int(len(y)),
-            "seed": seed,
-            "context_fingerprint": context_fingerprint,
-        }
-
-        # Refuse a cache created for another stochastic stream or replay budget.
-        if any(metadata.get(key) != value for key, value in expected.items()):
-            raise ValueError("Replay cache metadata differs from this experiment.")
-        if metadata.get("x_sha256") != _cache_digest(cached_x) \
-        or metadata.get("y_sha256") != _cache_digest(cached_y):
-            raise ValueError("Replay cache checksum validation failed.")
-
-        return cached_x, cached_y, str(path)
-
-    x = np.asarray(x)
-    y = np.asarray(y)
-    # A retried write may reuse the exact authenticated pool left by an
-    # interrupted task, but it must never replace different candidate bytes.
-    if cache_mode == "write" and path.exists():
-        if not path.is_file():
-            raise FileExistsError(f"Replay cache path is not a file: {path}")
-
-        with np.load(path, allow_pickle=False) as archive:
-            cached_x = archive["x"]
-            cached_y = archive["y"]
-            metadata = json.loads(str(archive["metadata"].item()))
-
-        expected = {
-            "schema_version": 1,
-            "task_index": int(task_index),
-            "old_classes": [int(class_id) for class_id in old_classes],
-            "candidate_count": int(len(y)),
-            "seed": seed,
-            "context_fingerprint": context_fingerprint
-        }
-        # Authenticate metadata, stored checksums, and the regenerated pool.
-        valid_metadata = all(
-            metadata.get(key) == value
-            for key, value in expected.items()
-        )
-        valid_archive = (
-            metadata.get("x_sha256") == _cache_digest(cached_x)
-            and metadata.get("y_sha256") == _cache_digest(cached_y)
-        )
-        same_candidates = (
-            _cache_digest(cached_x) == _cache_digest(x)
-            and _cache_digest(cached_y) == _cache_digest(y)
-        )
-
-        if not (valid_metadata and valid_archive and same_candidates):
-            raise FileExistsError(
-                "Replay cache already exists with incompatible candidates: "
-                f"{path}"
-            )
-
-        return cached_x, cached_y, str(path)
-
-    metadata = {
+    expected = {
         "schema_version": 1,
         "task_index": int(task_index),
         "old_classes": [int(class_id) for class_id in old_classes],
         "candidate_count": int(len(y)),
         "seed": seed,
         "context_fingerprint": context_fingerprint,
+    }
+    x, y = np.asarray(x), np.asarray(y)
+    # Read an existing pool, or attempt the required read even if its path is missing.
+    if cache_mode == "read" or path.exists():
+        # Reject cache paths that cannot be opened as files.
+        if not path.is_file():
+            # Report a conflicting write target as an existing-path error.
+            if cache_mode == "write":
+                raise FileExistsError(f"Replay cache path is not a file: {path}")
+            raise FileNotFoundError(f"Replay cache does not exist: {path}")
+
+        with np.load(path, allow_pickle=False) as archive:
+            cached_x, cached_y = archive["x"], archive["y"]
+            metadata = json.loads(str(archive["metadata"].item()))
+        cached_hashes = (_cache_digest(cached_x), _cache_digest(cached_y))
+        valid_metadata = all(metadata.get(key) == value for key, value in expected.items())
+        valid_archive = cached_hashes == (metadata.get("x_sha256"), metadata.get("y_sha256"))
+
+        # A retried write may reuse the same pool but never replace its bytes.
+        if cache_mode == "write":
+            # Reject retried writes whose metadata, stored bytes, or regenerated pool differ.
+            if not (valid_metadata and valid_archive and cached_hashes == (
+                _cache_digest(x), _cache_digest(y)
+            )):
+                raise FileExistsError(
+                    "Replay cache already exists with incompatible candidates: "
+                    f"{path}"
+                )
+        # Read modes authenticate the saved pool without comparing newly supplied samples.
+        else:
+            # Reject a cached pool from a different experiment or stochastic stream.
+            if not valid_metadata:
+                raise ValueError("Replay cache metadata differs from this experiment.")
+            # Reject cached arrays whose checksums no longer match their metadata.
+            if not valid_archive:
+                raise ValueError("Replay cache checksum validation failed.")
+        return cached_x, cached_y, str(path)
+
+    metadata = {
+        **expected,
         "x_sha256": _cache_digest(x),
-        "y_sha256": _cache_digest(y)
+        "y_sha256": _cache_digest(y),
     }
     temporary = path.with_name(
         "." + path.name + ".tmp-" + uuid.uuid4().hex
@@ -241,6 +326,7 @@ def _cached_replay_candidates(
             # cannot overwrite the first complete authenticated candidate pool.
             os.link(temporary, path)
         except FileExistsError:
+            # Reject a colliding publisher whose destination is not a regular file.
             if not path.is_file():
                 raise FileExistsError(
                     f"Replay cache path is not a file: {path}"
@@ -256,6 +342,7 @@ def _cached_replay_candidates(
                 context_fingerprint,
             )
     finally:
+        # Remove the private temporary archive only if it still exists.
         if temporary.exists():
             temporary.unlink()
 
@@ -270,14 +357,38 @@ def _replay_cache_path(
     context_fingerprint: str | None = None, 
     create_root: bool = False
 ) -> Path:
-    """Return the condition-independent path for one replay candidate pool."""
+    """Resolve a compact cache filename for one task, class set, and candidate count.
+
+    The current filename hashes the ordered old-class list and uses a short context
+    fingerprint. Existing legacy filenames with literal class IDs are reused when
+    no canonical filename exists, preserving compatibility with earlier caches.
+
+    Args:
+        cache_dir (str): Root directory for replay candidate archives.
+        task_index (int): Zero-based task index, formatted one-based in the filename.
+        old_classes (Sequence[int]): Ordered old-class IDs defining the candidate pool.
+        candidate_count (int): Number of candidate rows recorded in the filename.
+        context_fingerprint (str | None): Run identity prefix. Defaults to None
+            for a ``legacy`` namespace; other strings use their first 16 characters.
+        create_root (bool): Defaults to False for lookup only. True creates the
+            cache directory and any missing parents.
+
+    Returns:
+        Path: Existing compatible legacy path or canonical NPZ destination. Except
+        for optional root creation, no archive file is written.
+
+    Raises:
+        OSError: If requested cache-root creation fails.
+    """
 
     root = Path(cache_dir)
+    # Create the cache directory only when publication requests it.
     if create_root:
         root.mkdir(parents=True, exist_ok=True)
     class_text = fingerprint_state([
         int(class_id) for class_id in old_classes
     ])[:16]
+    # Use a legacy namespace without a run fingerprint; otherwise use its stable prefix.
     context_text = "legacy" if context_fingerprint is None else str(
         context_fingerprint
     )[:16]
@@ -292,6 +403,7 @@ def _replay_cache_path(
         f"classes-{legacy_classes}_"
         f"candidates-{int(candidate_count)}.npz"
     )
+    # Reuse an existing legacy path only when the current canonical path is absent.
     return legacy_path if legacy_path.exists() and not path.exists() else path
 
 
@@ -310,6 +422,10 @@ class ReplayBuffer(object):
             unbounded deque and ``0`` creates a deque that retains no items.
         buffer (collections.deque): Current replay items, initialized empty.
         strategy (ReplayStrategy): Selected insertion/eviction policy.
+        sample_dtype (np.dtype): Floating NumPy dtype captured from the Keras
+            variable policy at construction. It controls sampled input casting
+            even if the global policy subsequently changes; label dtypes remain
+            those originally stored.
     """
 
     def __init__(
@@ -322,14 +438,17 @@ class ReplayBuffer(object):
 
         Args:
             maxlen (int | None): Capacity passed to ``deque``. Once full,
-                appending removes the oldest element; ``None`` is unbounded.
+                FIFO removes the oldest element while reservoir policies
+                choose replacements probabilistically. ``None`` is unbounded.
             strategy (ReplayStrategy | str): ``"fifo"`` (the exact historical
                 behavior), ``"reservoir"`` (uniform Algorithm R), or
                 ``"class_balanced"`` (balanced per-class reservoirs). The
                 alias ``"class-balanced"`` is accepted.
+                Defaults to ``'fifo'``.
             seed (int | float | str | bytes | bytearray | None): Seed for this
                 buffer's private generator. ``None`` uses system entropy and
                 no module-level random state is changed.
+                Defaults to ``None``.
 
         Returns:
             None.
@@ -339,6 +458,7 @@ class ReplayBuffer(object):
                 the annotated capacity.
         """
 
+        # Preserve None for unbounded storage; normalize bounded capacities as integers.
         self.maxlen = None if maxlen is None else index(maxlen)
 
         # Restrict insertion behavior to the documented strategy vocabulary.
@@ -364,10 +484,14 @@ class ReplayBuffer(object):
         return len(self.buffer)
 
     def clear(self: ReplayBuffer) -> None:
-        """Replace the backing deque with a new empty deque.
+        """Empty retained replay and reset insertion counters and class-allocation state.
+
+        The backing deque is replaced at the existing capacity. Historical stream/class
+        counts and class priorities are cleared, while the private RNG keeps its current
+        state; clearing therefore does not restart seeded sampling sequences.
 
         Returns:
-            None.
+            None: This buffer is empty and ready to observe a new stream.
         """
 
         self.buffer = deque(maxlen=self.maxlen)
@@ -380,8 +504,9 @@ class ReplayBuffer(object):
     def _label_key(item: object) -> object:
         """Return a hashable class identifier from one ``(sample, label)`` item.
 
-        Scalar labels are used directly. A one-dimensional vector is treated as
-        one-hot/probability encoded and mapped with ``argmax``.
+        Scalar and one-element sparse-column labels are used directly. A vector
+        with multiple entries is treated as one-hot/probability encoded and
+        mapped with ``argmax``; normalization is not checked here.
 
         Args:
             item (object): Replay item whose second element is its label.
@@ -407,6 +532,7 @@ class ReplayBuffer(object):
                 "class_balanced labels must be scalars or one-dimensional vectors."
             )
 
+        # Read scalar/sparse-column labels directly; decode multi-entry one-hot vectors.
         value = label.reshape(-1)[0].item() if label.size == 1 \
                 else int(np.argmax(label))
 
@@ -425,7 +551,10 @@ class ReplayBuffer(object):
         uniform subset rather than permanently favoring the earliest labels.
 
         Returns:
-            dict[object, int]: Per-class quotas summing to ``maxlen``.
+            dict[object, int]: Class-label to allowed retained count. A bounded,
+            nonempty class registry allocates all ``maxlen`` slots. An empty
+            registry returns ``{}``; an unbounded buffer returns observed counts
+            instead. This calculation does not advance the RNG or mutate state.
         """
 
         # Unbounded buffers can retain every observation from each class.
@@ -457,6 +586,12 @@ class ReplayBuffer(object):
     def _rebalance_classes(self: ReplayBuffer) -> None:
         """Downsample stored classes uniformly to their current quotas.
 
+        For each over-capacity class, sample retained positions without
+        replacement using the private RNG. Rebuild the deque in original order
+        for the chosen positions. Zero-quota classes lose all retained items;
+        underfilled classes remain underfilled, and unbounded buffers are
+        unchanged. Observation counters and allocation priorities are retained.
+
         Returns:
             None: The bounded buffer is rebuilt with quota-compliant contents.
         """
@@ -482,6 +617,7 @@ class ReplayBuffer(object):
             elif quota > 0:
                 kept_indices.update(self._rng.sample(indices, quota))
 
+        # Retain only the indices selected by per-class quota thinning.
         self.buffer = deque(
             (item for index, item in enumerate(items) if index in kept_indices),
             maxlen=self.maxlen,
@@ -489,6 +625,13 @@ class ReplayBuffer(object):
 
     def _append_reservoir(self: ReplayBuffer, item: object) -> None:
         """Insert one stream item using standard uniform Algorithm R.
+
+        Increment the stream cursor for every observation, including rejected
+        items. Append until storage fills; thereafter draw uniformly from all
+        observed positions and replace only if the draw addresses a retained
+        slot. A bounded capacity ``k`` retains each of ``n >= k`` observations
+        with probability ``k / n``. Unbounded buffers append every item;
+        zero-capacity buffers retain none. Random draws use the private RNG.
 
         Args:
             item (object): Next item in the observed replay stream.
@@ -515,6 +658,13 @@ class ReplayBuffer(object):
 
     def _append_class_balanced(self: ReplayBuffer, item: object) -> None:
         """Insert one item into a balanced per-class reservoir.
+
+        Register unseen labels with a random allocation priority, rebalance
+        existing storage if class quotas shrink, and advance both global and
+        per-class observation counters. Fill the incoming class's quota or
+        apply Algorithm R using its historical count. Zero-quota classes keep
+        counters only; unbounded storage retains every item. All draws use the
+        buffer's private RNG and retained sample objects are stored by reference.
 
         Args:
             item (object): Next ``(sample, label)`` stream item.
@@ -548,6 +698,7 @@ class ReplayBuffer(object):
         if quota == 0:
             return
 
+        # Consider replacement slots only among stored items of the incoming class.
         class_indices = [
             index for index, stored in enumerate(self.buffer)
             if self._label_key(stored) == label
@@ -567,11 +718,21 @@ class ReplayBuffer(object):
     def state_dict(self: ReplayBuffer) -> dict[str, object]:
         """Return all state required for an exact deterministic continuation.
 
+        Creates fresh outer mappings/lists without consuming randomness. The
+        retained ``items`` are shallow references, so copy/serialize them before
+        mutating their sample arrays. Numeric sample dtype remains a constructor
+        setting and is not included in this state schema.
+
         Returns:
-            dict[str, object]: Capacity, strategy, retained items, private RNG,
-            stream count, and class-reservoir allocation state.
+            dict[str, object]: Schema version 1 with ``maxlen``, ``strategy``,
+            ordered ``items``, private Python ``rng_state``, ``items_seen``, and
+            ordered ``classes`` records containing ``label``, ``seen``, and
+            ``priority``. FIFO records current retained length as its cursor;
+            reservoir modes record all observations. Non-balanced modes have
+            no class records.
         """
 
+        # FIFO records retained length; reservoir strategies preserve the full stream cursor.
         return {
             "schema_version": 1,
             "maxlen": self.maxlen,
@@ -595,15 +756,25 @@ class ReplayBuffer(object):
     ) -> None:
         """Restore a state produced by :meth:`state_dict` without reinsertion.
 
+        Validate version, capacity, strategy, counters, class quotas, retained
+        contents, and private RNG state before replacing live storage. Restore
+        sample objects by reference and preserve their order; no new insertion
+        decisions or random draws occur. Capacity, strategy, and constructor
+        ``sample_dtype`` remain unchanged.
+
         Args:
-            state (Mapping[str, object]): Serialized replay state.
+            state (Mapping[str, object]): Version-1 mapping emitted by
+                ``state_dict`` or reconstructed by the recovery archive reader.
+                Its capacity and strategy must match this instance.
 
         Returns:
-            None.
+            None: Storage, counters, class allocation, and private RNG state
+            have been replaced in place.
 
         Raises:
             ValueError: If capacity, strategy, counters, or retained contents
-                are incompatible with this buffer.
+                are incompatible with this buffer, or RNG state is invalid.
+            TypeError: If malformed schema values cannot be normalized.
         """
 
         schema_version = int(state.get("schema_version"))
@@ -634,7 +805,7 @@ class ReplayBuffer(object):
             items_seen = len(items)
 
         # Reservoir cursors must cover every currently retained observation.
-        if items_seen < len(items) or items_seen < 0:
+        if items_seen < len(items):
             raise ValueError("Replay checkpoint has an invalid stream count.")
 
         saved_classes = state.get("classes", [])
@@ -664,8 +835,7 @@ class ReplayBuffer(object):
 
         # Allocation priorities originate from random.random() in [0, 1).
         if any(
-            not np.isfinite(float(record["priority"]))
-            or not 0. <= float(record["priority"]) < 1.
+            not 0. <= float(record["priority"]) < 1.
             for record in classes
         ):
             raise ValueError("Replay checkpoint contains an invalid class priority.")
@@ -793,14 +963,24 @@ class ReplayBuffer(object):
         return self.sample(self.buffer, num)
 
     def append(self: ReplayBuffer, item: object) -> None:
-        """Append one item, evicting the oldest item if capacity is full.
+        """Offer one stream item to the configured replay insertion policy.
+
+        FIFO retains the newest items and evicts the oldest on overflow. Reservoir
+        sampling may retain, replace, or discard the incoming item using Algorithm R;
+        class-balanced replay applies that rule within the item's class quota. Zero
+        capacity retains no items, while unbounded storage retains every accepted item.
 
         Args:
-            item (object): Value to retain; continual-learning callers use an
-                ``(x, y)`` pair.
+            item (object): Value to offer. Continual callers use ``(sample, label)``
+                pairs; class-balanced insertion requires such a pair and a supported
+                scalar, sparse-column, or one-hot label.
 
         Returns:
-            None.
+            None: Retained storage, policy counters, and possibly private RNG state
+            change in place. A discarded reservoir item still advances stream counters.
+
+        Raises:
+            TypeError: If class-balanced insertion receives a malformed pair/label.
         """
 
         # Preserve the exact historical bounded-deque behavior by default.
@@ -814,14 +994,22 @@ class ReplayBuffer(object):
             self._append_class_balanced(item)
 
     def extend(self: ReplayBuffer, items: Iterable[object]) -> None:
-        """Append every item from an iterable in order.
+        """Offer every item from an iterable to replay in its existing stream order.
+
+        FIFO uses deque.extend and retains the most recent capacity-limited suffix.
+        Reservoir and class-balanced strategies process each item through their insertion
+        policy, preserving the same counters and RNG progression as repeated append.
 
         Args:
-            items (Iterable[object]): Values to add.  With a bounded deque, only
-                the newest ``maxlen`` values remain after overflow.
+            items (Iterable[object]): Stream entries to consume once. Class-balanced
+                entries must be valid sample-label pairs.
 
         Returns:
-            None.
+            None: Storage, insertion counters, and any consumed private RNG state are
+            updated in place. The iterable itself is not copied or reordered.
+
+        Raises:
+            TypeError: If a class-balanced stream contains a malformed item/label.
         """
 
         # Preserve deque.extend, including its historical ordering semantics.
@@ -844,7 +1032,7 @@ class ReplayBuffer(object):
 
         Returns:
             tuple[numpy.ndarray, numpy.ndarray]: ``(x_buffer, y_buffer)``.
-            Samples are cast to the active policy's stable variable dtype and
+            Samples are cast to ``sample_dtype`` captured at construction and
             labels retain their stored dtype. Their leading dimension is the
             number sampled; an empty buffer produces two arrays with shape
             ``(0,)``.

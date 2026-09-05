@@ -1,4 +1,15 @@
-"""Focused tests for paired-block research manifests and run-level inference."""
+"""Regression checks for paired continual experiment design and inference.
+
+Fixed condition dictionaries, independent stream blocks, and synthetic result rows exercise
+reproducible execution plans, frozen manifest hashes, paired confidence intervals/tests,
+multiplicity correction, and rejection of invalid replication units. Temporary JSON files
+cover persistence without scheduling external runs.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +37,19 @@ from common.experiment import (
 
 
 class ExperimentDesignTests(unittest.TestCase):
-    """Verify deterministic blocking, freezing, and valid replication units."""
+    """Verify deterministic blocking, freezing, and valid replication units.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     @staticmethod
     def _conditions() -> dict[str, dict[str, object]]:
@@ -83,7 +106,8 @@ class ExperimentDesignTests(unittest.TestCase):
 
         Args:
             manifest_hash (str): Experiment digest linked from every row.
-            phase (str): Development or confirmation result label.
+            phase (str): Development or confirmation result label. Defaults to
+                ``'confirmation'``.
 
         Returns:
             list[dict[str, object]]: Eight run-level long-form result rows.
@@ -392,7 +416,15 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(tuple(rows[0]), LONG_RESULT_FIELDS)
 
     def test_paired_statistics_keep_zero_variance_results_defined(self) -> None:
-        """Preserve the established outputs for identical paired conditions."""
+        """Preserve the established outputs for identical paired conditions.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         rows = self._result_rows("a" * 64, phase="development")
         for row in rows:

@@ -1,4 +1,14 @@
-"""Focused tests for ordinary and mixed-precision custom gradient updates."""
+"""Numerical regressions for gradient application and mixed-precision scaling.
+
+Small TensorFlow variables and optimizers isolate expected updates, loss-scale unscaling,
+empty variable selections, and disconnected gradients. The original numeric policy is saved
+and restored around each case; no full training loop is needed.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +20,19 @@ from common.gradients import apply_policy_gradients
 
 
 class GradientTests(TestCase):
-    """Verify correct updates, one-time unscaling, and disconnected variables."""
+    """Verify correct updates, one-time unscaling, and disconnected variables.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def setUp(self: GradientTests) -> None:
         """Remember the caller's numeric policy before each test.
@@ -37,6 +59,9 @@ class GradientTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         tf.keras.mixed_precision.set_global_policy("float32")
@@ -71,6 +96,9 @@ class GradientTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         tf.keras.mixed_precision.set_global_policy("mixed_float16")
@@ -105,6 +133,9 @@ class GradientTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         optimizer = tf.keras.optimizers.SGD(learning_rate=0.1)

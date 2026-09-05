@@ -1,4 +1,14 @@
-"""Focused unit tests for process-wide experiment runtime configuration."""
+"""Regression checks for master seeds, derived streams, and dtype policies.
+
+The tests compare deterministic child seeds and runtime RNG effects across repository
+components, inspect policy consistency, and reject incompatible prebuilt state. Test setup
+retains the caller policy and cleanup restores it so one case does not dictate later cases.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +34,19 @@ from common.validation import require
 
 
 class RuntimeTests(TestCase):
-    """Verify seed precedence, child streams, policies, and global seeding."""
+    """Verify seed precedence, child streams, policies, and global seeding.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def setUp(self: RuntimeTests) -> None:
         """Remember the caller's Keras policy before each test.
@@ -49,6 +71,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         self.assertIsNone(require(object()))
@@ -68,6 +93,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         project_root = Path(__file__).resolve().parents[2]
@@ -92,6 +120,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         continual_config = SimpleNamespace(
@@ -122,6 +153,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         first = derive_seed(1234, "dataloader", 2, "shuffle")
@@ -140,6 +174,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         self.assertEqual(configure_runtime(dtype_policy="float64"), "float64")
@@ -155,6 +192,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         policy_name = configure_runtime(
@@ -187,6 +227,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with patch.object(
@@ -206,6 +249,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         policy = tf.keras.mixed_precision.Policy("float32")
@@ -220,6 +266,9 @@ class RuntimeTests(TestCase):
 
         Returns:
             None.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         config = SimpleNamespace(

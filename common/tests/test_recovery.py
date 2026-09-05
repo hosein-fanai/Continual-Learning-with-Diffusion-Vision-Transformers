@@ -1,4 +1,15 @@
-"""Round-trip and failure-safety tests for :mod:`common.recovery`."""
+"""Regression checks for committed task checkpoints and recoverable state.
+
+Temporary checkpoint trees cover atomic discovery, corruption/incompleteness handling,
+array/JSON encoding, RNG and replay state, dynamic model topology, teachers, EMA weights,
+and optimizer slots. Small TensorFlow fixtures compare restored values and the next actual
+update with uninterrupted state.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -82,10 +93,30 @@ def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
 
 
 class RecoveryTests(unittest.TestCase):
-    """Exercise committed discovery, state, replay, and TF optimizer recovery."""
+    """Exercise committed discovery, state, replay, and TF optimizer recovery.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_task_checkpoint_state_exposes_recovery_cursor(self) -> None:
-        """The integration mapping must combine state, schedule, and cursor."""
+        """The integration mapping must combine state, schedule, and cursor.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         checkpoint = TaskCheckpoint(
             task_dir=Path("task-0000"),
@@ -110,7 +141,15 @@ class RecoveryTests(unittest.TestCase):
         })
 
     def test_literal_recovery_type_mapping_round_trips(self) -> None:
-        """Keep user mappings distinct from the recovery serializer's tags."""
+        """Keep user mappings distinct from the recovery serializer's tags.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         literal = {
             "__recovery_type__": "path",
@@ -138,23 +177,31 @@ class RecoveryTests(unittest.TestCase):
         optimizer: tf.keras.optimizers.Optimizer,
         variables: list[tf.Variable],
     ) -> None:
-        """Create slots through the API available in TF 2.10 or later.
+        """Prepare optimizer slot variables through the available Keras API.
+
+        Legacy TensorFlow 2.10 optimizers use _create_all_weights; newer optimizers use
+        build. No gradient step or iteration increment is requested. This makes the
+        checkpoint object graph complete before saving or strict restoration.
 
         Args:
-            optimizer (tf.keras.optimizers.Optimizer): Test input named optimizer.
-            variables (list[tf.Variable]): Test input named variables.
+            optimizer (tf.keras.optimizers.Optimizer): Optimizer whose state will be saved
+                or restored.
+            variables (list[tf.Variable]): Model variables requiring optimizer slots.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Missing optimizer slot variables are materialized in place.
+
+        Raises:
+            AssertionError: Neither supported slot-registration API is available.
         """
 
-        # Select the test action required by this condition.
+        # TensorFlow 2.10 optimizers create slots through the legacy API.
         if hasattr(optimizer, "_create_all_weights"):
             optimizer._create_all_weights(variables)
-        # Select the test action required by this condition.
+        # Newer optimizers register variables through build instead.
         elif hasattr(optimizer, "build"):
             optimizer.build(variables)
-        # Handle the complementary test case.
+        # Fail when neither supported optimizer slot API is available.
         else:
             raise AssertionError("Optimizer exposes no slot-registration API.")
 
@@ -163,14 +210,19 @@ class RecoveryTests(unittest.TestCase):
         variable: tf.Variable,
         optimizer: tf.keras.optimizers.Optimizer,
     ) -> float:
-        """Apply one deterministic scalar gradient step and return its loss.
+        """Apply one deterministic gradient step toward the scalar target three.
+
+        The loss is (variable - 3)^2 and the supplied optimizer applies its gradient to that
+        same variable. Repeating this operation before/after recovery checks both restored
+        weights and the optimizer state controlling the next update.
 
         Args:
-            variable (tf.Variable): Test input named variable.
-            optimizer (tf.keras.optimizers.Optimizer): Test input named optimizer.
+            variable (tf.Variable): Scalar trainable variable to update in place.
+            optimizer (tf.keras.optimizers.Optimizer): Optimizer used to apply the gradient;
+                its iterations and slot state also advance.
 
         Returns:
-            float: Result produced by the test helper.
+            float: Eager Python value of the loss computed before the update.
         """
 
         with tf.GradientTape() as tape:
@@ -186,7 +238,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -263,7 +316,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -337,7 +391,15 @@ class RecoveryTests(unittest.TestCase):
                 )
 
     def test_skip_connected_unet_teacher_is_checkpoint_safe(self) -> None:
-        """Integer-keyed U-Net routes stay outside TensorFlow checkpoints."""
+        """Integer-keyed U-Net routes stay outside TensorFlow checkpoints.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         tf.keras.backend.clear_session()
         network = UNetClassifier(
@@ -388,7 +450,15 @@ class RecoveryTests(unittest.TestCase):
             self.assertTrue(Path(checkpoint_path + ".index").is_file())
 
     def test_dynamic_dual_heads_save_with_unique_hdf5_weight_names(self) -> None:
-        """Expanded classifier and distillation heads remain HDF5-safe."""
+        """Expanded classifier and distillation heads remain HDF5-safe.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         dit_wrapper = _make_dynamic_diffusion_classifier(43)
         dit_wrapper._check_new_labels(
@@ -471,7 +541,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -541,7 +612,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -583,7 +655,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         source = tf.random.Generator.from_seed(808)
@@ -606,7 +679,8 @@ class RecoveryTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -646,6 +720,6 @@ class RecoveryTests(unittest.TestCase):
                 )
 
 
-# Select the test action required by this condition.
+# Run this module's tests when executed directly.
 if __name__ == "__main__":
     unittest.main()

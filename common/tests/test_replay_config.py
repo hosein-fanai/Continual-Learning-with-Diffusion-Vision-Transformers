@@ -1,4 +1,14 @@
-"""Configuration contract tests for replay and cross-cutting boundaries."""
+"""Regression checks for replay settings and shared Config validation.
+
+In-memory mappings and temporary YAML files verify defaults, independent mutable settings,
+compact/full serialization, task normalization, and deferred runtime validation. Distilled
+V2 ensemble configurations are checked without starting a training run.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -23,13 +33,28 @@ from common.replay_buffer import ReplayBuffer
 
 
 class ReplayConfigTests(unittest.TestCase):
-    """Verify replay policies are defaulted, normalized, and serialized."""
+    """Verify replay policies are defaulted, normalized, and serialized.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_fifo_is_the_dataclass_and_yaml_default(self) -> None:
         """The repository example is fully loadable and explicitly uses FIFO.
 
         Returns:
             None: Dataclass and current-schema YAML defaults are compared.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         self.assertEqual(
@@ -54,6 +79,9 @@ class ReplayConfigTests(unittest.TestCase):
 
         Returns:
             None: Configuration retains values without interpreting them.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         partial = ContinuallyLearnConfig(buffer_kwargs={"maxlen": 23})
@@ -72,6 +100,9 @@ class ReplayConfigTests(unittest.TestCase):
 
         Returns:
             None: The reloaded config retains reservoir and companion controls.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         config = Config(continually_learn={
@@ -99,11 +130,61 @@ class ReplayConfigTests(unittest.TestCase):
             config.continually_learn.buffer_kwargs,
         )
 
+    def test_distilled_v2_ensemble_config_round_trips_in_both_formats(self) -> None:
+        """Full and compact YAML preserve the complete continual HPO setup.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
+        config = Config(
+            model={
+                "name": "dit_classifier",
+                "wrapper_name": "diffusion_classifier_v2",
+                "dit_classifier": {
+                    "clf_distil_token_type": "new_weight",
+                },
+                "diffusion_classifier_v2": {
+                    "clf_distil_type": "soft",
+                    "clf_distil_temperature": 2.0,
+                    "clf_distil_loss_coef": 0.05,
+                },
+            },
+            training={"task": "continual"},
+            continually_learn={
+                "class_order": [2, 0, 1],
+                "task_groups": [[2, 0], [1]],
+                "use_generative_model_classifier": True,
+                "train_classifier_separately": True,
+                "use_distillation": True,
+                "use_ensemble_accuracy": True,
+                "ensemble_accuracy_kwargs": {"max_t": 4, "weighted": True},
+            },
+            hpo={
+                "objective_metrics": [
+                    "final_average_accuracy", "average_forgetting",
+                ],
+                "objective_directions": ["maximize", "minimize"],
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for shorten in (False, True):
+                with self.subTest(shorten=shorten):
+                    path = Path(directory) / "config.yaml"
+                    save_config(config, path, shorten=shorten)
+                    self.assertEqual(load_config(path), config)
+
     def test_behavior_owner_validates_replay_strategy(self) -> None:
         """A config stores a strategy and ReplayBuffer decides if it is valid.
 
         Returns:
             None: Validation occurs only when replay behavior is constructed.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         config = ContinuallyLearnConfig(
@@ -123,10 +204,30 @@ class ReplayConfigTests(unittest.TestCase):
 
 
 class CoreConfigValidationTests(unittest.TestCase):
-    """Verify shared task, result-path, and clipping contracts."""
+    """Verify shared task, result-path, and clipping contracts.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_nested_model_sections_and_kwargs_are_independent(self) -> None:
-        """Nested mappings must convert to configs and return copied kwargs."""
+        """Nested mappings must convert to configs and return copied kwargs.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         config = Config(
             dataset={"batch_size": 4},
@@ -154,7 +255,15 @@ class CoreConfigValidationTests(unittest.TestCase):
         self.assertEqual(config.model.diffusion_transformer.dim, 16)
 
     def test_explicit_continual_schedule_is_preserved(self) -> None:
-        """Supplied class order and task groups must remain authoritative."""
+        """Supplied class order and task groups must remain authoritative.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         order, groups = resolve_continual_schedule(
             3,
@@ -170,6 +279,9 @@ class CoreConfigValidationTests(unittest.TestCase):
 
         Returns:
             None: Passive storage and explicit normalization are distinguished.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         self.assertEqual(normalize_training_task("Joint"), "joint")
@@ -185,6 +297,9 @@ class CoreConfigValidationTests(unittest.TestCase):
 
         Returns:
             None: A duplicate nested task key raises a marked YAML error.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         with tempfile.TemporaryDirectory() as directory:
@@ -216,6 +331,9 @@ class CoreConfigValidationTests(unittest.TestCase):
 
         Returns:
             None: Text and byte filesystem representations are preserved.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         config = TrainingConfig(results_path=Path("artifacts"))
@@ -230,6 +348,9 @@ class CoreConfigValidationTests(unittest.TestCase):
 
         Returns:
             None: Representative runtime values are stored unchanged.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         for value in (2.5, True, "1.0", 0.0, -1.0, float("nan")):

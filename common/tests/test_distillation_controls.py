@@ -1,4 +1,15 @@
-"""Focused tests for backward-compatible continual distillation controls."""
+"""Numerical checks for teacher distillation losses and example scopes.
+
+Fixed teacher/student probability matrices verify soft and hard targets, temperature
+scaling, old-class support, and replay-only row masks. A minimal wrapper harness isolates
+the loss mathematics; real diffusion fixtures also check frozen noise teachers and
+serialization controls.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +26,18 @@ from diffusion.models.transformer.diffusion_transformer import (
 
 
 class _DistillationHarness:
-    """Provide only the state used by the wrapper's KD loss helper."""
+    """Provide only the state used by the wrapper's KD loss helper.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        None.
+
+    Returns:
+        _DistillationHarness: A new local test fixture with independent instance state.
+    """
 
     compute_clf_distil_loss = DiffusionClassifier.compute_clf_distil_loss
     get_clf_results_dict = DiffusionClassifier.get_clf_results_dict
@@ -69,7 +91,19 @@ class _DistillationHarness:
 
 
 class DistillationControlTests(tf.test.TestCase):
-    """Check temperature mathematics and continual example scopes."""
+    """Check temperature mathematics and continual example scopes.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def setUp(self) -> None:
         """Create fixed teacher and student probability batches.

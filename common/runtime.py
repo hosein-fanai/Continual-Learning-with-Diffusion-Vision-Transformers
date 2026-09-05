@@ -71,8 +71,12 @@ def effective_seed(
         config (Any | None): Optional repository config tree exposing a
             ``training`` section and, for continual overrides, an optional
             ``continually_learn`` section.
+            Defaults to ``None``, selecting the direct ``seed`` argument.
         seed (int | None): Direct-mode seed used only when ``config`` is None.
+            Defaults to ``None`` for an unseeded run.
         task (str | None): Optional direct-mode task name.
+            Defaults to ``None``; retained for API compatibility and does not
+            change direct seed resolution.
 
     Returns:
         int | None: The validated effective seed, or ``None`` for an unseeded
@@ -161,13 +165,22 @@ def derive_seed(
 def validate_model_dtype_policy(
     dtype_policy: str | tf.keras.mixed_precision.Policy
 ) -> tf.keras.mixed_precision.Policy:
-    """Resolve a Keras dtype policy.
+    """Resolve a policy without changing Keras' process-global policy.
 
     Args:
-        dtype_policy (str | tf.keras.mixed_precision.Policy): Keras policy.
+        dtype_policy (str | tf.keras.mixed_precision.Policy): Existing policy or
+            a name accepted by the installed Keras version, such as
+            ``"float32"``, ``"float64"``, ``"mixed_float16"``, or
+            ``"mixed_bfloat16"``. Mixed policies separate compute and variable
+            dtypes; this helper imposes no additional model-specific restriction.
 
     Returns:
-        tf.keras.mixed_precision.Policy: Keras policy object.
+        tf.keras.mixed_precision.Policy: The input policy by identity, or a newly
+        constructed policy for a supplied name.
+
+    Raises:
+        TypeError: If Keras cannot interpret the supplied policy type.
+        ValueError: If the policy name is unsupported by Keras.
     """
 
     # Reuse complete policy objects without string round-tripping.
@@ -195,8 +208,13 @@ def configure_runtime(
     Args:
         seed (int | None): Effective experiment seed already resolved by
             :func:`effective_seed`.
-        dtype_policy (str): Keras global policy name.
+            Defaults to ``None``, leaving current Python/NumPy/TensorFlow RNG
+            states untouched. An integer reseeds all three through Keras.
+        dtype_policy (str): Global policy name accepted by
+            ``validate_model_dtype_policy``; subsequent layers inherit it.
+            Defaults to ``'float32'``.
         deterministic_ops (bool): Enable deterministic TensorFlow kernels.
+            Defaults to ``False``.
 
     Returns:
         str: Name of the installed Keras dtype policy.

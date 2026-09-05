@@ -1,4 +1,15 @@
-"""Integration checks for deterministic continual recovery and scheduling."""
+"""Integration checks for continual scheduling, precision, and deterministic recovery.
+
+Synthetic class-coded arrays and temporary classifier templates exercise the actual task
+runner. Tests compare uninterrupted and resumed weights, optimizer updates, task schedules,
+and metrics; callback fixtures deliberately interrupt a later fit. Seeded variants add
+dropout to test restoration of stochastic behavior.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -23,16 +34,32 @@ from common.learner import (
 
 
 class _InterruptOnSecondFit(tf.keras.callbacks.Callback):
-    """Raise once at task two, while retaining a stable descriptor type."""
+    """Raise once at task two, while retaining a stable descriptor type.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        enabled (bool): True enables a simulated failure at the second on_train_begin call;
+            False counts fits without raising.
+
+    Returns:
+        _InterruptOnSecondFit: A new local test fixture with independent instance state.
+    """
 
     def __init__(self, enabled: bool) -> None:
-        """Exercise the test helper named __init__.
+        """Create a task-boundary interruption callback with a reset fit counter.
+
+        The stable callback type is retained in checkpoint descriptors; tests can disable
+        its failure flag before resuming.
 
         Args:
-            enabled (bool): Test input named enabled.
+            enabled (bool): True enables a simulated failure at the second on_train_begin
+                call; False counts fits without raising.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         super().__init__()
         self.enabled = enabled
@@ -42,31 +69,80 @@ class _InterruptOnSecondFit(tf.keras.callbacks.Callback):
         self,
         logs: dict[str, float] | None = None,
     ) -> None:
-        """Exercise the test helper named on_train_begin.
+        """Count a new fit and optionally interrupt the second task.
 
         Args:
-            logs (dict[str, float] | None): Test input named logs.
+            logs (dict[str, float] | None): Optional Keras training-start metric mapping;
+                ignored by this fixture. Defaults to ``None``.
 
         Returns:
-            None: Result produced by the test helper.
+            None: fit_count is incremented; normal execution continues except at the
+            selected interruption.
+
+        Raises:
+            RuntimeError: enabled is True and this is the second fit start.
         """
         del logs
         self.fit_count += 1
-        # Select the test action required by this condition.
+        # Interrupt task two only in the simulated-failure run.
         if self.enabled and self.fit_count == 2:
             raise RuntimeError("intentional task interruption")
 
 
 class ContinualIntegrationTests(unittest.TestCase):
-    """Exercise orchestration seams that unit helpers cannot cover."""
+    """Exercise orchestration seams that unit helpers cannot cover.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_task_rng_reset_uses_stable_layer_traversal(self) -> None:
-        """Avoid TensorFlow weak-dictionary submodule flattening."""
+        """Avoid TensorFlow weak-dictionary submodule flattening.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         class Wrapper(tf.keras.Model):
-            """Expose a model with a deliberately fragile submodule property."""
+            """Expose a model with a deliberately fragile submodule property.
+
+            This fixture implements only the interface required by its surrounding
+            regression tests. Construction and mutable state are described by ``__init__``;
+            it does not provide a general production replacement.
+
+            Args:
+                None.
+
+            Returns:
+                Wrapper: A new local test fixture with independent instance state.
+            """
 
             def __init__(self) -> None:
+                """Build a small stochastic network for traversal testing.
+
+                The network contains Dropout(rate=0.1, seed=3) followed by Dense(2). Its
+                intentionally failing submodules property forces the runtime helper to use
+                supported layer/tracking traversal.
+
+                Args:
+                    None.
+
+                Returns:
+                    None: The fixture state is initialized in place.
+                """
+
                 super().__init__()
                 self.network = tf.keras.Sequential([
                     tf.keras.layers.Dropout(0.1, seed=3),
@@ -74,13 +150,36 @@ class ContinualIntegrationTests(unittest.TestCase):
                 ])
 
             def call(self, inputs: tf.Tensor) -> tf.Tensor:
-                """Delegate inference to the wrapped network."""
+                """Apply the small wrapped network to its input tensor.
+
+                This fixture forwards inputs directly; the enclosing Keras call context
+                controls training behavior.
+
+                Args:
+                    inputs (tf.Tensor): Tensor with a batch axis and a final feature axis
+                        compatible with the Dense layer.
+
+                Returns:
+                    tf.Tensor: Network output with two features per example.
+                """
 
                 return self.network(inputs)
 
             @property
             def submodules(self) -> tuple[object, ...]:
-                """Fail if runtime code inspects TensorFlow's fragile property."""
+                """Reject access to the fragile TensorFlow submodule enumeration property.
+
+                Args:
+                    None.
+
+                Returns:
+                    tuple[object, ...]: Declared interface only; this fixture always raises
+                    instead of returning modules.
+
+                Raises:
+                    ValueError: Always raised to expose traversal code that uses this
+                    property.
+                """
 
                 raise ValueError("fragile TensorFlow flattening")
 
@@ -96,7 +195,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         original_policy = tf.keras.mixed_precision.global_policy()
@@ -132,7 +232,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with warnings.catch_warnings():
@@ -165,6 +266,9 @@ class ContinualIntegrationTests(unittest.TestCase):
 
         Returns:
             None: The mismatch and matching branches are asserted in place.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
         """
 
         model = tf.keras.Sequential([
@@ -192,14 +296,23 @@ class ContinualIntegrationTests(unittest.TestCase):
         np.ndarray,
         np.ndarray,
     ]:
-        """Return a tiny balanced image dataset for requested original labels.
+        """Return class-coded synthetic arrays for the requested original labels.
+
+        The fixture ignores preprocessing/feature options: every image is a float32 2x2x1
+        array filled with its int32 class ID. Six examples are produced per requested label.
+        Validation uses the first 2 * len(indices) rows, so it need not contain every
+        requested class; this exercises missing task observations.
 
         Args:
-            indices (list[int] | tuple[int, ...]): Test input named indices.
-            kwargs (object): Test input named kwargs.
+            indices (list[int] | tuple[int, ...]): Original class IDs in the order used to
+                construct repeated labels and images.
+            **kwargs (object): Loader-compatible keyword options, accepted and ignored. No
+                options are supplied by default.
 
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: Result produced by the test helper.
+            tuple[np.ndarray, ...]: (x_train, y_train, x_val, y_val, x_test, y_test). Train
+            and test share the complete arrays; validation contains prefix views. Sparse
+            label arrays have shape (N,), and images have shape (N, 2, 2, 1).
         """
 
         del kwargs
@@ -221,7 +334,8 @@ class ContinualIntegrationTests(unittest.TestCase):
 
         Args:
             path (pathlib.Path): Destination Keras model path.
-            dropout_rate (float): Optional stochastic trunk dropout rate.
+            dropout_rate (float): Optional stochastic trunk dropout rate. Defaults to
+                ``0.0``.
 
         Returns:
             None: The compiled template is saved at ``path``.
@@ -230,7 +344,7 @@ class ContinualIntegrationTests(unittest.TestCase):
         inputs = tf.keras.Input((2, 2, 1))
         x = tf.keras.layers.Flatten()(inputs)
         x = tf.keras.layers.Dense(4, activation="relu")(x)
-        # Select the test action required by this condition.
+        # Include stochastic trunk behavior when dropout is requested.
         if dropout_rate > 0.0:
             x = tf.keras.layers.Dropout(
                 dropout_rate,
@@ -252,7 +366,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         class_random = resolve_continual_schedule(
@@ -317,7 +432,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
         self.assertEqual(
             resolve_continual_schedule(4, task_size=1)[1],
@@ -354,7 +470,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as directory:
@@ -410,7 +527,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as directory:
@@ -422,14 +540,21 @@ class ContinualIntegrationTests(unittest.TestCase):
                 checkpoint_dir: Path,
                 callback: tf.keras.callbacks.Callback,
             ) -> dict[str, object]:
-                """Exercise the test helper named arguments.
+                """Build matching fresh arguments for uninterrupted and resumed buffer runs.
+
+                The closure reads the temporary classifier template path and class-coded
+                loader. Only the checkpoint destination and callback differ across the
+                compared runs.
 
                 Args:
-                    checkpoint_dir (Path): Test input named checkpoint_dir.
-                    callback (tf.keras.callbacks.Callback): Test input named callback.
+                    checkpoint_dir (Path): Destination for committed task checkpoints in
+                        this run.
+                    callback (tf.keras.callbacks.Callback): Interruption callback
+                        controlling whether the second fit is deliberately stopped.
 
                 Returns:
-                    dict[str, object]: Result produced by the test helper.
+                    dict[str, object]: Three-class, one-epoch, seeded buffer-run options,
+                    including a fresh Adam optimizer and detailed checkpoint output.
                 """
                 return {
                     "class_num": 3,
@@ -513,13 +638,14 @@ class ContinualIntegrationTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
         first = _recovery_descriptor({"coefficient": 0.123456741})
         second = _recovery_descriptor({"coefficient": 0.123456749})
         self.assertNotEqual(first, second)
 
 
-# Select the test action required by this condition.
+# Run this module's tests when executed directly.
 if __name__ == "__main__":
     unittest.main()

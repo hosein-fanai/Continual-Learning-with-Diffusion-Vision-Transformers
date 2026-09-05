@@ -1,4 +1,16 @@
-"""Focused tests for validation-safe and resumable HPO orchestration."""
+"""Regression checks for HPO configuration, objective routing, and study recovery.
+
+Deterministic trial/study doubles expose forwarded arguments and metadata without training,
+while selected real Optuna studies test persistence, dynamic search-space compatibility,
+retry queues, and NaN trial handling. Tiny network construction checks validate sampled
+architectures. Validation and deliberately different history/test values detect objective
+leakage.
+
+Inputs are fixtures constructed by the test methods and their helpers. Tests return no
+application result: unittest records assertion outcomes and errors. Run this module directly
+or through ``python -m unittest`` discovery. Importing it defines fixtures and cases; it
+does not itself start a test run.
+"""
 
 from __future__ import annotations
 
@@ -36,30 +48,48 @@ from common.utils import save_feature_split_metadata, save_samples
 
 
 class _SuggestionTrial:
-    """Deterministic first-choice trial sufficient for config construction."""
+    """Deterministic first-choice trial sufficient for config construction.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        None.
+
+    Returns:
+        _SuggestionTrial: A new local test fixture with independent instance state.
+    """
 
     number = 3
 
     def __init__(self) -> None:
-        """Exercise the test helper named __init__.
+        """Create an empty parameter log for deterministic suggestions.
+
+        The class-level trial number stays fixed at three. Suggestion methods record the
+        first category or numeric lower endpoint.
 
         Args:
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         self.params: dict[str, object] = {}
 
     def suggest_categorical(self, name: str, choices: list[object]) -> object:
-        """Exercise the test helper named suggest_categorical.
+        """Select and record the first permitted categorical choice.
+
+        Repeated names overwrite the recorded value; this double does not sample or validate
+        Optuna distribution compatibility.
 
         Args:
-            name (str): Test input named name.
-            choices (list[object]): Test input named choices.
+            name (str): Parameter key used in the params mapping.
+            choices (list[object]): Nonempty ordered category list; its first entry is
+                always chosen.
 
         Returns:
-            object: Result produced by the test helper.
+            object: choices[0], also stored under params[name].
         """
         value = choices[0]
         self.params[name] = value
@@ -72,16 +102,20 @@ class _SuggestionTrial:
         high: float,
         **kwargs: object,
     ) -> float:
-        """Exercise the test helper named suggest_float.
+        """Return and record the numeric lower endpoint deterministically.
+
+        This fixture intentionally has no stochastic sampling and does not validate
+        distribution ranges.
 
         Args:
-            name (str): Test input named name.
-            low (float): Test input named low.
-            high (float): Test input named high.
-            kwargs (object): Test input named kwargs.
+            name (str): Parameter key used in the params mapping.
+            low (float): Lower endpoint to return and record.
+            high (float): Accepted upper endpoint; ignored by this deterministic double.
+            **kwargs (object): Optional Optuna-style controls such as log or step; ignored,
+                with no entries by default.
 
         Returns:
-            float: Result produced by the test helper.
+            float: The supplied low endpoint, also recorded in params[name].
         """
         del high, kwargs
         self.params[name] = low
@@ -94,16 +128,20 @@ class _SuggestionTrial:
         high: int,
         **kwargs: object,
     ) -> int:
-        """Exercise the test helper named suggest_int.
+        """Return and record the numeric lower endpoint deterministically.
+
+        This fixture intentionally has no stochastic sampling and does not validate
+        distribution ranges.
 
         Args:
-            name (str): Test input named name.
-            low (int): Test input named low.
-            high (int): Test input named high.
-            kwargs (object): Test input named kwargs.
+            name (str): Parameter key used in the params mapping.
+            low (int): Lower endpoint to return and record.
+            high (int): Accepted upper endpoint; ignored by this deterministic double.
+            **kwargs (object): Optional Optuna-style controls such as log or step; ignored,
+                with no entries by default.
 
         Returns:
-            int: Result produced by the test helper.
+            int: The supplied low endpoint, also recorded in params[name].
         """
         del high, kwargs
         self.params[name] = low
@@ -111,51 +149,100 @@ class _SuggestionTrial:
 
 
 class _RuntimeTrial:
-    """Small Optuna trial double that records persistent user attributes."""
+    """Small Optuna trial double that records persistent user attributes.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        number (int): Trial identifier exposed to HPO naming and artifact code. Defaults to
+            ``2``.
+
+    Returns:
+        _RuntimeTrial: A new local test fixture with independent instance state.
+    """
 
     def __init__(self, number: int = 2) -> None:
-        """Exercise the test helper named __init__.
+        """Create a numbered trial double with independent parameter and attribute logs.
+
+        Each instance starts with empty params and user_attrs dictionaries.
 
         Args:
-            number (int): Test input named number.
+            number (int): Trial identifier exposed to HPO naming and artifact code. Defaults
+                to ``2``.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         self.number = number
         self.params: dict[str, object] = {}
         self.user_attrs: dict[str, object] = {}
 
     def set_user_attr(self, name: str, value: object) -> None:
-        """Exercise the test helper named set_user_attr.
+        """Record a user attribute on the trial double.
+
+        No storage serialization occurs; the dictionary lets tests inspect metadata before
+        and after orchestration calls.
 
         Args:
-            name (str): Test input named name.
-            value (object): Test input named value.
+            name (str): Attribute key to create or overwrite.
+            value (object): Metadata value retained by reference under the key.
 
         Returns:
-            None: Result produced by the test helper.
+            None: user_attrs is updated in place.
         """
         self.user_attrs[name] = value
 
 
 class _TrialState:
-    """Named state double compatible with Optuna's enum interface."""
+    """Named state double compatible with Optuna's enum interface.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        name (str): State spelling such as RUNNING, WAITING, FAIL, or COMPLETE; retained
+            unchanged.
+
+    Returns:
+        _TrialState: A new local test fixture with independent instance state.
+    """
 
     def __init__(self, name: str) -> None:
-        """Exercise the test helper named __init__.
+        """Create the named state interface expected by recovery code.
+
+        This is a name carrier rather than an Optuna enum and performs no state transition
+        or validation.
 
         Args:
-            name (str): Test input named name.
+            name (str): State spelling such as RUNNING, WAITING, FAIL, or COMPLETE; retained
+                unchanged.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         self.name = name
 
 
 class _FrozenTrial:
-    """Persistent trial double used by automatic recovery discovery."""
+    """Persistent trial double used by automatic recovery discovery.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        number (int): Persistent trial identifier.
+        params (dict[str, object]): Suggested hyperparameter mapping, retained by reference.
+        state (str): State name wrapped by _TrialState. Defaults to ``'RUNNING'``.
+        user_attrs (dict[str, object] | None): Trial metadata copied to an independent
+            dictionary; None starts empty. Defaults to ``None``.
+
+    Returns:
+        _FrozenTrial: A new local test fixture with independent instance state.
+    """
 
     def __init__(
         self,
@@ -164,16 +251,21 @@ class _FrozenTrial:
         state: str = "RUNNING",
         user_attrs: dict[str, object] | None = None,
     ) -> None:
-        """Exercise the test helper named __init__.
+        """Create a stored-trial record for recovery queue tests.
+
+        Only the fields consumed by recovery discovery are modeled; no storage backend or
+        training objective is attached.
 
         Args:
-            number (int): Test input named number.
-            params (dict[str, object]): Test input named params.
-            state (str): Test input named state.
-            user_attrs (dict[str, object] | None): Test input named user_attrs.
+            number (int): Persistent trial identifier.
+            params (dict[str, object]): Suggested hyperparameter mapping, retained by
+                reference.
+            state (str): State name wrapped by _TrialState. Defaults to ``'RUNNING'``.
+            user_attrs (dict[str, object] | None): Trial metadata copied to an independent
+                dictionary; None starts empty. Defaults to ``None``.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         self.number = number
         self.params = params
@@ -182,21 +274,39 @@ class _FrozenTrial:
 
 
 class _Study:
-    """Study double that executes exactly one objective synchronously."""
+    """Study double that executes exactly one objective synchronously.
+
+    This fixture implements only the interface required by its surrounding regression tests.
+    Construction and mutable state are described by ``__init__``; it does not provide a
+    general production replacement.
+
+    Args:
+        trial (_RuntimeTrial): Live trial passed to objective callbacks.
+        frozen_trials (list[_FrozenTrial] | None): Previously stored trial records copied
+            into a list; None supplies no historical trials. Defaults to ``None``.
+
+    Returns:
+        _Study: A new local test fixture with independent instance state.
+    """
 
     def __init__(
         self,
         trial: _RuntimeTrial,
         frozen_trials: list[_FrozenTrial] | None = None,
     ) -> None:
-        """Exercise the test helper named __init__.
+        """Create a synchronous study double with observable trial and queue state.
+
+        The instance starts with empty study attributes and enqueue records, plus value=None
+        until optimize runs.
 
         Args:
-            trial (_RuntimeTrial): Test input named trial.
-            frozen_trials (list[_FrozenTrial] | None): Test input named frozen_trials.
+            trial (_RuntimeTrial): Live trial passed to objective callbacks.
+            frozen_trials (list[_FrozenTrial] | None): Previously stored trial records
+                copied into a list; None supplies no historical trials. Defaults to
+                ``None``.
 
         Returns:
-            None: Result produced by the test helper.
+            None: The fixture state is initialized in place.
         """
         self.trial = trial
         self.frozen_trials = list(frozen_trials or [])
@@ -205,13 +315,14 @@ class _Study:
         self.value: float | tuple[float, ...] | None = None
 
     def get_trials(self, deepcopy: bool = False) -> list[_FrozenTrial]:
-        """Exercise the test helper named get_trials.
+        """Expose the stored historical trial list to recovery code.
 
         Args:
-            deepcopy (bool): Test input named deepcopy.
+            deepcopy (bool): Optuna-compatible keyword accepted but ignored; records are
+                never deep-copied by this double. Defaults to ``False``.
 
         Returns:
-            list[_FrozenTrial]: Result produced by the test helper.
+            list[_FrozenTrial]: The original frozen_trials list, returned by identity.
         """
         del deepcopy
         return self.frozen_trials
@@ -221,14 +332,20 @@ class _Study:
         params: dict[str, object],
         user_attrs: dict[str, object] | None = None,
     ) -> None:
-        """Exercise the test helper named enqueue_trial.
+        """Record a retry request and install its parameters on the live trial.
+
+        Enqueuing is synchronous and does not create another historical trial; this makes
+        the next optimize call observable without real storage.
 
         Args:
-            params (dict[str, object]): Test input named params.
-            user_attrs (dict[str, object] | None): Test input named user_attrs.
+            params (dict[str, object]): Fixed parameter values copied into both queue record
+                and live trial.
+            user_attrs (dict[str, object] | None): Optional retry metadata copied and merged
+                into live trial attributes; None contributes an empty mapping. Defaults to
+                ``None``.
 
         Returns:
-            None: Result produced by the test helper.
+            None: enqueued, trial.params, and trial.user_attrs are updated.
         """
         attrs = dict(user_attrs or {})
         self.enqueued.append((dict(params), attrs))
@@ -236,54 +353,76 @@ class _Study:
         self.trial.user_attrs.update(attrs)
 
     def set_user_attr(self, name: str, value: object) -> None:
-        """Exercise the test helper named set_user_attr.
+        """Record a user attribute on the study double.
+
+        No storage serialization occurs; the dictionary lets tests inspect metadata before
+        and after orchestration calls.
 
         Args:
-            name (str): Test input named name.
-            value (object): Test input named value.
+            name (str): Attribute key to create or overwrite.
+            value (object): Metadata value retained by reference under the key.
 
         Returns:
-            None: Result produced by the test helper.
+            None: user_attrs is updated in place.
         """
         self.user_attrs[name] = value
 
     def optimize(self, objective: object, **kwargs: object) -> None:
-        """Exercise the test helper named optimize.
+        """Run one objective immediately and notify supplied completion callbacks.
+
+        Every supplied callback receives (study, trial) in list order. Objective and
+        callback exceptions propagate to the test.
 
         Args:
-            objective (object): Test input named objective.
-            kwargs (object): Test input named kwargs.
+            objective (object): Callable accepting the live trial and returning one scalar
+                or objective tuple.
+            **kwargs (object): Optuna-compatible keywords; callbacks defaults to an empty
+                list. Other optimization controls are ignored by this single-trial double.
 
         Returns:
-            None: Result produced by the test helper.
+            None: value stores the objective result before callbacks execute.
         """
         self.value = objective(self.trial)
         for callback in kwargs.get("callbacks", []):
             callback(self, self.trial)
 
     def trials_dataframe(self) -> pd.DataFrame:
-        """Exercise the test helper named trials_dataframe.
+        """Expose a minimal single-row trial table for CSV-publication tests.
 
         Args:
             None.
 
         Returns:
-            pd.DataFrame: Result produced by the test helper.
+            pd.DataFrame: One number column containing the live trial identifier; no metric
+            or parameter columns are fabricated.
         """
         return pd.DataFrame([{"number": self.trial.number}])
 
 
 class HpoObjectiveTests(unittest.TestCase):
-    """Verify objective selection and its no-leakage continual contract."""
+    """Verify objective selection and its no-leakage continual contract.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_objective_spec_defaults_and_multiple_metric_inference(self) -> None:
-        """Exercise the test helper named test_objective_spec_defaults_and_multiple_metric_inference.
+        """Verify default objective names and inferred multi-objective directions.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         self.assertEqual(
             _normalize_objective_spec("continual"),
@@ -313,13 +452,14 @@ class HpoObjectiveTests(unittest.TestCase):
             _normalize_objective_spec("generation", "custom_score")
 
     def test_continual_multiple_objectives_are_validation_only(self) -> None:
-        """Exercise the test helper named test_continual_multiple_objectives_are_validation_only.
+        """Read every continual objective from validation metrics despite conflicting test values.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         values = _objective_values(
             "continual",
@@ -341,26 +481,61 @@ class HpoObjectiveTests(unittest.TestCase):
             ],
         )
         self.assertEqual(values, (0.63, 0.08))
-        with self.assertRaisesRegex(ValueError, "must be finite"):
-            _objective_values(
+    def test_undefined_objective_fails_trial_without_stopping_study(self) -> None:
+        """Let Optuna record NaN metrics as failures and continue the search.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
+        study = optuna.create_study(direction="maximize")
+
+        def objective(trial: optuna.trial.Trial) -> float:
+            """Return an undefined first objective followed by a valid validation score.
+
+            This isolates failed-trial continuation without training a model or substituting
+            test/history metrics.
+
+            Args:
+                trial (optuna.trial.Trial): Real Optuna trial; its zero-based number
+                    determines the synthetic score.
+
+            Returns:
+                float: NaN for trial zero and 0.6 for subsequent trials, routed through
+                _objective_values.
+            """
+
+            return _objective_values(
                 "continual",
                 "dit_classifier",
                 {},
                 evaluations={
                     "validation_continual_metrics": {
-                        "final_average_accuracy": float("nan"),
+                        "final_average_accuracy": (
+                            # Make only the first trial undefined; the next can complete.
+                            float("nan") if trial.number == 0 else 0.6
+                        ),
                     },
                 },
             )
 
+        study.optimize(objective, n_trials=2)
+        self.assertEqual(study.trials[0].state, optuna.trial.TrialState.FAIL)
+        self.assertEqual(study.trials[1].state, optuna.trial.TrialState.COMPLETE)
+        self.assertEqual(study.best_value, 0.6)
+
     def test_continual_objective_never_falls_back_to_test_or_history(self) -> None:
-        """Exercise the test helper named test_continual_objective_never_falls_back_to_test_or_history.
+        """Reject a missing validation objective instead of using test or history scores.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         with self.assertRaises(KeyError):
             _objective_values(
@@ -374,13 +549,14 @@ class HpoObjectiveTests(unittest.TestCase):
             )
 
     def test_continual_ensemble_uses_selected_validation_mapping(self) -> None:
-        """Exercise the test helper named test_continual_ensemble_uses_selected_validation_mapping.
+        """Use the selected ensemble-derived validation metrics for continual objectives.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         value = _objective_values(
             "continual",
@@ -402,7 +578,8 @@ class HpoObjectiveTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
         self.assertEqual(
             _objective_values(
@@ -463,7 +640,8 @@ class HpoObjectiveTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
         values = _objective_values(
             "joint",
@@ -487,7 +665,15 @@ class HpoObjectiveTests(unittest.TestCase):
         self.assertEqual(values, (0.27, 0.73))
 
     def test_vae_classifier_objective_excludes_classifier_loss(self) -> None:
-        """Prefer the beta-VAE objective over joint total loss."""
+        """Prefer the beta-VAE objective over joint total loss.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         evaluations = {
             "valset_eval": {
@@ -545,7 +731,15 @@ class HpoObjectiveTests(unittest.TestCase):
         )
 
     def test_x0_objective_includes_weighted_main_kl(self) -> None:
-        """Score x0 reconstruction and KL without classifier contamination."""
+        """Score x0 reconstruction and KL without classifier contamination.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         evaluations = {
             "valset_ema_eval": {
@@ -597,7 +791,8 @@ class HpoObjectiveTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
         for task, model_name, history in (
             ("generation", "diffusion_transformer", {"noise_loss": [0.1]}),
@@ -613,10 +808,30 @@ class HpoObjectiveTests(unittest.TestCase):
 
 
 class HpoConfigTests(unittest.TestCase):
-    """Verify HPO configuration, search spaces, and objective contracts."""
+    """Verify HPO configuration, search spaces, and objective contracts.
+
+    The unittest runner executes the selected test method with its local fixtures;
+    individual methods describe the configurations and failure cases they exercise. There is
+    no application model or experiment result returned by constructing this test case.
+
+    Args:
+        methodName (str): Test method selected by unittest. Defaults to ``"runTest"``;
+            discovery supplies each named ``test_*`` method.
+
+    Attributes:
+        _testMethodName (str): Selected method name maintained by unittest.
+    """
 
     def test_zero_epoch_budget_cannot_score_untrained_weights(self) -> None:
-        """Reject an HPO objective that would skip every training epoch."""
+        """Reject an HPO objective that would skip every training epoch.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         with self.assertRaisesRegex(ValueError, "epochs"):
             run_hpo(
@@ -628,7 +843,15 @@ class HpoConfigTests(unittest.TestCase):
             )
 
     def test_tensorboard_name_hashes_wide_conditional_spaces(self) -> None:
-        """Keep Windows event paths short without losing run identity."""
+        """Keep Windows event paths short without losing run identity.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         trial = _SuggestionTrial()
         trial.params = {
@@ -643,7 +866,15 @@ class HpoConfigTests(unittest.TestCase):
         self.assertNotEqual(first, _tensorboard_name(trial))
 
     def test_umbrella_overrides_cannot_escape_valid_domains(self) -> None:
-        """Reject non-classifier families and impossible sampling horizons."""
+        """Reject non-classifier families and impossible sampling horizons.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         common = {
             "trial": _SuggestionTrial(),
@@ -675,7 +906,15 @@ class HpoConfigTests(unittest.TestCase):
             )
 
     def test_umbrella_requires_family_safe_fixed_overrides(self) -> None:
-        """Reserve raw/wrapper overrides for an exact architecture family."""
+        """Reserve raw/wrapper overrides for an exact architecture family.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         with self.assertRaisesRegex(ValueError, "exact diffusion classifier"):
             _build_trial_config(
@@ -694,7 +933,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_feature_archive_signature_binds_dataset_shape_and_metadata(
         self,
     ) -> None:
-        """Reject cross-dataset bundles and fingerprint label alignment."""
+        """Reject cross-dataset bundles and fingerprint label alignment.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir) / "cifar10_xception_features_safe"
             bundle = np.empty(3, dtype=object)
@@ -734,7 +981,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_singleton_classifier_schedule_excludes_sequential_protocol(
         self,
     ) -> None:
-        """Keep the first one-way head from becoming a permanent baseline."""
+        """Keep the first one-way head from becoming a permanent baseline.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
         singleton_trial = _SuggestionTrial()
         singleton = _build_trial_config(
             singleton_trial,
@@ -805,7 +1060,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_notebook_evidenced_classifier_templates_are_expressible(
         self,
     ) -> None:
-        """Keep the saved CIFAR CNN shape and Xception tail in the space."""
+        """Keep the saved CIFAR CNN shape and Xception tail in the space.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         cnn = _build_trial_config(
             _SuggestionTrial(),
@@ -846,7 +1109,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_continual_classifier_preprocessing_matches_selected_family(
         self,
     ) -> None:
-        """Do not replace classifier-only input scaling with replay-CNN scaling."""
+        """Do not replace classifier-only input scaling with replay-CNN scaling.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         common = {
             "task": "continual",
@@ -872,7 +1143,15 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(dnn.dataset.preprocess, "normalize")
 
     def test_reservoir_buffer_dimensions_are_independent(self) -> None:
-        """Keep replay capacity separate from sample and insertion counts."""
+        """Keep replay capacity separate from sample and insertion counts.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         config = _build_trial_config(
             _SuggestionTrial(),
@@ -899,7 +1178,15 @@ class HpoConfigTests(unittest.TestCase):
         })
 
     def test_reverse_sampling_is_tuned_only_when_it_affects_replay(self) -> None:
-        """Exclude unused reverse-process dimensions from loss objectives."""
+        """Exclude unused reverse-process dimensions from loss objectives.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         generation_trial = _SuggestionTrial()
         generation = _build_trial_config(
@@ -952,7 +1239,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_swap_noise_override_removes_incompatible_hpo_dimensions(
         self,
     ) -> None:
-        """Keep x0 HPO variational, sampleable, and trajectory-free."""
+        """Keep x0 HPO variational, sampleable, and trajectory-free.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         dit_vae_overrides = {
             "vit_block_ids": [1, 4],
@@ -1160,7 +1455,15 @@ class HpoConfigTests(unittest.TestCase):
             self.assertFalse(results_path.exists())
 
     def test_swap_noise_multilevel_topology_fixes_sufficient_depth(self) -> None:
-        """Derive Copy35 depth and reject topology that crosses its bridge."""
+        """Derive Copy35 depth and reject topology that crosses its bridge.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         topology = {
             "vit_block_ids": [1, 3, 5, 13, 15],
@@ -1226,6 +1529,7 @@ class HpoConfigTests(unittest.TestCase):
                 "diffusion_transformer",
                 {
                     name: value for name, value in topology.items()
+                    # Remove explicit depth IDs to exercise missing-route validation.
                     if name != "vit_block_ids"
                 },
                 {"swap_noise_image": True},
@@ -1234,7 +1538,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_swap_noise_preflight_validates_multilevel_latent_ratios(
         self,
     ) -> None:
-        """Match ordered ratio lists to pairs without rejecting latent builders."""
+        """Match ordered ratio lists to pairs without rejecting latent builders.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         model_overrides = {
             "depth": 6,
@@ -1341,7 +1653,15 @@ class HpoConfigTests(unittest.TestCase):
     def test_swap_noise_preflight_retains_true_decoder_bypass_guard(
         self,
     ) -> None:
-        """Only a route whose target is a flatten stage may cross the boundary."""
+        """Only a route whose target is a flatten stage may cross the boundary.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         base_overrides = {
             "depth": 6,
@@ -1375,31 +1695,83 @@ class HpoConfigTests(unittest.TestCase):
                     )
 
     def test_stochastic_u_vae_hpo_templates_construct(self) -> None:
-        """Keep U-VAE reshaper pairs in the central stochastic bridge."""
+        """Keep U-VAE reshaper pairs in the central stochastic bridge.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         import tensorflow as tf
         from diffusion.models.transformer.di_t_classifier import DiTClassifier
 
         class ArchitectureTrial(_SuggestionTrial):
-            """Force one classifier architecture while accepting other choices."""
+            """Force one classifier architecture while accepting other choices.
+
+            This fixture implements only the interface required by its surrounding
+            regression tests. Construction and mutable state are described by ``__init__``;
+            it does not provide a general production replacement.
+
+            Args:
+                architecture (str): Classifier architecture name to return for the
+                    architecture suggestion.
+
+            Returns:
+                ArchitectureTrial: A new local test fixture with independent instance state.
+            """
 
             def __init__(self, architecture: str) -> None:
+                """Create a deterministic trial with one forced classifier architecture.
+
+                The superclass initializes the parameter log; architecture is retained for
+                later suggest_categorical calls.
+
+                Args:
+                    architecture (str): Classifier architecture name to return for the
+                        architecture suggestion.
+
+                Returns:
+                    None: The fixture state is initialized in place.
+                """
+
                 super().__init__()
                 self.architecture = architecture
 
             def suggest_categorical(
                 self, name: str, choices: list[object]
             ) -> object:
-                """Return the requested architecture or a valid default choice."""
+                """Select controlled classifier settings and record the chosen category.
 
+                Classifier architecture follows self.architecture, aggregation is last,
+                classifier_only_cls_token is True, and each latent pair has width 16. Other
+                suggestions use choices[0].
+
+                Args:
+                    name (str): Suggestion name used to select a fixture override.
+                    choices (list[object]): Permitted categories; the first is used when no
+                        fixture override applies.
+
+                Returns:
+                    object: Forced architecture, aggregation route, token switch, latent
+                    width, or first category, stored in params.
+                """
+
+                # Force the classifier architecture selected by this test.
                 if name.startswith("classifier_architecture"):
                     value = self.architecture
+                # Test aggregation from the final feature depth only.
                 elif name == "feature_aggregation":
                     value = "last"
+                # Keep the classification token in the classifier branch.
                 elif name == "classifier_only_cls_token":
                     value = True
+                # Give each stochastic reshaper pair the same latent width.
                 elif name.startswith("clf_latent_dim_pair"):
                     value = 16
+                # Use the first valid choice for controls outside this fixture.
                 else:
                     value = choices[0]
                 self.params[name] = value
@@ -1450,6 +1822,7 @@ class HpoConfigTests(unittest.TestCase):
             network = DiTClassifier(**network_kwargs)
             outputs = network(inputs, full_return=True, training=False)
             self.assertEqual(len(outputs["clf_z_vals_list"]), latent_count)
+            # Count only the decoding side of each flatten/unflatten pair.
             unflatten_ids = {
                 depth for depth, reshape_type in
                 network.clf_reshaper_ids_dict.items()
@@ -1463,6 +1836,7 @@ class HpoConfigTests(unittest.TestCase):
                 ),
                 latent_count,
             )
+            # The multilevel VAE has additional skip connections to verify.
             if architecture == "u_multilevel_vae":
                 self.assertEqual(
                     network_kwargs["clf_connection_ids_dict"][-1], [-1]
@@ -1478,28 +1852,81 @@ class HpoConfigTests(unittest.TestCase):
             ))
 
     def test_all_feature_aggregation_forces_every_classifier_width(self) -> None:
-        """Project concatenated main features before every classifier template."""
+        """Project concatenated main features before every classifier template.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         class AllAggregationTrial(_SuggestionTrial):
-            """Select one architecture and all-depth feature aggregation."""
+            """Select one architecture and all-depth feature aggregation.
+
+            This fixture implements only the interface required by its surrounding
+            regression tests. Construction and mutable state are described by ``__init__``;
+            it does not provide a general production replacement.
+
+            Args:
+                architecture (str): Classifier architecture name to return for the
+                    architecture suggestion.
+
+            Returns:
+                AllAggregationTrial: A new local test fixture with independent instance
+                state.
+            """
 
             def __init__(self, architecture: str) -> None:
+                """Create a deterministic trial with one forced classifier architecture.
+
+                The superclass initializes the parameter log; architecture is retained for
+                later suggest_categorical calls.
+
+                Args:
+                    architecture (str): Classifier architecture name to return for the
+                        architecture suggestion.
+
+                Returns:
+                    None: The fixture state is initialized in place.
+                """
+
                 super().__init__()
                 self.architecture = architecture
 
             def suggest_categorical(
                 self, name: str, choices: list[object]
             ) -> object:
-                """Return the requested classifier controls or a valid default."""
+                """Select controlled classifier settings and record the chosen category.
 
+                Classifier architecture follows self.architecture, aggregation is all,
+                classifier_only_cls_token is True, and each latent pair has width 16. Other
+                suggestions use choices[0].
+
+                Args:
+                    name (str): Suggestion name used to select a fixture override.
+                    choices (list[object]): Permitted categories; the first is used when no
+                        fixture override applies.
+
+                Returns:
+                    object: Forced architecture, aggregation route, token switch, latent
+                    width, or first category, stored in params.
+                """
+
+                # Force the classifier architecture selected by this test.
                 if name.startswith("classifier_architecture"):
                     value = self.architecture
+                # Test aggregation across every feature depth.
                 elif name == "feature_aggregation":
                     value = "all"
+                # Keep the classification token in the classifier branch.
                 elif name == "classifier_only_cls_token":
                     value = True
+                # Give each stochastic reshaper pair the same latent width.
                 elif name.startswith("clf_latent_dim_pair"):
                     value = 16
+                # Use the first valid choice for controls outside this fixture.
                 else:
                     value = choices[0]
                 self.params[name] = value
@@ -1525,7 +1952,15 @@ class HpoConfigTests(unittest.TestCase):
                 self.assertIs(network_kwargs["clf_dim_forced"], True)
 
     def test_run_hpo_accepts_singleton_transfer_objectives(self) -> None:
-        """Later task cells make singleton-first CL objectives computable."""
+        """Later task cells make singleton-first CL objectives computable.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         accuracy_matrix = [
             [np.nan, np.nan, np.nan],
@@ -1543,7 +1978,17 @@ class HpoConfigTests(unittest.TestCase):
             builder_kwargs: dict[str, object] = {}
 
             def fake_builder(*args: object, **kwargs: object) -> Config:
-                """Return the minimal configured trial used by this regression."""
+                """Capture builder controls and return a minimal continual CNN Config.
+
+                Args:
+                    *args (object): Builder positional inputs; ignored and empty by default.
+                    **kwargs (object): Builder options copied into the enclosing
+                        builder_kwargs mapping; empty by default.
+
+                Returns:
+                    Config: Continual CNN configuration with ensemble selection disabled. No
+                    datasets or networks are constructed by this test double.
+                """
 
                 del args
                 builder_kwargs.update(kwargs)
@@ -1554,7 +1999,20 @@ class HpoConfigTests(unittest.TestCase):
                 )
 
             def fake_main(*args: object, **kwargs: object) -> dict[str, object]:
-                """Return staged continual metrics without running training."""
+                """Expose staged validation continual metrics without fitting a model.
+
+                The closure supplies metrics computed from a matrix with an undefined first
+                singleton task. It creates the temporary trial output directory so the real
+                HPO artifact path handling can proceed.
+
+                Args:
+                    *args (object): Main positional inputs; ignored and empty by default.
+                    **kwargs (object): Main keyword inputs; ignored and empty by default.
+
+                Returns:
+                    dict[str, object]: Empty history, the precomputed validation continual
+                    metric mapping, and the temporary result path.
+                """
 
                 del args, kwargs
                 trial_results.mkdir(parents=True, exist_ok=True)
@@ -1592,13 +2050,14 @@ class HpoConfigTests(unittest.TestCase):
             np.testing.assert_allclose(study.value, [0.10, -0.05])
 
     def test_builder_sets_runtime_continual_and_objective_metadata(self) -> None:
-        """Exercise the test helper named test_builder_sets_runtime_continual_and_objective_metadata.
+        """Preserve runtime controls, continual schedules, and objective metadata in trial Configs.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         config = _build_trial_config(
             _SuggestionTrial(),
@@ -1649,13 +2108,14 @@ class HpoConfigTests(unittest.TestCase):
         )
 
     def test_real_optuna_recovery_queue_is_persistent_and_idempotent(self) -> None:
-        """Exercise the test helper named test_real_optuna_recovery_queue_is_persistent_and_idempotent.
+        """Persist an Optuna recovery retry exactly once across repeated queue discovery.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         with tempfile.TemporaryDirectory() as temporary:
             study_root = Path(temporary)
@@ -1685,6 +2145,7 @@ class HpoConfigTests(unittest.TestCase):
                 (source.number,),
             )
             self.assertEqual(_enqueue_recovery_trials(study, study_root), ())
+            # Select pending retries, excluding completed or failed trials.
             queued = [
                 trial
                 for trial in study.get_trials(deepcopy=False)
@@ -1714,7 +2175,8 @@ class HpoConfigTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1803,7 +2265,8 @@ class HpoConfigTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         source = optuna.samplers.TPESampler(seed=29)
@@ -1835,7 +2298,8 @@ class HpoConfigTests(unittest.TestCase):
             None.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported
+                to the unittest runner.
         """
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1866,35 +2330,43 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 9)
-            self.assertEqual(original["search_space_version"], 9)
-            _write_study_spec(study_root, original)
-
-            with patch("optuna.load_study") as load_study:
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "specification differs",
-                ):
-                    run_hpo(
-                        "continual",
-                        "dit_classifier",
-                        n_trials=1,
-                        epochs=1,
-                        seed=12,
-                        resume_from=study_root,
-                    )
-            load_study.assert_not_called()
+            self.assertEqual(SEARCH_SPACE_VERSION, 10)
+            self.assertEqual(original["search_space_version"], 10)
+            # Old studies used sampled label discovery and report-selected
+            # public scores; resuming them would mix scientific protocols.
+            cases = (
+                ("seed", original, 12),
+                ("protocol", {**original, "search_space_version": 9}, 11),
+            )
+            for reason, stored_spec, requested_seed in cases:
+                with self.subTest(reason=reason):
+                    _write_study_spec(study_root, stored_spec)
+                    with patch("optuna.load_study") as load_study:
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "specification differs",
+                        ):
+                            run_hpo(
+                                "continual",
+                                "dit_classifier",
+                                n_trials=1,
+                                epochs=1,
+                                seed=requested_seed,
+                                resume_from=study_root,
+                            )
+                    load_study.assert_not_called()
 
     def test_run_hpo_loads_root_and_publishes_trial_recovery_before_main(
         self,
     ) -> None:
-        """Exercise the test helper named test_run_hpo_loads_root_and_publishes_trial_recovery_before_main.
+        """Load an existing study and publish its trial recovery metadata before training.
 
         Args:
-            None.
+            None. The unittest instance owns the fixtures used by this case.
 
         Returns:
-            None: Result produced by the test helper.
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
         """
         with tempfile.TemporaryDirectory() as temporary:
             study_root = Path(temporary) / "existing-study"
@@ -1954,26 +2426,33 @@ class HpoConfigTests(unittest.TestCase):
             main_observation: dict[str, object] = {}
 
             def fake_load_study(**kwargs: object) -> _Study:
-                """Exercise the test helper named fake_load_study.
+                """Capture study-load arguments and return the prepared study double.
 
                 Args:
-                    kwargs (object): Test input named kwargs.
+                    **kwargs (object): All optuna.load_study keyword arguments, copied into
+                        the enclosing load_kwargs log; empty by default.
 
                 Returns:
-                    _Study: Result produced by the test helper.
+                    _Study: The enclosing prepared study object, without opening a database.
                 """
                 load_kwargs.update(kwargs)
                 return study
 
             def fake_builder(*args: object, **kwargs: object) -> Config:
-                """Exercise the test helper named fake_builder.
+                """Record builder options and return a continual ensemble trial Config.
+
+                No network is constructed. The returned metadata permits the real HPO
+                wrapper to attach recovery paths before invoking fake_main.
 
                 Args:
-                    args (object): Test input named args.
-                    kwargs (object): Test input named kwargs.
+                    *args (object): Accepted builder positional arguments; unused by this
+                        fixture and empty by default.
+                    **kwargs (object): Builder controls retained in main_observation for
+                        assertions; empty by default.
 
                 Returns:
-                    Config: Result produced by the test helper.
+                    Config: A continual DiT configuration with accuracy/forgetting
+                    objectives and ensemble selection enabled.
                 """
                 main_observation["builder_kwargs"] = kwargs
                 return Config(
@@ -1990,14 +2469,21 @@ class HpoConfigTests(unittest.TestCase):
                 )
 
             def fake_main(config: Config, **kwargs: object) -> dict[str, object]:
-                """Exercise the test helper named fake_main.
+                """Observe published recovery metadata and emit fixed validation objectives.
+
+                The fixture captures trial attributes and Config before creating its result
+                directory. Its deliberately different history accuracy detects accidental
+                objective routing through training history.
 
                 Args:
-                    config (Config): Test input named config.
-                    kwargs (object): Test input named kwargs.
+                    config (Config): Trial Config after HPO attaches its runtime and
+                        recovery metadata.
+                    **kwargs (object): Optional main keywords accepted but ignored; empty by
+                        default.
 
                 Returns:
-                    dict[str, object]: Result produced by the test helper.
+                    dict[str, object]: Fake history, validation metrics (accuracy 0.67,
+                    forgetting 0.11), and the temporary result path.
                 """
                 del kwargs
                 main_observation["attrs_before_main"] = dict(trial.user_attrs)
@@ -2080,7 +2566,15 @@ class HpoConfigTests(unittest.TestCase):
             self.assertEqual(builder_kwargs["snapshot_network_name"], "raw")
 
     def test_umbrella_classifier_uses_prefixed_bounded_space(self) -> None:
-        """Resolve one umbrella family with sealed bounds and KD controls."""
+        """Resolve one umbrella family with sealed bounds and KD controls.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         study = optuna.create_study(
             direction="maximize",
@@ -2122,7 +2616,20 @@ class HpoConfigTests(unittest.TestCase):
         }
 
         def objective(trial: optuna.trial.Trial) -> float:
-            """Build, but do not train, one bounded umbrella candidate."""
+            """Build and retain one bounded umbrella-search Config without training.
+
+            The enclosing search-space overrides select a raw classifier family and limit
+            its architecture, distillation, and replay choices. This objective checks that
+            actual Optuna suggestions fit the shared study specification.
+
+            Args:
+                trial (optuna.trial.Trial): Live trial receiving family-prefixed
+                    hyperparameter suggestions.
+
+            Returns:
+                float: Constant 0.0, used only to complete the trial. The constructed Config
+                is also appended to the enclosing configs list.
+            """
             configs.append(_build_trial_config(
                 trial,
                 "continual",
@@ -2189,7 +2696,15 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(config.hpo["params"], trial.params)
 
     def test_run_hpo_forwards_tpe_startup_and_selects_best_trial(self) -> None:
-        """Use real Optuna storage around a mocked, ordered objective."""
+        """Use real Optuna storage around a mocked, ordered objective.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
 
         with tempfile.TemporaryDirectory() as temporary:
             current: dict[str, Config] = {}
@@ -2200,7 +2715,23 @@ class HpoConfigTests(unittest.TestCase):
                 *args: object,
                 **kwargs: object,
             ) -> Config:
-                """Return the smallest config required by the objective."""
+                """Create the minimal Config carrying the live trial number.
+
+                The fixture chooses a continual DiT model, raw-network evaluation, and
+                ordinary accuracy. The Config is retained in current so mocked YAML loading
+                returns the same trial settings without file I/O.
+
+                Args:
+                    trial (optuna.trial.Trial): Live Optuna trial whose number selects its
+                        synthetic validation score.
+                    *args (object): Remaining builder arguments, ignored and empty by
+                        default.
+                    **kwargs (object): Remaining builder options, ignored and empty by
+                        default.
+
+                Returns:
+                    Config: New trial configuration also stored as current['config'].
+                """
                 del args, kwargs
                 config = Config(
                     model={
@@ -2220,7 +2751,21 @@ class HpoConfigTests(unittest.TestCase):
                 config: Config,
                 **kwargs: object,
             ) -> dict[str, object]:
-                """Emit a deterministic validation score for each trial."""
+                """Return a trial-specific validation score and temporary output directory.
+
+                The surrounding scores list supplies 0.2, 0.8, and 0.4 in trial-number
+                order. No weights are trained; distinct values expose incorrect best-trial
+                selection.
+
+                Args:
+                    config (Config): Trial settings containing hpo['trial_number'].
+                    **kwargs (object): Additional main options, ignored and empty by
+                        default.
+
+                Returns:
+                    dict[str, object]: Empty history, final_average_accuracy in the
+                    validation continual mapping, and a newly created per-trial output path.
+                """
                 del kwargs
                 trial_number = config.hpo["trial_number"]
                 result_path = Path(temporary) / f"run-{trial_number}"
@@ -2239,7 +2784,20 @@ class HpoConfigTests(unittest.TestCase):
             original_create_study = optuna.create_study
 
             def create_in_memory_study(**kwargs: object) -> object:
-                """Keep this plumbing check independent of Windows DB locks."""
+                """Create a real Optuna study while excluding persistent database storage.
+
+                The storage option is removed from this local keyword mapping before calling
+                the captured original create_study function. Other options, including
+                sampler and directions, retain normal Optuna behavior. This isolates the
+                regression from Windows database-file locks.
+
+                Args:
+                    **kwargs (object): Optuna study constructor options; empty by default.
+                        storage, when supplied, is deliberately ignored by this fixture.
+
+                Returns:
+                    optuna.study.Study: Real study backed by Optuna's in-memory storage.
+                """
                 kwargs.pop("storage", None)
                 return original_create_study(**kwargs)
 
@@ -2306,7 +2864,19 @@ class HpoConfigTests(unittest.TestCase):
         study.enqueue_trial({"patch_size": 4})
 
         def objective(trial: optuna.trial.Trial) -> float:
-            """Build one classifier route for the queued patch grid."""
+            """Suggest a classifier route for one queued patch-grid size.
+
+            Patch sizes two and four produce different grid parity for a 28-pixel image. The
+            classifier suggestions must use compatible conditional parameter names so both
+            trials can coexist in the same real Optuna study.
+
+            Args:
+                trial (optuna.trial.Trial): Trial receiving patch-size and dependent
+                    classifier architecture suggestions.
+
+            Returns:
+                float: Constant 0.0 after suggestion succeeds; no model is trained.
+            """
             patch_size = trial.suggest_categorical("patch_size", [2, 4])
             _suggest_joint(
                 trial,
@@ -2326,7 +2896,15 @@ class HpoConfigTests(unittest.TestCase):
         self.assertIn("classifier_architecture_flat", study.trials[1].params)
 
     def test_v2_timestep_spaces_are_optuna_static(self) -> None:
-        """Run two diffusion horizons in one persistent V2 study."""
+        """Run two diffusion horizons in one persistent V2 study.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify the stated regression; failures are reported to the
+            unittest runner.
+        """
         study = optuna.create_study(
             direction="minimize",
             sampler=optuna.samplers.RandomSampler(seed=7),
@@ -2342,7 +2920,20 @@ class HpoConfigTests(unittest.TestCase):
         configs: list[Config] = []
 
         def objective(trial: optuna.trial.Trial) -> float:
-            """Build a complete V2 route for the queued diffusion horizon."""
+            """Build and retain a V2 trial Config for the queued diffusion horizon.
+
+            The surrounding study queues 500 and 1000 timesteps. Building each joint
+            classifier Config checks that horizon-dependent categorical choices use
+            compatible parameter names within one Optuna study. No training occurs.
+
+            Args:
+                trial (optuna.trial.Trial): Live trial receiving wrapper and model
+                    configuration suggestions under the fixed seed and MNIST geometry.
+
+            Returns:
+                float: Constant 0.0 to complete the trial. The Config is appended to the
+                enclosing configs list for inspection.
+            """
             configs.append(_build_trial_config(
                 trial,
                 "joint",
@@ -2377,6 +2968,6 @@ class HpoConfigTests(unittest.TestCase):
         ))
 
 
-# Select the test action required by this condition.
+# Run this module's tests when executed directly.
 if __name__ == "__main__":
     unittest.main()

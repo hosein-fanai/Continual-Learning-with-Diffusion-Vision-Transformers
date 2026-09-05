@@ -1,4 +1,10 @@
-"""Policy-aware gradient application for custom TensorFlow training steps."""
+"""Apply policy-aware gradients in custom TensorFlow training steps.
+
+``apply_policy_gradients`` differentiates an unscaled objective, handles the
+TensorFlow 2.10 LossScaleOptimizer protocol, and updates the selected variables.
+Ordinary and mixed-precision callers share one API; empty selections are no-ops,
+and disconnected objectives are reported before applying an update.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +30,8 @@ def apply_policy_gradients(
     resulting gradients exactly once. Ordinary optimizers retain the direct
     differentiation path. Partially disconnected variables are forwarded with
     ``None`` gradients so Keras emits its standard warning, while the returned
-    list contains only pairs that were actually applied.
+    list contains only connected pairs submitted to the optimizer. Dynamic
+    loss scaling may skip a nonfinite update according to optimizer policy.
 
     Args:
         tape (tf.GradientTape): Unconsumed tape that recorded ``loss``.
@@ -35,7 +42,7 @@ def apply_policy_gradients(
 
     Returns:
         list[tuple[tf.Tensor | tf.IndexedSlices, tf.Variable]]: Non-``None``
-        gradient-variable pairs that were applied. An explicitly empty
+        gradient-variable pairs submitted to the optimizer. An explicitly empty
         variable selection remains a no-op.
 
     Raises:
@@ -67,11 +74,13 @@ def apply_policy_gradients(
         gradients = optimizer.get_unscaled_gradients(gradients)
 
     gradient_variable_pairs = list(zip(gradients, selected_variables))
+    # Exclude disconnected variables from the returned gradient-variable pairs.
     pairs = [
         (gradient, variable)
         for gradient, variable in gradient_variable_pairs
         if gradient is not None
     ]
+    # Reject a selected objective that is disconnected from every variable.
     if not pairs:
         raise ValueError(
             "The loss is disconnected from every selected variable."

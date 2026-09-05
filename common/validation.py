@@ -1,4 +1,9 @@
-"""Optimization-invariant validation helpers shared across project modules."""
+"""Provide optimization-invariant assertion semantics for project invariants.
+
+``require`` raises AssertionError for a false condition even under Python ``-O``.
+It preserves ordinary truth testing and optional assertion messages; it does not
+coerce inputs, log failures, or change state when the condition is satisfied.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ def require(condition: object, message: object = None) -> None:
         condition (object): Value tested with normal Python truth semantics.
         message (object): Optional object passed to :class:`AssertionError`.
             ``None`` preserves the zero-argument assertion form.
+            Defaults to ``None``.
 
     Returns:
         None: The condition was truthy.

@@ -1,4 +1,12 @@
-"""MNIST/CIFAR loading, preprocessing, limiting, and ``tf.data`` helpers."""
+"""MNIST/CIFAR loading, preprocessing, limiting, and TensorFlow dataset helpers.
+
+The array loaders preserve original class IDs and derive preprocessing statistics
+from the training partition. They can return raw images or saved feature vectors,
+with optional stratified validation and one-hot labels. ``get_dataset`` adds
+batching and transforms; ``get_datasets`` resolves Config/direct options and
+returns either prepared datasets or a deferred loader for continual learning.
+Dataset downloads and feature reads occur when the selected loader is invoked.
+"""
 
 from __future__ import annotations
 
@@ -43,8 +51,9 @@ def _policy_numpy_dtype() -> np.dtype:
     """Return the active policy's stable floating NumPy dtype.
 
     Returns:
-        numpy.dtype: Float32 for float32/mixed policies and float64 for the
-        float64 policy.
+        numpy.dtype: NumPy equivalent of the active policy's ``variable_dtype``;
+        for example float32 under mixed_float16 and float64 under float64.
+        Reading the policy does not alter runtime settings.
     """
 
     variable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
@@ -64,6 +73,7 @@ def _pad_images(
         pad (int): Nonnegative padding width after integer normalization.
         value (float | int): Constant border value in the array's current
             preprocessing space.
+            Defaults to ``0``.
 
     Returns:
         numpy.ndarray: Padded images with unchanged dtype and leading/channel
@@ -75,6 +85,7 @@ def _pad_images(
         return x
 
     spatial_padding = ((0, 0), (int(pad), int(pad)), (int(pad), int(pad)))
+    # Preserve a channel axis only for rank-four image batches.
     channel_padding = ((0, 0),) if x.ndim == 4 else ()
 
     return np.pad(
@@ -111,6 +122,7 @@ def _limit_samples(
         return x, y
 
     labels = np.asarray(y)
+    # Decode multi-column one-hot labels; flatten sparse vectors or columns.
     label_ids = np.argmax(labels, axis=-1) if labels.ndim > 1 and labels.shape[-1] > 1 \
                 else labels.reshape(-1)
     classes = np.unique(label_ids)
@@ -204,12 +216,20 @@ def get_dataset_spec(
     """Return the class count, image shape, and flattened input size.
 
     Args:
-        dataset_name (str): MNIST, Fashion-MNIST, CIFAR-10, or CIFAR-100 name.
-        return_features (bool): Return the fixed saved-feature width when true.
+        dataset_name (str): Case-insensitive ``"mnist"``, ``"fmnist"``,
+            ``"cifar10"``, or ``"cifar100"``.
+        return_features (bool): Use width 2,048 for saved features when true;
+            false uses the product of the raw image dimensions. The returned
+            image shape remains the dataset's raw shape in either mode.
+            Defaults to ``False``.
 
     Returns:
-        tuple[int, tuple[int, int, int], int]: Class count, image shape, and
-        flattened image/feature width.
+        tuple[int, tuple[int, int, int], int]: Class count (10 or 100),
+        ``(height, width, channels)`` (``(28, 28, 1)`` or ``(32, 32, 3)``), and
+        flattened image/feature width. No dataset files are loaded.
+
+    Raises:
+        ValueError: If the dataset name is not one of the supported names.
     """
 
     spec = _DATASET_SPECS.get(dataset_name.lower())
@@ -222,6 +242,7 @@ def get_dataset_spec(
         )
 
     class_num, image_shape = spec
+    # Use the saved-feature width for feature inputs, otherwise flatten image geometry.
     flat_dim = 2_048 if return_features else int(np.prod(image_shape))
 
     return class_num, image_shape, flat_dim
@@ -376,6 +397,7 @@ def preprocess_dataset(
         # train and validation features with labels. Archives created before
         # metadata support retain the historical 42/0.2 layout.
         feature_split_metadata = load_feature_split_metadata(features_path)
+        # Use saved split metadata when available; otherwise preserve the legacy split.
         feature_split_seed, feature_validation_ratio = (
             feature_split_metadata
             if feature_split_metadata is not None
@@ -400,6 +422,7 @@ def preprocess_dataset(
             ("validation", len(x_val), len(y_val)),
             ("test", len(x_test), len(y_test)),
         )
+        # Report only feature splits whose row counts disagree with reconstructed labels.
         mismatched_lengths = [
             f"{name}: features={feature_count}, labels={label_count}"
             for name, feature_count, label_count in feature_label_lengths
@@ -517,6 +540,7 @@ def preprocess_dataset(
                 continue
 
             print(f"---{set_id}")
+            # Decode one-hot labels for frequencies; retain sparse IDs for other label shapes.
             label_ids = np.argmax(dataset, axis=-1) \
                 if dataset.ndim > 1 and dataset.shape[-1] > 1 \
                 else dataset.reshape(-1)
@@ -541,20 +565,52 @@ def load_mnist(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load MNIST and apply the shared preprocessing pipeline.
+    """Load MNIST and return filtered train, validation, and test arrays.
+
+    The Keras loader may download missing source data to its usual local cache.
+    Class IDs remain in their original dataset numbering. Validation is split
+    from the filtered training data, and scaling statistics are computed from
+    the remaining training partition. Saved-feature inputs follow the same
+    filtering and re-splitting contract as raw images.
 
     Args:
-        indices (Sequence[int]): Classes to retain.
-        validation_ratio (float): Fraction reserved for validation.
-        preprocess (str | None): Shared preprocessing mode.
-        features_path (str | None): Optional saved-feature archive.
-        return_features (bool): Load features instead of images.
-        onehot_labels (bool): Return one-hot labels.
-        seed (int | None): Split seed.
-        verbose (bool | int): Print dataset summaries.
+        indices (Sequence[int]): Class IDs to retain in the requested grouping
+            order. Defaults to ``tuple(range(10))`` (every dataset class).
+        validation_ratio (float): Fraction of filtered training rows reserved
+            by a stratified split. Defaults to ``0.2``; ``0.0`` disables
+            validation. Must lie in ``[0, 1)``.
+        preprocess (str | None): Defaults to ``None`` for no scaling.
+            ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
+            ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
+            ``"normalize"`` uses elementwise training mean/std. Other values
+            preserve unscaled storage. Held-out values are not clipped.
+        features_path (str | None): Base path without ``.npy`` for a saved
+            train/validation/test feature archive. Defaults to
+            ``"./data/mnist_xception_gavgpooled_features_train_val_test"``.
+            Ignored for raw images; feature mode requires a dataset-identifying
+            path and uses its optional metadata sidecar to reconstruct labels.
+        return_features (bool): Defaults to ``False`` for images. ``True``
+            replaces image arrays with the saved feature splits.
+        onehot_labels (bool): Defaults to ``False`` for sparse labels.
+            ``True`` returns rows of width ``10`` in the active policy's
+            stable variable dtype.
+        seed (int | None): Defaults to ``42`` for reproducible validation
+            splitting. ``None`` allows a stochastic split.
+        verbose (bool | int): Defaults to ``1`` to print split shapes and label
+            frequencies; zero/False suppresses this output.
 
     Returns:
-        DatasetArrays: Train, validation, and test pairs.
+        DatasetArrays: ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
+        Raw images have shape ``[N, 28, 28]`` and sparse labels ``[N]``
+        for each split; features have their archive-defined non-sample axes.
+        Unscaled images are uint8. Scaled inputs, unscaled floating features,
+        and one-hot labels use float32, or float64 under the float64 policy.
+        Validation arrays are both None when validation is disabled.
+
+    Raises:
+        ValueError: If feature metadata/row counts are incompatible, the
+            validation fraction is invalid, or a stratified split is infeasible.
+        OSError: If required data or feature artifacts cannot be read/downloaded.
     """
 
     from tensorflow.keras.datasets import mnist
@@ -580,20 +636,52 @@ def load_fmnist(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load Fashion-MNIST and apply the shared preprocessing pipeline.
+    """Load Fashion-MNIST and return filtered train, validation, and test arrays.
+
+    The Keras loader may download missing source data to its usual local cache.
+    Class IDs remain in their original dataset numbering. Validation is split
+    from the filtered training data, and scaling statistics are computed from
+    the remaining training partition. Saved-feature inputs follow the same
+    filtering and re-splitting contract as raw images.
 
     Args:
-        indices (Sequence[int]): Classes to retain.
-        validation_ratio (float): Fraction reserved for validation.
-        preprocess (str | None): Shared preprocessing mode.
-        features_path (str | None): Optional saved-feature archive.
-        return_features (bool): Load features instead of images.
-        onehot_labels (bool): Return one-hot labels.
-        seed (int | None): Split seed.
-        verbose (bool | int): Print dataset summaries.
+        indices (Sequence[int]): Class IDs to retain in the requested grouping
+            order. Defaults to ``tuple(range(10))`` (every dataset class).
+        validation_ratio (float): Fraction of filtered training rows reserved
+            by a stratified split. Defaults to ``0.2``; ``0.0`` disables
+            validation. Must lie in ``[0, 1)``.
+        preprocess (str | None): Defaults to ``None`` for no scaling.
+            ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
+            ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
+            ``"normalize"`` uses elementwise training mean/std. Other values
+            preserve unscaled storage. Held-out values are not clipped.
+        features_path (str | None): Base path without ``.npy`` for a saved
+            train/validation/test feature archive. Defaults to
+            ``"./data/fmnist_xception_gavgpooled_features_train_val_test"``.
+            Ignored for raw images; feature mode requires a dataset-identifying
+            path and uses its optional metadata sidecar to reconstruct labels.
+        return_features (bool): Defaults to ``False`` for images. ``True``
+            replaces image arrays with the saved feature splits.
+        onehot_labels (bool): Defaults to ``False`` for sparse labels.
+            ``True`` returns rows of width ``10`` in the active policy's
+            stable variable dtype.
+        seed (int | None): Defaults to ``42`` for reproducible validation
+            splitting. ``None`` allows a stochastic split.
+        verbose (bool | int): Defaults to ``1`` to print split shapes and label
+            frequencies; zero/False suppresses this output.
 
     Returns:
-        DatasetArrays: Train, validation, and test pairs.
+        DatasetArrays: ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
+        Raw images have shape ``[N, 28, 28]`` and sparse labels ``[N]``
+        for each split; features have their archive-defined non-sample axes.
+        Unscaled images are uint8. Scaled inputs, unscaled floating features,
+        and one-hot labels use float32, or float64 under the float64 policy.
+        Validation arrays are both None when validation is disabled.
+
+    Raises:
+        ValueError: If feature metadata/row counts are incompatible, the
+            validation fraction is invalid, or a stratified split is infeasible.
+        OSError: If required data or feature artifacts cannot be read/downloaded.
     """
 
     from tensorflow.keras.datasets import fashion_mnist
@@ -619,20 +707,52 @@ def load_cifar10(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load CIFAR-10 and apply the shared preprocessing pipeline.
+    """Load CIFAR-10 and return filtered train, validation, and test arrays.
+
+    The Keras loader may download missing source data to its usual local cache.
+    Class IDs remain in their original dataset numbering. Validation is split
+    from the filtered training data, and scaling statistics are computed from
+    the remaining training partition. Saved-feature inputs follow the same
+    filtering and re-splitting contract as raw images.
 
     Args:
-        indices (Sequence[int]): Classes to retain.
-        validation_ratio (float): Fraction reserved for validation.
-        preprocess (str | None): Shared preprocessing mode.
-        features_path (str | None): Optional saved-feature archive.
-        return_features (bool): Load features instead of images.
-        onehot_labels (bool): Return one-hot labels.
-        seed (int | None): Split seed.
-        verbose (bool | int): Print dataset summaries.
+        indices (Sequence[int]): Class IDs to retain in the requested grouping
+            order. Defaults to ``tuple(range(10))`` (every dataset class).
+        validation_ratio (float): Fraction of filtered training rows reserved
+            by a stratified split. Defaults to ``0.2``; ``0.0`` disables
+            validation. Must lie in ``[0, 1)``.
+        preprocess (str | None): Defaults to ``None`` for no scaling.
+            ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
+            ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
+            ``"normalize"`` uses elementwise training mean/std. Other values
+            preserve unscaled storage. Held-out values are not clipped.
+        features_path (str | None): Base path without ``.npy`` for a saved
+            train/validation/test feature archive. Defaults to
+            ``"./data/cifar10_xception_gavgpooled_features_train_val_test"``.
+            Ignored for raw images; feature mode requires a dataset-identifying
+            path and uses its optional metadata sidecar to reconstruct labels.
+        return_features (bool): Defaults to ``False`` for images. ``True``
+            replaces image arrays with the saved feature splits.
+        onehot_labels (bool): Defaults to ``False`` for sparse labels.
+            ``True`` returns rows of width ``10`` in the active policy's
+            stable variable dtype.
+        seed (int | None): Defaults to ``42`` for reproducible validation
+            splitting. ``None`` allows a stochastic split.
+        verbose (bool | int): Defaults to ``1`` to print split shapes and label
+            frequencies; zero/False suppresses this output.
 
     Returns:
-        DatasetArrays: Train, validation, and test pairs.
+        DatasetArrays: ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
+        Raw images have shape ``[N, 32, 32, 3]`` and sparse labels ``[N, 1]``
+        for each split; features have their archive-defined non-sample axes.
+        Unscaled images are uint8. Scaled inputs, unscaled floating features,
+        and one-hot labels use float32, or float64 under the float64 policy.
+        Validation arrays are both None when validation is disabled.
+
+    Raises:
+        ValueError: If feature metadata/row counts are incompatible, the
+            validation fraction is invalid, or a stratified split is infeasible.
+        OSError: If required data or feature artifacts cannot be read/downloaded.
     """
 
     from tensorflow.keras.datasets import cifar10
@@ -658,20 +778,52 @@ def load_cifar100(
     seed: int | None = 42, 
     verbose: bool | int = 1
 ) -> DatasetArrays:
-    """Load CIFAR-100 and apply the shared preprocessing pipeline.
+    """Load CIFAR-100 and return filtered train, validation, and test arrays.
+
+    The Keras loader may download missing source data to its usual local cache.
+    Class IDs remain in their original dataset numbering. Validation is split
+    from the filtered training data, and scaling statistics are computed from
+    the remaining training partition. Saved-feature inputs follow the same
+    filtering and re-splitting contract as raw images.
 
     Args:
-        indices (Sequence[int]): Classes to retain.
-        validation_ratio (float): Fraction reserved for validation.
-        preprocess (str | None): Shared preprocessing mode.
-        features_path (str | None): Optional saved-feature archive.
-        return_features (bool): Load features instead of images.
-        onehot_labels (bool): Return one-hot labels.
-        seed (int | None): Split seed.
-        verbose (bool | int): Print dataset summaries.
+        indices (Sequence[int]): Class IDs to retain in the requested grouping
+            order. Defaults to ``tuple(range(100))`` (every dataset class).
+        validation_ratio (float): Fraction of filtered training rows reserved
+            by a stratified split. Defaults to ``0.2``; ``0.0`` disables
+            validation. Must lie in ``[0, 1)``.
+        preprocess (str | None): Defaults to ``None`` for no scaling.
+            ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
+            ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
+            ``"normalize"`` uses elementwise training mean/std. Other values
+            preserve unscaled storage. Held-out values are not clipped.
+        features_path (str | None): Base path without ``.npy`` for a saved
+            train/validation/test feature archive. Defaults to
+            ``"./data/cifar100_xception_gavgpooled_features_train_val_test"``.
+            Ignored for raw images; feature mode requires a dataset-identifying
+            path and uses its optional metadata sidecar to reconstruct labels.
+        return_features (bool): Defaults to ``False`` for images. ``True``
+            replaces image arrays with the saved feature splits.
+        onehot_labels (bool): Defaults to ``False`` for sparse labels.
+            ``True`` returns rows of width ``100`` in the active policy's
+            stable variable dtype.
+        seed (int | None): Defaults to ``42`` for reproducible validation
+            splitting. ``None`` allows a stochastic split.
+        verbose (bool | int): Defaults to ``1`` to print split shapes and label
+            frequencies; zero/False suppresses this output.
 
     Returns:
-        DatasetArrays: Train, validation, and test pairs.
+        DatasetArrays: ``(x_train, y_train, x_val, y_val, x_test, y_test)``.
+        Raw images have shape ``[N, 32, 32, 3]`` and sparse labels ``[N, 1]``
+        for each split; features have their archive-defined non-sample axes.
+        Unscaled images are uint8. Scaled inputs, unscaled floating features,
+        and one-hot labels use float32, or float64 under the float64 policy.
+        Validation arrays are both None when validation is disabled.
+
+    Raises:
+        ValueError: If feature metadata/row counts are incompatible, the
+            validation fraction is invalid, or a stratified split is infeasible.
+        OSError: If required data or feature artifacts cannot be read/downloaded.
     """
 
     from tensorflow.keras.datasets import cifar100
@@ -707,25 +859,37 @@ def get_dataset(
             Rank-three image batches receive a final singleton channel axis.
         y (numpy.ndarray | tf.Tensor | None): Optional labels aligned with
             ``x``. ``None`` creates an input-only dataset.
+            Defaults to ``None``.
         pad (int): Nonnegative zero-padding width applied to both image axes
             after batching. ``0`` disables padding.
+            Defaults to ``0``.
         cache (str | bool): ``True`` caches in memory, a nonempty string caches
             at that path, and ``False`` disables caching.
+            Defaults to ``False``.
         shuffle_buffer (int): Positive shuffle capacity; ``0`` or a
             negative value preserves input order.
+            Defaults to ``10000``.
         batch_size (int): Positive examples per batch.
+            Defaults to ``128``.
         drop_remainder (bool): Whether to omit a final undersized batch.
+            Defaults to ``True``.
         augment_fn (Callable | None): Optional callable applied to each batch of
             inputs while labels, when present, remain unchanged.
+            Defaults to ``None``, skipping augmentation.
         conv_base (tf.keras.Model | None): Optional feature extractor applied to
             each input batch with ``training=False``.
+            Defaults to ``None``, returning the transformed inputs directly.
         num_parallel_calls (int | None): Parallel mapping count. ``None`` uses
             ``AUTOTUNE`` mapping and prefetching.
+            Defaults to ``None``.
         prefetch (bool): Whether to append a prefetch operation.
+            Defaults to ``False``.
         seed (int | None): Optional deterministic seed for shuffling.
+            Defaults to ``None``, leaving the dataset shuffle seed unspecified.
         metadata (numpy.ndarray | tf.Tensor | None): Optional third tensor
             aligned with ``x`` and ``y``. Continual distillation uses it for a
             replay-provenance mask. It requires non-``None`` labels.
+            Defaults to ``None``, omitting the third dataset component.
 
     Returns:
         tf.data.Dataset: Batched inputs, ``(inputs, labels)`` pairs, or
@@ -738,6 +902,7 @@ def get_dataset(
     from tensorflow.keras import layers
 
 
+    # Use automatic mapping parallelism unless the caller supplies a value.
     num_parallel_calls = tf.data.AUTOTUNE if num_parallel_calls is None \
                         else num_parallel_calls
 
@@ -831,12 +996,22 @@ def _resolve_dataset_options(
 ) -> dict[str, object]:
     """Resolve direct or configured dataset orchestration values once.
 
+    Config mode copies authoritative dataset/training/continual settings and
+    resolves the effective seed. Direct mode supplies the aliases, options,
+    and defaults documented in ``get_datasets``; its pretrained inputs default
+    to no preprocessing, while other model families default to standardization.
+
     Args:
-        config (Config | None): Typed project configuration, when supplied.
-        kwargs (Mapping[str, object]): Direct-mode dataset options.
+        config (Config | None): Typed project configuration; ``None`` selects
+            direct keyword resolution. This function does not mutate it.
+        kwargs (Mapping[str, object]): Direct-mode dataset options consumed
+            only when ``config`` is ``None``; the input mapping is not mutated.
 
     Returns:
-        dict[str, object]: Flat values consumed by :func:`get_datasets`.
+        dict[str, object]: Flat dataset/model names; preprocessing, class/filter,
+        feature, label, validation, batching, shuffle, padding, sample-cap,
+        validation-toggle, seed, task, and VAE-input settings consumed by
+        ``get_datasets``. Loading and TensorFlow pipeline construction are deferred.
     """
 
     # Keep the legacy direct defaults when no typed configuration is supplied.
@@ -846,6 +1021,7 @@ def _resolve_dataset_options(
             kwargs.get("model_type", kwargs.get("name", "diffusion_transformer"))
         )
         model_name = str(model_name).lower()
+        # Leave pretrained images raw; standardize other direct model families.
         default_preprocess = None if model_name == "pretrained" \
                             else "standardize"
 
@@ -868,6 +1044,7 @@ def _resolve_dataset_options(
             "task": normalize_training_task(kwargs.get("task", "legacy"))
         }
 
+    # Infer the diffusion family from with_classifier when no model name is set.
     model_name = config.model.name or (
         "dit_classifier" if config.model.with_classifier
         else "diffusion_transformer"
@@ -875,6 +1052,7 @@ def _resolve_dataset_options(
     model_name = str(model_name).lower()
     task = normalize_training_task(config.training.task)
 
+    # Use a continual seed override for continual runs; otherwise use training.seed.
     return {
         "dataset_name": config.dataset.name, 
         "model_name": model_name, 
@@ -914,6 +1092,7 @@ def get_datasets(
         config (Config | None): Optional typed project configuration. When
             provided, its dataset, model, and training sections supply every
             setting and direct keyword options are ignored.
+            Defaults to ``None``, resolving the direct keyword options below.
         **kwargs (object): Direct options used only when ``config`` is ``None``:
             ``dataset_name`` (``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
             ``"cifar100"``), ``model_name`` (str), ``preprocess``
@@ -923,6 +1102,25 @@ def get_datasets(
             (int), ``shuffle_buffer`` (int), ``pad`` (int),
             ``max_train_samples`` and ``max_val_samples`` (int | None),
             ``use_valset`` (bool), ``seed`` (int | None), and ``task`` (str).
+
+    Direct Defaults:
+        ``dataset_name="mnist"`` and ``model_name="diffusion_transformer"``
+        select the loader and representation. ``model_type``/``name`` are
+        fallback aliases for the model name. ``preprocess`` defaults to None
+        for pretrained models and ``"standardize"`` otherwise. ``indices=None``
+        selects every dataset class; ``validation_ratio=0.0`` creates no
+        validation partition. ``return_features=False``, ``features_path=""``,
+        and ``onehot_labels=False`` select raw images and sparse labels before
+        any required VAE conditioning adjustment. ``batch_size=128``,
+        ``shuffle_buffer=10000``, and ``pad=0`` define training batching,
+        shuffle capacity, and spatial padding. ``max_train_samples=None`` and
+        ``max_val_samples=None`` retain all rows; positive caps preserve at
+        least one row per represented class. ``use_valset=True`` returns an
+        existing validation partition, ``seed=None`` leaves selection unseeded,
+        and ``task="legacy"`` selects ordinary dataset construction.
+        ``model_kwargs`` (alias ``kwargs``, default empty mapping) supplies an
+        optional VAE ``conditioned`` choice, defaulting to true for continual
+        VAE runs and false for ordinary standalone VAEs.
 
     Returns:
         tuple[tf.data.Dataset | DatasetLoader, tf.data.Dataset | None]: Training
@@ -940,7 +1138,9 @@ def get_datasets(
         uses ``"normalize"``. The returned continual loader receives the same
         recorded setting. Direct pretrained calls default to raw images because
         Xception owns their rescaling; other direct families retain
-        standardization.
+        standardization. Conditional VAEs also record ``onehot_labels=True``.
+        Continual mode loads and sizes the selected training pool for optimizer
+        setup, then defers task-specific dataset creation to the learner.
 
     Raises:
         ValueError: If ``task`` is unsupported, or if ``pad`` is incompatible
@@ -969,7 +1169,9 @@ def get_datasets(
     # construction aligned with the effective factory setting rather than
     # requiring a redundant one-hot override from every caller.
     vae_conditioned = False
+    # Resolve conditioning for standalone VAE families.
     if model_name in {"vae", "variational_autoencoder"}:
+        # Direct VAE calls read conditioning from their model keyword mapping.
         if config is None:
             direct_model_kwargs = kwargs.get(
                 "model_kwargs", kwargs.get("kwargs", {})
@@ -977,18 +1179,22 @@ def get_datasets(
             vae_conditioned = bool(direct_model_kwargs.get(
                 "conditioned", task == "continual"
             ))
+        # Configured generic model options override the typed VAE section.
         elif config.model.kwargs:
             vae_conditioned = bool(config.model.kwargs.get(
                 "conditioned", task == "continual"
             ))
+        # Without generic options, use typed conditioning or the continual default.
         else:
             vae_conditioned = bool(
                 config.model.variational_autoencoder.conditioned
                 or task == "continual"
             )
 
+    # Attached classifiers and conditioned VAEs both require one-hot model inputs.
     if model_name == "vae_classifier" or vae_conditioned:
         onehot_labels = True
+        # Persist the inferred label representation when a Config is available.
         if config is not None:
             config.dataset.onehot_labels = True
 
@@ -1023,9 +1229,11 @@ def get_datasets(
         vae_activation = "tanh"
         # Respect generic model options before the typed family section.
         if config is not None:
+            # Select the joint or standalone VAE section to resolve reconstruction scaling.
             typed_vae_config = config.model.vae_classifier \
                 if model_name == "vae_classifier" \
                 else config.model.variational_autoencoder
+            # Prefer a generic reconstruction activation; otherwise use the typed activation.
             vae_activation = config.model.kwargs.get(
                 "last_activation", "tanh"
             ) if config.model.kwargs else typed_vae_config.last_activation
@@ -1034,6 +1242,7 @@ def get_datasets(
             vae_activation, "__name__", 
             vae_activation
         )
+        # Normalize a named activation while preserving the explicit linear None value.
         activation_name = str(activation_name).lower() if activation_name is not None \
                         else None
         preprocess = {
@@ -1089,6 +1298,7 @@ def get_datasets(
     # Flatten sparse labels into the shape expected by Keras losses.
     if not onehot_labels:
         y_train = np.asarray(y_train).reshape(-1)
+        # Flatten validation labels only when a validation split exists.
         y_val = np.asarray(y_val).reshape(-1) if y_val is not None else None
 
     rng = np.random.default_rng(seed)
@@ -1097,6 +1307,14 @@ def get_datasets(
         max_train_samples, 
         rng
     )
+    # Continual training constructs its own task pipelines. Only the update
+    # count is needed here to resolve configured optimizer schedules.
+    if task == "continual":
+        # Record the deferred pipeline length only for configured execution.
+        if config is not None:
+            config.dataset.trainset_len = (len(x_train) + batch_size - 1) // batch_size
+        return loader, None
+
     # Limit only an independently created validation partition.
     if x_val is not None:
         x_val, y_val = _limit_samples(
@@ -1107,6 +1325,7 @@ def get_datasets(
 
     # Pad raw images before any dense-model flattening.
     if pad > 0:
+        # Use a -1 border in diffusion space and a zero border in other input spaces.
         pad_value = -1. if str(preprocess).lower() in (
             "standardize", "diffusion"
         ) else 0.
@@ -1128,7 +1347,7 @@ def get_datasets(
         pad=0, 
         shuffle_buffer=shuffle_buffer, 
         batch_size=batch_size, 
-        drop_remainder=(task != "continual" and len(x_train) >= batch_size), 
+        drop_remainder=len(x_train) >= batch_size,
         seed=seed
     )
 
@@ -1136,6 +1355,7 @@ def get_datasets(
     if config is not None:
         config.dataset.trainset_len = len(trainset)
 
+    # Build validation batches only when validation is enabled and arrays exist.
     valset = get_dataset(
         x_val,
         y_val,
@@ -1145,7 +1365,4 @@ def get_datasets(
         drop_remainder=False
     ) if use_valset and x_val is not None else None
 
-    # Defer per-task loading to the continual learner.
-    if task == "continual":
-        return loader, None
     return trainset, valset

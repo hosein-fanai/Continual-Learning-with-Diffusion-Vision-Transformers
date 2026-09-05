@@ -1,4 +1,10 @@
-"""Lazy Keras custom-object registration for package-level deserialization."""
+"""Register lazy and canonical Keras custom objects for project deserialization.
+
+Package imports may register lightweight class proxies without importing every
+model implementation. The proxies load canonical classes on first construction;
+matching canonical decorators replace those proxies in Keras' process-global
+custom-object registry while preserving unrelated caller registrations.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +26,10 @@ def register_canonical_keras_serializable(
 
     Args:
         package (str): Keras serialization namespace used before ``>``.
+            Defaults to ``'continual_learning'``.
         name (str | None): Optional registered name; the class name is used
             when omitted.
+            Defaults to ``None``.
 
     Returns:
         Callable[[type], type]: Decorator that installs the canonical class.
@@ -80,8 +88,10 @@ def register_lazy_keras_serializable(
         module_name (str): Absolute module containing the canonical class.
         attribute_name (str): Class name exported by ``module_name``.
         package (str): Keras serialization namespace used before ``>``.
+            Defaults to ``'continual_learning'``.
         aliases (tuple[str, ...]): Additional legacy registry keys that should
             resolve through the same proxy.
+            Defaults to ``()``.
 
     Returns:
         None: The proxy is installed, or an existing registration is retained.
@@ -95,7 +105,14 @@ def register_lazy_keras_serializable(
 
 
     class LazySerializableProxy:
-        """Stand in for one registered class until Keras needs to construct it."""
+        """Defer construction of a registered Keras class until its implementation is needed.
+
+        ``__new__`` forwards constructor arguments to the imported canonical class;
+        ``from_config`` delegates configuration loading within a custom-object scope.
+        Instances returned by either route belong to the canonical class, not the proxy.
+        The enclosing registration sets the proxy's name/module metadata and records its
+        ``_continual_lazy_target`` tuple for safe replacement by the canonical decorator.
+        """
 
         def __new__(cls, *args: object, **kwargs: object) -> object:
             """Construct the canonical class for name-only deserialization.
@@ -124,6 +141,8 @@ def register_lazy_keras_serializable(
                 config (Mapping[str, object]): Serialized constructor state.
                 custom_objects (Mapping[str, object] | None): Custom-object
                     scope supplied by Keras for nested deserialization.
+                    Defaults to ``None``, adding no local custom-object entries.
+                    The supplied mapping is copied and remains unchanged.
 
             Returns:
                 object: Canonical class instance reconstructed from ``config``.

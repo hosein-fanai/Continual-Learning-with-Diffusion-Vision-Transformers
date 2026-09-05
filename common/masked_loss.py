@@ -1,4 +1,10 @@
-"""Serializable losses for comparing predictions with target prefixes."""
+"""Serializable MAE/MSE losses for comparing predictions with target prefixes.
+
+``MaskedLoss`` truncates only the final target dimension to the prediction width,
+checks that examples/features remain aligned, and averages non-batch dimensions.
+Keras then applies sample weights and the configured batch reduction. Importing
+this module registers the loss under the ``continual_learning`` Keras namespace.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +22,8 @@ class MaskedLoss(losses.Loss):
     of shape ``[batch, 4]`` uses only target columns ``0`` through ``3``.  Equal
     widths behave like the selected standard Keras loss. Both tensors must have
     the same rank of at least two and matching dimensions except for the last;
-    the prediction width must be positive, and the target's last dimension
-    cannot be narrower than the prediction's.
+    the target cannot be narrower than the prediction. Empty prediction widths
+    have an undefined mean, as with ordinary MAE/MSE.
 
     Attributes:
         loss (Callable): Elementwise ``tf.math.abs`` for ``"mae"`` or
@@ -85,45 +91,20 @@ class MaskedLoss(losses.Loss):
                 target's last dimension is narrower than the prediction.
         """
 
-        rank_true = tf.debugging.assert_rank_at_least(y_true, 2)
-        rank_pred = tf.debugging.assert_rank_at_least(y_pred, 2)
-        same_rank = tf.debugging.assert_equal(
-            tf.rank(y_true),
-            tf.rank(y_pred),
-            message="y_true and y_pred must have the same rank.",
+        prefix = tf.cast(y_true[..., :tf.shape(y_pred)[-1]], y_pred.dtype)
+        # Prevent broadcasting from changing which examples/features are paired.
+        checks = (
+            tf.debugging.assert_rank_at_least(y_pred, 2),
+            tf.debugging.assert_equal(tf.rank(prefix), tf.rank(y_pred)),
+            tf.debugging.assert_equal(
+                tf.shape(prefix), tf.shape(y_pred),
+                message="The target prefix must match the prediction shape.",
+            ),
         )
-        same_leading_shape = tf.debugging.assert_equal(
-            tf.shape(y_true)[:-1],
-            tf.shape(y_pred)[:-1],
-            message="y_true and y_pred must match outside the last dimension.",
-        )
-        width_assertion = tf.debugging.assert_greater_equal(
-            tf.shape(y_true)[-1],
-            tf.shape(y_pred)[-1],
-            message="y_true must be at least as wide as y_pred.",
-        )
-        positive_width = tf.debugging.assert_positive(
-            tf.shape(y_pred)[-1],
-            message="y_pred must have a positive last dimension.",
-        )
-        assertions = [
-            assertion for assertion in (
-                rank_true,
-                rank_pred,
-                same_rank,
-                same_leading_shape,
-                width_assertion,
-                positive_width,
-            ) if assertion is not None
-        ]
-
-        with tf.control_dependencies(assertions):
-            n = tf.shape(y_pred)[-1]
-            y_true_last = tf.cast(y_true[..., :n], y_pred.dtype)
-            error = y_true_last - y_pred
-
-        non_batch_axes = tf.range(1, tf.rank(error))
-        return tf.reduce_mean(self.loss(error), axis=non_batch_axes)
+        # Attach graph assertion operations; omit eager assertions that return None.
+        with tf.control_dependencies([check for check in checks if check is not None]):
+            error = self.loss(prefix - y_pred)
+            return tf.reduce_mean(error, axis=tf.range(1, tf.rank(error)))
 
     def get_config(self: MaskedLoss) -> dict[str, object]:
         """Return a Keras-serializable configuration.
