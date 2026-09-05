@@ -249,7 +249,7 @@ trainer; the default `"fit"` path is unchanged.
 
 ## Hyperparameter optimization
 
-The 21 notebooks under [`notebooks/hpo/`](notebooks/hpo/README.md) cover all
+The 24 supported notebooks under [`notebooks/hpo/`](notebooks/hpo/README.md) cover all
 task/model pairings supported by the HPO runner. They call one API:
 
 ```python
@@ -282,6 +282,12 @@ continual metrics. Joint models default to a two-objective Pareto study;
 `objective_metrics` and matching `objective_directions` select one or more
 other objectives. Continual objectives are read only from validation continual
 metrics and default to maximizing `final_average_accuracy`.
+
+VAE generation objectives compare fixed validation reconstruction MSE, and
+diffusion objectives compare unweighted validation `noise_loss` (input
+reconstruction MSE in swap mode). Sampled training losses and KL coefficients
+do not change the scoring units. These are reconstruction/denoising proxies;
+continual validation accuracy measures the usefulness of generated replay.
 
 For a teacher-distilled class-incremental architecture search, use
 `task="continual"`, `model_name="diffusion_classifier"`, and
@@ -470,7 +476,16 @@ conda run -n tf_env python test.py
 ```
 
 This command first enforces the source-wide documentation, type-annotation,
-named-callable, and branch-purpose-comment contracts. It then discovers the
+and adjacent branch-comment contracts. It then discovers the
 maintained model and layer classes and runs every registered TensorFlow 2.10
 self-test. A missing class, an omitted self-test result, or any non-passing
 result makes the command fail.
+
+Run the orchestration, HPO, recovery, and continual-learning regressions too:
+
+```powershell
+conda run -n tf_env python -m unittest discover -s common/tests -t .
+```
+
+See [the thesis code review](THESIS_CODE_REVIEW.md) for the reviewed scope,
+scientific interpretation, fixes, verification, and remaining experimental work.

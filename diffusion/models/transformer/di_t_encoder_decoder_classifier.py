@@ -97,8 +97,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 teacher-forcing tokens. The outer dtype policy is inherited unless ``dtype`` is set
                 explicitly here. Image size/channels must match the encoder and ``use_unpatchify`` must
                 be true. Configure KL bottlenecks and token regularizers on the encoder, where unchanged
-                classifier wrappers read their loss metadata. ``cond_dim`` must match the encoder unless
-                ``decoder_separate_cond=True``; any decoder timestep/label tables must cover the encoder
+                classifier wrappers read their loss metadata. ``cond_dim`` must match when an active
+                encoder condition is shared with the decoder; any decoder timestep/label tables must cover the encoder
                 ID ranges. Feature-width merges and encoder features used as cross- attention queries
                 require matching encoder/decoder class and distillation token settings; attention values
                 may differ in length. Defaults to ``None``.

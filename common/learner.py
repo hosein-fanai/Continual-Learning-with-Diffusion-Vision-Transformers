@@ -721,7 +721,8 @@ def _load_continual_arrays(
 ) -> tuple[DatasetArrays, np.random.Generator]:
     """Load, cap, pad, and relabel the shared arrays used by every continual task.
 
-    Padding uses -1 for standardize/diffusion preprocessing and zero otherwise. Labels are
+    Padding uses -1 for standardize/diffusion/fixed-standardize preprocessing and zero
+    otherwise. Labels are
     remapped to schedule positions while preserving the requested sparse/one-hot
     representation. The returned RNG is subsequently used by the task runner and is included
     in recovery state. Sample caps preserve at least one row per present class.
@@ -783,7 +784,7 @@ def _load_continual_arrays(
         # Use -1 for diffusion-scaled borders; other preprocessing uses zero.
         pad_value = -1. if str(
             load_dataset_fn_kwargs["preprocess"]
-        ).lower() in ("standardize", "diffusion") else 0.
+        ).lower() in ("standardize", "diffusion", "fixed-standardize") else 0.
         all_x_train = _pad_images(np.asarray(all_x_train), pad, value=pad_value)
         all_x_test = _pad_images(np.asarray(all_x_test), pad, value=pad_value)
         # Pad validation images only when that optional split exists.
@@ -1095,7 +1096,9 @@ def _run_continual_tasks(
     phase. Replay-only classifier distillation carries an explicit row-provenance mask.
 
     Diffusion input scaling is shared across tasks and replay. Literal preprocess values
-    'standardize'/'diffusion' use data_min=-1 and data_range=2; 'min-max' uses 0 and 1.
+    'standardize'/'diffusion'/'fixed-standardize' use data_min=-1 and data_range=2;
+    'min-max'/'fixed-min-max' use 0 and 1. Fixed modes use public uint8 bounds without
+    fitting preprocessing statistics to current or future training classes.
     Other values infer the minimum and range from the first scheduled task's capped, padded
     training rows, substituting 1 for a zero observed range. The resulting affine map
     converts that loader scale to diffusion-space [-1, 1] without clipping later rows to the
@@ -1756,7 +1759,7 @@ def _run_continual_tasks(
             else generative_model_kwargs["samples_per_class"]
         )
     buffer_can_replay = use_buffer \
-        and buffer_kwargs["maxlen"] > 0 \
+        and (buffer_kwargs["maxlen"] is None or buffer_kwargs["maxlen"] > 0) \
         and (baseline == "reservoir_er" or buffer_kwargs["insert_num"] > 0)
     generator_can_replay = generative_model is not None \
         and use_generative_replay
@@ -2166,10 +2169,10 @@ def _run_continual_tasks(
         preprocess = load_dataset_fn_kwargs.get("preprocess")
 
         # Already standardized diffusion inputs span the nominal [-1, 1] range.
-        if preprocess in ("standardize", "diffusion"):
+        if preprocess in ("standardize", "diffusion", "fixed-standardize"):
             diffusion_data_min, diffusion_data_range = -1., 2.
         # Min-max inputs span the nominal [0, 1] range.
-        elif preprocess == "min-max":
+        elif preprocess in ("min-max", "fixed-min-max"):
             diffusion_data_min, diffusion_data_range = 0., 1.
         # Other loader representations use their observed training minimum and range.
         else:
@@ -2205,7 +2208,8 @@ def _run_continual_tasks(
     # data bytes, callbacks, schedules, precision, and replay policy are all
     # represented without process-local repr strings.
     run_descriptor = {
-        "schema": 4,
+        # Version 5 binds learned replay sources and randomizes balanced remainder classes.
+        "schema": 5,
         "schedule": {
             "class_num": class_num,
             "class_order": class_order,
@@ -2383,8 +2387,8 @@ def _run_continual_tasks(
             # After diffusion topology recovery, reconnect the attached classifier head.
             if use_diffusion_classifier:
                 prev_model = generative_model.network.classifier
-        # Standalone classifier recovery rebuilds the saved classifier topology.
-        else:
+        # External classifiers need their own restored topology alongside any generator.
+        if not use_diffusion_classifier:
             completed_width = 0
             for completed_index, completed_group in enumerate(completed_groups):
                 completed_width += len(completed_group)
@@ -2763,13 +2767,20 @@ def _run_continual_tasks(
             expected_candidate_y = _restore_replay_label_shape(
                 expected_candidate_ids, y_train
             )
+            task_replay_cache_context = replay_cache_context
+            # Cache reuse requires the same learned generator, not only its initialization.
+            if replay_cache_mode != "off":
+                task_replay_cache_context = fingerprint_state({
+                    "initial_context": replay_cache_context,
+                    "generator_weights": _model_weight_descriptor(generative_model),
+                })
             # Create a candidate-cache path only when caching is enabled.
             cache_file = _replay_cache_path(
                 replay_cache_dir,
                 task_index,
                 old_original_classes,
                 candidate_count,
-                context_fingerprint=replay_cache_context,
+                context_fingerprint=task_replay_cache_context,
             ) if replay_cache_mode != "off" else None
             read_cached_pool = replay_cache_mode == "read" or (
                 replay_cache_mode == "read_write"
@@ -2790,7 +2801,7 @@ def _run_continual_tasks(
                     task_index,
                     old_original_classes,
                     candidate_seed,
-                    replay_cache_context,
+                    task_replay_cache_context,
                 )
             # Without a readable candidate cache, generate a fresh replay pool.
             else:
@@ -2846,7 +2857,7 @@ def _run_continual_tasks(
                     task_index,
                     old_original_classes,
                     candidate_seed,
-                    replay_cache_context,
+                    task_replay_cache_context,
                 )
             # Remove a generated singleton channel when current grayscale inputs have no
             # channel axis.
@@ -2897,8 +2908,10 @@ def _run_continual_tasks(
             # Expensive replay diagnostics remain fully opt-in.
             if mechanistic_metrics:
                 selected_probabilities = None
-                # Add teacher consistency/calibration only when a trace exists.
-                if previous_teacher is not None:
+                # Classifier teachers provide probabilities; generator-only teachers do not.
+                if previous_teacher is not None and isinstance(
+                    generative_model, DiffusionClassifier
+                ):
                     scoring_started = time.perf_counter()
                     selected_probabilities = _predict_teacher_probabilities(
                         previous_teacher,
@@ -3209,7 +3222,8 @@ def _run_continual_tasks(
         # Compare the frozen slow/previous trace with the updated student on
         # a bounded old-class training probe. This is optional and never reads
         # the locked test split during development.
-        if mechanistic_metrics and previous_teacher is not None and old_classes:
+        if mechanistic_metrics and previous_teacher is not None and old_classes \
+        and isinstance(generative_model, DiffusionClassifier):
             probe_x, probe_y = _select_classes(all_x_train, all_y_train, old_classes)
             probe_x, probe_y = _sample_exact_rows(
                 probe_x,

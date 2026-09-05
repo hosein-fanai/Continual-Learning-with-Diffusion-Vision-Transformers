@@ -1,7 +1,8 @@
 """MNIST/CIFAR loading, preprocessing, limiting, and TensorFlow dataset helpers.
 
-The array loaders preserve original class IDs and derive preprocessing statistics
-from the training partition. They can return raw images or saved feature vectors,
+The array loaders preserve original class IDs and derive fitted preprocessing statistics
+from the training partition. Fixed pixel scaling uses public uint8 bounds instead.
+They can return raw images or saved feature vectors,
 with optional stratified validation and one-hot labels. ``get_dataset`` adds
 batching and transforms; ``get_datasets`` resolves Config/direct options and
 returns either prepared datasets or a deferred loader for continual learning.
@@ -297,8 +298,8 @@ def preprocess_dataset(
 
     Class filtering is applied in the order supplied by ``indices``. Training
     data is then split reproducibly using ``validation_ratio`` and stratified
-    by label. Preprocessing statistics always come from that final
-    training partition.
+    by label. Fitted preprocessing statistics come from that final training partition;
+    fixed pixel modes instead use the public bounds 0 and 255.
 
     Args:
         x_train (numpy.ndarray): Training samples shaped ``[N, ...]``.  For raw
@@ -323,6 +324,9 @@ def preprocess_dataset(
             clipped, so they can lie outside the nominal interval. Any other
             value, including ``None`` or ``""``, performs no scaling. In
             raw-image mode unscaled arrays are cast to ``uint8``.
+            ``"fixed-min-max"`` divides raw pixels by 255; ``"fixed-standardize"``
+            applies ``2 * x / 255 - 1``. These fixed modes use no dataset statistics
+            and require raw pixels in public uint8 units, not saved features.
         return_features (bool): If true, load pre-extracted arrays instead of
             returning images. ``features_path`` must identify MNIST,
             Fashion-MNIST, CIFAR-10, or CIFAR-100 and contain three arrays in
@@ -349,7 +353,7 @@ def preprocess_dataset(
         ValueError: If feature mode cannot infer a supported dataset from its
             path, the validation ratio is outside ``[0, 1)``,
             requested classes cannot support the stratified split, or
-            feature/label lengths differ.
+            feature/label lengths differ. Fixed pixel modes reject saved features.
     """
 
     from tensorflow.keras.utils import to_categorical
@@ -365,6 +369,9 @@ def preprocess_dataset(
     # Keep the validation fraction within its mathematical interval.
     if not 0. <= validation_ratio < 1.:
         raise ValueError("validation_ratio must lie in [0, 1).")
+    # Public pixel bounds do not define a scale for saved feature vectors.
+    if return_features and preprocess in ("fixed-min-max", "fixed-standardize"):
+        raise ValueError("Fixed pixel preprocessing is not supported for saved features.")
     # Load saved feature vectors instead of raw images.
     if return_features:
         # Require an archive path whenever saved features are requested.
@@ -458,23 +465,29 @@ def preprocess_dataset(
     else:
         x_val, y_val = None, None
 
-    # Scale from training extrema to [0, 1] or diffusion's [-1, 1].
-    if preprocess in ("min-max", "standardize", "diffusion"):
-        min_ = x_train.min()
-        max_ = x_train.max()
-        value_range = max_ - min_
-        # Avoid division by zero for constant inputs.
-        if value_range == 0.:
-            value_range = 1.
+    # Scale pixels or fitted training extrema to [0, 1] or diffusion's [-1, 1].
+    if preprocess in (
+        "min-max", "standardize", "diffusion", "fixed-min-max", "fixed-standardize"
+    ):
+        # Fixed image modes never inspect current or future training extrema.
+        if preprocess in ("fixed-min-max", "fixed-standardize"):
+            min_, value_range = 0., 255.
+        # Existing fitted modes retain their training-partition calibration.
+        else:
+            min_ = x_train.min()
+            value_range = x_train.max() - min_
+            # Avoid division by zero for constant inputs.
+            if value_range == 0.:
+                value_range = 1.
 
         x_train = (x_train.astype(stable_dtype) - min_) / value_range
-        # Apply the training extrema to validation inputs when present.
+        # Apply the same fixed or fitted scale to validation inputs when present.
         if x_val is not None:
             x_val = (x_val.astype(stable_dtype) - min_) / value_range
         x_test = (x_test.astype(stable_dtype) - min_) / value_range
 
         # Map normalized inputs into diffusion space when requested.
-        if preprocess != "min-max":
+        if preprocess not in ("min-max", "fixed-min-max"):
             x_train = (x_train * 2.) - 1.
             # Apply the same mapping to validation inputs when present.
             if x_val is not None:
@@ -583,7 +596,9 @@ def load_mnist(
             ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
             ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
             ``"normalize"`` uses elementwise training mean/std. Other values
-            preserve unscaled storage. Held-out values are not clipped.
+            preserve unscaled storage. ``"fixed-min-max"`` divides raw pixels by 255;
+            ``"fixed-standardize"`` applies ``2 * x / 255 - 1``. Fixed modes require
+            raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
             ``"./data/mnist_xception_gavgpooled_features_train_val_test"``.
@@ -654,7 +669,9 @@ def load_fmnist(
             ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
             ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
             ``"normalize"`` uses elementwise training mean/std. Other values
-            preserve unscaled storage. Held-out values are not clipped.
+            preserve unscaled storage. ``"fixed-min-max"`` divides raw pixels by 255;
+            ``"fixed-standardize"`` applies ``2 * x / 255 - 1``. Fixed modes require
+            raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
             ``"./data/fmnist_xception_gavgpooled_features_train_val_test"``.
@@ -725,7 +742,9 @@ def load_cifar10(
             ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
             ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
             ``"normalize"`` uses elementwise training mean/std. Other values
-            preserve unscaled storage. Held-out values are not clipped.
+            preserve unscaled storage. ``"fixed-min-max"`` divides raw pixels by 255;
+            ``"fixed-standardize"`` applies ``2 * x / 255 - 1``. Fixed modes require
+            raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
             ``"./data/cifar10_xception_gavgpooled_features_train_val_test"``.
@@ -796,7 +815,9 @@ def load_cifar100(
             ``"min-max"`` uses scalar training extrema for ``[0, 1]`` scaling;
             ``"standardize"``/``"diffusion"`` maps those extrema to ``[-1, 1]``;
             ``"normalize"`` uses elementwise training mean/std. Other values
-            preserve unscaled storage. Held-out values are not clipped.
+            preserve unscaled storage. ``"fixed-min-max"`` divides raw pixels by 255;
+            ``"fixed-standardize"`` applies ``2 * x / 255 - 1``. Fixed modes require
+            raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
             ``"./data/cifar100_xception_gavgpooled_features_train_val_test"``.
@@ -1227,8 +1248,14 @@ def get_datasets(
         "vae", "variational_autoencoder", "vae_classifier"
     }:
         vae_activation = "tanh"
+        # Direct calls use the same reconstruction options as the model factory.
+        if config is None:
+            direct_model_kwargs = kwargs.get(
+                "model_kwargs", kwargs.get("kwargs", {})
+            ) or {}
+            vae_activation = direct_model_kwargs.get("last_activation", "tanh")
         # Respect generic model options before the typed family section.
-        if config is not None:
+        else:
             # Select the joint or standalone VAE section to resolve reconstruction scaling.
             typed_vae_config = config.model.vae_classifier \
                 if model_name == "vae_classifier" \
@@ -1327,7 +1354,7 @@ def get_datasets(
     if pad > 0:
         # Use a -1 border in diffusion space and a zero border in other input spaces.
         pad_value = -1. if str(preprocess).lower() in (
-            "standardize", "diffusion"
+            "standardize", "diffusion", "fixed-standardize"
         ) else 0.
         x_train = _pad_images(np.asarray(x_train), pad, value=pad_value)
         # Pad validation inputs only when a real validation partition exists.

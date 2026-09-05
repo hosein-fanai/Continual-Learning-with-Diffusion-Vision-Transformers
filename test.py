@@ -2,9 +2,9 @@
 """Repository self-test registry and Python source contract inspection.
 
 The static API parses Git-tracked and non-ignored Python sources, checks
-module/class/public-function documentation and function annotations, and
+module/class/function documentation and function annotations, and
 rejects production assert statements that disappear under Python -O. It counts
-statement-level branches but does not enforce adjacent comment text. Notebook
+statement-level branches and requires an adjacent case comment. Notebook
 cells are outside this check. No TensorFlow imports are needed for static use.
 
 run_project_self_tests additionally imports every module in
@@ -279,9 +279,8 @@ def assert_static_contracts() -> dict[str, int]:
 
             counts["functions"] += 1
             docstring = ast.get_docstring(node) or ""
-            public_api = not node.name.startswith("_")
-            # Public APIs explain their contract; private helpers rely on types.
-            if public_api and not docstring:
+            # Every callable explains its contract, including private helpers.
+            if not docstring:
                 failures.append(
                     f"{relative_path}:{node.lineno} function {node.name} missing docstring"
                 )
@@ -322,7 +321,36 @@ def assert_static_contracts() -> dict[str, int]:
                     f"{relative_path}:{node.lineno} {node.name} missing return annotation"
                 )
 
-        counts["branches"] += len(_if_branch_locations(tree, source))
+        branch_locations = _if_branch_locations(tree, source)
+        counts["branches"] += len(branch_locations)
+        lines = source.splitlines()
+        # Only lexical comments count; a hash inside a string is ordinary data.
+        comment_lines = {
+            token.start[0]
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT
+        }
+        # Include closing delimiters and comments before a multiline branch's first statement.
+        branch_ends = {
+            node.lineno: max(node.lineno, node.body[0].lineno - 1)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+        }
+        for line_number, keyword in branch_locations:
+            previous = line_number - 1
+            while previous > 0 and not lines[previous - 1].strip():
+                previous -= 1
+            end = branch_ends.get(line_number, line_number)
+            following = end + 1
+            while following <= len(lines) and not lines[following - 1].strip():
+                following += 1
+            # A case can be explained before, on, or immediately inside its header.
+            if not comment_lines.intersection(
+                (previous, *range(line_number, end + 1), following)
+            ):
+                failures.append(
+                    f"{relative_path}:{line_number} {keyword} missing case comment"
+                )
 
         for line_number in _production_assert_locations(tree, relative_path):
             failures.append(

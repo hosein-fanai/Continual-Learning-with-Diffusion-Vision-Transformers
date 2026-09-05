@@ -631,6 +631,28 @@ class ResearchControlTests(unittest.TestCase):
             [4, 4],
         )
 
+    def test_unbounded_buffer_remains_a_valid_replay_source(self) -> None:
+        """Retain the public ReplayBuffer unbounded-capacity option in continual runs.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: A singleton-first stream consumes the stored old-class rows.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_path = Path(directory) / "tiny_classifier.h5"
+            self._write_template(template_path)
+            details = _run_continual_tasks(
+                **self._run_args(template_path),
+                use_buffer=True,
+                buffer_kwargs={"maxlen": None, "sample_num": 3, "insert_num": 3},
+            )
+        resources = details["task_resource_metrics"]
+        self.assertEqual(resources[0]["replay"]["selected_count"], 0)
+        self.assertEqual(resources[1]["replay"]["selected_count"], 3)
+
     def test_explicit_reservoir_keeps_insert_num_ablation(self) -> None:
         """Keep sampled insertion available outside the named ER baseline.
 

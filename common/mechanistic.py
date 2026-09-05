@@ -282,9 +282,9 @@ def _balanced_indices(
     """Select a near-equal number of candidate indices from every class.
 
     Shuffle candidates independently within each class, then consume one per
-    class per round in sorted class-ID order. Exhausted classes are skipped;
-    a partial final round favors earlier sorted classes. The local generator
-    advances, while labels remain unchanged.
+    class per round in a seeded random class order. Exhausted classes are skipped;
+    a partial final round therefore does not systematically favor lower class IDs.
+    The local generator advances, while labels remain unchanged.
 
     Args:
         labels (numpy.ndarray): Rank-one integer candidate labels.
@@ -299,7 +299,7 @@ def _balanced_indices(
 
     queues = {
         int(class_id): list(rng.permutation(np.flatnonzero(labels == class_id)))
-        for class_id in sorted(np.unique(labels).tolist())
+        for class_id in rng.permutation(np.unique(labels))
     }
 
     selected: list[int] = []

@@ -41,8 +41,8 @@ the paired stochastic features without direct pre-latent encoder bypasses.
 denoiser/classifier three-input contracts and additionally accept a fourth
 decoder image for teacher forcing. Their inherited transformer APIs, active
 resolution policy, and progressive depth belong to the encoder; resolution
-updates are synchronized to the attached decoder, whose architecture keeps its
-own fixed construction depth. Use `DiffusionModel` for plain encoder/decoder
+updates are synchronized to the attached decoder. Targeted `{"decoder": ...}`
+depth specs can grow that branch separately. Use `DiffusionModel` for plain encoder/decoder
 denoising, `DiffusionClassifier` for the classifier's
 three-input workflow, and a custom classifier training step when its fourth
 tensor is required.

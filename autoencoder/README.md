@@ -111,6 +111,18 @@ Its `train_num` behavior is:
 - `-1`: use each supplied row once, with no manual resampling;
 - any positive value: sample exactly that many rows with replacement.
 
+Automatic early stopping minimizes loss monitors and maximizes accuracy monitors.
+For a custom metric with another direction, supply an explicit callback list.
+Reconstruction losses are computed in the policy's variable dtype before
+reduction, so mixed-float16 training avoids half-precision squared-error overflow.
+
+VAE HPO evaluates its default `generation_loss` using held-out reconstruction
+`mean_squared_error`, with fixed preprocessing within each study. This keeps
+validation units comparable when training samples MSE versus MAE or different
+KL weights. It is a reconstruction proxy, not a measure of prior-sample quality;
+continual studies select validation continual accuracy. Explicit objective names
+such as `generative_loss` remain available for controlled experiments.
+
 Conditional training records argmax label IDs in `seen_classes`. Calling
 `generate(classes=None)` replays all recorded classes. An explicit empty class
 list returns two empty Python lists; unconditional generation returns only the

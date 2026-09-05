@@ -1304,7 +1304,13 @@ def write_continual_tensorboard_summaries(
     groups = _task_groups(details)
     counts = {}
 
-    def write_events(relative_path, namespace, scalars, metadata, metadata_step):
+    def write_events(
+        relative_path: Path,
+        namespace: str,
+        scalars: Sequence[tuple[str, object, int]],
+        metadata: Mapping[str, object],
+        metadata_step: int,
+    ) -> None:
         """Write and close one event stream, then record its scalar count.
 
         Args:

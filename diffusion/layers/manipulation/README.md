@@ -34,8 +34,9 @@ Allowed scaling modes are:
 | `"cnn_stride"` | learned `cnn_kernel_size` convolution | `dim * cnn_dim_ratio` |
 
 With `same` padding, an input side `G` becomes `ceil(G / strides)`. With
-`valid` padding, use the normal pooling/convolution output formula; the stored
-positional size assumes the common setup where window/kernel and stride align.
+`valid` padding, it becomes `floor((G - window_size) / strides) + 1`, where
+`window_size` is `2` for pooling and `cnn_kernel_size` for convolution.
+`output_grid_size` records this computed side for positional and stage metadata.
 
 ## `Upsample`
 

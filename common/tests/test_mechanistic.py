@@ -16,7 +16,9 @@ import unittest
 
 import numpy as np
 
-from common.mechanistic import calibration_metrics, replay_quality_metrics
+from common.mechanistic import (
+    calibration_metrics, replay_quality_metrics, select_replay_candidates,
+)
 
 
 class MechanisticLabelTests(unittest.TestCase):
@@ -71,6 +73,34 @@ class MechanisticLabelTests(unittest.TestCase):
         self.assertEqual(result["class_coverage"], 1.)
         self.assertEqual(result["normalized_label_entropy"], 1.)
         self.assertEqual(result["class_counts"], {"1": 2})
+
+    def test_uniform_replay_randomizes_remainder_classes_reproducibly(self) -> None:
+        """Give every class access to an undersized or remainder replay budget.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Seeded selections repeat and remainder recipients span all classes.
+        """
+
+        labels = np.repeat(np.arange(4), 3)
+        samples = np.arange(len(labels))[:, None]
+        for budget in (1, 3, 5):
+            recipients = set()
+            for seed in range(32):
+                first = select_replay_candidates(
+                    samples, labels, budget, strategy="uniform", seed=seed,
+                )
+                repeated = select_replay_candidates(
+                    samples, labels, budget, strategy="uniform", seed=seed,
+                )
+                np.testing.assert_array_equal(first[0], repeated[0])
+                counts = np.bincount(first[1], minlength=4)
+                self.assertEqual(len(first[0]), budget)
+                self.assertLessEqual(int(counts.max() - counts.min()), 1)
+                recipients.update(np.flatnonzero(counts > budget // 4).tolist())
+            self.assertEqual(recipients, {0, 1, 2, 3})
 
     def test_first_task_one_class_onehot_calibration(self) -> None:
         """A one-class probability/target matrix still represents class zero.

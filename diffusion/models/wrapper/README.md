@@ -504,8 +504,8 @@ Configure the attached decoder with `use_unpatchify=True` and an output image
 shape matching the sampled noise target. Token-only decoder output is valid for
 direct raw-network calls but not for this wrapper's image-shaped diffusion
 target pipeline, even when `image_loss_coef=0`. Progressive
-depth changes grow the encoder only; decoder depth is fixed at raw-network
-construction. Resolution changes are synchronized across both branches and a
+depth changes grow the encoder by default; targeted `{"decoder": ...}` specs
+grow the attached decoder. Resolution changes are synchronized across both branches and a
 non-None value must be divisible by both patch sizes.
 Raw-network `get_config`/`from_config` reconstructs the configured topology;
 learned raw and EMA values still come from checkpoint weights. For continual
@@ -532,5 +532,5 @@ reuse the noisy encoder image as the decoder input and receive the standard
 `(encoder_images, timesteps, labels, decoder_images)` for explicit teacher
 forcing, but no stock wrapper supplies that fourth tensor; use a direct call or
 a custom `train_step` for that workflow. The classifier's inherited depth API
-grows its encoder and classifier branches, while the attached decoder remains
-at its constructor depth.
+grows its encoder and classifier branches, and targeted `{"decoder": ...}`
+specs can also grow the attached decoder.

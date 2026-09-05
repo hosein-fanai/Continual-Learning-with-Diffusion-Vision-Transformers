@@ -35,8 +35,8 @@ teacher-forcing image. `DiffusionModel` uses the ordinary three-input wrapper
 pipeline; the raw model reuses `x_t` for its decoder, so
 training, evaluation, and sampling stay aligned and the target noise is never
 exposed to the network.
-Encoder-side progressive depth and decoder construction depth are owned
-separately; see the transformer README for exact contracts.
+Encoder and decoder depth are owned separately; targeted `add_depths` calls
+can grow either branch. See the transformer README for exact contracts.
 
 ## Basic conditional model
 

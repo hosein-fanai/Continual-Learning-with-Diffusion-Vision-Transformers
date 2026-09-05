@@ -87,8 +87,8 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 right-shifted teacher forcing. The decoder also inherits the outer dtype policy unless
                 this mapping provides its own ``dtype``. Its image size and channels must match the
                 encoder, and ``use_unpatchify`` must be true so the generic diffusion wrapper receives
-                image-shaped predictions. ``cond_dim`` must also match unless
-                ``decoder_separate_cond=True``. Any decoder timestep/label embedding tables must cover
+                image-shaped predictions. ``cond_dim`` must also match when an active encoder
+                condition is shared with the decoder. Any decoder timestep/label embedding tables must cover
                 the encoder's wrapper-visible ID ranges. Feature-width merges and encoder features used
                 as cross-attention queries require matching encoder/decoder class and distillation token
                 settings; attention values may differ in length. Configure KL bottlenecks and token
@@ -295,9 +295,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
             raise ValueError(
                 "encoder and decoder image_size/channels must match."
             )
-        # Shared conditioning requires matching encoder and decoder widths.
+        # Reusing an active encoder condition requires matching decoder width.
         if not self.decoder.decoder_separate_cond and \
-        self.cond_type is not None and self.decoder.cond_dim != self.cond_dim:
+        self._cond_type and self.decoder.cond_dim != self.cond_dim:
             raise ValueError(
                 "a decoder that reuses encoder conditioning must have the "
                 "same cond_dim."
@@ -379,19 +379,17 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
     @staticmethod
     def _handler_merges_feature_width(handler_kwargs: dict) -> bool:
-        """Return whether a rank-3 handler requires equal token counts.
+        """Return whether a handler uses the supported last-axis connection.
 
         Args:
             handler_kwargs (dict[str, object]): ``FeatureHandler`` merge
-                options containing ``connect_type`` and ``connect_axis``.
+                options containing ``connect_axis``.
 
         Returns:
-            bool: True for addition or channel-axis concatenation; false for
-            token-axis concatenation.
+            bool: True for ``connect_axis=-1``; false for unsupported axes.
         """
 
-        return handler_kwargs.get("connect_type", "concat") != "concat" or \
-            handler_kwargs.get("connect_axis", -1) in (-1, 2)
+        return handler_kwargs.get("connect_axis", -1) == -1
 
     def get_config(self) -> dict[str, object]:
         """Serialize architecture settings and standard Keras model state.

@@ -34,8 +34,9 @@ intentionally empty in version control.
 | Continual learning | [dit_encoder_decoder_classifier](continual/dit_encoder_decoder_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
 | Continual learning | [unet_classifier](continual/unet_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
 
-The API-only continual model name `diffusion_classifier` searches those last
-three diffusion-classifier families in one conditional study. Family-specific
+The [continual diffusion-classifier notebook](continual/diffusion_classifier.ipynb)
+uses `diffusion_classifier` to search the three diffusion-classifier families
+in one conditional study. Family-specific
 parameter names are prefixed, so Optuna can compare DiT, encoder-decoder DiT,
 and U-Net candidates without incompatible conditional distributions.
 
@@ -45,6 +46,8 @@ latent path, so tuning its loss weight would neither define a growing
 class-incremental head nor improve the replay representation. Continual VAE
 studies instead use the ordinary conditional VAE with the learner's expanding
 external DNN.
+The old `continual/vae_classifier.ipynb` is retained with an archival notice;
+it is outside the 24 supported notebooks and the generator's output matrix.
 
 ## Execution notes
 
@@ -106,12 +109,15 @@ Optuna feedback comes from the post-training validation evaluation of the same
 saved/restored model state, not from a historical best or the last row of the
 pre-restoration Keras history. Diffusion objectives use the EMA branch;
 ordinary classifiers and VAEs use `valset_eval`. The semantic
-defaults are generation loss, a generation/accuracy Pareto pair for joint
+defaults are fixed reconstruction MSE for VAEs, unweighted `noise_loss` for
+diffusion, a generation/accuracy Pareto pair for joint
 models, validation accuracy for standalone classifiers, and validation
 `final_average_accuracy` for continual studies. `objective_metrics` can name
 other scalar validation metrics with matching or inferred directions. Test-set
 metrics are never HPO feedback, and trials are scored only after the complete
-fit; there is no intermediate pruning contract.
+fit; there is no intermediate pruning contract. VAE generation early stopping
+uses `val_mean_squared_error`. Reconstruction and denoising metrics are proxies
+for generation quality; they do not establish sample diversity or replay utility.
 
 Reverse-process `test_steps`, CFG scale, and eta are sampled only in continual
 diffusion studies, where generated examples enter later replay tasks and can
@@ -122,8 +128,10 @@ parameters.
 
 `swap_noise_image=True` is an immutable wrapper override for direct x_t/VAE
 prediction. These studies fix `image_loss_coef=0`, tune `kl_loss_coef` unless
-the override supplies one, and optimize `x_t` prediction plus weighted
-main-latent KL. HPO validates the variational structure and ratio-list
+the override supplies one, and train with `x_t` prediction plus weighted
+main-latent KL. Their default validation objective is unweighted reconstruction
+MSE, so changing the sampled KL coefficient cannot directly improve a score.
+HPO validates the variational structure and ratio-list
 cardinality but passes a fixed KL coefficient through unchanged. These studies
 do not request denoising GIFs. DiT, DiT encoder-decoder, and DiT
 encoder-decoder-classifier studies require an immutable main-network topology;

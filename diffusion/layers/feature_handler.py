@@ -28,8 +28,8 @@ class FeatureHandler(BaseLayer):
             choice to :meth:`call`; in that case every call must pass ``ids``.
             An empty list plus an empty ``second_list`` returns ``None``.
             Defaults to ``None``.
-        connect_axis (int): Tensor axis used for ``connect_type="concat"``. All
-            dimensions other than this axis must match.
+        connect_axis (int): Feature-concatenation axis; only ``-1`` is supported.
+            All dimensions other than the last axis must match.
             Defaults to ``-1``.
         connect_type (MergeType): ``"concat"`` concatenates selected tensors;
             ``"add"`` sums them and therefore requires broadcast-compatible
@@ -77,7 +77,7 @@ class FeatureHandler(BaseLayer):
             ids (list[int] | None): Default feature indices, or ``None`` to
                 require call-specific indices.
                 Defaults to ``None``.
-            connect_axis (int): Concatenation axis.
+            connect_axis (int): Concatenation axis; only ``-1`` is supported.
                 Defaults to ``-1``.
             connect_type (MergeType): Either ``"concat"`` or ``"add"``.
                 Defaults to ``'concat'``.
@@ -111,6 +111,10 @@ class FeatureHandler(BaseLayer):
             None: Invalid modes or a projected MLP without ``ln_dim`` raise
             ``ValueError``.
         """
+
+        # Reject axes outside the supported last-axis feature connections.
+        if self.connect_axis != -1:
+            raise ValueError("Only connect_axis == -1 is supported.")
 
         # Restrict feature merging to concatenation or addition.
         if local_vars["connect_type"] not in get_args(MergeType):
@@ -273,8 +277,6 @@ def run_self_tests() -> dict[str, str]:
     assert projected.shape == (2, 2, 3)
     assert adaptive.prev_output_dim == 2 and adaptive.output_dim == 3
 
-    axis_one = FeatureHandler(ids=[0, 1], connect_axis=1, ln_dim=2)
-    assert axis_one(features).shape == (2, 4, 2)
     try:
         concat([tf.ones((1, 2, 2)), tf.ones((1, 3, 3))], ids=[0, 1])
     except (tf.errors.InvalidArgumentError, ValueError):

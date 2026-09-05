@@ -222,8 +222,9 @@ class DiTClassifier(DiffusionTransformer):
                 ascending flatten order). None inherits a deep copy of main reshaper_kwargs; an explicit
                 mapping defines independent classifier values. Defaults to ``None``.
             clf_cls_token_regularizer_ids (list[int | None]): Classifier depths 0..``clf_depth`` with
-                auxiliary class softmax heads. Empty by default; ``[None]`` selects the full range.
-                Defaults to ``[]``.
+                auxiliary class softmax heads. ID 0 uses an existing label embedding consumed by
+                classifier conditioning or tokens, and returns None when none is used.
+                Empty by default; ``[None]`` selects the full range. Defaults to ``[]``.
             clf_cls_token_regularizer_kwargs (dict[str, object] | None): Token slice and optional
                 regularizer MLP settings. ``None`` inherits ``cls_token_regularizer_kwargs``. Missing
                 ``mlp_ratio`` and ``activation_function`` values default to ``None`` and ``"tanh"``,
@@ -764,46 +765,36 @@ class DiTClassifier(DiffusionTransformer):
 
         return last_output_dim
 
-    def _get_last_grid_size( # TODO: implement it like output_dim overriding
+    def _get_layers_dict_last_grid_size(
         self, 
-        i: int, 
-        layers_dicts: list[dict], 
-        base_grid_size: int, 
-        skip_reshaper: bool = False
+        layers_dict: dict, 
+        skip_reshaper: bool
     ) -> int | None:
-        """Resolve classifier grids including main-feature aggregation.
+        """Return the stage grid, including classifier feature aggregation.
 
         Args:
-            i (int): Zero-based classifier stage, or ``-1`` for depth zero.
-            layers_dicts (list[dict]): Classifier stage dictionaries.
-            base_grid_size (int): Classifier depth-zero grid side.
-            skip_reshaper (bool): Ignore reshaper rank changes when true. Defaults to ``False``.
+            layers_dict (dict[str, tf.keras.layers.Layer]): Stage components.
+            skip_reshaper (bool): Ignore reshaper output rank changes.
 
         Returns:
-            int | None: Latest square spatial side. A flattened rank-two reshaper
-            output uses integer sentinel 0; None can propagate when the supplied
-            base grid itself is unknown. skip_reshaper=True ignores rank changes.
+            int | None: Aggregator grid when no later component replaces it,
+            0 for flattened features, or ``None`` when no grid is established.
         """
 
-        # Inspect grid-changing components only for an existing classifier stage.
-        if 0 <= i < len(layers_dicts):
-            stage = layers_dicts[i]
-            later_grid_keys = (self.FC, self.VTB, self.LM, self.DS, self.US)
-            reshaper_sets_grid = self.R in stage and not skip_reshaper
+        grid_size = None
 
-            # Use the main-feature aggregator grid when no later component replaces it.
-            if self.FA in stage and not (
-                any(key in stage for key in later_grid_keys) or
-                reshaper_sets_grid
-            ):
-                return stage[self.FA].grid_size
+        # Account for the classifier feature aggregator's grid.
+        if (key:=self.FA) in layers_dict:
+            grid_size = layers_dict[key].grid_size
 
-        return super()._get_last_grid_size(
-            i, 
-            layers_dicts, 
-            base_grid_size, 
-            skip_reshaper
-        )
+        # Prefer a later component's grid over the initial aggregator grid.
+        grid_size = grid_size if (grid_size_:=
+            super()._get_layers_dict_last_grid_size(
+                layers_dict, 
+                skip_reshaper
+        )) is None else grid_size_
+
+        return grid_size
 
     def _create_clf_embedders(self) -> None:
         """Create or reuse condition layers needed by the classifier branch.
@@ -811,8 +802,7 @@ class DiTClassifier(DiffusionTransformer):
         With ``classifier_only_cls_token=True``, unused main token-conditioning
         embedders may be removed and ``cls_token_type`` is cleared.  Existing
         time/label embedders are shared when compatible; otherwise classifier-
-        named embedders are created.  A classifier depth-0 regularizer is also
-        created when requested.
+        named embedders are created.
 
         Returns:
             None: Embedder, merger, and ``clf_labels_embed_reg`` attributes are
@@ -820,19 +810,23 @@ class DiTClassifier(DiffusionTransformer):
         """
 
         # Track classifier condition dependencies only when adaptive conditioning is enabled.
-        self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None and not self.clf_ln_no_adaptation else []
+        self._clf_cond_type = self.clf_cond_type if self.clf_cond_type is not None \
+                            and not self.clf_ln_no_adaptation else []
         # Track class-token dependencies only when the classifier token exists.
-        self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None else []
+        self._clf_cls_token_type = self.clf_cls_token_type if self.clf_cls_token_type is not None \
+                                and self.classifier_only_cls_token else []
         # Track distillation-token dependencies only when that token exists.
-        self._clf_distil_token_type = self.clf_distil_token_type if self.clf_distil_token_type is not None else []
+        self._clf_distil_token_type = self.clf_distil_token_type if self.clf_distil_token_type is not None \
+                                    and self.classifier_only_distil_token else []
 
         clf_embed_times_flag = "time" in self._clf_cls_token_type or \
-                            "time" in self._clf_distil_token_type or "time" in self._clf_cond_type
+                            "time" in self._clf_distil_token_type or \
+                            "time" in self._clf_cond_type
         clf_embed_labels_flag = "label" in self._clf_cls_token_type or \
-                            "label" in self._clf_distil_token_type or "label" in self._clf_cond_type
-        clf_conds_merger_flag = ("time" in self._clf_cls_token_type and "label" in self._clf_cls_token_type
-                                ) or ("time" in self._clf_distil_token_type and \
-                                "label" in self._clf_distil_token_type) or \
+                                "label" in self._clf_distil_token_type or \
+                                "label" in self._clf_cond_type
+        clf_conds_merger_flag = ("time" in self._clf_cls_token_type and "label" in self._clf_cls_token_type) or \
+                                ("time" in self._clf_distil_token_type and "label" in self._clf_distil_token_type) or \
                                 ("time" in self._clf_cond_type and "label" in self._clf_cond_type)
 
         # Remove main-branch token dependencies used exclusively by the classifier.
@@ -852,6 +846,7 @@ class DiTClassifier(DiffusionTransformer):
             self.cls_token_type = None
             self._cls_token_type = []
 
+        # Remove main-branch distillation dependencies owned exclusively by the classifier.
         if self.classifier_only_distil_token:
             # Drop an otherwise unused main time embedder.
             if flag1:=("time" in self._distil_token_type) and not clf_embed_times_flag:
@@ -885,7 +880,7 @@ class DiTClassifier(DiffusionTransformer):
             name=f"{self.name_prefix}clf_depth_0_time_label_merger"
         ) if clf_conds_merger_flag and self.conds_merger is None else self.conds_merger
 
-        # Create a classifier depth-zero auxiliary head only when ID zero is selected.
+        # Attach the selected depth-zero head only to labels consumed by the classifier.
         self.clf_labels_embed_reg = self._create_token_regularizer(
             i=-1, 
             layers_dicts=[], 
@@ -893,7 +888,7 @@ class DiTClassifier(DiffusionTransformer):
             base_dim=self.cond_embedder_dim,
             kwargs=self.clf_cls_token_regularizer_kwargs, 
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
-        ) if 0 in self.clf_cls_token_regularizer_ids else None
+        ) if 0 in self.clf_cls_token_regularizer_ids and clf_embed_labels_flag else None
 
     def _create_clf_layers_dict(
         self, 
@@ -1365,12 +1360,15 @@ class DiTClassifier(DiffusionTransformer):
 
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
             times, labels, 
-            self.clf_cond_type, 
+            self._clf_cond_type, 
+            self._clf_cls_token_type, 
+            self._clf_distil_token_type, 
+            self.clf_labels_embed_reg is not None, 
             full_return=True, 
             training=training
         )
 
-        # Evaluate the classifier's label regularizer only when its depth-zero head exists.
+        # Regularize depth-zero labels only when an active classifier path embeds them.
         z = self.clf_labels_embed_reg(
             label_embeds, 
             training=training
@@ -1414,11 +1412,11 @@ class DiTClassifier(DiffusionTransformer):
                             labels=labels, 
                             training=training
                         ) if not self.classifier_only_distil_token else x
-                # Otherwise embed noise with the shared main condition components.
+                # Otherwise embed noise with the active main condition components.
                     else:
                         x, (_, main_time_embeds, main_label_embeds) = self.embed_inputs(
                             (noises, times, labels), 
-                            self.cond_type, 
+                            self._cond_type, 
                             full_return=True, 
                             training=training
                         )
@@ -1583,6 +1581,9 @@ class DiTClassifier(DiffusionTransformer):
     ) -> tf.Tensor | tuple:
         """Classify inputs while executing only the required main depths.
 
+        Noise aggregation supplies zeros to the unpatchifier's required
+        condition input when the encoder produces no condition.
+
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/noisy image
                 ``[B,H,W,C]``, integer time IDs ``[B]``, and condition labels
@@ -1612,10 +1613,14 @@ class DiTClassifier(DiffusionTransformer):
             training=training
         )
         # Reconstruct a noise image only when the classifier consumes predicted noises.
+        # Supply the required condition tensor when no condition was produced.
         noises = self.unpatchifier(
-            (x, cond), 
+            (x, tf.zeros(
+                (tf.shape(x)[0], self.cond_dim), 
+                dtype=self.compute_dtype
+            ) if cond is None else cond), 
             training=training
-        ) if self.aggregate_from_noises else None
+        ) if self.aggregate_from_noises else x
         outputs = self.compute_class(
             features_list, 
             noises, 

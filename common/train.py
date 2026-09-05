@@ -492,7 +492,8 @@ def train_model(
             ``_resolve_training_options``, including epochs/batching, runtime seed,
             callbacks/logging, artifact switches, ``fit_method``/``fit_kwargs``, and
             ``continually_learn_kwargs``. Config mode reads its typed fields instead.
-            Direct ``fit_method="train"`` adapts VAE datasets into arrays. Reserved
+            Direct ``fit_method="train"`` adapts unweighted VAE datasets into arrays.
+            Weighted datasets require ``fit_method="fit"``. Reserved
             orchestration arguments cannot be duplicated in typed ``fit_kwargs``.
 
     Returns:
@@ -508,7 +509,7 @@ def train_model(
             diffusion weight saving lacks the Config needed to reconstruct it.
         ValueError: If typed fit controls conflict, progressive training lacks
             stages/a diffusion target, a resume schedule differs, or VAE array
-            adaptation receives an empty dataset.
+            adaptation receives an empty or sample-weighted dataset.
         FileExistsError: If a new immutable input-config artifact would overwrite
             an existing file.
         OSError: If template, configuration, logging, or weight artifacts cannot
@@ -1109,6 +1110,15 @@ def train_model(
             if isinstance(model, VariationalAutoencoder) and isinstance(
                 trainset, tf.data.Dataset
             ):
+                _, _, sample_weight_spec = tf.keras.utils.unpack_x_y_sample_weight(
+                    trainset.element_spec
+                )
+                # The array-only VAE train API cannot preserve dataset row weights.
+                if sample_weight_spec is not None:
+                    raise ValueError(
+                        "Weighted VAE datasets require fit_method='fit'; "
+                        "fit_method='train' only accepts unweighted rows."
+                    )
                 batches = [
                     tf.keras.utils.unpack_x_y_sample_weight(batch)
                     for batch in trainset.as_numpy_iterator()

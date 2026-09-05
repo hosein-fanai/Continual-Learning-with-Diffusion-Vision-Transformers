@@ -50,7 +50,7 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _images():
+    def _images() -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
         """Create deterministic synthetic MNIST-shaped train and test pixels.
 
         A fixed NumPy seed of 17 adds low-valued noise and a class-specific bright stripe.
@@ -73,7 +73,7 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
             image[3 + 5 * int(label):7 + 5 * int(label), 3:25] = 224
         return (images, labels), (255 - images[::3], labels[::3])
 
-    def test_distilled_v2_ensemble_multiobjective_config_round_trip(self):
+    def test_distilled_v2_ensemble_multiobjective_config_round_trip(self) -> None:
         """Verify the complete distilled continual V2 and ensemble multi-objective pipeline.
 
         Runs two real trials with two two-class tasks, train_num=1, soft temperature-scaled
@@ -96,7 +96,7 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
         ]
         runs = []
 
-        def record_run(*args, **kwargs):
+        def record_run(*args: object, **kwargs: object) -> dict[str, object]:
             """Execute the real training pipeline and retain its result for objective assertions.
 
             The spy records results but does not replace training, evaluation, or model

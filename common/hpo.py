@@ -74,9 +74,9 @@ _DIFFUSION_HPO_MODELS = _DIFFUSION_MODELS | {
 _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
     _DIFFUSION_CLASSIFIER_STUDY
 }
-# Version 10 expands scheduled classes before resampling and derives public
-# accuracies from the same predictions as the continual accuracy matrices.
-SEARCH_SPACE_VERSION = 10
+# Version 11 compares VAE and input-reconstruction trials with fixed MSE scores
+# rather than losses containing sampled regularization coefficients.
+SEARCH_SPACE_VERSION = 11
 
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
@@ -3279,6 +3279,8 @@ def _build_trial_config(
             classifier=model_name == "vae_classifier"
         )
         model_kwargs["last_activation"] = "sigmoid"
+        # Keep validation units fixed while training loss and beta are sampled.
+        model_kwargs["compile_args"] = {"metrics": ["mean_squared_error"]}
 
         # Attach a dense classifier only for the joint VAE-classifier family.
         classifier_name = "dnn" if model_name == "vae_classifier" else None
@@ -3636,10 +3638,10 @@ def _build_trial_config(
     # Optimize the final continual-learning accuracy.
     elif task == "continual":
         monitor, monitor_mode = "val_accuracy", "max"
-    # Restore generator-only VAE/x0 weights by their full variational loss.
-    elif model_name in ("vae", "vae_classifier") or swap_noise_image:
-        monitor, monitor_mode = "val_loss", "min"
-    # Minimize validation diffusion noise loss for other generators.
+    # Restore VAE weights using the same fixed reconstruction score as HPO.
+    elif model_name in ("vae", "vae_classifier"):
+        monitor, monitor_mode = "val_mean_squared_error", "min"
+    # Minimize diffusion noise or input-reconstruction MSE for other generators.
     else:
         monitor, monitor_mode = "val_noise_loss", "min"
 
@@ -3841,49 +3843,6 @@ def _validation_evaluation_value(
     )
 
 
-def _x0_generation_value(
-    evaluations: Mapping[str, object],
-    model_name: str,
-    kl_loss_coef: float,
-    diffusion_network_name: str,
-) -> float:
-    """Combine noisy-input reconstruction and the weighted main-latent KL.
-
-    In swap mode the metric named noise_loss measures reconstruction of x_t.
-    The returned scalar is noise_loss + kl_loss_coef * kl_loss. Classifier
-    losses and auxiliary classifier latents do not enter this generative score.
-
-    Args:
-        evaluations (Mapping[str, object]): Post-training validation reports.
-        model_name (str): Diffusion family whose report namespace is selected.
-        kl_loss_coef (float): Fixed or sampled multiplier for the main latent KL.
-        diffusion_network_name (str): 'ema' or 'raw' validation network branch.
-
-    Returns:
-        float: Weighted generative score from one selected validation report.
-        Undefined numeric values are preserved for Optuna's failed-trial handling.
-
-    Raises:
-        KeyError: If the validation report or either required metric is absent.
-        TypeError: If a reported objective is not scalar or cannot be converted.
-        ValueError: If the diffusion branch selector or numeric conversion fails.
-    """
-
-    reconstruction = _validation_evaluation_value(
-        evaluations,
-        model_name,
-        ("noise_loss",),
-        diffusion_network_name,
-    )
-    kl_loss = _validation_evaluation_value(
-        evaluations,
-        model_name,
-        ("kl_loss",),
-        diffusion_network_name,
-    )
-    return reconstruction + float(kl_loss_coef) * kl_loss
-
-
 def _continual_validation_value(
     evaluations: Mapping[str, object], 
     metric_name: str
@@ -3943,17 +3902,17 @@ def _configured_objective_value(
         model_name (str): Normalized model-family name.
         evaluations (Mapping[str, object]): Final report evaluation mapping.
         metric_name (str): Exact metric name or semantic alias. generation_loss chooses
-            family-specific reconstruction/generative loss (plus weighted KL in swap mode);
+            fixed reconstruction MSE for VAEs or noise_loss for diffusion wrappers;
             classification_accuracy chooses the first available classifier accuracy;
             validation_accuracy reads accuracy. Ordinary explicit names accept
             val_/validation_ prefixes; continual names are exact keys in
             validation_continual_metrics.
         diffusion_network_name (str): Selected diffusion validation branch. Defaults to
             ``'ema'``.
-        swap_noise_image (bool): Whether diffusion reconstructs the noisy input ``x_t``.
-            Defaults to ``False``.
-        kl_loss_coef (float): Main variational KL coefficient in x0 mode. Defaults to
-            ``0.0``.
+        swap_noise_image (bool): Compatibility metadata for noisy-input reconstruction;
+            its score is still noise_loss. Defaults to ``False``.
+        kl_loss_coef (float): Compatibility metadata, excluded from the fixed validation
+            score because its training value may be sampled. Defaults to ``0.0``.
 
     Returns:
         float: Selected validation scalar, preserving undefined numeric values.
@@ -3964,26 +3923,17 @@ def _configured_objective_value(
         ValueError: If the diffusion branch selector or numeric conversion fails.
     """
 
+    del swap_noise_image, kl_loss_coef
+
     # Enforce the dedicated validation-only continual namespace.
     if task == "continual":
         return _continual_validation_value(evaluations, metric_name)
 
     # Resolve a model-family-aware semantic generation loss alias.
     if metric_name == "generation_loss":
-        # Combine reconstruction and weighted KL for the input-reconstruction objective.
-        if swap_noise_image:
-            return _x0_generation_value(
-                evaluations,
-                model_name,
-                kl_loss_coef,
-                diffusion_network_name,
-            )
-        # Use joint VAE generative loss, standalone VAE loss, or diffusion noise loss.
-        names = [
-            "generative_loss",
-        ] if model_name == "vae_classifier" else [
-            "loss", "total_loss", "recon_loss",
-        ] if model_name == "vae" else ["noise_loss", "loss"]
+        # Compare fixed MSE units independently from sampled training coefficients.
+        names = ["mean_squared_error"] if model_name in ("vae", "vae_classifier") \
+            else ["noise_loss"]
         return _validation_evaluation_value(
             evaluations,
             model_name,

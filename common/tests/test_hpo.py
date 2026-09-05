@@ -665,7 +665,7 @@ class HpoObjectiveTests(unittest.TestCase):
         self.assertEqual(values, (0.27, 0.73))
 
     def test_vae_classifier_objective_excludes_classifier_loss(self) -> None:
-        """Prefer the beta-VAE objective over joint total loss.
+        """Use fixed reconstruction MSE independently from joint training losses.
 
         Args:
             None. The unittest instance owns the fixtures used by this case.
@@ -680,6 +680,7 @@ class HpoObjectiveTests(unittest.TestCase):
                 "loss": 4.2,
                 "generative_loss": 0.35,
                 "recon_loss": 0.3,
+                "mean_squared_error": 0.2,
                 "clf_accuracy": 0.8,
             },
         }
@@ -690,7 +691,7 @@ class HpoObjectiveTests(unittest.TestCase):
                 {},
                 evaluations=evaluations,
             ),
-            0.35,
+            0.2,
         )
         self.assertEqual(
             _objective_values(
@@ -699,21 +700,21 @@ class HpoObjectiveTests(unittest.TestCase):
                 {},
                 evaluations=evaluations,
             ),
-            (0.35, 0.8),
+            (0.2, 0.8),
         )
-        without_generative_loss = {
+        without_fixed_mse = {
             "valset_eval": {
                 "loss": 4.2,
                 "recon_loss": 0.3,
                 "clf_accuracy": 0.8,
             },
         }
-        with self.assertRaisesRegex(KeyError, "generative_loss"):
+        with self.assertRaisesRegex(KeyError, "mean_squared_error"):
             _objective_values(
                 "joint",
                 "vae_classifier",
                 {},
-                evaluations=without_generative_loss,
+                evaluations=without_fixed_mse,
             )
         self.assertEqual(
             _objective_values(
@@ -727,11 +728,18 @@ class HpoObjectiveTests(unittest.TestCase):
                 ),
                 objective_directions=("minimize", "maximize"),
             ),
-            (0.35, 0.8),
+            (0.2, 0.8),
+        )
+        self.assertEqual(
+            _objective_values(
+                "generation", "vae_classifier", {},
+                evaluations=evaluations, objective_metrics="generative_loss",
+            ),
+            0.35,
         )
 
-    def test_x0_objective_includes_weighted_main_kl(self) -> None:
-        """Score x0 reconstruction and KL without classifier contamination.
+    def test_x0_objective_excludes_sampled_main_kl_weight(self) -> None:
+        """Score fixed reconstruction error independently from the sampled KL weight.
 
         Args:
             None. The unittest instance owns the fixtures used by this case.
@@ -761,7 +769,7 @@ class HpoObjectiveTests(unittest.TestCase):
                 {},
                 **kwargs,
             ),
-            0.4,
+            0.3,
         )
         self.assertEqual(
             _objective_values(
@@ -770,7 +778,7 @@ class HpoObjectiveTests(unittest.TestCase):
                 {},
                 **kwargs,
             ),
-            (0.4, 0.8),
+            (0.3, 0.8),
         )
         self.assertAlmostEqual(
             _objective_values(
@@ -781,8 +789,54 @@ class HpoObjectiveTests(unittest.TestCase):
                 objective_directions="minimize",
                 **kwargs,
             ),
-            0.4,
+            0.3,
         )
+        kwargs["kl_loss_coef"] = 10.
+        self.assertEqual(
+            _objective_values("generation", "diffusion_transformer", {}, **kwargs),
+            0.3,
+        )
+
+    def test_vae_objective_keeps_units_across_loss_and_beta_choices(self) -> None:
+        """Give identical predictions the same score across training objectives.
+
+        Returns:
+            None: Real VAE reports retain fixed MSE despite distinct training losses.
+        """
+
+        import tensorflow as tf
+        from common.model import get_model
+
+        x = tf.fill((2, 784), 0.25)
+        y = tf.one_hot([0, 1], depth=10)
+        for model_name in ("vae", "vae_classifier"):
+            losses = []
+            for loss_name, beta in (("mse", 0.01), ("mae", 2.)):
+                with self.subTest(model=model_name, loss=loss_name, beta=beta):
+                    config = _build_trial_config(
+                        _SuggestionTrial(), "generation", model_name, "MNIST",
+                        epochs=1, seed=7, results_path="unused",
+                        search_space_overrides={
+                            "loss_function": [loss_name],
+                            "beta": {"low": beta, "high": beta},
+                        },
+                    )
+                    config.dataset.trainset_len = 1
+                    model = get_model(config)
+                    for weight in model.weights:
+                        weight.assign(tf.zeros_like(weight))
+                    model.encoder.get_layer("z_mean").bias.assign(
+                        tf.ones((model.latent_dim,))
+                    )
+                    report = model.test_step((x, y))
+                    losses.append(float(report["loss"]))
+                    score = _objective_values(
+                        "generation", model_name, {},
+                        evaluations={"valset_eval": report},
+                    )
+                    self.assertEqual(score, 0.0625)
+            self.assertNotEqual(*losses)
+        tf.keras.backend.clear_session()
 
     def test_noncontinual_objectives_do_not_fall_back_to_training(self) -> None:
         """Reject training metrics when validation metrics are unavailable.
@@ -1234,7 +1288,7 @@ class HpoConfigTests(unittest.TestCase):
             seed=3,
             results_path="results/hpo",
         )
-        self.assertEqual(vae.training.monitor, "val_loss")
+        self.assertEqual(vae.training.monitor, "val_mean_squared_error")
 
     def test_swap_noise_override_removes_incompatible_hpo_dimensions(
         self,
@@ -1354,7 +1408,7 @@ class HpoConfigTests(unittest.TestCase):
         )
         self.assertEqual(generation.model.wrapper_kwargs["kl_loss_coef"], 0.02)
         self.assertNotIn("kl_loss_coef", generation_trial.params)
-        self.assertEqual(generation.training.monitor, "val_loss")
+        self.assertEqual(generation.training.monitor, "val_noise_loss")
         self.assertFalse(generation.reporting.save_final_gifs)
         with self.assertRaisesRegex(ValueError, "finite and positive"):
             _validate_swap_noise_hpo(
@@ -2330,8 +2384,8 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 10)
-            self.assertEqual(original["search_space_version"], 10)
+            self.assertEqual(SEARCH_SPACE_VERSION, 11)
+            self.assertEqual(original["search_space_version"], 11)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (

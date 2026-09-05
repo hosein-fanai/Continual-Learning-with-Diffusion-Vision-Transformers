@@ -45,6 +45,18 @@ branches' intermediate values when `full_return=True`. With a distillation
 token, it also returns the independent `distil_classes` head. `classes` remains
 the class-token/average-pooling result in both training and inference.
 
+When the encoder returns `cond=None`, `DiffusionTransformer` and `DiTClassifier`
+supply a zero tensor of shape `[B, cond_dim]` only at the unpatchifier call.
+This satisfies the head's required Keras input while preserving `cond=None`
+in returned metadata, including when class prediction aggregates from noises.
+
+Embedding helpers accept explicit `None` for condition and token modes.
+`cond_type` selects the condition supplied to adaptive normalization and patch
+merging; token modes and the label-regularizer flag request individual embeddings
+without changing that selection. Main and classifier branches use their effective
+condition modes, so disabling adaptation without patch conditioning leaves their
+condition absent.
+
 `DiTEncoderDecoder` accepts the standard three tensors and reuses
 `noisy_images` as the decoder image. A fourth float image tensor supplies an
 explicit teacher-forcing input. Its ordinary result is the decoder tensor. Its
@@ -162,6 +174,17 @@ hidden projection before that softmax. Its `activation_function` defaults to
 metadata keys do not change the raw network layers.
 Components omitted from a depth are identity/no-op paths.
 
+Regularizer ID `0` targets an existing `label_embedder`. The model's
+label-dependent conditioning, adaptive-normalization, or token settings must
+enable that embedding; selecting regularizer ID `0` does not enable it. Its
+regularizer output is `None` when the active branch does not embed labels.
+
+`DiffusionTransformer.encode` rebuilds its configured condition/token embeddings
+and evaluates an existing depth-zero label head when resuming with `min_depth>0`.
+Supply the required timestep and label IDs even though patch embedding and token
+creation are skipped. `DiTDecoder` preserves its resume behavior: label lookups
+and regularization used only by skipped entrance tokens remain absent.
+
 KL reshapers are configured as adjacent `"flatten"`, `"unflatten"` pairs.
 A transformer VAE intended for `sample_vae` can arrange its pair or pairs
 as one contiguous central bridge after real encoder computation and before
@@ -226,7 +249,7 @@ selected depth of that component type; they are not keyed per depth.
 
 | Argument | Allowed keys and important values |
 | --- | --- |
-| `connection_kwargs`, `cross_attention_kwargs` | `connect_axis: int`; `connect_type`: `"concat"` or `"add"`; `use_layer_norm: bool`; `ln_dim: int or None`; `ln_mlp_ratio: float or None`; `ln_no_adaptation: bool`; `mlp_output_dim: int or None`; `mlp_ratio: float or None`; `mlp_activation_func: Keras activation` |
+| `connection_kwargs`, `cross_attention_kwargs` | `connect_axis: -1` only; `connect_type`: `"concat"` or `"add"`; `use_layer_norm: bool`; `ln_dim: int or None`; `ln_mlp_ratio: float or None`; `ln_no_adaptation: bool`; `mlp_output_dim: int or None`; `mlp_ratio: float or None`; `mlp_activation_func: Keras activation` |
 | `local_mixer_kwargs` | `embed_temperature: float`; `dim: int`; `grid_size: int`; `use_layer_norm: bool`; `ln_mlp_ratio`; `ln_no_adaptation`; `kernel_size: int`; `strides: int`; `depth_multiplier: int`; `use_pointwise: bool`; `pointwise_dim_ratio: int`; `zero_init: bool`; `pos_embed_type`; `pos_interpolation_method`; `pos_merger_type`: `"add"` or `"concat"`; `mlp_ratio`; `mlp_activation_func`; `mlp_output_dim` |
 | `downsample_kwargs` | Common embedding/norm/position/MLP keys above plus `scaling_method`: `"avg_pooling"`, `"max_pooling"`, or `"cnn_stride"`; `cnn_dim_ratio: int`; `cnn_kernel_size: int`; `cnn_activation_func` |
 | `upsample_kwargs` | Common embedding/norm/position/MLP keys plus `scaling_method`: `"cnn_transpose"`, `"interpolate"`, or `"cnn_interpolate"`; `scaling_interpolation_method`; `cnn_dim_ratio`; `cnn_kernel_size`; `cnn_activation_func` |
@@ -240,6 +263,11 @@ underlying TensorFlow/Keras resize layer. Spatial patch/mixer/scaler embeddings
 support this full set. Discrete time/label `ConditionEmbedding` tables should use
 `new_weight` or `1d_sincos`; spatial/interpolation modes have incompatible table
 rank for lookup.
+
+Project feature connections support only `connect_axis=-1`. Concatenation
+joins the final feature dimension and requires matching non-merge dimensions;
+addition requires compatible feature widths and grids. Image reconstruction
+and spatial mixers require a square grid.
 
 Classifier `feature_aggregation_kwargs` and
 `cross_attention_aggregation_kwargs` use the connector whitelist.
@@ -355,8 +383,10 @@ predicted_noise = network(
 `slice_and_flatten_tokens`, `encode`, `add_depths`, and variable inspection all
 belong to the encoder. The composite forces the encoder's `use_unpatchify`
 setting to `False` because only the decoder owns the final noise/image head.
-`network.depth` and progressive `add_depths` refer only to encoder depth;
-`network.decoder.depth` remains fixed after construction.
+`network.depth` refers to encoder depth. Ordinary `add_depths` specs grow the
+encoder; targeted dictionaries may grow `"network"`, `"decoder"`, or both.
+Completed growth preserves existing weights and updates encoder metadata used
+by the decoder.
 At decoder depths 1..N, each decoder block cross-attends to the encoder's final
 feature by default, so the encoder image supplies actual context. Decoder depth
 0 has no attention block and therefore uses only the selected condition and
@@ -367,9 +397,9 @@ branch's configured image size. `build_model` always exposes four symbolic
 inputs even though eager three-input calls are valid. Configuration round trips
 preserve both nested dictionaries and standard Keras model state.
 
-The raw model may return decoder tokens when `use_unpatchify=False`. The
-`DiffusionModel` wrapper instead requires an unpatchified decoder image with
-the same shape as its sampled noise target. During latent resume the composite
+The composite requires `decoder_kwargs["use_unpatchify"]=True` and an output
+image with the encoder's image size and channels. A standalone `DiTDecoder`
+can return tokens when `use_unpatchify=False`. During latent resume the composite
 uses that image as its decoder input, so `sample_vae` supports the same ordered
 single- or multiscale-latent contract as the standalone transformer models.
 
@@ -439,8 +469,8 @@ encoder is represented by a zero decoder-context tensor.
 `set_current_resolution` updates both encoder and decoder resolutions. A
 non-None value must be positive and divisible by both patch sizes; `None`
 restores each branch's configured image size. `add_depths` retains the
-`DiTClassifier` syntax and grows only the `"network"` and `"classifier"`
-branches. Decoder depth and routing are fixed after construction; access
+`DiTClassifier` syntax and accepts targeted `"network"`, `"classifier"`, and
+`"decoder"` branches. Existing routes are retained during growth; access
 `network.decoder` for decoder-specific inspection. `build_model` exposes four
 symbolic inputs even though eager three-input calls remain supported.
 `get_config`/`from_config` preserve the nested dictionaries plus Keras `name`,

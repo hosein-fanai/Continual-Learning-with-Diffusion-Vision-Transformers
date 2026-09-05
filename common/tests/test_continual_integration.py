@@ -18,11 +18,13 @@ import unittest
 import warnings
 
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import tensorflow as tf
 
 from common.config import resolve_continual_schedule
+from common.dataloader import load_mnist
 from common.learner import (
     _continual_metrics,
     _prepare_diffusion_x,
@@ -31,6 +33,7 @@ from common.learner import (
     _run_continual_tasks,
     _validate_supplied_model_runtime,
 )
+from diffusion import DiffusionModel, DiffusionTransformer
 
 
 class _InterruptOnSecondFit(tf.keras.callbacks.Callback):
@@ -519,6 +522,231 @@ class ContinualIntegrationTests(unittest.TestCase):
                 restored["model"].get_weights(),
             ):
                 np.testing.assert_allclose(expected, actual)
+
+    @staticmethod
+    def _generator(noise_distillation: bool = False) -> DiffusionModel:
+        """Build the same seeded dynamic generator for each recovery or cache run.
+
+        Args:
+            noise_distillation (bool): Enable deferred previous-task noise distillation.
+                Defaults to False for an ordinary replay generator.
+
+        Returns:
+            DiffusionModel: A compiled two-pixel generator with independent state.
+        """
+
+        tf.keras.backend.clear_session()
+        tf.keras.utils.set_random_seed(31)
+        network = DiffusionTransformer(
+            num_classes=None, use_cfg=True, timesteps=4,
+            image_size=2, channels=1, patch_size=1,
+            dim=4, depth=1, mha_num_heads=1,
+            vit_block_mlp_ratio=1., seed=31,
+        )
+        wrapper = DiffusionModel(
+            network=network, use_ema=True, test_steps=2,
+            scheduler_name="linear", seed=31,
+            defer_teacher=noise_distillation,
+            # Noise KD needs a positive coefficient; ordinary replay leaves it disabled.
+            noise_distil_loss_coef=1. if noise_distillation else 0.,
+        )
+        wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
+        return wrapper
+
+    def test_diffusion_recovery_restores_external_classifier(self) -> None:
+        """Resume both the diffusion generator and its expanding external classifier.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Restored weights and the next task update match uninterrupted training.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / "template.h5"
+            self._template(template_path)
+            arguments = {
+                "class_num": 3,
+                "task_size": 2,
+                "load_dataset_fn": self._loader,
+                "load_dataset_fn_kwargs": {"preprocess": "min-max"},
+                "tuned_model_path": str(template_path),
+                "compile_args": {
+                    "optimizer": tf.keras.optimizers.Adam(1e-2),
+                    "loss": "sparse_categorical_crossentropy",
+                    "metrics": ["accuracy"],
+                },
+                "remove_prev_classes": False,
+                "use_generative_replay": False,
+                "generative_model_kwargs": {"train_num": 4},
+                "batch_size": 4,
+                "epochs": 1,
+                "callback_patience": 0,
+                "plot_results": False,
+                "verbose": 0,
+                "seed": 31,
+                "checkpoint_dir": str(root / "checkpoints"),
+            }
+            uninterrupted = _run_continual_tasks(
+                **arguments, generative_model=self._generator(), save_task_checkpoints=True,
+            )
+            restored = _run_continual_tasks(
+                **arguments, generative_model=self._generator(),
+                resume_from=str(root / "checkpoints" / "task-0000"),
+            )
+
+            self.assertEqual(restored["model"].output_shape[-1], 3)
+            for role in ("model", "generative_model"):
+                for expected, actual in zip(
+                    uninterrupted[role].get_weights(), restored[role].get_weights(),
+                ):
+                    np.testing.assert_allclose(expected, actual, rtol=0., atol=0.)
+            np.testing.assert_allclose(
+                uninterrupted["ordinary_accuracy_matrix"],
+                restored["ordinary_accuracy_matrix"], equal_nan=True,
+            )
+
+    def test_fixed_pixel_modes_preserve_continual_diffusion_coordinates(self) -> None:
+        """Map both fixed public scales to the same diffusion training values.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Real loader and learner pipelines retain public pixel scaling.
+        """
+
+        labels = np.repeat(np.arange(3, dtype="uint8"), 4)
+        pixels = np.broadcast_to(
+            ((labels + 1) * 64)[:, None, None], (len(labels), 2, 2),
+        ).copy()
+        with tempfile.TemporaryDirectory() as directory:
+            template_path = Path(directory) / "template.h5"
+            self._template(template_path)
+            for mode, expected_scale in (
+                ("fixed-min-max", {"data_min": 0., "data_range": 1.}),
+                ("fixed-standardize", {"data_min": -1., "data_range": 2.}),
+            ):
+                with self.subTest(mode=mode), patch(
+                    "tensorflow.keras.datasets.mnist.load_data",
+                    return_value=((pixels, labels), (pixels, labels)),
+                ), patch("common.train.train_model", return_value={}) as fit, patch(
+                    "common.train.report", return_value={},
+                ):
+                    details = _run_continual_tasks(
+                        class_num=3, task_size=2, load_dataset_fn=load_mnist,
+                        load_dataset_fn_kwargs={"preprocess": mode, "validation_ratio": 0.},
+                        tuned_model_path=str(template_path),
+                        generative_model=self._generator(),
+                        generative_model_kwargs={"train_num": -1},
+                        use_generative_replay=False, remove_prev_classes=False,
+                        batch_size=4, epochs=1, callback_patience=0,
+                        plot_results=False, verbose=0, seed=31,
+                    )
+                    # Inspect the generator phase rather than the separate classifier fit.
+                    generator_fit = next(
+                        call for call in fit.call_args_list
+                        if isinstance(call.args[1], DiffusionModel)
+                    )
+                    trained_pixels = np.concatenate([
+                        batch[0] for batch in generator_fit.args[2].as_numpy_iterator()
+                    ])
+                self.assertEqual(
+                    details["run_descriptor"]["data"]["diffusion_scale"], expected_scale,
+                )
+                np.testing.assert_allclose(
+                    np.sort(trained_pixels.reshape(-1)),
+                    np.sort((pixels[labels < 2].astype("float32") / 255. * 2. - 1.).reshape(-1)),
+                    rtol=1e-6,
+                )
+
+    def test_noise_distillation_supports_classifier_free_replay_diagnostics(self) -> None:
+        """Keep generator-teacher diagnostics independent of classifier-only APIs.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Noise KD trains and replay diagnostics omit unavailable class scores.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_path = Path(directory) / "template.h5"
+            self._template(template_path)
+            details = _run_continual_tasks(
+                class_num=3, task_size=2, load_dataset_fn=self._loader,
+                load_dataset_fn_kwargs={"preprocess": "min-max"},
+                tuned_model_path=str(template_path),
+                compile_args={
+                    "optimizer": "adam", "loss": "sparse_categorical_crossentropy",
+                    "metrics": ["accuracy"],
+                },
+                generative_model=self._generator(noise_distillation=True),
+                generative_model_kwargs={"train_num": -1, "samples_per_class": 1},
+                use_distillation=True, mechanistic_metrics=True,
+                batch_size=4, epochs=1, callback_patience=0,
+                plot_results=False, verbose=0, seed=31,
+            )
+        diagnostics = details["task_mechanistic_metrics"][1]
+        self.assertEqual(diagnostics["sample_count"], 2)
+        self.assertNotIn("label_consistency", diagnostics)
+        self.assertNotIn("representation", diagnostics)
+        self.assertGreater(
+            details["generative_histories"][1]["noise_distil_loss"][-1], 0.,
+        )
+
+    def test_replay_cache_requires_identical_learned_generator(self) -> None:
+        """Reuse identical replay sources and reject changed pre-replay training.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Matching runs read the pool without sampling; changed weights miss it.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / "template.h5"
+            self._template(template_path)
+            arguments = {
+                "class_num": 3,
+                "task_size": 2,
+                "load_dataset_fn": self._loader,
+                "load_dataset_fn_kwargs": {"preprocess": "min-max"},
+                "tuned_model_path": str(template_path),
+                "compile_args": {
+                    "optimizer": "adam", "loss": "sparse_categorical_crossentropy",
+                    "metrics": ["accuracy"],
+                },
+                "generative_model_kwargs": {"train_num": 4, "samples_per_class": 1},
+                "replay_cache_dir": str(root / "cache"),
+                "batch_size": 4, "callback_patience": 0,
+                "plot_results": False, "verbose": 0, "seed": 31,
+            }
+            generated = _run_continual_tasks(
+                **arguments, generative_model=self._generator(),
+                replay_cache_mode="write", epochs=1,
+            )
+            reader = self._generator()
+            with patch.object(reader, "sample", side_effect=AssertionError(
+                "An identical learned generator must use its cached candidates."
+            )):
+                cached = _run_continual_tasks(
+                    **arguments, generative_model=reader,
+                    replay_cache_mode="read", epochs=1,
+                )
+            self.assertEqual(
+                generated["task_resource_metrics"][1]["replay"]["cache_path"],
+                cached["task_resource_metrics"][1]["replay"]["cache_path"],
+            )
+            with self.assertRaises(FileNotFoundError):
+                _run_continual_tasks(
+                    **arguments, generative_model=self._generator(),
+                    replay_cache_mode="read", epochs=2,
+                )
 
     def test_interrupted_buffer_run_matches_uninterrupted_next_updates(self) -> None:
         """Resume restores cursor, replay RNG, optimizer slots, and weights.

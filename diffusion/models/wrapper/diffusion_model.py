@@ -1952,6 +1952,12 @@ class DiffusionModel(ArgumentSaverModel):
                         f"Invalid stage task at index {stage_index}: {task!r}."
                     )
 
+                # Reject misspelled task names before silently training an unchanged stage.
+                if set(updates) - {"timesteps", "resolution", "depth"}:
+                    raise ValueError(
+                        f"Unsupported progressive task at index {stage_index}: {task!r}."
+                    )
+
                 # Resolve and apply this stage's timestep bounds.
                 if "timesteps" in updates:
                     bounds = updates["timesteps"]
@@ -5366,6 +5372,23 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Invalid progressive stage objects must fail")
     assert failing_progressive.current_timesteps_bounds == failing_entry_bounds
     assert failing_progressive.current_resolution == failing_entry_resolution
+
+    for unknown_task in (
+        "resoluton",
+        {"resoluton"},
+        {"resolution": 2, "resoluton": 4},
+    ):
+        with np.testing.assert_raises_regex(ValueError, "Unsupported progressive task"):
+            failing_progressive.fit_progressively(
+                [unknown_task],
+                x=dataset,
+                stages_verbose=False,
+                stage_epochs=0,
+                final_epochs=0,
+                verbose=0,
+            )
+        assert failing_progressive.current_timesteps_bounds == failing_entry_bounds
+        assert failing_progressive.current_resolution == failing_entry_resolution
 
     for forbidden_fit_argument in ({"epochs": 1}, {"initial_epoch": 0}):
         try:

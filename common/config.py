@@ -1518,7 +1518,10 @@ class DatasetConfig:
         name (str): ``"mnist"``, ``"fmnist"``, ``"cifar10"``, or ``"cifar100"``. Defaults to
             ``'mnist'``.
         preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or no scaling. ``None`` is resolved
+            ``"standardize"``/``"diffusion"``, or no scaling. Raw pixel-only
+            ``"fixed-min-max"`` uses ``x / 255``; ``"fixed-standardize"`` uses
+            ``2 * x / 255 - 1`` without fitted statistics. Fixed modes reject saved
+            features whose units are not uint8 pixel units. ``None`` is resolved
             automatically for diffusion and VAE model families. Defaults to ``None``.
         indices (list[int] | None): Original class IDs retained by ordinary dataset
             construction; None retains every class. Continual selection follows

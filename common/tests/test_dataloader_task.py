@@ -18,9 +18,9 @@ from unittest.mock import patch
 import numpy as np
 
 from common.config import Config
-from common.dataloader import get_datasets
+from common.dataloader import get_datasets, load_mnist, preprocess_dataset
 from common.hpo import run_hpo
-from common.learner import continually_learn
+from common.learner import _load_continual_arrays, continually_learn
 from common.model import get_model
 
 
@@ -107,6 +107,141 @@ class DatasetTaskValidationTests(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             run_hpo(None, "cnn", n_trials=1)
+
+    def test_direct_vae_preprocessing_follows_reconstruction_activation(self) -> None:
+        """Keep direct VAE targets in the configured reconstruction range.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Assertions verify activation-dependent loader preprocessing.
+        """
+
+        images = np.zeros((4, 28, 28), dtype="uint8")
+        labels = np.asarray([0, 1, 0, 1], dtype="uint8")
+        for model_name in ("vae", "variational_autoencoder", "vae_classifier"):
+            for option_name in ("model_kwargs", "kwargs"):
+                for activation, expected in (
+                    ("tanh", "standardize"), ("sigmoid", "min-max"),
+                    ("linear", "normalize"), (None, "normalize"),
+                ):
+                    with self.subTest(
+                        model_name=model_name,
+                        option_name=option_name,
+                        activation=activation,
+                    ), patch("common.dataloader.load_mnist") as loader:
+                        loader.return_value = (
+                            images, labels, None, None, images, labels
+                        )
+                        get_datasets(
+                            model_name=model_name,
+                            preprocess=None,
+                            use_valset=False,
+                            **{option_name: {"last_activation": activation}},
+                        )
+                        self.assertEqual(
+                            loader.call_args.kwargs["preprocess"], expected
+                        )
+
+    def test_fixed_pixel_scaling_is_independent_of_future_class_extrema(self) -> None:
+        """Keep first-task pixels unchanged when future-task image statistics change.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Both fixed scales match public pixel bounds on every split.
+        """
+
+        labels = np.repeat(np.arange(2), 4)
+        first_task = np.asarray([64, 96, 128, 160], dtype="uint8")
+        test_pixels = np.asarray([0, 255], dtype="uint8")[:, None, None]
+        for mode, multiplier, offset in (
+            ("fixed-min-max", 1., 0.), ("fixed-standardize", 2., -1.),
+        ):
+            first_observations = []
+            for future_pixels in ([0, 32, 224, 255], [48, 64, 176, 192]):
+                pixels = np.concatenate([
+                    first_task, np.asarray(future_pixels, dtype="uint8"),
+                ])[:, None, None]
+                prepared = preprocess_dataset(
+                    pixels, labels, test_pixels, np.asarray([0, 1]),
+                    class_num=2, indices=[0, 1], validation_ratio=0.5,
+                    preprocess=mode, return_features=False, features_path=None,
+                    onehot_labels=False, seed=19, verbose=0,
+                )
+                train_x, train_y, val_x, val_y, test_x, _ = prepared
+                first_observations.append(np.concatenate([
+                    train_x[train_y == 0], val_x[val_y == 0],
+                ]))
+                np.testing.assert_allclose(
+                    np.sort(first_observations[-1].reshape(-1)),
+                    first_task.astype("float32") / 255. * multiplier + offset,
+                    rtol=1e-6,
+                )
+                np.testing.assert_allclose(
+                    test_x, test_pixels.astype("float32") / 255. * multiplier + offset,
+                    rtol=1e-6,
+                )
+            np.testing.assert_array_equal(*first_observations)
+
+    def test_fixed_standardize_padding_uses_the_public_lower_bound(self) -> None:
+        """Keep ordinary and continual padded borders at diffusion-space minus one.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Both input pipelines preserve the declared public pixel scale.
+        """
+
+        pixels = np.full((4, 2, 2), 128, dtype="uint8")
+        labels = np.asarray([0, 1, 0, 1], dtype="uint8")
+        with patch(
+            "tensorflow.keras.datasets.mnist.load_data",
+            return_value=((pixels, labels), (pixels, labels)),
+        ):
+            dataset, _ = get_datasets(
+                model_name="cnn", preprocess="fixed-standardize", pad=1,
+                validation_ratio=0., batch_size=4, shuffle_buffer=0,
+            )
+            arrays, _ = _load_continual_arrays(
+                load_mnist, [0, 1], False,
+                {"preprocess": "fixed-standardize", "onehot_labels": False,
+                 "validation_ratio": 0.},
+                None, None, 1, 19,
+            )
+        ordinary = next(iter(dataset))[0].numpy()[..., 0]
+        for prepared in (ordinary, arrays[0], arrays[4]):
+            np.testing.assert_array_equal(prepared[:, 0, :], -1.)
+            np.testing.assert_array_equal(prepared[:, :, 0], -1.)
+            np.testing.assert_allclose(
+                prepared[:, 1:-1, 1:-1], 128. / 255. * 2. - 1., atol=1e-7,
+            )
+
+    def test_fixed_pixel_scaling_rejects_saved_feature_units(self) -> None:
+        """Reject unknown feature units before loading a saved feature archive.
+
+        Args:
+            None. The unittest instance owns the fixtures used by this case.
+
+        Returns:
+            None: Both fixed pixel modes reject feature preprocessing explicitly.
+        """
+
+        pixels = np.zeros((4, 2, 2), dtype="uint8")
+        labels = np.asarray([0, 1, 0, 1])
+        for mode in ("fixed-min-max", "fixed-standardize"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                ValueError, "not supported for saved features",
+            ):
+                preprocess_dataset(
+                    pixels, labels, pixels, labels,
+                    class_num=2, indices=[0, 1], validation_ratio=0.,
+                    preprocess=mode, return_features=True, features_path=None,
+                    onehot_labels=False, seed=19, verbose=0,
+                )
 
     def test_vae_conditioning_selects_onehot_labels(self) -> None:
         """Keep VAE factory inputs aligned with their conditioning mode.

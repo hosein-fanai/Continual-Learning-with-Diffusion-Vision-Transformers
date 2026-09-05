@@ -112,8 +112,9 @@ merged = handler([early, middle, latest])
 
 The example concatenates `early`, `latest`, and `latest`, in that order.
 Negative indices, repeated indices, and arbitrary ordering are valid; an
-out-of-range index raises `IndexError`. With `connect_type="concat"`, every
-dimension except `connect_axis` must match. With `"add"`, TensorFlow
+out-of-range index raises `IndexError`. Project feature connections support
+only `connect_axis=-1`. With `connect_type="concat"`, every dimension except
+the final feature dimension must match. With `"add"`, TensorFlow
 broadcasting rules apply. Passing `ids=[]` and no secondary tensors returns
 `None`. If the constructor receives `ids=None`, each call must supply an
 explicit ID list.

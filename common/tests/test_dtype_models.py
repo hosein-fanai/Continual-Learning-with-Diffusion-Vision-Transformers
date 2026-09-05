@@ -19,6 +19,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import tensorflow as tf
@@ -487,6 +489,80 @@ class DtypeModelTests(unittest.TestCase):
         )(values, training=False)
         np.testing.assert_allclose(restored_features, expected_features)
         self.assertEqual(restored.output_shape[-1], 3)
+
+    def test_vae_mixed_precision_reconstruction_avoids_overflow(self) -> None:
+        """Keep large squared reconstruction errors finite in both VAE families.
+
+        Returns:
+            None: Training and evaluation match the float32 MSE of 90,000.
+        """
+
+        configure_runtime(27, "mixed_float16")
+        x = tf.fill((2, 2), 300.)
+        y = tf.one_hot([0, 1], depth=2)
+        classifier = tf.keras.Sequential([
+            tf.keras.layers.InputLayer(input_shape=(2,)),
+            tf.keras.layers.Dense(2, activation="softmax", dtype="float32"),
+        ])
+        for model_type in (VariationalAutoencoder, VAEClassifier):
+            with self.subTest(model_type=model_type.__name__):
+                # The joint model additionally needs its independent classifier.
+                classifier_kwargs = {"classifier": classifier} \
+                    if model_type is VAEClassifier else {"conditioned": True}
+                model = model_type(
+                    data_dim=2,
+                    latent_dim=1,
+                    hiddens_dims=(),
+                    class_num=2,
+                    last_activation="linear",
+                    compile_args={
+                        "optimizer": tf.keras.mixed_precision.LossScaleOptimizer(
+                            tf.keras.optimizers.SGD(learning_rate=0.),
+                            dynamic=False,
+                            initial_scale=1.,
+                        ),
+                        "loss": "mse",
+                    },
+                    **classifier_kwargs,
+                )
+                for weight in model.weights:
+                    weight.assign(tf.zeros_like(weight))
+                for step in (model.test_step, model.train_step):
+                    model.reset_metrics()
+                    result = step((x, y))
+                    self.assertEqual(float(result["recon_loss"]), 90_000.)
+                    self.assertTrue(np.isfinite(float(result["loss"])))
+
+    def test_vae_automatic_stopping_follows_monitor_direction(self) -> None:
+        """Restore lower loss values and higher accuracy values by default.
+
+        Returns:
+            None: Automatically created callbacks recognize each improvement.
+        """
+
+        configure_runtime(28, "float32")
+        model = VariationalAutoencoder(
+            data_dim=2, latent_dim=1, hiddens_dims=(), compile=False,
+        )
+        x = np.zeros((2, 2), dtype=np.float32)
+        for monitor, first, improved in (
+            ("loss", 3., 1.),
+            ("val_loss", 3., 1.),
+            ("decoder_accuracy", 0.2, 0.8),
+        ):
+            with self.subTest(monitor=monitor), patch.object(
+                model, "fit", return_value=SimpleNamespace(history={})
+            ) as fit:
+                model.train(
+                    x, train_num=-1, callbacks_monitor=monitor, verbose=0,
+                )
+                stopper = fit.call_args.kwargs["callbacks"][0]
+                stopper.set_model(model)
+                stopper.on_train_begin()
+                stopper.on_epoch_end(0, {monitor: first})
+                stopper.on_epoch_end(1, {monitor: improved})
+                self.assertEqual(float(stopper.best), improved)
+                self.assertEqual(stopper.wait, 0)
 
     def test_vae_custom_steps_accept_sample_weights(self) -> None:
         """Apply per-row weights in conditional VAE train and test steps.

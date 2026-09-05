@@ -801,9 +801,10 @@ class VariationalAutoencoder(models.Model):
                 tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
                 tf.shape(x)[:1],
             )
+            # Compute reconstruction error before reduction in stable precision.
             recon_loss = tf.cast(self.compiled_loss(
-                x, 
-                x_recon, 
+                tf.cast(x, stable_dtype),
+                tf.cast(x_recon, stable_dtype),
                 sample_weight=row_sample_weight,
                 regularization_losses=self.losses
             ), stable_dtype)
@@ -889,9 +890,10 @@ class VariationalAutoencoder(models.Model):
             tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
             tf.shape(x)[:1],
         )
+        # Compute reconstruction error before reduction in stable precision.
         recon_loss = tf.cast(self.compiled_loss(
-            x, 
-            x_recon, 
+            tf.cast(x, stable_dtype),
+            tf.cast(x_recon, stable_dtype),
             sample_weight=row_sample_weight,
             regularization_losses=self.losses
         ), stable_dtype)
@@ -1132,10 +1134,9 @@ class VariationalAutoencoder(models.Model):
             are not modified; callback objects may update their own state or artifacts.
 
         Notes:
-            Automatically constructed callbacks retain get_callbacks(mode="max"),
-            including when the inferred monitor is loss or val_loss. For minimizing
-            reconstruction loss, supply a callback configured with mode="min" through
-            callbacks_list. This method does not infer a minimizing direction.
+            Automatically constructed callbacks use Keras mode="auto", minimizing
+            loss monitors and maximizing accuracy monitors. Supply callbacks_list
+            to choose an explicit direction for a custom metric.
         """
 
         # Publish the normalized Python integer to the Keras fit call.
@@ -1205,6 +1206,7 @@ class VariationalAutoencoder(models.Model):
                 DecoderAccuracyCallback(classifier=clf, seed=seed),
                 *get_callbacks(
                     monitor=callbacks_monitor, 
+                    mode="auto",
                     verbose=verbose
                 )
             ]
@@ -1224,6 +1226,7 @@ class VariationalAutoencoder(models.Model):
                     else "loss"
             callbacks_list = get_callbacks(
                 monitor=callbacks_monitor, 
+                mode="auto",
                 verbose=verbose
             )
 
@@ -1795,7 +1798,9 @@ def run_self_tests() -> dict[str, str]:
             verbose=0, 
         )
         assert history == {"loss": [1.0]}
-        callbacks_mock.assert_called_once_with(monitor="custom_metric", verbose=0)
+        callbacks_mock.assert_called_once_with(
+            monitor="custom_metric", mode="auto", verbose=0
+        )
         fit_args, fit_kwargs = fit_mock.call_args
         assert fit_args[0] is unconditioned
         assert isinstance(fit_args[1], tf.data.Dataset)
@@ -1860,7 +1865,7 @@ def run_self_tests() -> dict[str, str]:
         )
         assert history == {"loss": [1.0]}
         callbacks_mock.assert_called_once_with(
-            monitor="decoder_accuracy", verbose=0
+            monitor="decoder_accuracy", mode="auto", verbose=0
         )
         fit_args, fit_kwargs = fit_mock.call_args
         assert isinstance(fit_args[1], tf.data.Dataset)

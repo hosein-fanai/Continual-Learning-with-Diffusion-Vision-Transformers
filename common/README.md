@@ -63,7 +63,15 @@ labels, saved features, and these preprocessing modes:
 - `"min-max"`: training-set scalar min/max scaling;
 - `"normalize"`: elementwise training mean/std scaling;
 - `"standardize"` or `"diffusion"`: training extrema mapped to `[-1, 1]`;
+- `"fixed-min-max"`: raw uint8 pixel units divided by 255;
+- `"fixed-standardize"`: raw uint8 pixel units mapped by `2 * x / 255 - 1`;
 - `None` or `""`: no scaling in the direct loader functions.
+
+The fitted modes use all selected training classes before a continual task
+stream is split, which exposes future-task distribution statistics. Use an
+explicit fixed mode for public pixel scaling without that access. Fixed modes
+do not fit statistics, preserve the matching padding/replay coordinates, and
+are rejected for saved feature vectors whose units are not raw pixels.
 
 `get_dataset` converts arrays into a batched `tf.data.Dataset` and can shuffle,
 cache, pad, augment, extract features, and prefetch. `get_datasets` selects the
@@ -175,6 +183,11 @@ models, wrappers, schedules, constants, optimizers, and mixed-precision loss
 scaling. Directly supplied prebuilt repository models must already match the
 requested seed and dtype policy because their initialization cannot be changed
 retroactively.
+
+Replay-cache compatibility includes the generator's learned weights at the
+task boundary. Runs with different learned generators cannot silently reuse
+the same candidate pool. Seeded balanced selection randomizes which classes
+receive remainder slots when the replay budget is not divisible by class count.
 
 ## Continual learning
 

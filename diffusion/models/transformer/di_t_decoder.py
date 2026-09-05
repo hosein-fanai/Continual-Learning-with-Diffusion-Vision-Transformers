@@ -126,8 +126,8 @@ class DiTDecoder(DiffusionTransformer):
                 (bool), ``ln_dim`` (int | None), ``ln_mlp_ratio`` (float | None), ``ln_no_adaptation``
                 (bool), ``mlp_output_dim`` (int | None), ``mlp_ratio`` (float | None), and
                 ``mlp_activation_func`` (Keras activation). Unknown keys raise ``AssertionError``.
-                Rank-3 token features use axis ``1``/``-2`` for tokens and ``2``/``-1`` for channels;
-                flattened rank-2 features accept only ``1``/``-1``. Defaults to ``{}``.
+                Only ``connect_axis=-1`` is supported for both token sequences and flattened
+                features. Defaults to ``{}``.
             cross_attention_aggregation_ids_dict (dict[int, list[int | None]]): Maps decoder depths to
                 encoder features used as cross- attention values or queries. It uses the same depth and
                 ID syntax as ``feature_aggregation_ids_dict``. Defaults to ``{}``.
@@ -220,21 +220,19 @@ class DiTDecoder(DiffusionTransformer):
             self.time_embedder = self.time_embedder \
                 if "time" in self._cls_token_type or \
                 "time" in self._distil_token_type else None
-            # Retain a decoder label lookup only for token conditions or depth-zero
-            # regularization.
+            # Retain a decoder label lookup only when a decoder token consumes labels.
             self.label_embedder = self.label_embedder \
                 if "label" in self._cls_token_type or \
-                "label" in self._distil_token_type or \
-                0 in self.cls_token_regularizer_ids else None
+                "label" in self._distil_token_type else None
+            # Retain the auxiliary label head only when decoder tokens consume labels.
+            self.labels_embed_reg = self.labels_embed_reg \
+                if self.label_embedder is not None else None
             # Retain a condition merger only when a decoder token combines time and labels.
             self.conds_merger = self.conds_merger \
                 if ("time" in self._cls_token_type and \
                 "label" in self._cls_token_type) or \
                 ("time" in self._distil_token_type and \
                 "label" in self._distil_token_type) else None
-        # Restore label embeddings needed by a depth-zero label regularizer.
-        if 0 in self.cls_token_regularizer_ids and self.label_embedder is None:
-            self.label_embedder = self._create_label_embedder()
 
         # Materialize decoder variables when eager construction is requested.
         if self.build_:
@@ -324,9 +322,9 @@ class DiTDecoder(DiffusionTransformer):
                 self.feature_handler_kwargs_allowed_vals
             )
             require(not invalid, f"Unknown keys in {kwargs_name}: {sorted(invalid)}.")
-            require(handler_kwargs.get("connect_axis", -1) in (
-                -2, -1, 1, 2
-            ), "decoder feature handlers support token or channel axes only.")
+            require(handler_kwargs.get("connect_axis", -1) == -1, (
+                "Only connect_axis == -1 is supported."
+            ))
 
     def _normalize_encoder_ids(
         self, 
@@ -410,8 +408,17 @@ class DiTDecoder(DiffusionTransformer):
             dims.append(increased_dim)
             grids.append(second_grid_size)
             flat_states.append(second_is_flat)
-        # Concatenation sums source widths; addition preserves the first source width.
-        merged_dim = sum(dims) if kwargs.get("connect_type", "concat") == "concat" else dims[0]
+        # Last-axis concatenation sums widths; addition preserves their common width.
+        merged_dim = sum(dims) if kwargs.get("connect_type", "concat") == "concat" \
+            else dims[0]
+        # Reject broadcasting that would change the inferred additive feature shape.
+        if kwargs.get("connect_type", "concat") == "add":
+            require(all(
+                dim == dims[0] and grid == grids[0]
+                for dim, grid in zip(dims, grids)
+            ), (
+                "Addition requires equal feature dimensions and grid sizes."
+            ))
         grid_size = grids[0]
         output_is_flat = flat_states[0]
         # Project widened encoder aggregates back to the forced decoder width when allowed.
@@ -547,6 +554,13 @@ class DiTDecoder(DiffusionTransformer):
             output uses integer sentinel 0; None can propagate when the supplied
             base grid itself is unknown. skip_reshaper=True ignores rank changes.
         """
+
+        # Use encoder aggregation when no later decoder component establishes a grid.
+        if 0 <= i < len(layers_dicts) and self.FA in layers_dicts[i] and \
+        self._get_layers_dict_last_grid_size(layers_dicts[i], skip_reshaper) is None:
+            # Represent a flat encoder aggregate with the decoder's zero-grid sentinel.
+            return 0 if layers_dicts[i][self.FA].output_is_flat \
+                else layers_dicts[i][self.FA].grid_size
 
         return super()._get_last_grid_size(
             i,
@@ -1057,12 +1071,12 @@ class DiTDecoder(DiffusionTransformer):
                     f"{expected_latents} input feature/latent tensors."
                 )
         batch_input = latent_inputs[0]
-        # Build decoder-owned conditions when separate conditioning is enabled.
+        # Build active decoder-owned conditions when separate conditioning is enabled.
         if self.decoder_separate_cond:
             cond, time_embeds, label_embeds = self.embed_conditions(
                 times, 
                 labels, 
-                self.cond_type, 
+                self._cond_type, 
                 full_return=True, 
                 training=training, 
             )
@@ -1081,6 +1095,11 @@ class DiTDecoder(DiffusionTransformer):
 
         # Embed raw decoder images when execution starts at depth zero.
         if min_depth == 0:
+            # Prepare labels for decoder tokens when shared or local conditions omit them.
+            if label_embeds is None and (
+                "label" in self._cls_token_type or "label" in self._distil_token_type
+            ):
+                label_embeds = self.label_embedder(labels, training=training)
             # Patchify at the active resolution only when it differs from native decoder
             # resolution.
             x = self.patch_embedder(
@@ -1127,15 +1146,11 @@ class DiTDecoder(DiffusionTransformer):
         else:
             x = batch_input
 
-        # Compute labels solely for a depth-zero label regularizer when needed.
-        if label_embeds is None and self.label_embedder is not None and \
-        self.labels_embed_reg is not None:
-            label_embeds = self.label_embedder(labels, training=training)
-        # Compute depth-zero decoder label regularization only when its head exists.
+        # Regularize depth-zero labels only when an active decoder path embeds them.
         depth_zero_reg = self.labels_embed_reg(
             label_embeds, 
             training=training, 
-        ) if self.labels_embed_reg is not None else None
+        ) if self.labels_embed_reg is not None and label_embeds is not None else None
 
         features_list = [None] * min_depth + [x]
         regs_list = [depth_zero_reg] + [None] * min_depth
@@ -1932,9 +1947,10 @@ def run_self_tests() -> dict[str, str]:
     )
     assert truncated_multilevel[0].shape == (2, 4, 4)
 
-    # Regenerate encoder metadata for the independent decoder-context fixture.
+    # Use separate label conditioning in the depth-zero regularizer fixture.
     depth_zero_reg = DiTDecoder(
         depth=0, 
+        decoder_separate_cond=True,
         cls_token_regularizer_ids=[0], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 
@@ -1942,7 +1958,6 @@ def run_self_tests() -> dict[str, str]:
             "encoder_feature_grid_sizes", "encoder_feature_dims"
         )},
     )
-    assert depth_zero_reg.label_embedder is not None
     zero_full = depth_zero_reg.predict_noise(
         (images, times, labels), encoder_cond, [encoder_features[-1]], 
         full_return=True, 
@@ -1952,7 +1967,7 @@ def run_self_tests() -> dict[str, str]:
     # Remove base encoder metadata so the focused fixture supplies its own dimensions.
     all_regularizers = DiTDecoder(
         depth=1, 
-        cls_token_type="new_weight", 
+        cls_token_type="label",
         cls_token_regularizer_ids=[0, 1], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 

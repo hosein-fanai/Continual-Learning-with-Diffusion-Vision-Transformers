@@ -103,6 +103,12 @@ NOTEBOOKS = {
         )
     },
     "continual": {
+        "diffusion_classifier": (
+            20,
+            "Compare DiT, encoder-decoder DiT, and U-Net classifiers in one "
+            "conditional continual-learning search with a shared task stream "
+            "and validation objective."
+        ),
         "cnn": (
             20,
             "Tune the convolutional classifier under sequential, cumulative, "

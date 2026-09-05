@@ -335,9 +335,10 @@ class VAEClassifier(VariationalAutoencoder):
                 tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
                 tf.shape(x)[:1],
             )
+            # Compute reconstruction error before reduction in stable precision.
             recon_loss = tf.cast(self.compiled_loss(
-                x, 
-                x_recon, 
+                tf.cast(x, stable_dtype),
+                tf.cast(x_recon, stable_dtype),
                 sample_weight=row_sample_weight,
                 regularization_losses=self.losses,
             ), stable_dtype)
@@ -449,9 +450,10 @@ class VAEClassifier(VariationalAutoencoder):
             tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
             tf.shape(x)[:1],
         )
+        # Compute reconstruction error before reduction in stable precision.
         recon_loss = tf.cast(self.compiled_loss(
-            x, 
-            x_recon, 
+            tf.cast(x, stable_dtype),
+            tf.cast(x_recon, stable_dtype),
             sample_weight=row_sample_weight,
             regularization_losses=self.losses,
         ), stable_dtype)

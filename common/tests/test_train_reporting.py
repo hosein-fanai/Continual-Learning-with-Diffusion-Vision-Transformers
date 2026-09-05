@@ -177,6 +177,30 @@ class TrainReportingTests(unittest.TestCase):
         np.testing.assert_array_equal(train_args.kwargs["y"], labels)
         self.assertEqual(train_args.kwargs["batch_size"], 128)
 
+    def test_direct_vae_train_rejects_discarded_sample_weights(self) -> None:
+        """Keep the array adapter from silently dropping weighted dataset rows.
+
+        Returns:
+            None: Weighted input is rejected before the model train method runs.
+        """
+
+        trainset = tf.data.Dataset.from_tensor_slices((
+            tf.zeros((2, 3)), tf.one_hot([0, 1], 2), tf.constant([1., 0.]),
+        )).batch(2)
+        model = MagicMock(spec=VariationalAutoencoder)
+        model.conditioned = True
+        with self.assertRaisesRegex(ValueError, "fit_method='fit'"):
+            train_model(
+                model=model,
+                trainset=trainset,
+                fit_method="train",
+                show_images=True,
+                report_every_epoch=False,
+                save_weights=False,
+                verbose=0,
+            )
+        model.train.assert_not_called()
+
     def test_configured_continual_seed_is_forwarded_once(self) -> None:
         """Use the effective training seed without duplicate keyword routing.
 
