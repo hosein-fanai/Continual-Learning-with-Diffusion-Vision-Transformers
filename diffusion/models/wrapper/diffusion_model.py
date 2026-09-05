@@ -1250,6 +1250,10 @@ class DiffusionModel(ArgumentSaverModel):
             network are restored even when Keras raises an exception.
         """
 
+        # Validation inside fit temporarily changes bounds, whose setter clears
+        # cached functions. Keep the active fit trace for the restored train
+        # bounds: Keras does not rebuild it between validation and the next epoch.
+        prev_train_function = self.train_function
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
         self.set_timestep_bounds(
@@ -1293,6 +1297,7 @@ class DiffusionModel(ArgumentSaverModel):
             if prev_test_network_name != self.test_network_name:
                 self.test_network_name = prev_test_network_name
                 self.test_function = None
+            self.train_function = prev_train_function
 
     def summary(self, **kwargs: object) -> None:
         """Print/return the raw network's Keras model summary.
