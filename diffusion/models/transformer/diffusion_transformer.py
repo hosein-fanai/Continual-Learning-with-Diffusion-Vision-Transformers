@@ -1246,6 +1246,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             embed_freq_dim=self.time_freq_dim, 
             embed_trainable=self.time_embed_trainable, 
             mlp_ratio=self.time_mlp_ratio, 
+            dtype=self.dtype_policy,
             name=f"{self.name_prefix}{name_prefix}depth_0_time_embedder"
         )
 
@@ -1269,6 +1270,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             embed_freq_dim=self.label_freq_dim, 
             embed_trainable=self.label_embed_trainable, 
             mlp_ratio=self.label_mlp_ratio, 
+            dtype=self.dtype_policy,
             name=f"{self.name_prefix}{name_prefix}depth_0_label_embedder"
         )
 
@@ -1297,11 +1299,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if merger_type == "concat":
             merger_layer = layers.Concatenate(
                 axis=-1, 
+                dtype=self.dtype_policy,
                 name=name
             )
         # Add condition components elementwise when their widths match.
         elif merger_type == "add":
             merger_layer = layers.Add(
+                dtype=self.dtype_policy,
                 name=name
             )
         # Reject condition mergers outside the supported alternatives.
@@ -1350,6 +1354,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             patchify_with_cnn=self.patchify_with_cnn, 
             shift_right_token=self.shift_inputs, 
             seed=derive_seed(self.seed, "patch_embedder"),
+            dtype=self.dtype_policy,
             name=f"{self.name_prefix}depth_0_patch_embedder"
         )
 
@@ -1420,6 +1425,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 "time_label", "time", "label"
             ), 
             seed=derive_seed(self.seed, "single_token", name or "unnamed"),
+            dtype=self.dtype_policy,
             name=name
         ) if token_type is not None else None
 
@@ -1497,6 +1503,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         mlp_output_dim = base_dim if dim_forced and increased_dim_ > base_dim and \
                         output_dim_flag else None
         feature_handler_kwargs = {
+            "dtype": self.dtype_policy,
             "ids": ids_set, 
             "ln_dim": increased_dim_, 
             "mlp_output_dim": mlp_output_dim, 
@@ -1561,6 +1568,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """
 
         block_kwargs = {
+            "dtype": self.dtype_policy,
             "dim": self._get_current_output_dim(
                 i, 
                 layers_dicts, 
@@ -1644,6 +1652,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """
 
         local_mixer_kwargs = {
+            "dtype": self.dtype_policy,
             "dim": self._get_current_output_dim(
                 i, 
                 layers_dicts, 
@@ -1720,6 +1729,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """
 
         scaler_kwargs = {
+            "dtype": self.dtype_policy,
             "dim": self._get_current_output_dim(
                 i, 
                 layers_dicts, 
@@ -2342,12 +2352,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 return_gate=False, 
                 mlp_ratio=self.ln_mlp_ratio, 
                 no_adaptation=self.ln_no_adaptation, 
+                dtype=self.dtype_policy,
                 name=f"{name}/layer_norm"
             )((token_inputs, cond_inputs))
             x = layers.Dense(
                 self.patch_size * self.patch_size * self.channels, 
                 kernel_initializer="zeros", 
                 activation=self.final_ffn_activation_func, 
+                dtype=self.dtype_policy,
                 name=f"{name}/ffn"
             )(x)
 
@@ -2391,6 +2403,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     kernel_size=3, 
                     padding="same", 
                     activation="swish", 
+                    dtype=self.dtype_policy,
                     name=f"{name}/refiner_conv_1"
                 )(x)
                 # Zero-initialize residual refinement so it starts as an identity; use ordinary
@@ -2401,6 +2414,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     padding="same", 
                     kernel_initializer="zeros" if self.refiner_cnn_residual else "glorot_uniform",
                     bias_initializer="zeros", 
+                    dtype=self.dtype_policy,
                     name=f"{name}/refiner_conv_2"
                 )(h)
                 # Add a residual refinement to the image or return the refinement directly.
@@ -2408,6 +2422,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             outputs = layers.Activation(
                 self.final_activation_func, 
+                dtype=self.dtype_policy,
                 name=f"{name}/noises"
             )(x)
 
@@ -4265,7 +4280,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy.name == "policy_transformer"
     assert policy.dtype_policy.name == "float64"
     assert policy.patch_embedder.name.startswith("policy/")
-    assert policy(inputs, training=False).dtype == tf.float32
+    assert policy(inputs, training=False).dtype == tf.float64
     policy_config = policy.get_config()
     assert policy_config["name_prefix"] == "policy/"
     assert policy_config["name"] == policy.name

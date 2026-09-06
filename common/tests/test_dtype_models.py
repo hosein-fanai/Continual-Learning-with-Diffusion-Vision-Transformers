@@ -533,6 +533,51 @@ class DtypeModelTests(unittest.TestCase):
                     self.assertEqual(float(result["recon_loss"]), 90_000.)
                     self.assertTrue(np.isfinite(float(result["loss"])))
 
+    def test_diffusion_mixed_precision_losses_avoid_overflow(self) -> None:
+        """Preserve large finite denoising errors and masked teacher gradients.
+
+        Returns:
+            None: MSE is 90,000, excluded rows have zero gradient, and teacher
+            targets remain detached even when the inputs use float16.
+        """
+
+        configure_runtime(29, "mixed_float16")
+        model = DiffusionClassifier(
+            network=_make_dit_network(), use_ema=False,
+            test_network_name="raw", test_steps=2, seed=29,
+        )
+        model.compile(optimizer="adam", loss="mse", run_eagerly=True)
+        zeros = tf.zeros((2, 4, 4, 1), dtype=tf.float16)
+        prediction = tf.Variable(tf.fill((2, 4, 4, 1), tf.constant(300., tf.float16)))
+        teacher = tf.Variable(zeros)
+        with tf.GradientTape(persistent=True) as tape:
+            kd = model.compute_distil_noise_loss(
+                teacher, prediction, tf.constant([1., 0.], dtype=tf.float16),
+            )
+        self.assertEqual(float(kd), 90_000.)
+        gradient = tape.gradient(kd, prediction).numpy()
+        np.testing.assert_allclose(gradient[0], 600. / 16.)
+        np.testing.assert_array_equal(gradient[1], 0.)
+        self.assertIsNone(tape.gradient(kd, teacher))
+        self.assertEqual(float(model.compute_distil_noise_loss(
+            teacher, prediction, tf.zeros((2,), dtype=tf.float16),
+        )), 0.)
+
+        model.use_noise_distil_loss = False
+        model.use_kl_loss = False
+        model.use_ctr_loss = False
+        result = model.compute_noise_distil_image_kl_ctr_loss(
+            zeros, zeros, tf.constant([0, 1]), prediction, prediction, [], [],
+            use_image_loss=True,
+        )
+        self.assertEqual(float(result[1]), 90_000.)
+        self.assertEqual(float(result[5]), 90_000.)
+        conditional, unconditional = model.compute_separate_noise_losses(
+            zeros, prediction, tf.constant([1, 0]),
+        )
+        self.assertEqual(float(conditional), 90_000.)
+        self.assertEqual(float(unconditional), 90_000.)
+
     def test_vae_automatic_stopping_follows_monitor_direction(self) -> None:
         """Restore lower loss values and higher accuracy values by default.
 

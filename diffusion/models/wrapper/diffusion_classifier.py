@@ -19,7 +19,7 @@ import numpy as np
 
 from math import ceil
 
-from typing import get_args, Literal
+from typing import Callable, get_args, Literal
 
 from . import NetworkName, TrainType
 
@@ -1485,7 +1485,9 @@ class DiffusionClassifier(DiffusionModel):
             "old_classes", 
             "replay_only", 
             "current_and_replay"
-        ] | None = None
+        ] | None = None, 
+        kd_loss_allocator: Callable | None = None, 
+        x0: tf.Tensor | None = None
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Compute hard-label CE or soft-label KL distillation loss.
 
@@ -1527,6 +1529,11 @@ class DiffusionClassifier(DiffusionModel):
                 classes and uses the original teacher width; replay_only needs explicit
                 replay_mask; current_and_replay adds no extra row filter.
                 Defaults to ``None``.
+            kd_loss_allocator (Callable | None): Optional runtime independent-head
+                KD reducer. Receives this wrapper, the unchanged per-example KD,
+                its final eligibility mask, clean x0, classes, and replay provenance.
+                The aggregation method supplies it only during training.
+            x0 (tf.Tensor | None): Clean normalized images for an optional reducer.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Scalar unweighted distillation loss
@@ -1665,9 +1672,16 @@ class DiffusionClassifier(DiffusionModel):
             scope_mask = tf.cast(scope_mask, stable_dtype)
             # Use the KD scope alone or intersect it multiplicatively with existing classifier
             # weights.
-            clf_distil_loss_mask = scope_mask \
-                                if clf_distil_loss_mask is None \
+            clf_distil_loss_mask = scope_mask if clf_distil_loss_mask is None \
                                 else clf_distil_loss_mask * scope_mask
+
+        # A dedicated runtime reducer can change independent KD allocation only.
+        if kd_loss_allocator is not None:
+            return kd_loss_allocator(
+                self, clf_distil_loss, 
+                clf_distil_loss_mask, 
+                x0, classes, replay_mask
+            ), distil_classes
 
         # Normalize by selected exposure when masked; otherwise average the complete batch.
         clf_distil_loss = tf.math.divide_no_nan(
@@ -1872,11 +1886,17 @@ class DiffusionClassifier(DiffusionModel):
         # conditional or null branch used by primary classification.
         clf_distil_loss, distil_classes = self.compute_clf_distil_loss(
             teacher_labels, 
-            distil_classes_c if clf_train_type == "cond" \
+            distil_classes_c if clf_train_type == "cond" 
             else distil_classes_u, 
             clf_distil_loss_mask=clf_loss_mask, 
             classes=classes, 
-            replay_mask=replay_mask
+            replay_mask=replay_mask, 
+            kd_loss_allocator=getattr(
+                self, 
+                "_classifier_kd_allocator", 
+                None
+            ) if training is True else None, 
+            x0=x0
         ) if self.use_clf_distil_loss else (0., None)
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)

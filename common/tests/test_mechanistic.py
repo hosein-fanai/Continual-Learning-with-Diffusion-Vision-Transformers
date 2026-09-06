@@ -17,7 +17,7 @@ import unittest
 import numpy as np
 
 from common.mechanistic import (
-    calibration_metrics, replay_quality_metrics, select_replay_candidates,
+    calibration_metrics, linear_cka, replay_quality_metrics, select_replay_candidates,
 )
 
 
@@ -116,6 +116,40 @@ class MechanisticLabelTests(unittest.TestCase):
         result = calibration_metrics(np.ones((2, 1)), np.ones((2, 1)))
         self.assertEqual(result["accuracy"], 1.)
         self.assertEqual(result["nll"], 0.)
+
+    def test_invalid_metric_labels_and_calibration_settings_fail(self) -> None:
+        """Reject ambiguous identities and undefined calibration partitions."""
+
+        for labels in ([.75], [True], [2 ** 63], [-1], [[1., 0., 0.]]):
+            with self.subTest(labels=labels), self.assertRaises(ValueError):
+                calibration_metrics([[.9, .1]], labels)
+        for settings in ({"bins": 2.5}, {"bins": True}, {"bins": 0},
+                         {"epsilon": float("nan")}, {"epsilon": float("inf")},
+                         {"epsilon": 1.1}, {"epsilon": 0.}):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                calibration_metrics([[.9, .1]], [0], **settings)
+        largest_id = np.asarray([np.iinfo(np.int64).max], dtype="int64")
+        _, retained, _ = select_replay_candidates([[1.]], largest_id, 1)
+        np.testing.assert_array_equal(retained, largest_id)
+
+    def test_cka_preserves_scale_and_orthogonal_invariance(self) -> None:
+        """Both CKA algorithms agree with centered Gram alignment at extreme scales."""
+
+        rng = np.random.default_rng(7)
+        for width in (3, 12):
+            x, y = rng.normal(size=(8, width)), rng.normal(size=(8, width))
+            rotation, _ = np.linalg.qr(rng.normal(size=(width, width)))
+            centered_x, centered_y = x - x.mean(axis=0), y - y.mean(axis=0)
+            gram_x, gram_y = centered_x @ centered_x.T, centered_y @ centered_y.T
+            expected = np.sum(gram_x * gram_y) / (np.linalg.norm(gram_x) * np.linalg.norm(gram_y))
+            for scale_x, scale_y in ((1., 1.), (1e100, 1e-100), (1e-100, 1e100)):
+                with self.subTest(width=width, scales=(scale_x, scale_y)):
+                    self.assertAlmostEqual(linear_cka(x * scale_x, (y @ rotation) * scale_y), expected, places=12)
+            self.assertAlmostEqual(linear_cka(x, x @ rotation + 7.), 1., places=12)
+        self.assertTrue(np.isnan(linear_cka(np.ones((3, 2)), np.ones((3, 2)))))
+        for invalid in (np.empty((3, 0)), np.full((3, 2), np.nan), np.full((3, 2), np.inf)):
+            with self.subTest(shape=invalid.shape), self.assertRaises(ValueError):
+                linear_cka(invalid, np.ones((3, 2)))
 
 
 # Run this module's tests when executed directly.

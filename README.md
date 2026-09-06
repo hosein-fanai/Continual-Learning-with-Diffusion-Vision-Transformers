@@ -459,12 +459,15 @@ see
 - [`notebooks/`](notebooks/README.md): exploratory, archived, and HPO experiments.
 - [`results/`](results/README.md): generated run artifacts and reports.
 - [`gifs/`](gifs/README.md): retained example animations.
-- [`others/`](others/README.md): conceptual reference material.
+- [`others/`](others/research-grade-continual-learning.md): research protocol and conceptual reference material.
+- [`semantic_consolidation/`](semantic_consolidation/README.md): semantic modulation experiments.
+- [`gist_memory/`](gist_memory/README.md): byte-budgeted gist and detail memory experiments.
+- [`allocation_study/`](allocation_study/README.md): paired allocation studies and experimental analysis.
 
-Every source subdirectory has its own API README. Every Python class, method,
-and function documents its accepted input types, output types, tensor shapes,
-state changes, valid modes, and constrained dictionary/keyword forms in its
-docstring.
+Maintained Python sources require module, class, and callable docstrings,
+parameter and return annotations, and comments explaining conditional branches.
+The source checker enforces their presence; numerical and protocol regressions
+check behavior separately.
 
 ## Validation
 
@@ -485,7 +488,14 @@ Run the orchestration, HPO, recovery, and continual-learning regressions too:
 
 ```powershell
 conda run -n tf_env python -m unittest discover -s common/tests -t .
+conda run -n tf_env python -m unittest discover -s allocation_study/tests
+conda run -n tf_env python -m unittest discover -s gist_memory/tests
+conda run -n tf_env python -m unittest discover -s semantic_consolidation/tests
 ```
 
 See [the thesis code review](THESIS_CODE_REVIEW.md) for the reviewed scope,
 scientific interpretation, fixes, verification, and remaining experimental work.
+The [September 6 project review](allocation_study/PROJECT_REVIEW.md) records the
+subsequent audit of the research modules and shared numerical corrections.
+The [thesis readiness audit](allocation_study/THESIS_READINESS.md) records the
+end-to-end follow-up, current execution boundaries, and experiment/evidence runbook.

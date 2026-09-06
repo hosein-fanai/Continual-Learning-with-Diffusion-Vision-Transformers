@@ -6,7 +6,6 @@ mask only to the first self-attention branch, then cross-attention and the MLP.
 """
 
 import tensorflow as tf
-from tensorflow.keras import layers
 
 from typing import Any
 
@@ -14,6 +13,7 @@ from common.runtime import derive_seed
 
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.drop_path import DropPath
+from diffusion.layers.policy_multi_head_attention import PolicyMultiHeadAttention
 
 
 class DiTDecoderBlock(VisionTransformerBlock):
@@ -79,7 +79,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             gate_dim=self.query_dim, 
             name=f"{self.name}/mha_layer_norm_2"
         )
-        self.mha2 = layers.MultiHeadAttention(
+        self.mha2 = PolicyMultiHeadAttention(
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 

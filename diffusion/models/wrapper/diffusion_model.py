@@ -2897,7 +2897,10 @@ class DiffusionModel(ArgumentSaverModel):
             cond_mask = tf.ones_like(cond_labels, dtype=tf.bool)
 
         uncond_mask = tf.logical_not(cond_mask)
-        noises_pred = tf.stop_gradient(noises_pred)
+        # Promote before the compiled loss squares or reduces mixed-precision values.
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        noises = tf.cast(noises, stable_dtype)
+        noises_pred = tf.stop_gradient(tf.cast(noises_pred, stable_dtype))
 
         cond_has_rows = tf.reduce_any(cond_mask)
         cond_noise_loss = self.compiled_loss(
@@ -2950,6 +2953,10 @@ class DiffusionModel(ArgumentSaverModel):
             multiplied by noise_distil_loss_coef here.
         """
 
+        # Compute squared errors and exposure weights in the stable policy dtype.
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        teacher_noises_pred = tf.cast(teacher_noises_pred, stable_dtype)
+        noises_pred = tf.cast(noises_pred, stable_dtype)
         noise_distil_sample_weight = None
 
         # Normalize a teacher mask by selected exposure so absent teacher classes do not dilute the
@@ -3099,6 +3106,12 @@ class DiffusionModel(ArgumentSaverModel):
         # Use the configured image objective unless the caller explicitly enables or disables it.
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
 
+        # Casting a reduced float16 loss cannot recover overflow in squared errors.
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        noises = tf.cast(noises, stable_dtype)
+        noises_pred = tf.cast(noises_pred, stable_dtype)
+        x0 = tf.cast(x0, stable_dtype)
+        x0_pred = tf.cast(x0_pred, stable_dtype)
         noise_loss = self.compiled_loss(
             noises, 
             noises_pred

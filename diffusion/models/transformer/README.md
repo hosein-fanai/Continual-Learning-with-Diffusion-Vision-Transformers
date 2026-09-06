@@ -7,6 +7,12 @@ sample forward noise, optimize losses, maintain EMA weights, or run reverse
 sampling. Those responsibilities belong to the sibling
 [`wrapper`](../wrapper/README.md) package.
 
+The configured numerical policy is passed to child layers, so restoring a
+`float64` or mixed-precision model does not depend on the current global policy.
+`PolicyMultiHeadAttention` retains standard Keras attention equations and weight
+names while correcting TensorFlow 2.10's omission of dtype in its internal
+projection and normalization factories.
+
 ## Public classes
 
 - `DiffusionTransformer`: configurable patch-based denoising transformer.

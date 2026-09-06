@@ -85,6 +85,9 @@ an independent, uncompiled architecture. Architecture config deliberately does
 not carry learned weights, optimizer slots/iterations, or compile arguments;
 use normal model/weight persistence for learned state and compile a direct clone
 explicitly.
+Observed conditional `seen_classes` IDs are retained as replay metadata, so full
+model loading preserves the default `generate(classes=None)` class set. Older
+artifacts without this metadata require explicit generation class IDs.
 
 The three package-level exports are lazy and cached: `from autoencoder import
 VariationalAutoencoder`, `VAEClassifier`, and `DecoderAccuracyCallback` retain
@@ -115,6 +118,11 @@ Automatic early stopping minimizes loss monitors and maximizes accuracy monitors
 For a custom metric with another direction, supply an explicit callback list.
 Reconstruction losses are computed in the policy's variable dtype before
 reduction, so mixed-float16 training avoids half-precision squared-error overflow.
+Optional sample weights are relative, finite, nonnegative row weights normalized
+to mean one within each batch. Rescaling them therefore preserves the balance of
+reconstruction, KL and classification; an all-zero mask gives zero data losses.
+Loss trackers summarize batch objectives using batch size. Keras regularization
+penalties remain independent of the row mask.
 
 VAE HPO evaluates its default `generation_loss` using held-out reconstruction
 `mean_squared_error`, with fixed preprocessing within each study. This keeps

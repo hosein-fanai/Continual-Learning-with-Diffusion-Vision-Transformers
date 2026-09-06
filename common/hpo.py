@@ -74,9 +74,9 @@ _DIFFUSION_HPO_MODELS = _DIFFUSION_MODELS | {
 _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
     _DIFFUSION_CLASSIFIER_STUDY
 }
-# Version 11 compares VAE and input-reconstruction trials with fixed MSE scores
-# rather than losses containing sampled regularization coefficients.
-SEARCH_SPACE_VERSION = 11
+# Version 12 restricts replay selectors to executable model families and removes
+# inactive reservoir insertion and replay-free reverse-sampling dimensions.
+SEARCH_SPACE_VERSION = 12
 
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
@@ -243,9 +243,9 @@ _CONTINUAL_NOTE = {
 }
 _CONTINUAL_DIFFUSION_NOTE = {
     **_CONTINUAL_NOTE,
-    "test_steps": "20, 50, or 100 up to timesteps",
-    "test_cfg_scale": "uniform 2.5 to 5",
-    "test_eta": "0 or 1",
+    "test_steps": "generated replay only: 20, 50, or 100 up to timesteps",
+    "test_cfg_scale": "generated replay only: uniform 2.5 to 5",
+    "test_eta": "generated replay only: 0 or 1",
 }
 _CONTINUAL_CLASSIFIER_NOTE = {
     "protocol": (
@@ -255,7 +255,7 @@ _CONTINUAL_CLASSIFIER_NOTE = {
     "task_size": "one or more classes per task; at least two tasks required",
     "reservoir_capacity": "2500, 5000, or 10000 rows",
     "reservoir_sample_count": "500, 1000, or 2500 rows",
-    "reservoir_insert_count": "500 or 1000 rows",
+    "reservoir_insertion": "all exposed current rows; Algorithm R",
     "objective": "maximize validation class-incremental accuracy",
 }
 _CONTINUAL_DIFFUSION_CLASSIFIER_NOTE = {
@@ -320,7 +320,7 @@ SEARCH_SPACES = {
         "vae_classifier": {
             **_VAE, 
             "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)", 
-            "objective": "Pareto minimize beta-VAE loss / maximize accuracy"
+            "objective": "Pareto minimize validation reconstruction MSE / maximize accuracy"
         }
     },
     "classification": {
@@ -543,14 +543,18 @@ class _TrialView:
 
         Raises:
             ValueError: If replacement choices are empty, contain forbidden template
-                values, or violate a parameter's allowed count/timestep range.
-            TypeError: If a count override cannot be converted to an integer.
+                values, or violate a parameter's integer count/timestep contract.
         """
         override = self._override(name)
         default_choices = list(choices)
         # Read categorical choices from a structured override mapping.
         if isinstance(override, Mapping):
-            choices = override.get("choices", choices)
+            # Reject numeric or misspelled mappings instead of silently retaining defaults.
+            if set(override) != {"choices"}:
+                raise ValueError(
+                    f"Categorical search override {name!r} requires only 'choices'."
+                )
+            choices = override["choices"]
         # Treat a direct override value as the replacement choice set.
         elif override is not None:
             choices = override
@@ -571,7 +575,6 @@ class _TrialView:
             "replay_current_examples",
             "replay_candidate_multiplier",
             "replay_buffer_capacity",
-            "replay_buffer_insert_count",
             "replay_buffer_sample_count",
             "train_num",
         }
@@ -582,6 +585,13 @@ class _TrialView:
                 1 if name in ("batch_size", "replay_candidate_multiplier")
                 else 0
             )
+            # Counts must be integers as supplied, without fractional or boolean coercion.
+            if any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                for value in choices
+            ):
+                raise ValueError(f"Search override {name!r} requires integer counts.")
             choices = [int(value) for value in choices]
             # Reject counts outside their allowed range, including an empty training pool.
             if any(
@@ -595,6 +605,13 @@ class _TrialView:
         # Allow custom sampling step counts within the selected diffusion horizon.
         elif override is not None and re.fullmatch(r"test_steps_t\d+", name):
             timesteps = int(name.rsplit("t", 1)[1])
+            # Reverse-step counts are discrete and cannot be truncated from floats.
+            if any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                for value in choices
+            ):
+                raise ValueError("test_steps overrides require integer counts.")
             choices = [int(value) for value in choices]
             # Reject reverse-process step counts outside [1, timesteps].
             if any(
@@ -615,6 +632,34 @@ class _TrialView:
         return self._trial.suggest_categorical(
             self._name(name), choices
         )
+
+    def _numeric_override(self, name: str) -> Mapping[str, object]:
+        """Validate the schema of an applied numeric sampling override.
+
+        Args:
+            name (str): Local suggestion name resolved with the usual precedence.
+
+        Returns:
+            Mapping[str, object]: Supplied bound controls, or an empty mapping.
+
+        Raises:
+            ValueError: If a supplied override has an invalid schema or log flag.
+        """
+        override = self._override(name)
+        # An absent override preserves the declared numerical distribution.
+        if override is None:
+            return {}
+        # Reject ignored scalar, categorical, empty, or misspelled controls.
+        if not isinstance(override, Mapping) or not override or (
+            set(override) - {"low", "high", "step", "log"}
+        ):
+            raise ValueError(
+                f"Numeric search override {name!r} requires low/high/step/log controls."
+            )
+        # YAML strings such as 'false' must not invert the requested sampling scale.
+        if "log" in override and not isinstance(override["log"], (bool, np.bool_)):
+            raise ValueError(f"Search override {name!r} log must be boolean.")
+        return override
 
     def suggest_float(
         self,
@@ -639,19 +684,29 @@ class _TrialView:
 
         Returns:
             float: The underlying trial's sampled float. Mapping overrides replace
-            low, high, step, and log independently; nonmapping overrides are ignored.
+            low, high, step, and log independently; invalid schemas are rejected.
 
         Raises:
             ValueError: If numeric conversion or Optuna's range/grid validation fails.
             TypeError: If an overridden bound cannot be converted to a float.
         """
-        override = self._override(name)
+        override = self._numeric_override(name)
         # Apply explicit numeric bounds and sampling options from a float override.
-        if isinstance(override, Mapping):
+        if override:
             low = float(override.get("low", low))
             high = float(override.get("high", high))
             step = override.get("step", step)
             log = bool(override.get("log", log))
+        # Reject nonfinite distributions before asking even a custom sampler to run.
+        if not math.isfinite(low) or not math.isfinite(high) or (
+            step is not None and not math.isfinite(step)
+        ):
+            raise ValueError(f"Search override {name!r} requires finite bounds and step.")
+        # Apply Optuna's interval constraints before invoking the wrapped sampler.
+        if low > high or (step is not None and step <= 0) or (
+            log and (low <= 0 or step is not None)
+        ):
+            raise ValueError(f"Search override {name!r} has an invalid range or sampling grid.")
         return self._trial.suggest_float(
             self._name(name), low, high, step=step, log=log
         )
@@ -679,19 +734,30 @@ class _TrialView:
 
         Returns:
             int: The underlying trial's sampled integer. Mapping overrides replace
-            low, high, step, and log independently; nonmapping overrides are ignored.
+            low, high, step, and log independently; invalid schemas are rejected.
 
         Raises:
             ValueError: If conversion or Optuna's range/grid validation fails.
             TypeError: If an overridden numeric setting cannot be converted to int.
         """
-        override = self._override(name)
+        override = self._numeric_override(name)
         # Apply explicit numeric bounds and sampling options from an integer override.
-        if isinstance(override, Mapping):
+        if override:
+            # Keep discrete bounds exact instead of truncating fractions or booleans.
+            if any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                for key, value in override.items()
+                if key != "log"
+            ):
+                raise ValueError(f"Search override {name!r} requires integer bounds and step.")
             low = int(override.get("low", low))
             high = int(override.get("high", high))
             step = int(override.get("step", step))
             log = bool(override.get("log", log))
+        # Integer log sampling requires positive bounds and an unquantized unit grid.
+        if low > high or step < 1 or (log and (low <= 0 or step != 1)):
+            raise ValueError(f"Search override {name!r} has an invalid range or sampling grid.")
         return self._trial.suggest_int(
             self._name(name), low, high, step=step, log=log
         )
@@ -2971,7 +3037,7 @@ def _build_trial_config(
             generation_loss plus classification_accuracy (ensemble_accuracy when enabled);
             classification validation_accuracy; or continual final_average_accuracy.
             Continual names must exist exactly in validation_continual_metrics, for example
-            final_average_accuracy, average_incremental_accuracy, forgetting, or
+            final_average_accuracy, average_incremental_accuracy, average_forgetting, or
             backward_transfer. Defaults to ``None``.
         objective_directions (str | Sequence[str] | None): One 'minimize'/'maximize' string
             or an ordered sequence matching the metric count. None infers directions by
@@ -3196,6 +3262,46 @@ def _build_trial_config(
         if "patience" in fit_kwargs:
             progressive_fields["progressive_patience"] = fit_kwargs.pop("patience")
 
+    continual_strategy = "generative_replay"
+    use_generative_replay = True
+    remove_prev_classes = True
+    clf_distil_scope = "current_and_replay"
+    # Search a continual replay strategy for diffusion classifiers.
+    if task == "continual" and model_name in _DIFFUSION_CLASSIFIER_MODELS:
+        singleton_first = len(resolved_task_groups[0]) == 1
+        # Give singleton-first and multiclass-first strategies separate Optuna distributions.
+        strategy_parameter = "continual_strategy_singleton" \
+            if singleton_first else "continual_strategy_multiclass"
+        continual_strategy = trial.suggest_categorical(
+            strategy_parameter,
+            # Exclude new-only training for singleton starts; allow it for multiclass starts.
+            ["generative_replay", "cumulative"] if singleton_first else [
+                "generative_replay", "new_only", "cumulative"
+            ],
+        )
+        use_generative_replay = continual_strategy == "generative_replay"
+        remove_prev_classes = continual_strategy != "cumulative"
+        # Search teacher example scope only when distillation is enabled.
+        if use_distillation:
+            scope_choices = {
+                "generative_replay": [
+                    "old_classes", "replay_only", "current_and_replay"
+                ],
+                "cumulative": ["old_classes", "current_and_replay"],
+                "new_only": ["current_and_replay"],
+            }[continual_strategy]
+            clf_distil_scope = trial.suggest_categorical(
+                "clf_distil_scope_" + continual_strategy,
+                scope_choices,
+            )
+        set_user_attr = getattr(trial, "set_user_attr", None)
+        # Record the resolved replay strategy when trial attributes are supported.
+        if callable(set_user_attr):
+            set_user_attr("continual_strategy", continual_strategy)
+            # Record the teacher scope only for a distillation trial.
+            if use_distillation:
+                set_user_attr("clf_distil_scope", clf_distil_scope)
+
     _, image_shape, _ = get_dataset_spec(dataset_name)
     image_size = image_shape[0]
     optimization = _suggest_optimizer(
@@ -3241,7 +3347,10 @@ def _build_trial_config(
     if model_name.startswith("dit") or model_name == "diffusion_transformer":
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
             trial,
-            tune_sampling=task == "continual" and not swap_noise_image,
+            tune_sampling=(
+                task == "continual" and use_generative_replay
+                and not swap_noise_image
+            ),
             swap_noise_image=swap_noise_image,
             fixed_kl_loss_coef=fixed_kl_loss_coef,
         )
@@ -3260,7 +3369,10 @@ def _build_trial_config(
     elif model_name in ("unet", "unet_classifier"):
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
             trial,
-            tune_sampling=task == "continual" and not swap_noise_image,
+            tune_sampling=(
+                task == "continual" and use_generative_replay
+                and not swap_noise_image
+            ),
             swap_noise_image=swap_noise_image,
             fixed_kl_loss_coef=fixed_kl_loss_coef,
         )
@@ -3299,46 +3411,6 @@ def _build_trial_config(
         # Preserve raw image scale for pretrained preprocessing layers.
         elif model_name == "pretrained":
             preprocess = None
-
-    continual_strategy = "generative_replay"
-    use_generative_replay = True
-    remove_prev_classes = True
-    clf_distil_scope = "current_and_replay"
-    # Search a continual replay strategy for diffusion classifiers.
-    if task == "continual" and model_name in _DIFFUSION_CLASSIFIER_MODELS:
-        singleton_first = len(resolved_task_groups[0]) == 1
-        # Give singleton-first and multiclass-first strategies separate Optuna distributions.
-        strategy_parameter = "continual_strategy_singleton" \
-            if singleton_first else "continual_strategy_multiclass"
-        continual_strategy = trial.suggest_categorical(
-            strategy_parameter,
-            # Exclude new-only training for singleton starts; allow it for multiclass starts.
-            ["generative_replay", "cumulative"] if singleton_first else [
-                "generative_replay", "new_only", "cumulative"
-            ],
-        )
-        use_generative_replay = continual_strategy == "generative_replay"
-        remove_prev_classes = continual_strategy != "cumulative"
-        # Search teacher example scope only when distillation is enabled.
-        if use_distillation:
-            scope_choices = {
-                "generative_replay": [
-                    "old_classes", "replay_only", "current_and_replay"
-                ],
-                "cumulative": ["old_classes", "current_and_replay"],
-                "new_only": ["current_and_replay"],
-            }[continual_strategy]
-            clf_distil_scope = trial.suggest_categorical(
-                "clf_distil_scope_" + continual_strategy,
-                scope_choices,
-            )
-        set_user_attr = getattr(trial, "set_user_attr", None)
-        # Record the resolved replay strategy when trial attributes are supported.
-        if callable(set_user_attr):
-            set_user_attr("continual_strategy", continual_strategy)
-            # Record the teacher scope only for a distillation trial.
-            if use_distillation:
-                set_user_attr("clf_distil_scope", clf_distil_scope)
 
     # Configure optional noise distillation for a diffusion student.
     if use_distillation and model_name in _DIFFUSION_MODELS:
@@ -3451,11 +3523,14 @@ def _build_trial_config(
                     "replay_current_examples",
                     [100, 500, 1_000, 2_500, 5_000],
                 )
+            replay_choices = ["all", "uniform"]
+            # Scored selection requires the diffusion classifier teacher's outputs.
+            if model_name in _DIFFUSION_CLASSIFIER_MODELS:
+                replay_choices.extend([
+                    "confidence", "surprise", "confidence_surprise",
+                ])
             replay_selection = trial.suggest_categorical(
-                "replay_selection", [
-                    "all", "uniform", "confidence", "surprise",
-                    "confidence_surprise",
-                ]
+                "replay_selection", replay_choices
             )
             # Search an enlarged candidate pool when a selection rule filters replay.
             if replay_selection != "all":
@@ -3524,21 +3599,26 @@ def _build_trial_config(
             if callable(set_user_attr):
                 set_user_attr("continual_protocol", protocol)
             continual_kwargs["baseline"] = protocol
-            # Tune buffer capacity, sampling, and insertion for reservoir replay.
+            # Tune capacity and retrieval; Algorithm R observes every current row.
             if protocol == "reservoir_er":
+                # Insertion subsampling is deliberately inactive for this named baseline.
+                if search_space_overrides and any(
+                    key.rsplit(".", 1)[-1] == "replay_buffer_insert_count"
+                    for key in search_space_overrides
+                ):
+                    raise ValueError(
+                        "replay_buffer_insert_count is inactive for reservoir_er: "
+                        "Algorithm R inserts every exposed current row."
+                    )
                 replay_capacity = trial.suggest_categorical(
                     "replay_buffer_capacity", [2_500, 5_000, 10_000]
                 )
                 replay_sample_count = trial.suggest_categorical(
                     "replay_buffer_sample_count", [500, 1_000, 2_500]
                 )
-                replay_insert_count = trial.suggest_categorical(
-                    "replay_buffer_insert_count", [500, 1_000]
-                )
                 continual_kwargs["buffer_kwargs"] = {
                     "maxlen": replay_capacity,
                     "sample_num": replay_sample_count,
-                    "insert_num": replay_insert_count,
                     "strategy": "reservoir",
                 }
 
@@ -4174,7 +4254,7 @@ def run_hpo(
             generation_loss plus classification_accuracy (ensemble_accuracy when enabled);
             classification validation_accuracy; or continual final_average_accuracy.
             Continual names must exist exactly in validation_continual_metrics, for example
-            final_average_accuracy, average_incremental_accuracy, forgetting, or
+            final_average_accuracy, average_incremental_accuracy, average_forgetting, or
             backward_transfer. Defaults to ``None``.
         objective_directions (str | Sequence[str] | None): One 'minimize'/'maximize' string
             or an ordered sequence matching the metric count. None infers directions by
@@ -4245,7 +4325,7 @@ def run_hpo(
         To keep a distilled continual study on V2 while optimizing two metrics
         from one ensemble matrix, use task='continual', model_name='dit_classifier',
         use_distillation=True, use_ensemble_accuracy=True,
-        objective_metrics=['final_average_accuracy', 'forgetting'], and
+        objective_metrics=['final_average_accuracy', 'average_forgetting'], and
         search_space_overrides={'wrapper_name': ['diffusion_classifier_v2']}.
         Directions infer to maximize accuracy and minimize forgetting. The saved
         trial YAML includes both HPO objective metadata and continual ensemble/KD
@@ -4277,9 +4357,21 @@ def run_hpo(
             "Optuna is required for HPO. "
             "Install the project requirements."
         ) from error
-    # Reject a study budget that would perform no training epochs.
-    if epochs <= 0:
-        raise ValueError("epochs must be positive.")
+    # Reject truncated or empty budgets before writing study artifacts.
+    for name, value, minimum in (
+        ("epochs", epochs, 1), ("n_trials", n_trials, 1),
+        ("n_startup_trials", n_startup_trials, 0), ("seed", seed, 0),
+    ):
+        # Study identity and Optuna/Keras seeds require exact integer controls.
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) \
+        or value < minimum or (name == "seed" and value >= 2**32):
+            raise ValueError(f"{name} must be an integer >= {minimum}; seed must be below 2**32.")
+    # A finite positive timeout is the only meaningful optional wall-time budget.
+    if timeout is not None and (
+        isinstance(timeout, (bool, np.bool_))
+        or not math.isfinite(timeout) or timeout <= 0
+    ):
+        raise ValueError("timeout must be finite and positive.")
 
     model_name = model_name.lower()
     fit_kwargs = dict(fit_kwargs or {})

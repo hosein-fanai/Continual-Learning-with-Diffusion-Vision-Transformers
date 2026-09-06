@@ -334,7 +334,7 @@ HPO evaluation. Trial `input_config.yaml` files use the ordinary Config APIs
 and can be loaded with `load_config` and executed with `main`. An undefined
 NaN objective fails its Optuna trial and allows subsequent trials to continue.
 
-Checkpoint descriptor schema 4 and HPO search version 10 distinguish these
+Checkpoint descriptor schema 4 and HPO search version 12 distinguish these
 class-growth and scoring semantics from earlier runs. Start a new study for
 older artifacts; their scores must not be mixed into the corrected protocol.
 

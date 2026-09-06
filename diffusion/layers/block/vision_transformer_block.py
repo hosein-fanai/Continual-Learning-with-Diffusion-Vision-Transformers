@@ -15,6 +15,7 @@ from common.runtime import derive_seed
 
 from diffusion.layers.base_layer import BaseLayer
 from diffusion.layers.drop_path import DropPath
+from diffusion.layers.policy_multi_head_attention import PolicyMultiHeadAttention
 
 
 class VisionTransformerBlock(BaseLayer):
@@ -183,7 +184,7 @@ class VisionTransformerBlock(BaseLayer):
         )
         # Use query-width gates and attention outputs when enabled; otherwise retain the
         # input width.
-        self.mha = layers.MultiHeadAttention(
+        self.mha = PolicyMultiHeadAttention(
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 

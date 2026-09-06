@@ -44,6 +44,7 @@ import statistics
 from pathlib import Path
 
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 
 EXPERIMENT_SCHEMA_VERSION = 2
 """Version of the paired-block experiment manifest schema."""
@@ -63,6 +64,24 @@ LONG_RESULT_FIELDS = (
 _PHASES = frozenset(("development", "confirmation"))
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INDEPENDENT_UNIT = "continual_stream_block"
+
+
+def _validated_seed(value: object) -> int:
+    """Preserve an exact seed usable by the shared NumPy/TensorFlow runtime.
+
+    Args:
+        value (object): Experiment randomization seed or resolved stream seed.
+
+    Returns:
+        int: The unchanged integer identity in the range [0, 2**32).
+
+    Raises:
+        ValueError: If a seed is boolean, fractional, textual, or outside that range.
+    """
+    # Truncation would seal an experiment different from the requested seed.
+    if isinstance(value, bool) or not isinstance(value, Integral) or not 0 <= value < 2**32:
+        raise ValueError("Experiment and stream seeds must be integers in [0, 2**32).")
+    return int(value)
 
 
 def _canonical_json(value: object) -> str:
@@ -301,7 +320,8 @@ def _normalize_stream(
         index (int): One-based stream position used to default the block ID to
             ``block-XXXX`` when no ID is supplied.
         experiment_seed (int): Parent seed used with the resolved block ID to derive
-            a missing stream seed. An explicit stream_seed is normalized with int.
+            a missing stream seed. An explicit stream_seed must be an integer in
+            [0, 2**32), matching the shared training runtime.
 
     Returns:
         tuple[str, dict[str, object]]: ``(block_id, normalized_stream)``. The stream
@@ -354,7 +374,7 @@ def _normalize_stream(
     if "stream_seed" not in copied:
         copied["stream_seed"] = _derive_stream_seed(experiment_seed, block_id)
 
-    copied["stream_seed"] = int(copied["stream_seed"])
+    copied["stream_seed"] = _validated_seed(copied["stream_seed"])
 
     return block_id, copied
 
@@ -401,7 +421,7 @@ def create_paired_block_manifest(
             resolved stream specifications containing class_order and task_groups.
             Block IDs and canonical stream specifications must be unique. Tasks
             within a stream do not count as independent blocks.
-        seed (int): Experiment randomization seed, normalized with int. It controls
+        seed (int): Experiment randomization seed in [0, 2**32). It controls
             condition execution order and supplies missing per-stream seeds.
         phase (str): Experiment phase. Default ``"development"`` allows exploratory
             analysis; ``"confirmation"`` sets the frozen flag. Other values fail.
@@ -425,7 +445,7 @@ def create_paired_block_manifest(
             contrast, or stream uniqueness is invalid.
         TypeError: If inputs have unsupported mapping/sequence/JSON types."""
 
-    seed = int(seed)
+    seed = _validated_seed(seed)
 
     # Keep exploratory development distinct from confirmatory testing.
     if phase not in _PHASES:
@@ -583,7 +603,7 @@ def validate_experiment_manifest(
     }:
         raise ValueError("Manifest spec has unexpected fields.")
 
-    seed = int(spec["randomization_seed"])
+    seed = _validated_seed(spec["randomization_seed"])
 
     # Make the independent replication level machine-readable.
     if spec["independent_unit"] != _INDEPENDENT_UNIT \

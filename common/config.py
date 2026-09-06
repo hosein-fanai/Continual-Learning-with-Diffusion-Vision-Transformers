@@ -21,6 +21,8 @@ import random
 
 import yaml
 
+from numbers import Integral
+
 from dataclasses import (
     MISSING, 
     Field, 
@@ -1567,6 +1569,37 @@ class DatasetConfig:
     shuffle_buffer: int = 10_000
     pad: int = 0
     trainset_len: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject ambiguous preprocessing and repeated or invalid class selections.
+
+        Returns:
+            None: Valid dataset settings are retained without relabeling.
+
+        Raises:
+            ValueError: If preprocessing is unknown or indices are not unique
+                nonnegative integer labels within the selected dataset's class range.
+        """
+        # A typo must not silently disable normalization in the dataset loader.
+        if self.preprocess not in (
+            None, "", "min-max", "normalize", "standardize", "diffusion",
+            "fixed-min-max", "fixed-standardize",
+        ):
+            raise ValueError(f"Unknown dataset preprocessing mode: {self.preprocess!r}.")
+        # Repeated class IDs duplicate original rows before validation splitting.
+        if self.indices is not None:
+            class_num = {"mnist": 10, "fmnist": 10, "cifar10": 10, "cifar100": 100}.get(
+                str(self.name).lower()
+            )
+            # Validate integer identity before using set equality or integer indexing.
+            if not isinstance(self.indices, (list, tuple)) or not self.indices or any(
+                isinstance(index, bool) or not isinstance(index, Integral)
+                or index < 0 or (class_num is not None and index >= class_num)
+                for index in self.indices
+            ) or len(set(self.indices)) != len(self.indices):
+                raise ValueError(
+                    "dataset.indices must contain unique in-range nonnegative integer labels."
+                )
 
 
 @dataclass

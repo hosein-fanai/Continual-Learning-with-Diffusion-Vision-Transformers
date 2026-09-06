@@ -31,7 +31,8 @@ def _label_ids(
         by argmax without checking their normalization.
 
     Raises:
-        ValueError: If labels are not rank one/two or contain nonfinite IDs.
+        ValueError: If labels are not rank one/two or sparse IDs are not finite,
+            nonnegative integers representable as int64.
     """
 
     values = np.asarray(labels)
@@ -44,7 +45,18 @@ def _label_ids(
 
     # Decode probability columns, including a known one-class one-hot target.
     if values.ndim == 2 and (values.shape[1] != 1 or class_num == 1):
+        # Encoded targets must name the same output vocabulary as the predictions.
+        if values.shape[1] == 0 or (class_num is not None and values.shape[1] != class_num):
+            raise ValueError("encoded labels must match the prediction class width.")
         values = np.argmax(values, axis=-1)
+
+    # Validate sparse identity before casting, which would truncate or wrap invalid IDs.
+    if values.dtype.kind not in "iuf" or np.any(values < 0):
+        raise ValueError("labels must contain nonnegative integer class IDs within int64.")
+    # Avoid signed/unsigned promotion to float, which rounds the largest valid int64.
+    if (values.dtype.kind == "u" and np.any(values > np.uint64(np.iinfo(np.int64).max))) \
+    or (values.dtype.kind == "f" and (np.any(values >= float(2 ** 63)) or np.any(values != np.floor(values)))):
+        raise ValueError("labels must contain nonnegative integer class IDs within int64.")
 
     return values.reshape(-1).astype("int64", copy=False)
 
@@ -102,8 +114,8 @@ def calibration_metrics(
             ground-truth labels.
         bins (int): Positive number of equal-width ECE bins.
             Defaults to ``15``.
-        epsilon (float): Positive lower probability bound used only inside
-            logarithms.
+        epsilon (float): Finite lower probability bound in ``(0, 1]`` used only
+            inside logarithms.
             Defaults to ``1e-12``.
 
     Returns:
@@ -117,11 +129,14 @@ def calibration_metrics(
     probs = _probability_matrix(probabilities)
     targets = _label_ids(labels, class_num=probs.shape[1])
 
+    # A bin count describes a discrete partition and must not be silently rounded.
+    if isinstance(bins, (bool, np.bool_)) or not isinstance(bins, (int, np.integer)):
+        raise ValueError("bins must be a positive integer.")
     bins = int(bins)
     epsilon = float(epsilon)
     # Keep ECE binning and logarithms mathematically defined.
-    if bins < 1 or epsilon <= 0.:
-        raise ValueError("bins and epsilon must be positive.")
+    if bins < 1 or not np.isfinite(epsilon) or not 0. < epsilon <= 1.:
+        raise ValueError("bins must be positive and epsilon must be finite in (0, 1].")
     # Require a nonempty one-to-one probability/target alignment.
     if len(probs) == 0 or len(targets) != len(probs):
         raise ValueError("probabilities and labels must be nonempty and aligned.")
@@ -175,7 +190,8 @@ def linear_cka(first: np.ndarray, second: np.ndarray) -> float:
         float: Linear CKA in ``[0, 1]`` or ``NaN`` for a constant representation.
 
     Raises:
-        ValueError: If fewer than two aligned samples are supplied.
+        ValueError: If fewer than two aligned samples, empty features, or
+            nonfinite representations are supplied.
     """
 
     x = np.asarray(first, dtype="float64")
@@ -187,6 +203,12 @@ def linear_cka(first: np.ndarray, second: np.ndarray) -> float:
 
     x = x.reshape((len(x), -1))
     y = y.reshape((len(y), -1))
+    # CKA is undefined for missing features or nonfinite observations.
+    if not x.shape[1] or not y.shape[1] or not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("representations require nonempty finite features.")
+    # Isotropic rescaling preserves CKA while keeping centered products in range.
+    x = x / max(float(np.max(np.abs(x))), np.finfo(np.float64).tiny)
+    y = y / max(float(np.max(np.abs(y))), np.finfo(np.float64).tiny)
     x = x - np.mean(x, axis=0, keepdims=True)
     y = y - np.mean(y, axis=0, keepdims=True)
     # Use sample matrices when the representations are wider than the batch.

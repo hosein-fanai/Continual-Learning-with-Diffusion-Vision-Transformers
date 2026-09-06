@@ -74,6 +74,7 @@ class VariationalAutoencoder(models.Model):
         compile: bool = True, 
         compile_args: Mapping[str, object] | None = None, 
         seed: int | None = None,
+        seen_classes: Sequence[int] | None = None,
         **kwargs: object
     ) -> None:
         """Build the encoder, decoder, metric state, and optional optimizer.
@@ -121,6 +122,8 @@ class VariationalAutoencoder(models.Model):
                 Defaults to ``None``.
                 None leaves component operation/initializer seeds unspecified; global
                 TensorFlow RNG state can still affect draws.
+            seen_classes (Sequence[int] | None): Previously observed conditional
+                class IDs restored with model configuration. None starts empty.
             **kwargs (object): Standard ``tf.keras.Model`` constructor options,
                 such as ``name``, ``trainable``, and ``dtype``.
 
@@ -206,7 +209,16 @@ class VariationalAutoencoder(models.Model):
         self.decoder = self._build_decoder(data_dim, latent_dim, hiddens_dims[::-1], 
                                         hiddens_kwargs, class_num, last_activation)
 
-        self.seen_classes = []
+        restored_classes = [] if seen_classes is None else list(seen_classes)
+        # Retained replay metadata must describe valid integer IDs of this conditional model.
+        if (restored_classes and not conditioned) or any(
+            isinstance(class_id, (bool, np.bool_))
+            or not isinstance(class_id, (int, np.integer))
+            or not 0 <= int(class_id) < class_num
+            for class_id in restored_classes
+        ):
+            raise ValueError("seen_classes must contain valid conditional integer class IDs.")
+        self.seen_classes = sorted(set(int(class_id) for class_id in restored_classes))
 
         stable_dtype = self.dtype_policy.variable_dtype
         self.total_loss_tracker = metrics.Mean(
@@ -315,6 +327,7 @@ class VariationalAutoencoder(models.Model):
             "compile": False,
             "compile_args": None,
             "seed": self.seed,
+            "seen_classes": list(self.seen_classes),
         })
 
         return config
@@ -694,6 +707,31 @@ class VariationalAutoencoder(models.Model):
             tf.reduce_sum(sample_weight)
         )
 
+    def _relative_row_weights(
+        self: VariationalAutoencoder,
+        sample_weight: tf.Tensor | None,
+        x: tf.Tensor,
+    ) -> tf.Tensor | None:
+        """Normalize finite nonnegative row weights to preserve all loss coefficients.
+
+        The default Keras reconstruction loss divides by batch size, while KL
+        and classifier losses divide by total weight. Mean-one weights make
+        these objectives use the same weighted empirical distribution. An
+        all-zero mask remains zero; regularization losses retain Keras semantics.
+        """
+
+        # An omitted weight preserves the compiled objective's ordinary reduction.
+        if sample_weight is None:
+            return None
+        weights = tf.broadcast_to(
+            tf.reshape(tf.cast(sample_weight, self.dtype_policy.variable_dtype), (-1,)),
+            tf.shape(x)[:1],
+        )
+        tf.debugging.assert_all_finite(weights, "Sample weights must be finite.")
+        tf.debugging.assert_non_negative(weights, "Sample weights must be nonnegative.")
+        scaled = tf.math.divide_no_nan(weights, tf.reduce_max(weights))
+        return tf.math.divide_no_nan(scaled, tf.reduce_mean(scaled))
+
     @property
     def metrics(
         self: VariationalAutoencoder
@@ -777,8 +815,9 @@ class VariationalAutoencoder(models.Model):
 
         Notes:
             Keras (x, y, sample_weight) triples are also accepted; weights broadcast to
-            rows. Reconstruction follows the compiled loss reduction, while KL divides
-            by total row weight. Trackers average batch objectives using actual batch
+            rows and are normalized to mean one. Reconstruction follows the compiled
+            loss reduction and KL divides by total weight, preserving beta when all
+            weights are rescaled. Trackers average batch objectives using actual batch
             size, and reconstruction metrics receive row weights. Evaluation still
             samples latents and updates metric state; only train_step applies gradients
             and training-mode batch-normalization updates.
@@ -797,10 +836,7 @@ class VariationalAutoencoder(models.Model):
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
             # Use unweighted rows when no weights are supplied; otherwise broadcast weights
             # across the batch.
-            row_sample_weight = None if sample_weight is None else tf.broadcast_to(
-                tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
-                tf.shape(x)[:1],
-            )
+            row_sample_weight = self._relative_row_weights(sample_weight, x)
             # Compute reconstruction error before reduction in stable precision.
             recon_loss = tf.cast(self.compiled_loss(
                 tf.cast(x, stable_dtype),
@@ -868,8 +904,9 @@ class VariationalAutoencoder(models.Model):
 
         Notes:
             Keras (x, y, sample_weight) triples are also accepted; weights broadcast to
-            rows. Reconstruction follows the compiled loss reduction, while KL divides
-            by total row weight. Trackers average batch objectives using actual batch
+            rows and are normalized to mean one. Reconstruction follows the compiled
+            loss reduction and KL divides by total weight, preserving beta when all
+            weights are rescaled. Trackers average batch objectives using actual batch
             size, and reconstruction metrics receive row weights. Evaluation still
             samples latents and updates metric state; only train_step applies gradients
             and training-mode batch-normalization updates.
@@ -886,10 +923,7 @@ class VariationalAutoencoder(models.Model):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         # Use unweighted rows when no weights are supplied; otherwise broadcast weights
         # across the batch.
-        row_sample_weight = None if sample_weight is None else tf.broadcast_to(
-            tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
-            tf.shape(x)[:1],
-        )
+        row_sample_weight = self._relative_row_weights(sample_weight, x)
         # Compute reconstruction error before reduction in stable precision.
         recon_loss = tf.cast(self.compiled_loss(
             tf.cast(x, stable_dtype),

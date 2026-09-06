@@ -145,6 +145,21 @@ class ExperimentDesignTests(unittest.TestCase):
             ))
         return rows
 
+    def test_manifest_rejects_seed_coercion_before_sealing(self) -> None:
+        """Preserve declared experiment and stream seed identities without truncation.
+
+        Returns:
+            None: Invalid seeds cannot produce a seemingly valid frozen design.
+        """
+        for seed in (True, 1.5, "2", -1, 2**32):
+            with self.subTest(seed=seed):
+                with self.assertRaisesRegex(ValueError, "seeds must be integers"):
+                    create_paired_block_manifest(self._conditions(), self._streams(), seed=seed)
+                streams = self._streams()
+                streams[0]["stream_seed"] = seed
+                with self.assertRaisesRegex(ValueError, "seeds must be integers"):
+                    create_paired_block_manifest(self._conditions(), streams, seed=91)
+
     def test_manifest_crosses_conditions_and_seeded_stream_blocks(self) -> None:
         """Cross every condition with every stream and preserve seeded order.
 

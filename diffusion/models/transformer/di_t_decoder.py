@@ -423,6 +423,7 @@ class DiTDecoder(DiffusionTransformer):
         output_is_flat = flat_states[0]
         # Project widened encoder aggregates back to the forced decoder width when allowed.
         options = {
+            "dtype": self.dtype_policy,
             "ids": ids, 
             "ln_dim": merged_dim, 
             "mlp_output_dim": self.dim if self.dim_forced and output_dim_flag

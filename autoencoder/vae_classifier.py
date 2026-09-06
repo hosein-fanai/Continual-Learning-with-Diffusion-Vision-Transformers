@@ -312,7 +312,8 @@ class VAEClassifier(VariationalAutoencoder):
         Notes:
             A third sample_weight component is accepted and broadcast over batch rows.
             Classification and KL use weight-normalized means (zero for all-zero
-            weights); reconstruction follows the compiled Keras reduction. The total
+            weights); reconstruction uses mean-one weights with the compiled Keras
+            reduction so rescaling weights preserves beta and alpha. The total
             is reconstruction + beta * KL + alpha * classification. Running loss
             trackers weight batch objectives by batch size; accuracy and reconstruction
             metrics receive row weights. test_step updates metrics and samples the
@@ -331,10 +332,7 @@ class VAEClassifier(VariationalAutoencoder):
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
             # Use unweighted rows when no weights are supplied; otherwise broadcast weights
             # across the batch.
-            row_sample_weight = None if sample_weight is None else tf.broadcast_to(
-                tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
-                tf.shape(x)[:1],
-            )
+            row_sample_weight = self._relative_row_weights(sample_weight, x)
             # Compute reconstruction error before reduction in stable precision.
             recon_loss = tf.cast(self.compiled_loss(
                 tf.cast(x, stable_dtype),
@@ -428,7 +426,8 @@ class VAEClassifier(VariationalAutoencoder):
         Notes:
             A third sample_weight component is accepted and broadcast over batch rows.
             Classification and KL use weight-normalized means (zero for all-zero
-            weights); reconstruction follows the compiled Keras reduction. The total
+            weights); reconstruction uses mean-one weights with the compiled Keras
+            reduction so rescaling weights preserves beta and alpha. The total
             is reconstruction + beta * KL + alpha * classification. Running loss
             trackers weight batch objectives by batch size; accuracy and reconstruction
             metrics receive row weights. test_step updates metrics and samples the
@@ -446,10 +445,7 @@ class VAEClassifier(VariationalAutoencoder):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         # Use unweighted rows when no weights are supplied; otherwise broadcast weights
         # across the batch.
-        row_sample_weight = None if sample_weight is None else tf.broadcast_to(
-            tf.reshape(tf.cast(sample_weight, stable_dtype), (-1,)),
-            tf.shape(x)[:1],
-        )
+        row_sample_weight = self._relative_row_weights(sample_weight, x)
         # Compute reconstruction error before reduction in stable precision.
         recon_loss = tf.cast(self.compiled_loss(
             tf.cast(x, stable_dtype),

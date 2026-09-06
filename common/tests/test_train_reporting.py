@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import tensorflow as tf
 
-from common.config import Config, load_config
+from common.config import Config, DatasetConfig, load_config
 from common.runtime import derive_seed
 from common.train import _report_final_visuals, main, report, train_model
 from autoencoder.variational_autoencoder import VariationalAutoencoder
@@ -239,7 +239,7 @@ class TrainReportingTests(unittest.TestCase):
                 results_path=temporary,
                 task="continual",
                 dataset_name="mnist",
-                seed=19,
+                seed=9,
                 epochs=1,
                 batch_size=2,
                 show_images=False,
@@ -257,6 +257,35 @@ class TrainReportingTests(unittest.TestCase):
             )
 
         self.assertEqual(continual.call_args.kwargs["seed"], 19)
+
+    def test_random_schedule_inherits_training_seed_when_stream_seed_is_none(self) -> None:
+        """Prevent a default None stream seed from unseeding a configured random schedule.
+
+        Returns:
+            None: Schedule construction receives the same seed used for training.
+        """
+        inputs = tf.keras.Input((1,))
+        classifier = tf.keras.Model(inputs, tf.keras.layers.Dense(2)(inputs))
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Config(
+                training={
+                    "task": "continual", "seed": 17, "results_path": temporary,
+                    "epochs": 1, "show_images": False, "save_weights": False,
+                },
+                continually_learn={
+                    "class_num": 4, "task_size": 2, "class_order_mode": "random",
+                    "baseline": "cumulative",
+                },
+            )
+            with patch(
+                "common.train.resolve_continual_schedule",
+                side_effect=RuntimeError("schedule boundary"),
+            ) as schedule, self.assertRaisesRegex(RuntimeError, "schedule boundary"):
+                train_model(
+                    config=config, model={"classifier_name": "tiny", "classifier": classifier},
+                    trainset=object(),
+                )
+            self.assertEqual(schedule.call_args.kwargs["seed"], 17)
 
     def test_input_config_remains_pretraining_recovery_specification(
         self: "TrainReportingTests",
@@ -621,6 +650,56 @@ class TrainReportingTests(unittest.TestCase):
         self.assertEqual(report_mock.call_args.kwargs["results_path"], concrete_path)
         self.assertEqual(result["results_path"], concrete_path)
         self.assertIs(result["history"], history)
+
+
+    def test_ordinary_training_rejects_empty_effective_budget_before_artifacts(self) -> None:
+        """Do not publish untouched model weights as a completed ordinary training run.
+
+        Returns:
+            None: Invalid effective budgets fail before callbacks or file creation.
+        """
+        for epochs, fit_kwargs in ((0, {}), (1.5, {}), (True, {}), (3, {"epochs": 0})):
+            with self.subTest(epochs=epochs, fit_kwargs=fit_kwargs), patch(
+                "common.train.ImageGeneratorCallback"
+            ) as callback, self.assertRaisesRegex(ValueError, "positive integer"):
+                train_model(model=object(), trainset=object(), epochs=epochs, fit_kwargs=fit_kwargs)
+            callback.assert_not_called()
+
+    def test_direct_continual_seed_is_installed_before_dataset_construction(self) -> None:
+        """Use one authoritative continual seed for runtime, loading, and later training.
+
+        Returns:
+            None: Runtime setup precedes the deliberately interrupted loader.
+        """
+        for outer_seed in (None, 9):
+            with self.subTest(outer_seed=outer_seed), patch(
+                "common.train.configure_runtime"
+            ) as runtime, patch(
+                "common.train.get_datasets", side_effect=RuntimeError("loader boundary")
+            ) as loader, self.assertRaisesRegex(RuntimeError, "loader boundary"):
+                main(task="continual", seed=outer_seed, continually_learn_kwargs={"seed": 17})
+            runtime.assert_called_once_with(17, "float32", False)
+            self.assertEqual(loader.call_args.kwargs["seed"], 17)
+
+    def test_dataset_config_rejects_duplicate_labels_and_preprocessing_typos(self) -> None:
+        """Reject settings that can duplicate split rows or silently disable scaling.
+
+        Returns:
+            None: Dataset selections preserve their exact unique integer identity.
+        """
+        for indices in ([0, 0], [0, 1.5], [False, 1], [0, 10], [], "01"):
+            with self.subTest(indices=indices), self.assertRaisesRegex(ValueError, "indices"):
+                DatasetConfig(name="mnist", indices=indices)
+        with self.assertRaisesRegex(ValueError, "preprocessing"):
+            Config(dataset={"preprocess": "standarize"})
+        config = Config()
+        config.dataset.indices = [0, 0]
+        with patch("common.train.configure_runtime") as runtime, self.assertRaisesRegex(ValueError, "indices"):
+            main(config)
+        runtime.assert_not_called()
+        self.assertEqual(DatasetConfig(name="cifar100", indices=[99, 3]).indices, [99, 3])
+        for mode in (None, "", "min-max", "normalize", "standardize", "diffusion", "fixed-min-max", "fixed-standardize"):
+            self.assertEqual(DatasetConfig(preprocess=mode).preprocess, mode)
 
 
 # Run this module's tests when executed directly.

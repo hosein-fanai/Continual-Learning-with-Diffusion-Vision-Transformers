@@ -378,6 +378,7 @@ PROJECT_SELF_TEST_CLASSES = {
         "RawNetworkValidationCallback", 
     ), 
     "diffusion.layers.adaptive_layer_normalization_zero": ("AdaLNZero",), 
+    "diffusion.layers.policy_multi_head_attention": ("PolicyMultiHeadAttention",),
     "diffusion.layers.base_layer": ("BaseLayer",), 
     "diffusion.layers.block.di_t_decoder_block": ("DiTDecoderBlock",), 
     "diffusion.layers.block.vision_transformer_block": (

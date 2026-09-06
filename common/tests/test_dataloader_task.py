@@ -68,6 +68,24 @@ class DatasetTaskValidationTests(unittest.TestCase):
         self.assertEqual(config.dataset.trainset_len, 3)
         get_dataset.assert_not_called()
 
+    def test_invalid_class_filters_fail_before_split_leakage(self) -> None:
+        """A repeated class must not copy identical examples into independent splits."""
+
+        images = np.arange(24, dtype="uint8").reshape(12, 2)
+        labels = np.repeat([0, 1], 6)
+        for indices in ([0, 0, 1], [0, .5], [True, False], [-1, 0], [0, 2], []):
+            with self.subTest(indices=indices), patch("sklearn.model_selection.train_test_split") as splitter:
+                with self.assertRaises(ValueError):
+                    preprocess_dataset(images, labels, images, labels, 2, indices, .5,
+                                       "fixed-min-max", False, None, False, 11, False)
+                splitter.assert_not_called()
+        train_x, _, val_x, _, _, _ = preprocess_dataset(
+            images, labels, images, labels, 2, [1, 0], .5,
+            None, False, None, False, 11, False,
+        )
+        self.assertEqual(len(train_x) + len(val_x), len(images))
+        self.assertFalse(set(map(tuple, train_x)) & set(map(tuple, val_x)))
+
     def test_unknown_direct_task_is_rejected_before_loading_data(self) -> None:
         """An unsupported direct task must not reach a dataset loader.
 

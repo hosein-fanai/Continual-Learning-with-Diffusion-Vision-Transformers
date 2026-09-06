@@ -26,6 +26,7 @@ import optuna
 from common.config import Config
 from common.hpo import (
     SEARCH_SPACE_VERSION,
+    _TrialView,
     _build_trial_config,
     _capture_sampler_rng_state,
     _enqueue_recovery_trials,
@@ -896,6 +897,22 @@ class HpoConfigTests(unittest.TestCase):
                 epochs=0,
             )
 
+    def test_invalid_study_budgets_fail_before_creating_storage(self) -> None:
+        """Reject fractional, boolean, nonfinite, and empty public study budgets.
+
+        Returns:
+            None: Invalid requests never reach Optuna study creation.
+        """
+        for name, value in (
+            ("epochs", 1.5), ("n_trials", 0), ("n_trials", True),
+            ("n_startup_trials", -1), ("n_startup_trials", 1.5),
+            ("seed", 1.5), ("seed", 2**32), ("timeout", 0),
+            ("timeout", float("nan")), ("timeout", float("inf")),
+        ):
+            with self.subTest(name=name, value=value), patch("optuna.create_study") as create, self.assertRaisesRegex(ValueError, name):
+                run_hpo("generation", "vae", **{name: value})
+            create.assert_not_called()
+
     def test_tensorboard_name_hashes_wide_conditional_spaces(self) -> None:
         """Keep Windows event paths short without losing run identity.
 
@@ -1197,7 +1214,7 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(dnn.dataset.preprocess, "normalize")
 
     def test_reservoir_buffer_dimensions_are_independent(self) -> None:
-        """Keep replay capacity separate from sample and insertion counts.
+        """Keep replay capacity separate from retrieval while inserting the full stream.
 
         Args:
             None. The unittest instance owns the fixtures used by this case.
@@ -1207,8 +1224,9 @@ class HpoConfigTests(unittest.TestCase):
             unittest runner.
         """
 
+        trial = _SuggestionTrial()
         config = _build_trial_config(
-            _SuggestionTrial(),
+            trial,
             "continual",
             "cnn",
             "cifar10",
@@ -1221,15 +1239,73 @@ class HpoConfigTests(unittest.TestCase):
                 "continual_protocol_multiclass": ["reservoir_er"],
                 "replay_buffer_capacity": [10_000],
                 "replay_buffer_sample_count": [2_500],
-                "replay_buffer_insert_count": [500],
             },
         )
         self.assertEqual(config.continually_learn.buffer_kwargs, {
             "maxlen": 10_000,
             "sample_num": 2_500,
-            "insert_num": 500,
             "strategy": "reservoir",
         })
+        self.assertNotIn("replay_buffer_insert_count", trial.params)
+        with self.assertRaisesRegex(ValueError, "inactive for reservoir_er"):
+            _build_trial_config(
+                _SuggestionTrial(), "continual", "cnn", "mnist", 1, 3, "results/hpo",
+                search_space_overrides={
+                    "continual_protocol": ["reservoir_er"],
+                    "replay_buffer_insert_count": [500],
+                },
+            )
+
+    def test_replay_selectors_require_a_classifier_teacher(self) -> None:
+        """Reject scored replay for families the learner cannot score.
+
+        Returns:
+            None: Both accepted uniform replay and rejected scored replay are checked.
+        """
+        for family in ("vae", "diffusion_transformer", "dit_decoder", "dit_encoder_decoder", "unet"):
+            with self.subTest(family=family):
+                uniform = _build_trial_config(
+                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "results/hpo",
+                    search_space_overrides={"replay_selection": ["uniform"]},
+                )
+                self.assertEqual(uniform.continually_learn.replay_selection, "uniform")
+                with self.assertRaisesRegex(ValueError, "replay_selection"):
+                    _build_trial_config(
+                        _SuggestionTrial(), "continual", family, "mnist", 1, 3, "results/hpo",
+                        search_space_overrides={"replay_selection": ["confidence"]},
+                    )
+        for family in ("dit_classifier", "dit_encoder_decoder_classifier", "unet_classifier"):
+            with self.subTest(family=family):
+                scored = _build_trial_config(
+                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "results/hpo",
+                    search_space_overrides={"replay_selection": ["confidence"]},
+                )
+                self.assertEqual(scored.continually_learn.replay_selection, "confidence")
+
+    def test_search_overrides_reject_silent_coercion_and_ignored_settings(self) -> None:
+        """Reject malformed controls before they can become misleading trial metadata.
+
+        Returns:
+            None: Applied override schemas and exact integer counts are checked.
+        """
+        for value in (2.5, True, "2", float("nan")):
+            for name in ("batch_size", "test_steps_t500"):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    _TrialView(_SuggestionTrial(), overrides={name: [value]}).suggest_categorical(
+                        name, [1, 2]
+                    )
+        for override in (0.1, [0.1], {"choices": [0.1]}, {"loww": 0.1}, {"log": "false"}, {"low": float("nan")}, {"high": float("inf")}, {"low": 2., "high": 1.}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                _TrialView(_SuggestionTrial(), overrides={"rate": override}).suggest_float(
+                    "rate", 0.1, 1.
+                )
+        with self.assertRaisesRegex(ValueError, "requires only 'choices'"):
+            _TrialView(_SuggestionTrial(), overrides={"batch_size": {"low": 2}}).suggest_categorical(
+                "batch_size", [2, 4]
+            )
+        for override in ({"low": 1.5}, {"step": True}, {"step": 0}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                _TrialView(_SuggestionTrial(), overrides={"depth": override}).suggest_int("depth", 1, 4)
 
     def test_reverse_sampling_is_tuned_only_when_it_affects_replay(self) -> None:
         """Exclude unused reverse-process dimensions from loss objectives.
@@ -1278,6 +1354,19 @@ class HpoConfigTests(unittest.TestCase):
         self.assertIn("test_steps_t500", continual_trial.params)
         self.assertIn("test_cfg_scale", continual_trial.params)
         self.assertIn("test_eta", continual_trial.params)
+
+        for strategy in ("new_only", "cumulative"):
+            with self.subTest(strategy=strategy):
+                trial = _SuggestionTrial()
+                config = _build_trial_config(
+                    trial, "continual", "dit_classifier", "mnist", 1, 3, "results/hpo",
+                    class_num=4, task_size=2,
+                    search_space_overrides={"continual_strategy": [strategy]},
+                )
+                self.assertFalse(config.continually_learn.use_generative_replay)
+                self.assertNotIn("test_cfg_scale", trial.params)
+                self.assertNotIn("test_eta", trial.params)
+                self.assertFalse(any(name.startswith("test_steps_t") for name in trial.params))
 
         vae = _build_trial_config(
             _SuggestionTrial(),
@@ -2384,8 +2473,8 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 11)
-            self.assertEqual(original["search_space_version"], 11)
+            self.assertEqual(SEARCH_SPACE_VERSION, 12)
+            self.assertEqual(original["search_space_version"], 12)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (

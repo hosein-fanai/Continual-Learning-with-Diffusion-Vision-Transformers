@@ -352,7 +352,7 @@ def preprocess_dataset(
     Raises:
         ValueError: If feature mode cannot infer a supported dataset from its
             path, the validation ratio is outside ``[0, 1)``,
-            requested classes cannot support the stratified split, or
+            requested classes are not unique valid integer IDs or cannot support the stratified split, or
             feature/label lengths differ. Fixed pixel modes reject saved features.
     """
 
@@ -445,6 +445,13 @@ def preprocess_dataset(
 
         x_train = np.concatenate([x_train, x_val], axis=0)
         y_train = np.concatenate([y_train, y_val], axis=0)
+
+    selected_classes = np.asarray(indices)
+    # Duplicating a requested class can put copies of the same image in both split partitions.
+    if selected_classes.ndim != 1 or selected_classes.dtype.kind not in "iu" \
+    or not selected_classes.size or np.any(selected_classes < 0) or np.any(selected_classes >= class_num) \
+    or len(np.unique(selected_classes)) != len(selected_classes):
+        raise ValueError("indices must contain unique integer class IDs within the dataset vocabulary.")
 
     labels_set_list = sort_filter_labels(
         [y_train, y_test], 

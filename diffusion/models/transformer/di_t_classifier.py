@@ -2486,7 +2486,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy.dtype_policy.name == "float64"
     assert policy.dynamic is True
     assert policy.trainable is False
-    assert policy_output["noises"].dtype == tf.float32
+    assert policy_output["noises"].dtype == tf.float64
     assert policy_output["classes"].dtype == tf.float64
 
     scaled = make_model(

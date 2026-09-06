@@ -155,6 +155,13 @@ def _resolve_training_options(
 
     # Preserve the established direct-mode defaults.
     if config is None:
+        direct_seed = None
+        # Direct bundle training gives an explicit stream seed the same precedence as Config.
+        if isinstance(model, dict):
+            direct_seed = kwargs.get("continually_learn_kwargs", {}).get("seed")
+        # An omitted stream seed inherits the ordinary direct experiment seed.
+        if direct_seed is None:
+            direct_seed = kwargs.get("seed")
         return {
             "show_images": kwargs.get("show_images", True),
             "save_gifs": kwargs.get("save_gifs", False),
@@ -177,7 +184,7 @@ def _resolve_training_options(
             "onehot_labels": kwargs.get("onehot_labels", False),
             "validation_ratio": kwargs.get("validation_ratio", 0.),
             "use_valset": kwargs.get("use_valset", True),
-            "seed": kwargs.get("seed"),
+            "seed": effective_seed(seed=direct_seed),
             "dtype_policy": kwargs.get(
                 "dtype_policy",
                 tf.keras.mixed_precision.global_policy().name
@@ -561,6 +568,15 @@ def train_model(
     fit_kwargs = training_options["fit_kwargs"]
     is_continual = isinstance(model, dict)
 
+    # Ordinary training must not save untouched weights after an empty fit budget.
+    if not is_continual and fit_method == "fit":
+        effective_epochs = fit_kwargs.get("epochs", epochs)
+        # Direct fit overrides also participate in the actual epoch count.
+        if isinstance(effective_epochs, (bool, np.bool_)) or not isinstance(
+            effective_epochs, (int, np.integer)
+        ) or effective_epochs <= 0:
+            raise ValueError("Ordinary training epochs must be a positive integer.")
+
     # Apply stricter selector and fit-ownership checks to typed configurations.
     if config is not None:
         # Restrict the typed selector to the two documented training methods.
@@ -830,7 +846,7 @@ def train_model(
         task_size = continual_kwargs.pop("task_size", 1)
         class_order_mode = continual_kwargs.pop("class_order_mode", "fixed")
         task_order_mode = continual_kwargs.pop("task_order_mode", "fixed")
-        schedule_seed = continual_kwargs.get("seed", seed)
+        schedule_seed = seed
         resume_path = continual_kwargs.get("resume_from")
 
         # Reuse the authoritative materialized schedule on configured resume.
@@ -1812,6 +1828,8 @@ def main(
             ``dtype_policy="float32"`` and ``deterministic_ops=False``; effective
             seed behavior is delegated to the runtime task contract. The factory,
             training, and reporting functions document their remaining defaults.
+            An explicit continual seed in continually_learn_kwargs takes precedence
+            before runtime, dataset, and model initialization, matching Config mode.
 
     Returns:
         dict[str, object]: ``model`` (trained model or updated bundle), ``history``
@@ -1831,9 +1849,16 @@ def main(
     # Revalidate mutable typed configs at the complete-pipeline boundary.
     if config is not None:
         config.training.task = normalize_training_task(config.training.task)
+        config.dataset.__post_init__()
     # Canonicalize direct task selection before dataset/model side effects.
     else:
         kwargs["task"] = normalize_training_task(kwargs.get("task", "legacy"))
+        # Resolve the stream's authoritative seed before dataset/model initialization.
+        if kwargs["task"] == "continual":
+            continual_seed = kwargs.get("continually_learn_kwargs", {}).get("seed")
+            # A missing nested seed retains the direct top-level seed.
+            if continual_seed is not None:
+                kwargs["seed"] = continual_seed
 
     # Announce typed configuration and obtain its seed.
     if config is not None:
