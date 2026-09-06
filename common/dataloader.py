@@ -1018,7 +1018,7 @@ def get_dataset(
     return dataset
 
 
-def _resolve_dataset_options(
+def _dataset_option_inputs(
     config: Config | None, 
     kwargs: Mapping[str, object]
 ) -> dict[str, object]:
@@ -1027,7 +1027,8 @@ def _resolve_dataset_options(
     Config mode copies authoritative dataset/training/continual settings and
     resolves the effective seed. Direct mode supplies the aliases, options,
     and defaults documented in ``get_datasets``; its pretrained inputs default
-    to no preprocessing, while other model families default to standardization.
+    to no preprocessing, VAEs defer to their decoder activation, and other
+    model families default to standardization.
 
     Args:
         config (Config | None): Typed project configuration; ``None`` selects
@@ -1044,13 +1045,16 @@ def _resolve_dataset_options(
 
     # Keep the legacy direct defaults when no typed configuration is supplied.
     if config is None:
+        default_model = "dit_classifier" if kwargs.get("with_classifier", True) else "diffusion_transformer"
         model_name = kwargs.get(
-            "model_name", 
-            kwargs.get("model_type", kwargs.get("name", "diffusion_transformer"))
-        )
+            "model_name",
+            kwargs.get("model_type", kwargs.get("name"))
+        ) or default_model
         model_name = str(model_name).lower()
-        # Leave pretrained images raw; standardize other direct model families.
-        default_preprocess = None if model_name == "pretrained" \
+        # VAE omission is automatic, pretrained omission is raw, and diffusion is standardized.
+        default_preprocess = None if model_name in {
+            "pretrained", "vae", "variational_autoencoder", "vae_classifier"
+        } \
                             else "standardize"
 
         return {
@@ -1106,93 +1110,43 @@ def _resolve_dataset_options(
     }
 
 
-def get_datasets(
-    config: Config | None = None, 
-    **kwargs: object
-) -> tuple[tf.data.Dataset | DatasetLoader, tf.data.Dataset | None]:
-    """Build the selected training and validation datasets.
+def _resolve_dataset_options(
+    config: Config | None,
+    kwargs: Mapping[str, object]
+) -> dict[str, object]:
+    """Resolve one effective data contract before loading, construction or fitting.
 
-    Settings may come from a :class:`common.config.Config` object or directly
-    from keyword arguments. Config values take precedence when both are
-    supplied.
-
-    Args:
-        config (Config | None): Optional typed project configuration. When
-            provided, its dataset, model, and training sections supply every
-            setting and direct keyword options are ignored.
-            Defaults to ``None``, resolving the direct keyword options below.
-        **kwargs (object): Direct options used only when ``config`` is ``None``:
-            ``dataset_name`` (``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
-            ``"cifar100"``), ``model_name`` (str), ``preprocess``
-            (str | None), ``indices`` (Sequence[int] | None),
-            ``validation_ratio`` (float), ``return_features`` (bool),
-            ``features_path`` (str), ``onehot_labels`` (bool), ``batch_size``
-            (int), ``shuffle_buffer`` (int), ``pad`` (int),
-            ``max_train_samples`` and ``max_val_samples`` (int | None),
-            ``use_valset`` (bool), ``seed`` (int | None), and ``task`` (str).
-
-    Direct Defaults:
-        ``dataset_name="mnist"`` and ``model_name="diffusion_transformer"``
-        select the loader and representation. ``model_type``/``name`` are
-        fallback aliases for the model name. ``preprocess`` defaults to None
-        for pretrained models and ``"standardize"`` otherwise. ``indices=None``
-        selects every dataset class; ``validation_ratio=0.0`` creates no
-        validation partition. ``return_features=False``, ``features_path=""``,
-        and ``onehot_labels=False`` select raw images and sparse labels before
-        any required VAE conditioning adjustment. ``batch_size=128``,
-        ``shuffle_buffer=10000``, and ``pad=0`` define training batching,
-        shuffle capacity, and spatial padding. ``max_train_samples=None`` and
-        ``max_val_samples=None`` retain all rows; positive caps preserve at
-        least one row per represented class. ``use_valset=True`` returns an
-        existing validation partition, ``seed=None`` leaves selection unseeded,
-        and ``task="legacy"`` selects ordinary dataset construction.
-        ``model_kwargs`` (alias ``kwargs``, default empty mapping) supplies an
-        optional VAE ``conditioned`` choice, defaulting to true for continual
-        VAE runs and false for ordinary standalone VAEs.
-
-    Returns:
-        tuple[tf.data.Dataset | DatasetLoader, tf.data.Dataset | None]: Training
-            and optional validation inputs. Continual tasks return the selected
-            NumPy-array loader and ``None``; their configured limits, padding,
-            shuffle capacity, and seed are reapplied by the continual trainer.
-            All other tasks return batched ``tf.data.Dataset`` objects, with
-            validation optionally disabled.
-
-    Side Effects:
-        Config mode records ``dataset.trainset_len``. A missing preprocessing
-        mode is resolved to ``"standardize"`` for diffusion families. For VAE
-        families it follows the reconstruction activation: ``tanh`` uses
-        ``"standardize"``, ``sigmoid`` uses ``"min-max"``, and linear/``None``
-        uses ``"normalize"``. The returned continual loader receives the same
-        recorded setting. Direct pretrained calls default to raw images because
-        Xception owns their rescaling; other direct families retain
-        standardization. Conditional VAEs also record ``onehot_labels=True``.
-        Continual mode loads and sizes the selected training pool for optimizer
-        setup, then defers task-specific dataset creation to the learner.
-
-    Raises:
-        ValueError: If ``task`` is unsupported, or if ``pad`` is incompatible
-            with saved features or a pretrained image model.
+    Automatic VAE label/scaling choices and the continual seed are identical
+    for direct and typed calls. Explicit preprocessing overrides are retained;
+    conditioned models require full-width one-hot labels. Config mode records
+    the resolved representation so saved settings describe consumed inputs.
     """
+    from common.runtime import effective_seed
 
-    options = _resolve_dataset_options(config, kwargs)
-    dataset_name = options["dataset_name"]
-    model_name = options["model_name"]
-    preprocess = options["preprocess"]
-    indices = options["indices"]
-    validation_ratio = options["validation_ratio"]
-    return_features = options["return_features"]
-    features_path = options["features_path"]
-    onehot_labels = options["onehot_labels"]
-    batch_size = options["batch_size"]
-    shuffle_buffer = options["shuffle_buffer"]
-    pad = options["pad"]
-    max_train_samples = options["max_train_samples"]
-    max_val_samples = options["max_val_samples"]
-    use_valset = options["use_valset"]
-    seed = options["seed"]
-    task = options["task"]
-
+    options = _dataset_option_inputs(config, kwargs)
+    model_name, task = options["model_name"], options["task"]
+    preprocess, onehot_labels = options["preprocess"], options["onehot_labels"]
+    # Preserve one direct schedule across data sizing, model vocabulary and learner dispatch.
+    if config is None:
+        continual = dict(kwargs.get("continually_learn_kwargs", {}))
+        for key in ("class_num", "class_order", "task_groups", "task_size", "class_order_mode", "task_order_mode"):
+            # A top-level schedule option fills an omitted or unset nested value.
+            if key in kwargs:
+                # Conflicting explicit declarations cannot define two different experiments.
+                if task == "continual" and key in continual and continual[key] is not None \
+                and kwargs[key] is not None and continual[key] != kwargs[key]:
+                    raise ValueError(f"Conflicting direct continual schedule declarations for {key}.")
+                # None has the same unset meaning as the nullable schedule defaults.
+                if continual.get(key) is None:
+                    continual[key] = kwargs[key]
+        options["continual_kwargs"] = continual
+    # Direct continual settings have the same nested seed precedence as Config.
+    if config is None and task == "continual":
+        nested_seed = kwargs.get("continually_learn_kwargs", {}).get("seed")
+        # A missing nested seed keeps the explicit top-level seed.
+        if nested_seed is not None:
+            options["seed"] = nested_seed
+    options["seed"] = effective_seed(config, seed=options["seed"], task=task)
     # Conditional VAEs consume full-width labels as model inputs. Keep dataset
     # construction aligned with the effective factory setting rather than
     # requiring a redundant one-hot override from every caller.
@@ -1226,23 +1180,6 @@ def get_datasets(
         if config is not None:
             config.dataset.onehot_labels = True
 
-    dataset_name = dataset_name.lower()
-
-    # Prevent image padding from being applied to saved feature vectors.
-    if pad and return_features:
-        raise ValueError("pad is not supported for saved feature inputs.")
-    # Keep pretrained image geometry unchanged.
-    if pad and model_name in {"pretrained", "hp-tuned"}:
-        raise ValueError("pad is not supported for pretrained/hp-tuned models.")
-    # Keep continual pretrained classifiers on their required image geometry.
-    if config is not None and pad and task == "continual" \
-    and str(config.model.classifier_name).lower() in {
-        "pretrained", "hp-tuned"
-    }:
-        raise ValueError(
-            "pad is not supported for pretrained/hp-tuned classifiers."
-        )
-
     # Supply diffusion-safe scaling when no preprocessing mode was chosen.
     if preprocess is None and model_name in _DIFFUSION_MODELS:
         preprocess = "standardize"
@@ -1273,22 +1210,132 @@ def get_datasets(
             ) if config.model.kwargs else typed_vae_config.last_activation
 
         activation_name = getattr(
-            vae_activation, "__name__", 
+            vae_activation, "__name__",
             vae_activation
         )
         # Normalize a named activation while preserving the explicit linear None value.
         activation_name = str(activation_name).lower() if activation_name is not None \
                         else None
         preprocess = {
-            "tanh": "standardize", 
-            "sigmoid": "min-max", 
-            "linear": "normalize", 
+            "tanh": "standardize",
+            "sigmoid": "min-max",
+            "linear": "normalize",
             None: "normalize"
         }.get(activation_name)
 
         # Record a recognized activation's resolved preprocessing mode.
         if config is not None and preprocess is not None:
             config.dataset.preprocess = preprocess
+
+    options.update(preprocess=preprocess, onehot_labels=onehot_labels)
+    return options
+
+
+def get_datasets(
+    config: Config | None = None, 
+    **kwargs: object
+) -> tuple[tf.data.Dataset | DatasetLoader, tf.data.Dataset | None]:
+    """Build the selected training and validation datasets.
+
+    Settings may come from a :class:`common.config.Config` object or directly
+    from keyword arguments. Config values take precedence when both are
+    supplied.
+
+    Args:
+        config (Config | None): Optional typed project configuration. When
+            provided, its dataset, model, and training sections supply every
+            setting and direct keyword options are ignored.
+            Defaults to ``None``, resolving the direct keyword options below.
+        **kwargs (object): Direct options used only when ``config`` is ``None``:
+            ``dataset_name`` (``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
+            ``"cifar100"``), ``model_name`` (str), ``preprocess``
+            (str | None), ``indices`` (Sequence[int] | None),
+            ``validation_ratio`` (float), ``return_features`` (bool),
+            ``features_path`` (str), ``onehot_labels`` (bool), ``batch_size``
+            (int), ``shuffle_buffer`` (int), ``pad`` (int),
+            ``max_train_samples`` and ``max_val_samples`` (int | None),
+            ``use_valset`` (bool), ``seed`` (int | None), and ``task`` (str).
+
+    Direct Defaults:
+        ``dataset_name="mnist"`` selects the loader. The default model matches
+        the factory's ``with_classifier`` selector: ``dit_classifier`` when true
+        and ``diffusion_transformer`` otherwise. ``model_type``/``name`` are
+        fallback aliases. ``preprocess`` defaults to raw pretrained inputs,
+        automatic VAE activation-dependent scaling, and ``"standardize"`` for
+        other models. Explicit ``None`` also selects automatic VAE scaling. ``indices=None``
+        selects every dataset class; ``validation_ratio=0.0`` creates no
+        validation partition. ``return_features=False``, ``features_path=""``,
+        and ``onehot_labels=False`` select raw images and sparse labels before
+        any required VAE conditioning adjustment. ``batch_size=128``,
+        ``shuffle_buffer=10000``, and ``pad=0`` define training batching,
+        shuffle capacity, and spatial padding. ``max_train_samples=None`` and
+        ``max_val_samples=None`` retain all rows; positive caps preserve at
+        least one row per represented class. ``use_valset=True`` returns an
+        existing validation partition, ``seed=None`` leaves selection unseeded,
+        and ``task="legacy"`` selects ordinary dataset construction.
+        ``model_kwargs`` (alias ``kwargs``, default empty mapping) supplies an
+        optional VAE ``conditioned`` choice, defaulting to true for continual
+        VAE runs and false for ordinary standalone VAEs.
+
+    Returns:
+        tuple[tf.data.Dataset | DatasetLoader, tf.data.Dataset | None]: Training
+            and optional validation inputs. Continual tasks return the selected
+            NumPy-array loader and ``None``; their configured limits, padding,
+            shuffle capacity, and seed are reapplied by the continual trainer.
+            All other tasks return batched ``tf.data.Dataset`` objects, with
+            validation optionally disabled.
+
+    Side Effects:
+        Config mode records ``dataset.trainset_len``. A missing preprocessing
+        mode is resolved to ``"standardize"`` for diffusion families. For VAE
+        families it follows the reconstruction activation: ``tanh`` uses
+        ``"standardize"``, ``sigmoid`` uses ``"min-max"``, and linear/``None``
+        uses ``"normalize"``. The returned continual loader receives the same
+        recorded setting. Direct pretrained calls default to raw images because
+        Xception owns their rescaling; non-VAE direct families retain
+        standardization. Conditional VAEs also record ``onehot_labels=True``.
+        Continual mode loads and sizes the selected training pool for optimizer
+        setup, then defers task-specific dataset creation to the learner.
+
+    Raises:
+        ValueError: If ``task`` is unsupported, or if ``pad`` is incompatible
+            with saved features or a pretrained image model.
+    """
+
+    options = _resolve_dataset_options(config, kwargs)
+    dataset_name = options["dataset_name"]
+    model_name = options["model_name"]
+    preprocess = options["preprocess"]
+    indices = options["indices"]
+    validation_ratio = options["validation_ratio"]
+    return_features = options["return_features"]
+    features_path = options["features_path"]
+    onehot_labels = options["onehot_labels"]
+    batch_size = options["batch_size"]
+    shuffle_buffer = options["shuffle_buffer"]
+    pad = options["pad"]
+    max_train_samples = options["max_train_samples"]
+    max_val_samples = options["max_val_samples"]
+    use_valset = options["use_valset"]
+    seed = options["seed"]
+    task = options["task"]
+
+    dataset_name = dataset_name.lower()
+
+    # Prevent image padding from being applied to saved feature vectors.
+    if pad and return_features:
+        raise ValueError("pad is not supported for saved feature inputs.")
+    # Keep pretrained image geometry unchanged.
+    if pad and model_name in {"pretrained", "hp-tuned"}:
+        raise ValueError("pad is not supported for pretrained/hp-tuned models.")
+    # Keep continual pretrained classifiers on their required image geometry.
+    if config is not None and pad and task == "continual" \
+    and str(config.model.classifier_name).lower() in {
+        "pretrained", "hp-tuned"
+    }:
+        raise ValueError(
+            "pad is not supported for pretrained/hp-tuned classifiers."
+        )
 
     class_num, _, _ = get_dataset_spec(
         dataset_name, 
@@ -1299,15 +1346,15 @@ def get_datasets(
     if indices is None:
         indices = list(range(class_num))
     # Resolve configured class order before the continual loader is deferred.
-    if config is not None and task == "continual":
+    if task == "continual":
+        # Typed and direct calls materialize the same selected training population.
+        schedule = vars(config.continually_learn) if config is not None else options["continual_kwargs"]
         indices, _ = resolve_continual_schedule(
-            config.continually_learn.class_num, 
-            config.continually_learn.class_order, 
-            config.continually_learn.task_groups, 
-            available_class_num=class_num, 
-            task_size=config.continually_learn.task_size, 
-            class_order_mode=config.continually_learn.class_order_mode, 
-            task_order_mode=config.continually_learn.task_order_mode, 
+            schedule.get("class_num"), schedule.get("class_order"),
+            schedule.get("task_groups"), available_class_num=class_num,
+            task_size=schedule.get("task_size", 1),
+            class_order_mode=schedule.get("class_order_mode", "fixed"),
+            task_order_mode=schedule.get("task_order_mode", "fixed"),
             seed=options["seed"]
         )
 

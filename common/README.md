@@ -255,6 +255,16 @@ all exposed current rows to Algorithm R; manually selecting
 `buffer_kwargs.strategy="reservoir"` retains `insert_num` as a sampled-stream
 ablation.
 
+VAE replay retains canonical images in the learner and supplies separate flat
+views to the dense generator and image views to an explicitly selected CNN.
+Generated replay and decoder-accuracy probes use the same classifier geometry;
+the default DNN and saved-feature comparator paths remain supported. Direct
+`main(task="continual", model_name="vae", ...)` and typed configurations share
+activation-dependent automatic preprocessing, inferred one-hot conditioning,
+selected vocabulary, and seed precedence. Omitted preprocessing and explicit
+`None` both mean automatic resolution at this factory boundary; an explicit
+string, including `""` for unscaled inputs, remains an override.
+
 Task checkpointing is opt-in with `save_task_checkpoints=True`. Each atomic committed checkpoint
 contains raw/EMA, classifier/replay and teacher state, optimizer slots, replay
 contents and RNG, global/local RNG state, the task cursor, resolved schedule,
@@ -266,6 +276,47 @@ metrics, accuracy matrices, the resolved schedule, and summaries beside its
 other artifacts. TensorBoard uses task/class/phase namespaces. Setting
 `use_ensemble_accuracy=True` makes the ensemble accuracy matrix, rather than
 the ordinary matrix, authoritative for final continual metrics.
+
+The learner's experiment descriptor is now version **6**. Older task-boundary
+descriptors cannot resume into the corrected training semantics; historical
+checkpoints and weight-only loading remain unchanged. Conditional VAE task
+seed, reparameterization seed and observed classes are authenticated and
+restored before topology validation, independently of the initial model seed.
+HPO retains search-space version **12** and separately seals
+`training_semantics_version=2`; missing or older semantics require a new study.
+
+Checkpoint discovery may fall back past an incomplete or corrupt `task-NNNN`
+directory. Before fitting, the learner rejects any occupied destination for a
+remaining task. Preserve that evidence and supply a **fresh `checkpoint_dir`**
+while keeping `resume_from` pointed at the original valid boundary/root. The
+next completed task then commits in the fresh root. Valid boundaries are never
+overwritten; ordinary `.task-*.tmp-*` staging directories do not occupy task
+slots. This recovery support applies to the common learner. Cognitive routes
+still reject continual resume because their controller/bank/memory state is
+not restored by this API.
+
+Strict checkpoint runs also authenticate behavior-defining callbacks.
+`LearningRateScheduler` supports pure Python schedules with immutable captured
+values, or callable schedule objects exposing a JSON-compatible `get_config()`.
+A changed closure value changes the recovery identity. Opaque or mutable
+dependencies require a declarative configured schedule. Built-in per-fit
+EarlyStopping and ReduceLROnPlateau behavior is preserved; model/optimizer state
+is restored and those callbacks reset at the next fit as in uninterrupted
+execution. Opaque callbacks remain usable in runs without checkpointing.
+
+Custom callbacks for strict recovery must implement JSON-compatible
+`get_recovery_config()` and either declare
+`recovery_state_scope = "stateless"` / `"per_fit"`, or provide both
+`get_recovery_state()` and `set_recovery_state(state)` for persistent task-level
+state. Behavior declarations are checked again before each task. This protocol
+is an explicit correctness contract: the callback author must include every
+behavior-defining parameter and every required persistent state variable.
+
+Classifier depth growth from `clf_depth=0` is explicitly unsupported. The
+common progressive entry points reject requested classifier growth before any
+fit or result reservation; fixed-depth zero and denoiser-only growth remain
+separate supported choices. Start the classifier at a positive depth when
+planning classifier growth.
 
 ## Hyperparameter optimization
 
@@ -334,7 +385,8 @@ HPO evaluation. Trial `input_config.yaml` files use the ordinary Config APIs
 and can be loaded with `load_config` and executed with `main`. An undefined
 NaN objective fails its Optuna trial and allows subsequent trials to continue.
 
-Checkpoint descriptor schema 4 and HPO search version 12 distinguish these
+Checkpoint descriptor schema 6, HPO search version 12 and training-semantics
+version 2 distinguish these
 class-growth and scoring semantics from earlier runs. Start a new study for
 older artifacts; their scores must not be mixed into the corrected protocol.
 

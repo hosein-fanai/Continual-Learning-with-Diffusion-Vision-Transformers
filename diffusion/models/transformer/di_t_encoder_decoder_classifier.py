@@ -319,6 +319,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         full_return: bool = False, 
         training: bool | None = None, 
         min_depth: int = 0, 
+        return_logits: bool = False,
     ) -> tf.Tensor | dict[str, object]:
         """Predict decoder noise and encoder-derived class probabilities.
 
@@ -331,6 +332,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 decoder and therefore must satisfy both image interfaces.
             full_return (bool): Include the established transformer, classifier, and decoder
                 intermediate fields. Defaults to ``False``.
+            return_logits (bool): Include same-pass classifier and auxiliary
+                logits for stable distillation. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -381,6 +384,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             times, 
             labels, 
             training=training, 
+            return_logits=return_logits,
         )
         classes, clf_cond, clf_features, clf_regs, clf_z_vals_list = class_outputs[:5]
 
@@ -389,8 +393,11 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             "classes": classes, 
         }
         # Expose the independent distillation head when configured.
-        if len(class_outputs) > 5:
+        if self.distil_classifier is not None:
             outputs["distil_classes"] = class_outputs[5]
+        # Include additive numerical metadata only when requested by the caller.
+        if return_logits:
+            outputs.update(class_outputs[-1])
         # Attach encoder, decoder, and classifier metadata only for full returns.
         if full_return:
             outputs.update({
@@ -609,6 +616,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
         training: bool | None = None, 
+        return_logits: bool = False,
     ) -> tf.Tensor | tuple[
         tf.Tensor, 
         tf.Tensor | None, 
@@ -626,6 +634,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 ``-1`` executes all stages. Defaults to ``-1``.
             full_return (bool): Include classifier condition, features, regularizers, and latent
                 statistics. Defaults to ``False``.
+            return_logits (bool): Append the same-pass logits dictionary to a full
+                return, preserving existing tuple positions. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -654,6 +664,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 max_encoder_num=max_encoder_num, 
                 full_return=full_return, 
                 training=training, 
+                return_logits=return_logits,
             )
 
         # Use the inferred encoder limit only when classification receives no explicit limit.
@@ -689,6 +700,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             times=base_inputs[1], 
             labels=base_inputs[2], 
             training=training, 
+            return_logits=return_logits,
         )
         # Return the metadata mapping only when the caller requested it.
         if full_return:

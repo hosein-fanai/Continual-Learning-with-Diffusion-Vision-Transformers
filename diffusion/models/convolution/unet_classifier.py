@@ -639,7 +639,8 @@ class UNetClassifier(UNet):
         times: tf.Tensor, 
         labels: tf.Tensor, 
         cond: tf.Tensor | None = None, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> tuple:
         """Return class probabilities and classifier branch intermediates.
 
@@ -660,6 +661,8 @@ class UNetClassifier(UNet):
         [B, num_classes] and use the policy variable dtype. Classifier feature lists
         retain depth-indexed tensors; auxiliary head entries may be None and absent
         KL statistics are represented by an empty list, not by zero-valued losses.
+        ``return_logits=True`` appends same-pass class/distillation/regularizer
+        logits as a final mapping while preserving all ordinary tuple positions.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor | None, list[tf.Tensor],
@@ -750,25 +753,41 @@ class UNetClassifier(UNet):
                 tf.as_dtype(self.dtype_policy.variable_dtype),
             )
 
-            return (
+            outputs = (
                 classes, cond, clf_features_list, clf_regs_list,
                 clf_z_vals_list, distil_classes
             )
-
-        return classes, cond, clf_features_list, clf_regs_list, clf_z_vals_list
+        # Preserve the five-item ordinary return when no parallel head exists.
+        else:
+            outputs = classes, cond, clf_features_list, clf_regs_list, clf_z_vals_list
+        # Keras softmax retains its actual input; expose it without rerunning any head.
+        if return_logits:
+            logits = {
+                "class_logits": classes._keras_logits,
+                # Auxiliary slots stay aligned with the original depth-indexed list.
+                "clf_regs_logits_list": [None if value is None else value._keras_logits
+                                   for value in clf_regs_list],
+            }
+            # Include the independent head only when present in the architecture.
+            if self.distil_classifier is not None:
+                logits["distil_logits"] = distil_classes._keras_logits
+            outputs += (logits,)
+        return outputs
 
     def call(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         training: bool | None = None, 
-        min_depth: int = 0
+        min_depth: int = 0,
+        return_logits: bool = False,
     ) -> dict[str, object] | tf.Tensor | tuple:
         """Predict both branches, or resume only latent noise decoding.
 
         ``min_depth=0`` returns the classifier wrapper mapping. A positive
         ``min_depth`` follows :class:`UNet` and returns its tensor/tuple output,
         which lets the unchanged VAE sampler resume after a flatten depth.
+        ``return_logits=True`` adds same-pass classifier logits to the mapping.
 
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/latent,
@@ -809,6 +828,7 @@ class UNetClassifier(UNet):
             labels=inputs[2], 
             cond=cond, 
             training=training, 
+            return_logits=return_logits,
         )
         outputs = {
             "noises": noises, 
@@ -828,8 +848,11 @@ class UNetClassifier(UNet):
                 "clf_z_vals_list": class_outputs[4],
             })
         # Expose the independent distillation distribution in every mode.
-        if len(class_outputs) > 5:
+        if self.distil_classifier is not None:
             outputs["distil_classes"] = class_outputs[5]
+        # Explicit logits are additive metadata; ordinary probability mappings are unchanged.
+        if return_logits:
+            outputs.update(class_outputs[-1])
 
         return outputs
 
@@ -864,9 +887,12 @@ class UNetClassifier(UNet):
         inputs: UNetInputs,
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> tf.Tensor | tuple:
         """Classify inputs while executing selected encoder depths.
+
+        ``return_logits=True`` appends a logits mapping to the full tuple only.
 
         Args:
             inputs (UNetInputs): Image, timestep, and label tensors.
@@ -911,6 +937,7 @@ class UNetClassifier(UNet):
             labels=inputs[2], 
             cond=cond, 
             training=training, 
+            return_logits=return_logits,
         )
 
         # Return all classifier metadata when requested, otherwise just primary probabilities.

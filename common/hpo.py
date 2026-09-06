@@ -77,6 +77,12 @@ _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
 # Version 12 restricts replay selectors to executable model families and removes
 # inactive reservoir insertion and replay-free reverse-sampling dimensions.
 SEARCH_SPACE_VERSION = 12
+TRAINING_SEMANTICS_VERSION = 2
+"""Version 2 seals stable logits KD, deployed-head metrics and resolved validation.
+
+Old specifications lack this field and cannot resume into the repaired training
+behavior. The version-12 executable search dimensions remain unchanged.
+"""
 
 _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
@@ -2615,6 +2621,7 @@ def _make_study_spec(
     return _study_json_value({
         "schema_version": 1, 
         "search_space_version": SEARCH_SPACE_VERSION,
+        "training_semantics_version": TRAINING_SEMANTICS_VERSION,
         "search_space_fingerprint": fingerprint_state(
             SEARCH_SPACES[task][model_name]
         ),

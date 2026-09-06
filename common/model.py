@@ -23,7 +23,7 @@ from common.config import (
     normalize_training_task,
     resolve_continual_schedule
 )
-from common.dataloader import get_dataset_spec
+from common.dataloader import get_dataset_spec, _resolve_dataset_options
 from common.runtime import (
     configure_runtime, 
     derive_seed, 
@@ -58,6 +58,29 @@ _DIFFUSION_CLASSIFIER_WRAPPERS = {
     "diffusion_classifier", 
     "diffusion_classifier_v2"
 }
+
+
+def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[str, object]) -> None:
+    """Reject unsupported classifier growth from depth zero before any fit.
+
+    The raw model retains its transactional guard. This orchestration preflight
+    also covers the encoder-decoder classifier, which exposes the same
+    classifier depth and targeted growth mapping.
+    """
+    from common.recovery import _progressive_depth_specs
+
+    network = getattr(model, "network", model)
+    # Ordinary denoiser growth and positive-depth classifier growth retain their APIs.
+    if getattr(network, "clf_depth", None) != 0:
+        return
+    for specification in _progressive_depth_specs(dict(fit_kwargs)):
+        # Only an explicitly targeted classifier addition reaches this unsupported case.
+        if isinstance(specification, dict) and "classifier" in specification:
+            requested = specification["classifier"]
+            requested = requested if isinstance(requested, list) else [requested]
+            # Disabled placeholders do not request classifier growth.
+            if any(item is not None for item in requested):
+                raise ValueError("Classifier depth growth from clf_depth=0 is unsupported; choose a positive initial classifier depth before training.")
 
 
 def get_compile_args(
@@ -701,15 +724,12 @@ def get_model(
         if config is not None
         else kwargs.get("task", "legacy")
     )
-    runtime_seed = effective_seed(
-        config, 
-        seed=kwargs.get("seed"), 
-        task=task,
-    )
+    data_contract = _resolve_dataset_options(config, kwargs)
+    runtime_seed = data_contract["seed"]
 
     # Configured factories own the policy. Internal direct calls preserve the
     # installed policy unless runtime controls were supplied explicitly.
-    if config is not None or any(
+    if config is not None or runtime_seed is not None or any(
         key in kwargs for key in ("seed", "dtype_policy", "deterministic_ops")
     ):
         # Configured runs own dtype and determinism; direct runs use their explicit overrides.
@@ -786,6 +806,7 @@ def get_model(
             dataset_name, 
             return_features
         )
+        dataset_class_num = class_num
         class_num = kwargs.get("class_num", class_num)
         image_shape = tuple(kwargs.get("image_shape", image_shape))
         flat_dim = kwargs.get("flat_dim", flat_dim)
@@ -797,10 +818,23 @@ def get_model(
         classifier_name = kwargs.get("classifier_name")
         classifier_kwargs = deepcopy(kwargs.get("classifier_kwargs", {}))
         trainset_len = kwargs.get("trainset_len")
-        onehot_labels = kwargs.get("onehot_labels", False)
+        onehot_labels = data_contract["onehot_labels"]
         loss_function = kwargs.get("loss_function", "mse")
         show_network_summary = kwargs.get("show_network_summary", False)
         weights_path = kwargs.get("weights_path")
+
+        # A direct continual bundle uses the same declared vocabulary as its learner.
+        if task == "continual":
+            schedule = data_contract["continual_kwargs"]
+            class_order, _ = resolve_continual_schedule(
+                schedule.get("class_num"), schedule.get("class_order"),
+                schedule.get("task_groups"), available_class_num=dataset_class_num,
+                task_size=schedule.get("task_size", 1),
+                class_order_mode=schedule.get("class_order_mode", "fixed"),
+                task_order_mode=schedule.get("task_order_mode", "fixed"),
+                seed=runtime_seed
+            )
+            class_num = len(class_order)
 
         for key in (
             "model_path", "dropout_rate", "num_last_not_frozen", "resize", 

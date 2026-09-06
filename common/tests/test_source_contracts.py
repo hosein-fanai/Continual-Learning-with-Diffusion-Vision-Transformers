@@ -42,6 +42,8 @@ class SourceContractTests(unittest.TestCase):
              'else:\n    pass\n', "else missing case comment"),
         )
         root = Path(project_tests.__file__).resolve().parent
+        # The checker requires repository-relative fixture paths on a clean checkout too.
+        (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
             path = Path(directory) / "source.py"
             with patch.object(project_tests, "_project_python_files", return_value=(path,)):

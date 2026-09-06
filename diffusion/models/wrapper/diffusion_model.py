@@ -1224,7 +1224,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         x: object | None = None, 
         y: object | None = None, 
-        network_name: NetworkName = "ema", 
+        network_name: NetworkName | None = None,
         **kwargs: object
     ) -> float | list[float] | dict[str, float]:
         """Evaluate the raw or EMA network under test timestep bounds.
@@ -1237,9 +1237,9 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``None``.
             y (tf.data.Dataset | object | None): Optional separate targets.
                 Defaults to ``None``.
-            network_name (NetworkName): ``"ema"`` or ``"raw"`` for this call.
+            network_name (NetworkName | None): ``"ema"`` or ``"raw"`` for this call.
                 With ``use_ema=False``, ``"ema"`` resolves to the raw network.
-                Defaults to ``'ema'``.
+                None inherits ``test_network_name``, including validation in fit.
             **kwargs (object): Forwarded to ``tf.keras.Model.evaluate``.  Standard keys
                 include ``batch_size``, ``verbose``, ``sample_weight``, ``steps``,
                 ``callbacks``, and ``return_dict``.
@@ -1253,6 +1253,9 @@ class DiffusionModel(ArgumentSaverModel):
         # Validation inside fit temporarily changes bounds, whose setter clears
         # cached functions. Keep the active fit trace for the restored train
         # bounds: Keras does not rebuild it between validation and the next epoch.
+        # Omitted selectors inherit the configured evaluation branch.
+        network_name = self.test_network_name if network_name is None else network_name
+
         prev_train_function = self.train_function
         prev_t_min = self._active_min_timestep
         prev_t_max = self._active_max_timestep
@@ -1377,6 +1380,7 @@ class DiffusionModel(ArgumentSaverModel):
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
             noise_distil_loss=noise_distil_loss, 
+            teacher_noise_mask=teacher_noise_mask,
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
@@ -1450,6 +1454,7 @@ class DiffusionModel(ArgumentSaverModel):
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
             noise_distil_loss=noise_distil_loss, 
+            teacher_noise_mask=teacher_noise_mask,
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
@@ -1660,7 +1665,8 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``10``.
             min_delta (float): Minimum monitored improvement.
                 Defaults to ``0.001``.
-            stopper_mode (str): Keras early-stopping mode used by epoch-wise pacing.
+            stopper_mode (str): ``min``, ``max``, or ``auto`` direction for both
+                epoch-wise and batch-wise plateau pacing.
                 Defaults to ``'min'``.
             **fit_kwargs (object): Normal Keras ``fit`` arguments such as ``x``,
                 ``validation_data``, ``callbacks``, ``steps_per_epoch`` and
@@ -1852,7 +1858,7 @@ class DiffusionModel(ArgumentSaverModel):
                         monitor=monitor.removeprefix("val_"), 
                         patience=patience, 
                         min_delta=min_delta, 
-                        # mode=stopper_mode
+                        mode=stopper_mode
                     ))
 
             # Print the resolved stage state when progress output is requested.
@@ -3360,7 +3366,8 @@ class DiffusionModel(ArgumentSaverModel):
         cond_labels: tf.Tensor, 
         uncond_labels: tf.Tensor | None = None, 
         scale: float | None = None, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False
     ) -> tuple[
         tf.Tensor, tf.Tensor, 
         tuple[list[tf.Tensor], list[tf.Tensor] | None], 
@@ -3383,14 +3390,18 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``None``.
             scale (float | None): Guidance scale; None skips unconditional pass.
                 Defaults to ``None``.
-            training (bool | None): Keras training mode.
-                Defaults to ``None``.
+            return_logits (bool): Request additive classifier-logit metadata from
+                a compatible classifier call_network implementation. Defaults to False.
+            training (bool | None): Keras training mode. Defaults to ``None``.
 
         Returns:
             tuple: ``(x0, eps, (regs_c, regs_u),
             (z_vals_list_c, z_vals_list_u))``. Image tensors
             match ``x_t``; regularizers and latent pairs preserve branch outputs.
         """
+
+        # Keep ordinary denoiser/caller signatures intact unless logits are explicitly requested.
+        network_options = {"return_logits": True} if return_logits else {}
 
         (eps_c, eps_u), *others = self.call_network(
             x_t, 
@@ -3399,7 +3410,8 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_labels, 
             scale, 
             network_name, 
-            training
+            training,
+            **network_options
         )
         x0, eps = self.denoise(
             x_t, 
@@ -3515,19 +3527,23 @@ class DiffusionModel(ArgumentSaverModel):
         use_noise_distil_loss: bool | None = None, 
         use_image_loss: bool | None = None, 
         use_kl_loss: bool | None = None, 
-        use_ctr_loss: bool | None = None
+        use_ctr_loss: bool | None = None,
+        teacher_noise_mask: tf.Tensor | None = None
     ) -> dict[str, tf.Tensor]:
         """Update enabled diffusion metric trackers and return their results.
 
         Scalar loss trackers weight each batch by len(classes), or one when classes
-        is absent. Split-noise trackers instead use conditional/null row counts when
-        cond_labels is available. Accuracy tracks individual examples. All values are
+        is absent. Noise-KD uses the sum of teacher_noise_mask when supplied;
+        split-noise trackers use conditional/null row counts when cond_labels is
+        available. Accuracy tracks individual examples. All values are
         running aggregates until Keras or the caller resets the metric objects.
 
         Args:
             noise_loss (tf.Tensor): Required scalar noise loss.
             noise_distil_loss (tf.Tensor | None): Teacher-student noise loss.
                 Defaults to ``None``.
+            teacher_noise_mask (tf.Tensor | None): Eligible teacher-row weights
+                used to compute noise_distil_loss; None includes every row.
             cond_noise_loss (tf.Tensor | None): Conditional-row noise loss for
                 optional split reporting.
                 Defaults to ``None``.
@@ -3665,7 +3681,11 @@ class DiffusionModel(ArgumentSaverModel):
 
             self.noise_distil_loss_tracker.update_state(
                 noise_distil_loss, 
-                sample_weight=batch_weight
+                # Weight eligible-row means by their actual contributing population.
+                sample_weight=tf.reduce_sum(tf.cast(
+                    teacher_noise_mask,
+                    stable_dtype
+                )) if teacher_noise_mask is not None else batch_weight
             )
             results.update({
                 self.noise_distil_loss_tracker.name: 

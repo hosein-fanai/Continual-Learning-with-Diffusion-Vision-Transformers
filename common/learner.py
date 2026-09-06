@@ -36,7 +36,7 @@ import tensorflow as tf
 
 from common.config import Config, normalize_training_task, resolve_continual_schedule
 from common.utils import CL_plot
-from common.model import get_model, copy_model, get_callbacks
+from common.model import get_model, copy_model, get_callbacks, validate_progressive_classifier_growth
 from common.replay_buffer import (
     ReplayBuffer,
     _balanced_generation_labels,
@@ -68,12 +68,18 @@ from common.recovery import (
     _qualified_name,
     _recovery_descriptor,
     _trackable_topology_descriptor,
+    callback_recovery_descriptor,
+    callback_recovery_state,
     capture_rng_state,
     fingerprint_state,
     load_task_checkpoint,
+    optimizer_learning_rate_state,
     restore_replay_buffer,
     restore_rng_state,
-    save_task_checkpoint
+    restore_callback_recovery_state,
+    restore_optimizer_learning_rate_state,
+    save_task_checkpoint,
+    validate_checkpoint_destination
 )
 
 from autoencoder import VariationalAutoencoder, VAEClassifier
@@ -1940,6 +1946,9 @@ def _run_continual_tasks(
         generative_model, DiffusionModel
     ):
         raise ValueError("fit_progressively requires a diffusion replay model.")
+    # Continual curricula fail before the first classifier/generator phase starts.
+    if fit_method == "fit_progressively":
+        validate_progressive_classifier_growth(generative_model, fit_kwargs)
 
     # Continual diffusion models need a vocabulary that can grow at task boundaries.
     if isinstance(generative_model, DiffusionModel) and not getattr(
@@ -2208,8 +2217,8 @@ def _run_continual_tasks(
     # data bytes, callbacks, schedules, precision, and replay policy are all
     # represented without process-local repr strings.
     run_descriptor = {
-        # Version 5 binds learned replay sources and randomizes balanced remainder classes.
-        "schema": 5,
+        # Version 6 authenticates callback behavior and explicit VAE boundary metadata.
+        "schema": 6,
         "schedule": {
             "class_num": class_num,
             "class_order": class_order,
@@ -2248,9 +2257,11 @@ def _run_continual_tasks(
             "generative_compile_args": _recovery_descriptor(
                 generative_model_compile_args
             ),
-            "callbacks": _recovery_descriptor(list(callbacks_list or [])),
-            "generative_callbacks": _recovery_descriptor(
-                list(generative_callbacks_list or [])
+            "callbacks": callback_recovery_descriptor(
+                list(callbacks_list or []), strict=save_task_checkpoints or resume_from is not None
+            ),
+            "generative_callbacks": callback_recovery_descriptor(
+                list(generative_callbacks_list or []), strict=save_task_checkpoints or resume_from is not None
             ),
             "callback_patience": callback_patience,
             "callback_monitor": callback_monitor,
@@ -2298,6 +2309,16 @@ def _run_continual_tasks(
         },
     }
     run_fingerprint = fingerprint_state(run_descriptor)
+
+    def _validate_callback_identity() -> None:
+        """Reject changed callback policy before fitting or committing recovery state."""
+        # Ordinary runs do not promise authenticated callback recovery.
+        if not (save_task_checkpoints or resume_from is not None):
+            return
+        for key, selected in (("callbacks", callbacks_list), ("generative_callbacks", generative_callbacks_list)):
+            # Persistent runtime state is separate from this frozen behavior snapshot.
+            if callback_recovery_descriptor(list(selected or []), strict=True) != run_descriptor["training"][key]:
+                raise ValueError("Callback behavior changed after the recovery identity was frozen.")
 
     task_state = {
         "accuracies": [],
@@ -2415,8 +2436,31 @@ def _run_continual_tasks(
             )
             generative_model.set_teacher_network(restored_teacher)
 
+        # Restore authenticated VAE task-local metadata before its config enters topology checks.
+        if isinstance(generative_model, VariationalAutoencoder):
+            metadata = saved.get("vae_task_state")
+            expected_seed = derive_seed(seed, "task", start_task_index - 1)
+            expected_sampling_seed = derive_seed(expected_seed, "vae", "reparameterization")
+            # The master initialization seed remains independently sealed in run_descriptor.
+            if not isinstance(metadata, dict) or metadata.get("seed") != expected_seed or (
+                metadata.get("reparameterization_seed") != expected_sampling_seed
+            ):
+                raise ValueError("Checkpoint VAE task seed metadata is incompatible with its authenticated schedule.")
+            observed = metadata.get("seen_classes")
+            permitted = {label for group in completed_groups for label in group}
+            # Sampling may omit a scheduled class, but cannot observe future or malformed IDs.
+            if not isinstance(observed, list) or any(
+                isinstance(label, bool) or not isinstance(label, int) or label not in permitted
+                for label in observed
+            ) or observed != sorted(set(observed)):
+                raise ValueError("Checkpoint VAE observed classes are incompatible with the completed tasks.")
+            generative_model.seed = metadata["seed"]
+            generative_model.reparameterization_seed = metadata["reparameterization_seed"]
+            generative_model.seen_classes = list(observed)
+
         _prepare_optimizer_slots()
         reconstructed_trackables = _recovery_trackables()
+        restore_optimizer_learning_rate_state(reconstructed_trackables, saved.get("optimizer_learning_rates"))
         reconstructed_topology = _trackable_topology_descriptor(
             reconstructed_trackables
         )
@@ -2439,6 +2483,8 @@ def _run_continual_tasks(
             assert_consumed=True
         )
         restore_rng_state(recovered.rng_state, numpy_generator=rng)
+        restore_callback_recovery_state(list(callbacks_list or []), saved.get("callback_states", []))
+        restore_callback_recovery_state(list(generative_callbacks_list or []), saved.get("generative_callback_states", []))
         # Restore saved buffer contents and RNG state only for buffered replay.
         if use_buffer and recovered.replay_state is not None:
             restore_replay_buffer(buffer, recovered.replay_state)
@@ -2454,7 +2500,12 @@ def _run_continual_tasks(
     if checkpoint_dir is None and resume_from is not None:
         checkpoint_dir = str(recovered.task_dir.parent)
 
+    # Discovery can skip an invalid future slot; reject that occupied root before retraining.
+    if save_task_checkpoints and checkpoint_dir is not None:
+        validate_checkpoint_destination(checkpoint_dir, start_task_index, len(internal_task_groups))
+
     for task_index in range(start_task_index, len(internal_task_groups)):
+        _validate_callback_identity()
         task_wall_start = time.perf_counter()
         # Record buffered, generated, or absent replay according to the active source.
         task_resource = {
@@ -2664,15 +2715,6 @@ def _run_continual_tasks(
         if not use_valset:
             x_val, y_val = None, None
 
-        # Image-based VAEs flatten pixels to match their dense input architecture.
-        if isinstance(generative_model, VariationalAutoencoder) \
-        and not return_features: # Match configured dense VAE input shapes.
-            x_train = _flatten_example_rows(x_train)
-            x_test = _flatten_example_rows(x_test)
-            # Flatten validation images only when a validation split exists.
-            if x_val is not None:
-                x_val = _flatten_example_rows(x_val)
-
         # Track the origin of each training row. Diffusion KD consumes this
         # metadata only for the optional replay-only scope.
         replay_mask = np.zeros((len(x_train),), dtype=bool)
@@ -2859,6 +2901,9 @@ def _run_continual_tasks(
                     candidate_seed,
                     task_replay_cache_context,
                 )
+            # Dense VAE generations return to the canonical image/feature coordinates.
+            if isinstance(generative_model, VariationalAutoencoder):
+                x_buffer = np.asarray(x_buffer).reshape((-1, *x_train.shape[1:]))
             # Remove a generated singleton channel when current grayscale inputs have no
             # channel axis.
             if (x_train.ndim == 3 and x_buffer.ndim == 4 and x_buffer.shape[-1] == 1):
@@ -2963,6 +3008,14 @@ def _run_continual_tasks(
             classifier_x_val = _flatten_example_rows(x_val) \
                 if x_val is not None else None
 
+        # Grayscale loaders may omit the singleton channel required by a CNN.
+        elif not use_diffusion_classifier and isinstance(classifier_input_shape, tuple) \
+        and len(classifier_input_shape) == 4 and x_train.ndim == 3:
+            classifier_x_train = x_train[..., None]
+            classifier_x_test = x_test[..., None]
+            # Keep an absent validation split absent during the image-view conversion.
+            classifier_x_val = x_val[..., None] if x_val is not None else None
+
         classifier_y_train = y_train
         classifier_y_val = y_val
         classifier_y_test = y_test
@@ -3054,13 +3107,23 @@ def _run_continual_tasks(
                         else generative_model_kwargs["train_num"]
         # VAE generators train through their custom array-based training API.
         if isinstance(generative_model, VariationalAutoencoder):
+            vae_x_train = _flatten_example_rows(x_train)
+            vae_x_test = _flatten_example_rows(x_test)
+            # Only the generator sees a flat view; the canonical task arrays stay spatial.
+            vae_x_val = _flatten_example_rows(x_val) if x_val is not None else None
+
+            def classify_vae_samples(samples: tf.Tensor) -> tf.Tensor:
+                """Evaluate generated vectors through the requested classifier's geometry."""
+                shaped = tf.reshape(samples, (-1, *classifier_input_shape[1:]))
+                return new_model(shaped, training=False)
+
             vae_fit_kwargs = {
                 "y": y_train,
                 "train_num": phase_train_num,
                 "batch_size": batch_size,
                 "shuffle_buffer": task_shuffle_buffer,
                 "seed": task_seed,
-                "clf": new_model
+                "clf": classify_vae_samples
             }
 
             fit_started = time.perf_counter()
@@ -3068,8 +3131,8 @@ def _run_continual_tasks(
             # validation.
             generative_history = _train_task_model(
                 generative_model,
-                x_train,
-                (x_val, y_val) if x_val is not None else None,
+                vae_x_train,
+                (vae_x_val, y_val) if vae_x_val is not None else None,
                 task_callbacks=_phase_callbacks(
                     "val_loss" if x_val is not None else "loss",
                     default_mode="min",
@@ -3081,10 +3144,10 @@ def _run_continual_tasks(
             task_resource["seconds"]["generator_fit"] += float(
                 time.perf_counter() - fit_started
             )
-            generative_trainset = _task_dataset(x_train, y_train, training=True)
-            generative_valset = _task_dataset(x_val, y_val)
+            generative_trainset = _task_dataset(vae_x_train, y_train, training=True)
+            generative_valset = _task_dataset(vae_x_val, y_val)
             # Build a VAE test dataset only outside development experiments.
-            generative_testset = _task_dataset(x_test, y_test) \
+            generative_testset = _task_dataset(vae_x_test, y_test) \
                                 if experiment_phase != "development" else None
         # Diffusion generators prepare noised training through dataset-based wrapper APIs.
         elif isinstance(generative_model, DiffusionModel):
@@ -3446,6 +3509,7 @@ def _run_continual_tasks(
 
         # Persist task-boundary state when checkpointing is enabled and has a destination.
         if save_task_checkpoints and checkpoint_dir is not None:
+            _validate_callback_identity()
             # Materialize every optimizer slot at the save boundary. This
             # makes the checkpoint object graph complete even when a phase did
             # not happen to receive gradients in the just-finished task.
@@ -3463,6 +3527,16 @@ def _run_continual_tasks(
                 "trackable_topology": trackable_topology,
                 "trackable_topology_fingerprint": fingerprint_state(trackable_topology)
             }
+            checkpoint_state["callback_states"] = callback_recovery_state(list(callbacks_list or []))
+            checkpoint_state["generative_callback_states"] = callback_recovery_state(list(generative_callbacks_list or []))
+            checkpoint_state["optimizer_learning_rates"] = optimizer_learning_rate_state(checkpoint_trackables)
+            # VAE vocabulary and task seeds are runtime metadata, separate from initial config.
+            if isinstance(generative_model, VariationalAutoencoder):
+                checkpoint_state["vae_task_state"] = {
+                    "seed": generative_model.seed,
+                    "reparameterization_seed": generative_model.reparameterization_seed,
+                    "seen_classes": list(generative_model.seen_classes)
+                }
             # Include replay-buffer state for buffered runs; other runs save no buffer.
             checkpoint_path = save_task_checkpoint(
                 checkpoint_dir,

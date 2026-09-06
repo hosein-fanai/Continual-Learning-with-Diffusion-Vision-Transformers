@@ -20,11 +20,14 @@ stopper = BatchLossPlateau(
 model.fit(dataset, callbacks=[stopper])
 ```
 
-An improvement is strictly `current < best - min_delta`. Missing monitor keys
+With `mode="min"` (the default), improvement means `current < best - min_delta`.
+With `mode="max"`, it means `current > best + min_delta`; `mode="auto"` maximizes
+accuracy/acc/AUC monitors and minimizes other names. Missing monitor keys
 are ignored. The stop condition is `wait >= patience`, so `patience=200` stops
 after 200 consecutive non-improving batches. `fit_progressively` creates a new
-callback for each stage, giving each stage independent `best=inf` and `wait=0`
-state.
+callback for each stage, giving each stage independent best and patience state.
+Its `stopper_mode` argument now selects direction for both batch-wise and
+epoch-wise pacing. Use `stopper_mode="max"` for an accuracy monitor.
 
 ## `ImageGeneratorCallback`
 
@@ -60,6 +63,9 @@ record the one-based epoch, sampling steps, guidance scale, and eta.
 Supplying `results_path` saves PNGs whether or not GIF output is enabled. If
 `results_path=None`, `show_images` must be true; `save_gifs=True` always
 requires a result path.
+
+New result directories are reserved exclusively using timestamp and tag, with a
+unique suffix on collision. Every writer for the same run shares that reservation.
 
 ## `RawNetworkValidationCallback`
 

@@ -1938,7 +1938,8 @@ class ContinuallyLearnConfig(KwargsMixin):
         save_task_checkpoints (bool): Persist one atomic recovery checkpoint after every
             completed task. Defaults to ``False``.
         checkpoint_dir (str | None): Optional recovery root. Configured runs default to
-            ``<results_path>/checkpoints``. Defaults to ``None``.
+            ``<results_path>/checkpoints``. Occupied future task slots require a fresh
+            root before resumed fitting; invalid evidence is preserved. Defaults to ``None``.
         resume_from (str | None): Checkpoint root or committed task directory from which the
             next unfinished task is restored. Defaults to ``None``.
         experiment_phase (str): ``"legacy"`` preserves test reporting, ``"development"``
@@ -2057,8 +2058,9 @@ class TrainingConfig:
             the selected progressive plateau stopper; the unit follows earlystopping_type.
             Defaults to ``10``.
         min_delta (float): Minimum progressive plateau improvement. Defaults to ``0.001``.
-        stopper_mode (str): 'min', 'max', or 'auto' direction passed to Keras EarlyStopping
-            for epoch-wise progressive plateau pacing. Defaults to ``'min'``.
+        stopper_mode (str): 'min', 'max', or 'auto' direction for epoch-wise or batch-wise
+            progressive plateau pacing. Auto maximizes accuracy/AUC monitors and minimizes
+            other monitors. Defaults to ``'min'``.
         fit_kwargs (dict[str, object]): Additional Keras fit arguments such as step counts;
             each config instance owns an independent mapping. Defaults to a fresh ``{}`` for
             each instance.

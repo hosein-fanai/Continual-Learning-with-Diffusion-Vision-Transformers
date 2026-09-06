@@ -216,10 +216,9 @@ class DistillationControlTests(tf.test.TestCase):
             axis=-1,
         )
         expected = tf.reduce_mean(
-            tf.keras.losses.kullback_leibler_divergence(
-                teacher_soft,
-                student_soft,
-            )
+            # Padded classes have exact zero teacher mass, rather than Keras's clipped epsilon.
+            tf.reduce_sum(tf.math.xlogy(teacher_soft, teacher_soft)
+                          - teacher_soft * tf.math.log(student_soft), axis=-1)
         ) * temperature ** 2
         self.assertAllClose(actual, expected)
 

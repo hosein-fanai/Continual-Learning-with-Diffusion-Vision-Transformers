@@ -1,7 +1,9 @@
 # Experiment results
 
-Training callbacks create one project directory here, named with a timestamp
-and optional `training.project_tag`. Depending on reporting settings, a run can
+Training reserves one new directory atomically here, named with a timestamp
+and optional `training.project_tag`. A unique suffix resolves concurrent or
+same-second collisions. The reserved path is shared by callbacks, configuration,
+reporting and default checkpoint writers. Depending on reporting settings, a run can
 contain:
 
 - the resolved `config.yaml` and `model.weights.h5`;
@@ -21,6 +23,8 @@ training-history GIF, so classification-only trials have the same artifact
 coverage as generative trials.
 
 `common.train.train_model` creates and updates training artifacts;
-`common.train.report` writes final reports and samples. Existing timestamped
-directories are immutable experiment records and do not expose Python APIs.
+`common.train.report` writes final reports and samples in that execution's reserved
+directory. The allocator never reuses an occupied directory. Preserve existing
+experiment records; direct report calls must use their own reserved path. Explicit
+task-checkpoint recovery keeps its separately authenticated checkpoint root.
 The `old/` and `tests/` groupings contain archived and trial runs respectively.

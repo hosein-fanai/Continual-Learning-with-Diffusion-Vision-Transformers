@@ -1805,6 +1805,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if self._current_resolution == self.image_size:
             return x
 
+        input_dtype = x.dtype
         # Detach prefix tokens before resizing a spatial grid; grids without prefixes stay
         # intact.
         x, token = (
@@ -1834,6 +1835,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 output_grid_size
             )
         )
+        # Bilinear resize returns float32 even for float64 or mixed-precision input.
+        x = tf.cast(x, input_dtype)
         x = tf.reshape(x, (
             x_shape[0], 
             output_grid_size * output_grid_size, 

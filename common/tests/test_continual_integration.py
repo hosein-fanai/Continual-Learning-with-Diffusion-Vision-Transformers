@@ -766,19 +766,15 @@ class ContinualIntegrationTests(unittest.TestCase):
 
             def arguments(
                 checkpoint_dir: Path,
-                callback: tf.keras.callbacks.Callback,
             ) -> dict[str, object]:
                 """Build matching fresh arguments for uninterrupted and resumed buffer runs.
 
                 The closure reads the temporary classifier template path and class-coded
-                loader. Only the checkpoint destination and callback differ across the
-                compared runs.
+                loader. Only the checkpoint destination differs across the compared runs.
 
                 Args:
                     checkpoint_dir (Path): Destination for committed task checkpoints in
                         this run.
-                    callback (tf.keras.callbacks.Callback): Interruption callback
-                        controlling whether the second fit is deliberately stopped.
 
                 Returns:
                     dict[str, object]: Three-class, one-epoch, seeded buffer-run options,
@@ -804,7 +800,6 @@ class ContinualIntegrationTests(unittest.TestCase):
                         "sample_num": 2,
                         "insert_num": 2,
                     },
-                    "callbacks_list": [callback],
                     "plot_results": False,
                     "verbose": 0,
                     "seed": 73,
@@ -813,24 +808,26 @@ class ContinualIntegrationTests(unittest.TestCase):
                     "return_details": True,
                 }
 
-            uninterrupted = _run_continual_tasks(**arguments(
-                root / "full",
-                _InterruptOnSecondFit(enabled=False),
-            ))
+            uninterrupted = _run_continual_tasks(**arguments(root / "full"))
+            interrupted_args = arguments(root / "resumed")
+            original_fit = tf.keras.Model.fit
+            fit_count = 0
 
-            interrupting = _InterruptOnSecondFit(enabled=True)
-            interrupted_args = arguments(root / "resumed", interrupting)
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "intentional task interruption",
-            ):
-                _run_continual_tasks(**interrupted_args)
+            def interrupted_fit(model: tf.keras.Model, *args: object, **kwargs: object) -> object:
+                """Inject an external failure without changing experiment callbacks."""
+                nonlocal fit_count
+                fit_count += 1
+                # The first committed task remains durable while the next fit is interrupted.
+                if fit_count == 2:
+                    raise RuntimeError("intentional task interruption")
+                return original_fit(model, *args, **kwargs)
 
-            # Task zero is durable; task one restarts from its derived seed.
-            interrupting.enabled = False
+            with patch.object(tf.keras.Model, "fit", new=interrupted_fit):
+                with self.assertRaisesRegex(RuntimeError, "intentional task interruption"):
+                    _run_continual_tasks(**interrupted_args)
+
             resumed = _run_continual_tasks(
-                **interrupted_args,
-                resume_from=str(root / "resumed"),
+                **interrupted_args, resume_from=str(root / "resumed"),
             )
 
             self.assertEqual(resumed["next_task_index"], 3)

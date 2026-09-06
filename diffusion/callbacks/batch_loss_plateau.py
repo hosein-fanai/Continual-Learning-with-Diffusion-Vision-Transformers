@@ -1,6 +1,6 @@
 """Batch-granularity early stopping for progressive training stages.
 
-BatchLossPlateau monitors a minimizing metric at batch boundaries and stops the
+BatchLossPlateau monitors a metric in its configured direction and stops the
 bound model after sustained non-improvement. Each new callback owns an independent
 best value and patience counter, matching progressive curriculum stage lifetimes.
 """
@@ -12,7 +12,7 @@ from typing import Any
 
 
 class BatchLossPlateau(callbacks.Callback):
-    """Stop one progressive curriculum stage after batch-level loss stagnation.
+    """Stop one progressive curriculum stage after batch-level metric stagnation.
 
     This is deliberately stage-local: ``fit_progressively`` creates a fresh
     instance for every curriculum stage, so ``best`` and ``wait`` are reset
@@ -27,8 +27,10 @@ class BatchLossPlateau(callbacks.Callback):
             patience semantics.
             Defaults to ``200``.
         min_delta (float): Non-negative improvement margin. A value is improving only
-            when ``current < best - min_delta``.
+            when it exceeds the margin in the configured direction.
             Defaults to ``0.0``.
+        mode (str): ``min`` minimizes, ``max`` maximizes, and ``auto`` maximizes
+            accuracy/acc/AUC monitors and minimizes other metrics. Defaults to ``min``.
 
     Inputs:
         Keras supplies a zero-based integer batch index and an optional mapping
@@ -39,8 +41,7 @@ class BatchLossPlateau(callbacks.Callback):
         ``model.stop_training`` to ``True``.
 
     Attributes:
-        best (float): Smallest sufficiently improved observed metric, initially positive
-            infinity.
+        best (float): Best sufficiently improved value; initially signed infinity.
         wait (int): Consecutive non-improving batch count, initially zero.
         monitor (str): Metric key selected by the constructor.
     """
@@ -49,7 +50,8 @@ class BatchLossPlateau(callbacks.Callback):
         self, 
         monitor: str = "noise_loss", 
         patience: int = 200, 
-        min_delta: float = 0.
+        min_delta: float = 0.,
+        mode: str = "min",
     ) -> None:
         """Initialize an empty stage-local best value and wait counter.
 
@@ -61,6 +63,7 @@ class BatchLossPlateau(callbacks.Callback):
             min_delta (float): Non-negative minimum decrease that counts as an
                 improvement.
                 Defaults to ``0.0``.
+            mode (str): ``min``, ``max``, or ``auto`` metric direction.
 
         Returns:
             None: No value is returned.
@@ -81,7 +84,16 @@ class BatchLossPlateau(callbacks.Callback):
         # Reject an invalid improvement margin before monitoring begins.
         if not np.isfinite(self.min_delta) or self.min_delta < 0.:
             raise ValueError("min_delta must be finite and nonnegative.")
-        self.best = np.inf
+        # Reject unknown directions before any training update can occur.
+        if mode not in ("min", "max", "auto"):
+            raise ValueError("mode must be 'min', 'max', or 'auto'.")
+        # Match Keras auto-mode conventions while retaining explicit min/max control.
+        self.maximize = mode == "max" or (
+            mode == "auto" and (
+                "acc" in self.monitor.lower() or self.monitor.lower().endswith("auc")
+            )
+        )
+        self.best = -np.inf if self.maximize else np.inf
         self.wait = 0
 
     def on_train_batch_end(
@@ -113,8 +125,11 @@ class BatchLossPlateau(callbacks.Callback):
             return
 
         current = float(current)
-        # Record a sufficiently lower loss as a new best value.
-        if current < self.best - self.min_delta:
+        # Compare in the configured direction with the same positive margin.
+        improved = current > self.best + self.min_delta if self.maximize \
+            else current < self.best - self.min_delta
+        # Reset patience only after a sufficiently improved observation.
+        if improved:
             self.best = current
             self.wait = 0
             return

@@ -144,7 +144,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self.clf_vars_noise_part_ids, 
             depth=self.network.depth, 
             min_id=1, 
-            max_id=self.network.depth, 
+            max_id=self.network.depth
         )
         self.network.set_max_encoder_num(max([
             self.network.max_encoder_num, 
@@ -461,11 +461,18 @@ class DiffusionClassifierV2(DiffusionClassifier):
             updated in place.
         """
 
+        previous_group_ids = {
+            id(variable) for variable in (
+                *(self.clf_trainable_variables or ()),
+                *(self.gen_trainable_variables or ())
+            )
+        }
+
         self.clf_vars_noise_part_ids = self.network._handle_ids(
             self._init_config["clf_vars_noise_part_ids"], 
             depth=self.network.depth, 
             min_id=1, 
-            max_id=self.network.depth, 
+            max_id=self.network.depth
         )
         self.network.set_max_encoder_num(max([
             self.network.max_encoder_num, 
@@ -473,6 +480,22 @@ class DiffusionClassifierV2(DiffusionClassifier):
         ]))
         self._set_clf_variables()
         self._set_gen_variables()
+
+        current_network_ids = {id(variable) for variable in self.network.weights}
+        obsolete_group_ids = previous_group_ids - current_network_ids
+        # Keras 2.10 registers variables assigned through selection lists as direct
+        # wrapper weights, but replacing a list does not remove its old variables.
+        # Drop only replaced raw-network variables; retain ordinary weight ordering
+        # and every unrelated wrapper/teacher/optimizer variable.
+        if obsolete_group_ids:
+            object.__setattr__(self, "_trainable_weights", [
+                value for value in self._trainable_weights
+                if id(value) not in obsolete_group_ids
+            ])
+            object.__setattr__(self, "_non_trainable_weights", [
+                value for value in self._non_trainable_weights
+                if id(value) not in obsolete_group_ids
+            ])
 
         super()._register_optimizer_variables(
             getattr(self, "gen_optimizer", getattr(self, "optimizer", None)), 
@@ -1338,28 +1361,28 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 (x_t, t, uncond_labels), 
                 max_encoder_num=None,
                 full_return=True, 
-                training=True
+                training=True,
+                **self.use_logits_instead
             )
             classes_pred = class_outputs[0]
             clf_regs_list = class_outputs[3]
             clf_z_vals_list = class_outputs[4]
-            distil_classes = None
-            # Read the independent distillation head when it is active.
-            if self.use_clf_distil_loss:
-                distil_classes = class_outputs[5]
+            distil_classes = class_outputs[5] if self.use_clf_distil_loss else None
+            logits = class_outputs[-1] if self.use_logits_instead else None
 
             outputs = self.compute_clf_kl_ctr_distil_loss(
-                classes, None, None, None, None, 
+                classes, None, None, None, None,
                 classes_pred, clf_z_vals_list, 
-                clf_regs_list, distil_classes, 
+                clf_regs_list, distil_classes,
                 clf_loss_mask=clf_loss_mask, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
                 ctr_train_type="uncond", 
                 teacher_labels=teacher_labels, 
                 replay_mask=replay_mask, 
-                x0=x0, 
-                training=True
+                x0=x0,
+                training=True,
+                logits_u=logits
             )
             (loss, clf_loss, kl_loss, 
             ctr_loss, clf_distil_loss, 
@@ -1441,20 +1464,19 @@ class DiffusionClassifierV2(DiffusionClassifier):
             (x_t, t, uncond_labels), 
             max_encoder_num=None,
             full_return=True, 
-            training=False
+            training=False,
+            **self.use_logits_instead
         )
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
         clf_z_vals_list = class_outputs[4]
-        distil_classes = None
-        # Read the independent distillation head when it is active.
-        if self.use_clf_distil_loss:
-            distil_classes = class_outputs[5]
+        distil_classes = class_outputs[5] if self.use_clf_distil_loss else None
+        logits = class_outputs[-1] if self.use_logits_instead else None
 
         outputs = self.compute_clf_kl_ctr_distil_loss(
-            classes, None, None, None, None, 
+            classes, None, None, None, None,
             classes_pred, clf_z_vals_list, 
-            clf_regs_list, distil_classes, 
+            clf_regs_list, distil_classes,
             clf_loss_mask=clf_loss_mask, 
             clf_train_type="uncond", 
             kl_train_type="uncond", 
@@ -1462,7 +1484,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             teacher_labels=teacher_labels,
             replay_mask=replay_mask,
             x0=x0,
-            training=False
+            training=False,
+            logits_u=logits
         )
         (loss, clf_loss, kl_loss, 
         ctr_loss, clf_distil_loss, 

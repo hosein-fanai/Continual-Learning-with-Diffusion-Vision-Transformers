@@ -41,8 +41,8 @@ from common.config import (
     resolve_continual_schedule,
     save_config
 )
-from common.dataloader import get_datasets, get_dataset_spec
-from common.model import get_model
+from common.dataloader import get_datasets, get_dataset_spec, _resolve_dataset_options
+from common.model import get_model, validate_progressive_classifier_growth
 from common.runtime import configure_runtime, derive_seed, effective_seed
 from common.recovery import find_latest_task_checkpoint, load_task_checkpoint
 from common.continual_reporting import (
@@ -155,6 +155,7 @@ def _resolve_training_options(
 
     # Preserve the established direct-mode defaults.
     if config is None:
+        data_contract = _resolve_dataset_options(None, kwargs)
         direct_seed = None
         # Direct bundle training gives an explicit stream seed the same precedence as Config.
         if isinstance(model, dict):
@@ -175,13 +176,11 @@ def _resolve_training_options(
             "tensorboard_run_name": kwargs.get("tensorboard_run_name"),
             "tensorboard_path": kwargs.get("tensorboard_path"),
             "hpo": kwargs.get("hpo", {}),
-            "continual_kwargs": deepcopy(
-                kwargs.get("continually_learn_kwargs", {})
-            ),
+            "continual_kwargs": deepcopy(data_contract["continual_kwargs"]),
             "dataset_name": kwargs.get("dataset_name", "mnist"),
-            "loader_preprocess": kwargs.get("preprocess", "standardize"),
+            "loader_preprocess": data_contract["preprocess"],
             "features_path": kwargs.get("features_path", ""),
-            "onehot_labels": kwargs.get("onehot_labels", False),
+            "onehot_labels": data_contract["onehot_labels"],
             "validation_ratio": kwargs.get("validation_ratio", 0.),
             "use_valset": kwargs.get("use_valset", True),
             "seed": effective_seed(seed=direct_seed),
@@ -642,6 +641,9 @@ def train_model(
         raise ValueError(
             "Progressive fitting requires a DiffusionModel wrapper."
         )
+    # Reject unsupported future growth before any epoch or artifact reservation.
+    if progressive_fit:
+        validate_progressive_classifier_growth(checkpoint_model, fit_kwargs)
 
     dynamic_diffusion_checkpoint = save_weights and isinstance(
         checkpoint_model, DiffusionModel
@@ -1883,6 +1885,13 @@ def main(
         )
         dtype_policy = kwargs.get("dtype_policy", "float32")
         deterministic_ops = kwargs.get("deterministic_ops", False)
+
+    data_contract = _resolve_dataset_options(config, kwargs)
+    # Direct calls carry inferred values through all subsequent public adapters.
+    if config is None:
+        kwargs.update({key: data_contract[key] for key in (
+            "model_name", "preprocess", "onehot_labels", "seed", "return_features"
+        )})
 
     # Install policy and seed before constructing datasets, models, layers, or
     # optimizers. Keras seeds Python, NumPy, and TensorFlow together.

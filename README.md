@@ -499,3 +499,10 @@ The [September 6 project review](allocation_study/PROJECT_REVIEW.md) records the
 subsequent audit of the research modules and shared numerical corrections.
 The [thesis readiness audit](allocation_study/THESIS_READINESS.md) records the
 end-to-end follow-up, current execution boundaries, and experiment/evidence runbook.
+The [F01–F22 implementation closure](allocation_study/IMPLEMENTATION_CLOSURE.md)
+records the subsequent verified repairs and current test evidence. Use the
+[new development bundle](allocation_study/prepared/thesis_staged_review_20260906/README.md)
+and [claim/control map](allocation_study/CLAIM_CONTROLS.md) for new experiments;
+both earlier prepared bundles remain tied to their archived source.
+The [45-file staged review](allocation_study/STAGED_REVIEW_20260906.md) records
+the subsequent corrections, final verification and staging scope.

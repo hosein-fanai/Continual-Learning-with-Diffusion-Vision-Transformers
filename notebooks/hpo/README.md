@@ -6,6 +6,11 @@ pair, exposes the same editable constants, displays its constrained search
 space, runs the study, and reports the best trial or Pareto front. Outputs are
 intentionally empty in version control.
 
+Current studies retain search-space version 12 and seal training-semantics
+version 2. Earlier study specifications cannot resume into the repaired KD,
+prediction and validation behavior. Start a new study and preserve its predecessor;
+do not change old `study_spec.json` fields to authorize mixed-semantics trials.
+
 ## Notebook matrix
 
 | Task | Notebook | Model role | Representation | Default epochs |

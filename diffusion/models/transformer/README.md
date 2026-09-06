@@ -114,7 +114,9 @@ tokens; they do not classify them or expose separate token predictions.
 `classifier_only_distil_token=True`, set `clf_distil_token_type`. With
 `classifier_only_distil_token=False`, the classifier uses the main
 transformer's `distil_token_type`. The remaining distillation-token shape/merge
-options are the inherited `distil_token_*` values.
+options are the inherited `distil_token_*` values. The same canonical prefix
+order applies when the two tokens have different ownership and when the
+classifier aggregates predicted noises.
 
 The ordinary classifier head reads the class token when present. If no class
 token exists, or `force_global_avg_pooling=True`, it averages every token except
@@ -125,6 +127,12 @@ independent `"distil_classes"` distributions in both modes; without it, the
 established `"classes"` contract is unchanged. The wrapper combines these
 distributions only when computing `total_accuracy`. Dynamic `add_class()`
 growth expands both softmax heads.
+
+For stable soft-target losses, classifier calls accept `return_logits=True`.
+This adds `class_logits`, optional `distil_logits`, and `clf_regs_logits_list` to the
+result mapping from the same forward pass. A full `predict_class` result
+appends this dictionary after its existing five or six entries. Inactive
+auxiliary entries remain `None`; ordinary calls retain probability outputs.
 
 ## Depth and ID conventions
 
@@ -513,7 +521,12 @@ growth = classifier_network.add_depths({
 
 Classifier-only additional names are `feature_aggregator` and
 `cross_attention_aggregator`. Added sequences must preserve the feature width
-expected by the already-created output/classifier head.
+expected by the already-created output/classifier head and any retained terminal
+connector weights. A classifier sequence may change width internally if its
+final routed features restore that interface. Incompatible classifier growth
+is rejected before either targeted branch changes. Classifier depth growth
+from `clf_depth=0` is unsupported; start a progressive classifier with positive
+depth. Fixed depth-zero classifiers remain supported.
 
 Dynamic class growth follows the same serialization rule across transformer
 variants: each `add_class()` updates `get_config()["num_classes"]` to the
@@ -540,15 +553,22 @@ four-input call or a custom training step for teacher forcing.
 
 The standalone `DiTDecoder` uses
 `decoder((images, times, labels), encoder_cond, encoder_features_list)` and its
-symbolic builder exposes those values as five inputs. Eager calls accept the
-complete depth-indexed encoder feature list; the symbolic fifth input is one
-final feature tensor, wrapped internally as a one-item list. Separate
+symbolic builder exposes three decoder inputs, one encoder condition input,
+and one input for each entry in `encoder_feature_dims`. The remaining inputs
+are the complete depth-indexed encoder feature list, including depth zero;
+`encoder_feature_is_flat` determines whether each is a vector `[B,D]` or a
+token tensor `[B,N,D]`. Eager calls accept the same indexed list. Separate
 conditions, class tokens, shifted batches, and the image output head are
 supported. A changed active resolution must be positive and divisible by the
 decoder patch size, and `None` restores its configured image size. Its
-encoder-feature and cross-attention aggregation mappings remain reserved rather
-than materialized; each decoder block still cross-attends to the final encoder
-feature as its default values tensor. Depth 0 has no block and is
+encoder-feature and cross-attention aggregation mappings are implemented:
+`feature_aggregation_ids_dict` routes encoder features into decoder features,
+and `cross_attention_aggregation_ids_dict` selects encoder attention context.
+Feature connectors select earlier decoder features. Last-axis feature merges
+require matching rank and non-merged dimensions, including token counts;
+encoder grid, width, and flat-feature metadata must describe those tensors.
+Without an explicit attention route, a decoder block uses the last available
+encoder feature as its default values tensor. Depth 0 has no block and is
 condition/decoder-image only. Encoder-style blocks selected with
 `use_decoder_ids=[]` receive the same context without a causal mask.
 `get_config`/`from_config` preserve standard Keras `name`, `trainable`, `dtype`,

@@ -2475,11 +2475,15 @@ class HpoConfigTests(unittest.TestCase):
             )
             self.assertEqual(SEARCH_SPACE_VERSION, 12)
             self.assertEqual(original["search_space_version"], 12)
+            self.assertEqual(original["training_semantics_version"], 2)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (
                 ("seed", original, 12),
                 ("protocol", {**original, "search_space_version": 9}, 11),
+                ("legacy_training_semantics", {key: value for key, value in original.items()
+                                               if key != "training_semantics_version"}, 11),
+                ("changed_training_semantics", {**original, "training_semantics_version": 1}, 11),
             )
             for reason, stored_spec, requested_seed in cases:
                 with self.subTest(reason=reason):

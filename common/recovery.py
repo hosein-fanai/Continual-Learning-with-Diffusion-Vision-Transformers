@@ -43,6 +43,12 @@ import shutil
 
 import uuid
 
+import inspect
+
+import types
+
+from copy import deepcopy
+
 from pathlib import Path
 
 from dataclasses import dataclass
@@ -681,6 +687,184 @@ def _recovery_descriptor(
         return {"type": _qualified_name(value)}
     finally:
         active_ids.remove(object_id)
+
+
+def _schedule_descriptor(schedule: object) -> dict[str, object]:
+    """Bind a configured schedule or a pure Python function and immutable captures.
+
+    Opaque callables and mutable/global object dependencies are rejected for
+    strict recovery. Configured callable objects must expose get_config().
+    """
+    # A declarative schedule owns a portable behavior description.
+    if callable(getattr(schedule, "get_config", None)):
+        config = deepcopy(schedule.get_config())
+        json.dumps(config, sort_keys=True, allow_nan=False)
+        return {"type": _qualified_name(schedule), "config": config}
+    # Arbitrary callable objects cannot be authenticated by class name alone.
+    if not isinstance(schedule, types.FunctionType):
+        raise ValueError("Strict recovery requires a configured or pure-function learning-rate schedule.")
+
+    def constant(value: object) -> object:
+        """Encode only immutable function dependencies without executable deserialization."""
+        # Primitive immutable values have unambiguous exact JSON representations.
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        # Python bytecode constants can include immutable byte strings.
+        if isinstance(value, bytes):
+            return {"bytes": value.hex()}
+        # Tuple constants remain ordered and recursively immutable.
+        if isinstance(value, tuple):
+            return [constant(item) for item in value]
+        raise ValueError("Strict recovery cannot authenticate an opaque or mutable schedule dependency; use a configured schedule.")
+
+    captures = inspect.getclosurevars(schedule)
+    # Unresolved globals cannot define a reproducible schedule at this boundary.
+    if captures.unbound:
+        raise ValueError("Strict recovery cannot authenticate unresolved schedule globals.")
+    # External I/O and dynamic evaluation cannot be bound by an immutable closure.
+    if set(captures.builtins) - {"abs", "min", "max", "pow", "round", "float", "int", "bool", "tuple", "len", "sum", "range"}:
+        raise ValueError("Strict recovery schedules support only pure numeric builtins; use a configured schedule.")
+    code = schedule.__code__
+    return {"python_schedule": 1, "bytecode": code.co_code.hex(),
+            "constants": constant(code.co_consts), "names": list(code.co_names), "freevars": list(code.co_freevars),
+            "arguments": [code.co_argcount, code.co_kwonlyargcount, code.co_posonlyargcount],
+            "defaults": constant(schedule.__defaults__),
+            "kwdefaults": {key: constant(value) for key, value in (schedule.__kwdefaults__ or {}).items()},
+            "captures": {key: constant(value) for key, value in {
+                **captures.globals, **captures.nonlocals
+            }.items()}}
+
+
+def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -> list[object]:
+    """Authenticate supported callback behavior and explicit custom state semantics.
+
+    Strict runs support built-in per-fit stopping/scheduling callbacks and
+    stateless observers. Custom callbacks declare get_recovery_config() plus
+    recovery_state_scope='stateless'/'per_fit', or paired state getter/setter.
+    Ordinary runs without checkpointing retain unrestricted callback support.
+    """
+    # Ordinary fitting does not promise recovery for opaque Python callbacks.
+    if not strict:
+        return _recovery_descriptor(list(callbacks))
+    result = []
+    for callback in callbacks:
+        kind = type(callback)
+        descriptor = {"type": _qualified_name(callback)}
+        custom = getattr(callback, "get_recovery_config", None)
+        # Custom behavior must explicitly declare whether state spans task boundaries.
+        if callable(custom):
+            scope = getattr(callback, "recovery_state_scope", None)
+            getter = callable(getattr(callback, "get_recovery_state", None))
+            setter = callable(getattr(callback, "set_recovery_state", None))
+            # A partial persistent-state interface cannot be restored at the next boundary.
+            if getter != setter:
+                raise ValueError("Custom recovery callbacks need both persistent state methods.")
+            stateful = getter and setter
+            # Missing state semantics cannot be inferred from a callback class name.
+            if not stateful and scope not in {"stateless", "per_fit"}:
+                raise ValueError("Custom recovery callbacks need paired state methods or explicit recovery_state_scope.")
+            config = deepcopy(custom())
+            json.dumps(config, sort_keys=True, allow_nan=False)
+            descriptor.update(config=config, state_scope="persistent" if stateful else scope)
+        # LearningRateScheduler has no get_config in Keras 2.10.
+        elif kind is tf.keras.callbacks.LearningRateScheduler:
+            descriptor.update(schedule=_schedule_descriptor(callback.schedule), state_scope="per_fit")
+        # These built-ins reset their decision state on each fit, while optimizer LR is saved.
+        elif kind in {tf.keras.callbacks.EarlyStopping, tf.keras.callbacks.ReduceLROnPlateau}:
+            fields = ("monitor", "min_delta", "patience", "baseline", "restore_best_weights",
+                      "start_from_epoch", "factor", "cooldown", "min_lr")
+            descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
+                                      for key in fields if hasattr(callback, key)},
+                              monitor_op=getattr(callback.monitor_op, "__name__", _qualified_name(callback.monitor_op)), state_scope="per_fit")
+        # Termination has no evolving state between completed fit phases.
+        elif kind is tf.keras.callbacks.TerminateOnNaN:
+            descriptor["state_scope"] = "stateless"
+        # TensorBoard changes artifacts only; its callback arguments are still declared.
+        elif kind is tf.keras.callbacks.TensorBoard:
+            fields = ("histogram_freq", "write_graph", "write_images", "update_freq",
+                      "embeddings_freq", "embeddings_metadata")
+            descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
+                                      for key in fields if hasattr(callback, key)}, state_scope="per_fit")
+        # Repository sampling callbacks use task-isolated seeds and change no learned state.
+        elif _qualified_name(callback) == "diffusion.callbacks.image_generator_callback.ImageGeneratorCallback":
+            descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
+                                      for key in ("add_null_label", "show_images", "save_gifs", "base_seed")},
+                              state_scope="per_fit")
+        # Unknown callbacks must declare a behavior/state contract before strict execution.
+        else:
+            raise ValueError(f"Strict recovery cannot authenticate opaque callback {_qualified_name(callback)}; declare get_recovery_config and state semantics.")
+        result.append(descriptor)
+    return result
+
+
+def callback_recovery_state(callbacks: Sequence[object]) -> list[object]:
+    """Capture explicitly declared persistent callback state in callback order."""
+    return [callback.get_recovery_state() if callable(getattr(callback, "get_recovery_state", None))
+            else None for callback in callbacks]
+
+
+def optimizer_learning_rate_state(trackables: Mapping[str, object]) -> dict[str, float]:
+    """Capture scalar optimizer learning rates which callbacks can change at runtime.
+
+    Configured schedule objects remain structural configuration and are not
+    replaced by scalar rates. Their iteration/state variables stay checkpointed.
+    """
+    result = {}
+    for role, value in trackables.items():
+        # Only optimizers own a mutable learning-rate hyperparameter in this contract.
+        if isinstance(value, tf.keras.optimizers.Optimizer):
+            rate = value.learning_rate
+            # Exclude configured schedule objects, which have immutable behavior identity.
+            if hasattr(rate, "assign"):
+                result[role] = float(rate.numpy())
+    return result
+
+
+def restore_optimizer_learning_rate_state(trackables: Mapping[str, object], state: object) -> None:
+    """Restore authenticated mutable rates before comparing optimizer configuration.
+
+    Initial optimizer configuration is independently bound by the run descriptor;
+    these scalar values describe a completed callback-controlled boundary.
+    """
+    expected = optimizer_learning_rate_state(trackables)
+    # The same optimizer roles must exist before mutable values can be restored.
+    if not isinstance(state, dict) or set(state) != set(expected):
+        raise ValueError("Checkpoint optimizer learning-rate state differs from its reconstructed roles.")
+    for role, rate in state.items():
+        # A malformed runtime value must not change the authenticated optimizer.
+        if isinstance(rate, bool) or not isinstance(rate, (float, int)) or not math.isfinite(rate) or rate < 0.:
+            raise ValueError("Checkpoint optimizer learning rates must be finite nonnegative scalars.")
+        trackables[role].learning_rate.assign(rate)
+
+
+def restore_callback_recovery_state(callbacks: Sequence[object], states: Sequence[object]) -> None:
+    """Restore custom callback state only after the run identity has been authenticated."""
+    # A changed callback list cannot receive a different task boundary's state.
+    if len(callbacks) != len(states):
+        raise ValueError("Checkpoint callback state count differs from the declared callbacks.")
+    for callback, state in zip(callbacks, states):
+        setter = getattr(callback, "set_recovery_state", None)
+        # Only explicit persistent-state callbacks consume saved state.
+        if callable(setter):
+            setter(state)
+        # Stateless/per-fit callbacks cannot silently acquire saved mutable state.
+        elif state is not None:
+            raise ValueError("Checkpoint contains unsupported persistent callback state.")
+
+
+def validate_checkpoint_destination(checkpoint_dir: str | os.PathLike[str], first_task: int, task_count: int) -> None:
+    """Reject occupied future task slots before fitting and preserve their evidence.
+
+    This deliberately requires a fresh checkpoint_dir after corrupt/incomplete
+    fallback; it neither quarantines nor overwrites any committed or invalid slot.
+    Ordinary temporary staging siblings do not occupy a task destination.
+    """
+    root = Path(checkpoint_dir)
+    for index in range(first_task, task_count):
+        destination = root / f"task-{index:04d}"
+        # Any occupied task slot needs an explicitly different output root before training.
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(f"Checkpoint destination is occupied before training: {destination}. Preserve this evidence and select a fresh checkpoint_dir.")
 
 
 def _model_topology_descriptor(model: object) -> dict[str, object] | None:

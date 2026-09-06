@@ -262,9 +262,9 @@ class DiTClassifier(DiffusionTransformer):
         # Suppress the main distillation token when ownership belongs exclusively to the
         # classifier.
         super().__init__(
-            cls_token_type=None if classifier_only_cls_token and \
+            cls_token_type=None if classifier_only_cls_token and
                         temp_val[0] is not None else temp_val[0], 
-            distil_token_type=None if classifier_only_distil_token and \
+            distil_token_type=None if classifier_only_distil_token and
                         temp_val[1] is not None else temp_val[1], 
             build=False, 
             **kwargs
@@ -1189,12 +1189,39 @@ class DiTClassifier(DiffusionTransformer):
 
         return classifier
 
+    @staticmethod
+    def _classifier_logits(probabilities: tf.Tensor | None) -> tf.Tensor | None:
+        """Read the connected logits cached by the existing Keras softmax head.
+
+        Inactive auxiliary heads preserve their ``None`` placeholder. Reading
+        at the head output avoids a second stochastic forward pass or recovery
+        from rounded probabilities and does not change head weights or names.
+        """
+
+        # Preserve the existing placeholder for an inactive auxiliary head.
+        if probabilities is None:
+            return None
+
+        logits = getattr(
+            probabilities,
+            "_keras_logits",
+            None
+        )
+
+        # Fail explicitly when an unsupported softmax implementation loses its source tensor.
+        if logits is None:
+            raise ValueError(
+                "The classifier softmax did not expose its same-pass logits."
+            )
+        return logits
+
     def call(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         min_depth: int = 0, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> dict[str, object] | tf.Tensor:
         """Predict diffusion noise and class probabilities in one pass.
 
@@ -1202,6 +1229,8 @@ class DiTClassifier(DiffusionTransformer):
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Noisy images
                 ``[B,H,W,C]``, timestep IDs ``[B]``, and CFG label IDs ``[B]``.
             full_return (bool): Include both branches' intermediate tensors. Defaults to ``False``.
+            return_logits (bool): Include same-pass pre-softmax classifier and
+                auxiliary logits for stable distillation. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -1238,6 +1267,7 @@ class DiTClassifier(DiffusionTransformer):
             noises, 
             times=inputs[1], 
             labels=inputs[2], 
+            return_logits=return_logits,
             training=training
         )
         output_dict = {
@@ -1257,8 +1287,12 @@ class DiTClassifier(DiffusionTransformer):
             output_dict["clf_z_vals_list"] = outputs[4]
 
         # Expose both component distributions whenever distillation is active.
-        if len(outputs) > 5:
+        if self.distil_classifier is not None:
             output_dict["distil_classes"] = outputs[5]
+
+        # Preserve the ordinary probability contract unless logits are explicitly requested.
+        if return_logits:
+            output_dict.update(outputs[-1])
 
         return output_dict
 
@@ -1328,7 +1362,8 @@ class DiTClassifier(DiffusionTransformer):
         noises: tf.Tensor | None, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> tuple:
         """Compute class probabilities from main features or predicted noises.
 
@@ -1339,6 +1374,9 @@ class DiTClassifier(DiffusionTransformer):
                 Required when ``aggregate_from_noises=True``; otherwise ignored.
             times (tf.Tensor): Integer timestep IDs ``[B]``.
             labels (tf.Tensor): Integer condition label IDs ``[B]``.
+            return_logits (bool): Append a dictionary containing ``class_logits``,
+                ``clf_regs_logits_list``, and optional ``distil_logits`` from this same
+                forward pass. Defaults to ``False``; original tuple positions remain unchanged.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -1376,6 +1414,7 @@ class DiTClassifier(DiffusionTransformer):
 
         clf_features_list = []
         clf_regs_list = [z]
+        clf_regs_logits_list = [self._classifier_logits(z)] if return_logits else []
         clf_z_vals_list = []
         for i, layers_dict in enumerate(self.clf_layers_dicts):
             # Aggregate main features when this classifier stage has a route.
@@ -1447,6 +1486,16 @@ class DiTClassifier(DiffusionTransformer):
                     times=times, labels=labels, 
                     training=training
                 ) if self.classifier_only_distil_token and self.clf_distil_token_type is not None else x
+
+                # Keep a shared class token ahead of a newly prepended distillation token.
+                if self.classifier_only_distil_token and self.clf_has_distil_token \
+                and not self.classifier_only_cls_token and self.clf_has_cls_token:
+                    x = tf.concat([
+                        x[:, 1: 2],
+                        x[:, :1],
+                        x[:, 2:]
+                    ], axis=1)
+
                 # Prepend a separate classifier class token only when its source is enabled.
                 x = self.prepend_single_token(
                     x, self.cls_token,
@@ -1536,6 +1585,11 @@ class DiTClassifier(DiffusionTransformer):
 
             clf_features_list.append(x)
             clf_regs_list.append(z)
+            # Collect the same-pass logits in the existing regularizer order, including None.
+            if return_logits:
+                clf_regs_logits_list.append(
+                    self._classifier_logits(z)
+                )
             # Keep real classifier variational flatten statistics and exclude unflatten/dummy
             # outputs.
             if x_mean is not None and \
@@ -1551,6 +1605,17 @@ class DiTClassifier(DiffusionTransformer):
             classes, 
             training=training
         )
+
+        # Capture the primary head logits only for the explicit distillation interface.
+        logits = {
+            "class_logits": self._classifier_logits(classes),
+            "clf_regs_logits_list": clf_regs_logits_list
+        } if return_logits else {}
+
+        outputs = (
+            classes, clf_cond, clf_features_list,
+            clf_regs_list, clf_z_vals_list
+        )
         # Compute the parallel token head only when distillation is configured.
         if self.distil_classifier is not None:
             distil_classes = self.distil_feature_extractor(
@@ -1562,22 +1627,23 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             )
 
-            return (
-                classes, clf_cond, clf_features_list, 
-                clf_regs_list, clf_z_vals_list, distil_classes
-            )
+            outputs += (distil_classes,)
+            # Keep the independent distillation head's original connected logits.
+            if return_logits:
+                logits["distil_logits"] = self._classifier_logits(
+                    distil_classes
+                )
 
-        return (
-            classes, clf_cond, clf_features_list, 
-            clf_regs_list, clf_z_vals_list
-        )
+        # Append additive numerical metadata without changing any existing tuple positions.
+        return outputs + (logits,) if return_logits else outputs
 
     def predict_class(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> tf.Tensor | tuple:
         """Classify inputs while executing only the required main depths.
 
@@ -1591,6 +1657,8 @@ class DiTClassifier(DiffusionTransformer):
             max_encoder_num (int | None): Main encoder loop stop. ``None`` uses
                 ``self.max_encoder_num``; the default ``-1`` executes all stages. Defaults to ``-1``.
             full_return (bool): Return classifier intermediates and latent stats. Defaults to ``False``.
+            return_logits (bool): Append the same-pass logits dictionary to a full
+                return, preserving all original tuple positions. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -1626,6 +1694,7 @@ class DiTClassifier(DiffusionTransformer):
             noises, 
             times=inputs[1], 
             labels=inputs[2], 
+            return_logits=return_logits,
             training=training
         )
 
@@ -1734,6 +1803,12 @@ class DiTClassifier(DiffusionTransformer):
                     "after": old_clf_depth, 
                 }
             }
+
+        # Depth zero combines initialization and extraction in one retained stage.
+        if old_clf_depth == 0:
+            raise ValueError(
+                "Classifier depth growth from clf_depth=0 is unsupported."
+            )
 
         metadata_names = (
             "feature_aggregation_ids_dict", 
@@ -1960,12 +2035,25 @@ class DiTClassifier(DiffusionTransformer):
                 new_clf_depth+1: terminal_ids, 
             }
 
-            # Keep classifier growth compatible with the existing classification head.
-            if self._get_last_output_dim(
-                len(planned_layers), 
-                planned_layers + [terminal_layers], 
-                self.clf_dim
-            ) != old_head_dim:
+            terminal_connector = terminal_layers[self.FC]
+            candidate_input_dim = self._get_unforced_total_dim(
+                terminal_ids,
+                planned_layers,
+                self.first_aggregated_dim,
+                kwargs={"connect_type": terminal_connector.connect_type},
+            )
+            # Retained normalization/projection weights require their original input width.
+            if (terminal_connector.layer_norm is not None or
+                terminal_connector.mlp is not None) and \
+            candidate_input_dim != terminal_connector.ln_dim:
+                raise ValueError(
+                    "Added classifier depths must preserve the terminal connector's input dimension."
+                )
+            # Infer the actual retained connector output from candidate sources, not stale metadata.
+            candidate_head_dim = terminal_connector.output_dim \
+                if terminal_connector.mlp is not None else candidate_input_dim
+            # Validate the complete appended sequence before either branch commits growth.
+            if candidate_head_dim != old_head_dim:
                 raise ValueError(
                     "Added classifier depths must preserve the classifier-head dimension."
                 )

@@ -173,6 +173,10 @@ Keras batch/epoch/callback/validation/step arguments documented in their
 docstrings. `summary(**kwargs)` forwards Keras summary display options to the
 raw network.
 
+Omitting `evaluate(network_name=...)` inherits `test_network_name`, including
+validation inside `fit`. Explicit `"raw"`/`"ema"` overrides apply only to that
+evaluation call; without EMA, both selectors resolve to the raw network.
+
 ## Noising and forward APIs
 
 Useful programmatic interfaces are:
@@ -249,7 +253,9 @@ model.fit_progressively(
 
 Generated timestep clusters are `uniform` or `log_snr`. Fixed pacing runs every
 allocated epoch; plateau pacing uses epoch-wise Keras early stopping or the
-project's batch-wise plateau callback. The returned `History` includes a
+project's batch-wise plateau callback. `stopper_mode` selects `"min"`, `"max"`,
+or `"auto"` for either callback; use `"max"` when monitoring accuracy.
+The returned `History` includes a
 `progressive_stages` record and the resolved schedules. Timestep bounds and
 resolution are restored on exit; completed depth growth remains.
 
@@ -315,6 +321,10 @@ teacher on the same `x_t`, timestep, condition IDs, and CFG scale. The teacher
 is run with `training=False`, its outputs are stopped, and its variables are
 never optimized. `defer_teacher=True` permits task one to train before
 continual learning snapshots the first completed denoiser.
+The reported `noise_distil_loss` is an eligible-row population mean: batches
+contribute their teacher-mask weight, and empty eligible batches contribute zero
+weight. The differentiated per-batch KD objective is unchanged; `total_loss`
+continues to aggregate complete batch objectives.
 
 Distillation-token loss is enabled only when the wrapped classifier has a
 distillation token, `teacher_network` is supplied, and
@@ -392,6 +402,18 @@ terms. The coefficient defaults to `0.0`; at zero, distillation-token loss and
 its metrics are disabled. Teacher mapping remains enabled only when a
 classifier regularizer independently requests it.
 
+Soft KD evaluates student `log_softmax(logits / temperature)` from the same
+network pass that produced the probabilities. It never clips student
+probabilities to reconstruct saturated logits. All student classes participate
+in normalization; newly added classes have exactly zero teacher target mass.
+Auxiliary heads retain their mean-probability mixture, computed in log space
+before temperature scaling. Raw `DiTClassifier`, `DiTEncoderDecoderClassifier`,
+and `UNetClassifier` expose this additive metadata through `return_logits=True`.
+Normal probability returns and checkpoint weights are unchanged. Custom raw
+networks used with soft KD must implement that full-return interface; compilation
+rejects probability-only implementations. Direct calls to the KD helper may
+omit `student_logits` only for strictly positive probability inputs.
+
 Classifier regularizers read `train_type` and `distil_type` from
 `clf_cls_token_regularizer_kwargs`, falling back to
 `cls_token_regularizer_kwargs` for networks such as `UNetClassifier`.
@@ -410,6 +432,9 @@ head instead. Without a distillation token, the existing
 `classifier_accuracy` name and output behavior remain unchanged. The raw
 classifier always leaves `classes` and `distil_classes` independent; only the
 wrapper forms the coefficient-weighted prediction used by `total_accuracy`.
+This overall prediction uses the same coefficients for every example, independently
+of true labels and replay provenance. KD scope masks select loss eligibility and
+scoped head diagnostics; they never choose components of the overall prediction.
 `EnsembleAccuracy` accepts the same `clf_acc_coef`, `clf_distil_acc_coef`, and
 `ctr_acc_coef` values and applies them at every ensembled timestep.
 
@@ -534,3 +559,12 @@ forcing, but no stock wrapper supplies that fourth tensor; use a direct call or
 a custom `train_step` for that workflow. The classifier's inherited depth API
 grows its encoder and classifier branches, and targeted `{"decoder": ...}`
 specs can also grow the attached decoder.
+
+## Teacher construction and weight-only reload
+
+For native HDF5 weight-only reload, reconstruct the same teacher attachment
+topology used when saving. Passing `teacher_network` to the wrapper constructor
+and attaching it later with `set_teacher_network` can produce different Keras
+weighted-layer layouts. A constructor-attached teacher therefore needs the same
+constructor attachment when reloading; this is an existing compatibility boundary.
+Common task-boundary recovery has its own authenticated reconstruction protocol.

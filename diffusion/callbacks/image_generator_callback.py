@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from common.utils import plot_images, create_gif
+from common.result_directory import reserve_result_directory
 
 
 class ImageGeneratorCallback(callbacks.Callback):
@@ -139,16 +140,11 @@ class ImageGeneratorCallback(callbacks.Callback):
         self.base_seed = seed
         self.artifact_prefix = ""
 
-        # Leave empty tags without a separator; prefix nonempty run tags with a space.
-        project_tag = "" if not normalized_project_tag else " " + normalized_project_tag
-
-        # Create a timestamped artifact directory when saving is requested.
+        # Atomically reserve a distinct artifact directory for each new execution.
         if self.results_path is not None:
-            self.results_path = os.path.join(
-                self.results_path, 
-                datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + project_tag
-            )
-            os.makedirs(self.results_path, exist_ok=True)
+            self.results_path = str(reserve_result_directory(
+                self.results_path, normalized_project_tag, timestamp=datetime.now()
+            ))
 
             os.makedirs(
                 os.path.join(self.results_path, "images"), 

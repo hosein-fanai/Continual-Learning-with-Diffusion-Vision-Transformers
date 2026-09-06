@@ -144,6 +144,9 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         # Preserve an already-resolved mixed-precision policy.
         elif isinstance(dtype, tf.keras.mixed_precision.Policy):
             policy = dtype
+        # Reconstruct the policy dictionary emitted by Keras for mixed precision.
+        elif isinstance(dtype, dict):
+            policy = tf.keras.mixed_precision.Policy.from_config(dtype["config"])
         # Convert an explicit dtype name into a uniform Keras policy.
         else:
             policy = tf.keras.mixed_precision.Policy(dtype)
@@ -195,7 +198,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
                     "seed": reparameterization_seed,
                     "dtype": policy.variable_dtype,
                 },
-                name=f"{model_name}/sample"
+                name=f"{model_name}/sample",
+                **layer_dtype_kwargs,
             )((z_mean, z_log_var))
             # Project sampled latents back to flattened width only when the latent ratio
             # changes it.
@@ -208,7 +212,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
         else:
             dummy = layers.Lambda(
                 _batch_size,
-                name=f"{model_name}/dummy"
+                name=f"{model_name}/dummy",
+                **layer_dtype_kwargs,
             )(inputs)
             z_mean, z_log_var = dummy, dummy
 
@@ -217,6 +222,8 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             outputs=(x, z_mean, z_log_var), 
             **kwargs
         )
+        # Keras 2.10 Functional rejects a dtype argument; set its owning policy after graph setup.
+        self._set_dtype_policy(policy)
         self._save_init_args({
             "reshape_type": reshape_type, 
             "source_shape": source_shape, 
