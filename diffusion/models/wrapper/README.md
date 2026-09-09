@@ -91,6 +91,9 @@ images = model.sample(labels=[1, 2], steps=50, eta=0.0)
 
 # Three consecutive samples for condition 1, then three for condition 2.
 images = model.sample(labels=[1, 2], samples_per_label=3, steps=50, eta=0.0)
+
+# Include CFG null condition 0 before the default real-class conditions.
+images = model.sample(add_null_label=True, steps=50, eta=0.0)
 ```
 
 `sample` returns postprocessed float images `[B,H,W,C]` in `[0,1]`. Set
@@ -99,20 +102,33 @@ images plus step-wise NumPy trajectories. `eta=0` is deterministic DDIM;
 `0 < eta < 1` is stochastic DDIM; `eta=1` is DDPM-equivalent only when using
 the full consecutive schedule.
 
+Both samplers accept `add_null_label=False` immediately after `labels`, before
+`samples_per_label`. Every argument can be passed by position or keyword. When
+`labels=None`, enabling it prepends null condition ID 0 for a CFG network.
+The remaining defaults are observed class conditions for a dynamic model and
+all real class conditions for a fixed-width model. Without CFG, the flag has
+no effect. Explicit `labels`, including `[]`, override default label selection;
+to request a particular null-conditioned sample, include 0 explicitly.
+Positional calls must include the null-label flag before the sample count.
+
 `sample` and `sample_vae` accept `samples_per_label=1`. In ordinary diffusion
 sampling and direct `sample_vae` calls, an integer greater than one repeats
-each explicit or default condition ID contiguously. Supplied `x_t` or latent
+each selected condition ID contiguously, including the null condition when
+selected. Supplied `x_t` or latent
 `z` batches must already have one row for each repeated condition ID.
-Only labels are repeated. Prefer keyword arguments:
-the new parameter was inserted before `x_t`/`z`, changing positional calls.
+Only labels are repeated. The positional argument order begins
+`network_name, labels, add_null_label, samples_per_label`, followed by `x_t`
+in `sample` or `z` in `sample_vae`.
+
+With `swap_noise_image=True`, `sample(...)` forwards both `add_null_label` and
+`samples_per_label` to `sample_vae(...)`, and passes `x_t` as the latent `z`.
 
 The repetition implementation is incomplete: zero and negative counts silently
 act like one, repeated empty label requests fail, and the label helper cannot
-repeat symbolic labels in graph execution. In addition,
-when the wrapper uses `swap_noise_image=True`, `sample(...)` does not forward
-`samples_per_label` to `sample_vae` and therefore ignores it. Call `sample_vae`
-directly to request multiple variational samples per label. See the
-[staged review](../../../STAGED_REVIEW.md) for validation evidence.
+repeat symbolic labels in graph execution. Use positive integer counts and
+nonempty labels for repeated sampling. See the
+[staged review](../../../STAGED_REVIEW.md) for the earlier findings and current
+follow-up validation.
 
 `network_name="ema"` is the default for sampling. Use `"raw"` whenever
 `use_ema=False`. With EMA enabled, a deferred raw network and its clone are

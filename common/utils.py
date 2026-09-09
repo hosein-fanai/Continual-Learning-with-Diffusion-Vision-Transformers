@@ -556,8 +556,9 @@ def plot_images(
     imgs: np.ndarray, 
     row: int = 1, 
     col: int = 11, 
+    has_null_label: bool = False,
     show_images: bool = True, 
-    save_path: str | os.PathLike[str] | None = None
+    save_path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Display or save a grayscale batch as a labeled subplot grid.
 
@@ -570,6 +571,9 @@ def plot_images(
             Defaults to ``1``.
         col (int): Positive maximum number of subplot columns.
             Defaults to ``11``.
+        has_null_label (bool): Whether the first image is a null-condition
+            preview. Titles then start at -1, followed by zero-based indices
+            for the remaining images. Defaults to ``False``.
         show_images (bool): Display the figure interactively.
             Defaults to ``True``.
         save_path (str | os.PathLike | None): Optional image destination.  At
@@ -584,7 +588,8 @@ def plot_images(
             an invalid shape.
 
     Note:
-        Titles are zero-based sample indices, not inferred class labels.
+        Titles are sample indices starting at 0, or -1 with ``has_null_label``;
+        class IDs are not inferred from image content or sampling labels.
     """
 
     import matplotlib
@@ -615,7 +620,7 @@ def plot_images(
         image = imgs[i, :, :, 0] if imgs.shape[-1] == 1 else imgs[i]
         # Use a grayscale colormap for one-channel images and native colors otherwise.
         axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None)
-        axes[i].set_title(f"{i}")
+        axes[i].set_title(f"{i - int(has_null_label)}")
         axes[i].axis("off")
 
     for j in range(len(imgs), len(axes)):

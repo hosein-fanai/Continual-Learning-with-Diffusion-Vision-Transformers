@@ -34,6 +34,18 @@ epoch-wise pacing. Use `stopper_mode="max"` for an accuracy monitor.
 This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`,
 and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
 renders the result.
+
+`ImageGenerator(add_null_label=True)` forwards that flag to the sampler and
+omits explicit labels. The wrapper chooses observed classes for a dynamic
+model or all real classes for a fixed-width model. With CFG enabled, the default
+preview starts with null condition ID 0; set `add_null_label=False` to omit it.
+For a model without CFG, the flag has no effect and class 0 appears once.
+These rules also apply when sampling delegates to the VAE path.
+The callback passes `has_null_label=True` to the image plotter only when the
+grid contains a CFG null preview, giving it title `-1` and the following images
+titles `0`, `1`, and so on. Other grids start at `0`. These are grid indices,
+not recovered dataset class IDs.
+
 The current validation permits two configurations.
 
 Display only:

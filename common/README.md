@@ -409,6 +409,13 @@ in the project's TensorFlow 2.10 environment.
 | `callbacks/decoder_accuracy.py` | `DecoderAccuracy`: conditional sample classification accuracy |
 | `utils.py` | Plots, GIFs, CSV/NumPy persistence, and HPO logs |
 
+`plot_images(imgs, row=1, col=11, has_null_label=False, show_images=True,
+save_path=None)` accepts every argument by position or keyword.
+Enable it when the first image is a null-condition preview: subplot titles
+become `-1, 0, 1, ...` instead of `0, 1, 2, ...`. Titles identify grid positions
+and do not infer dataset class IDs. Positional display/save calls must include
+`has_null_label` after `col`.
+
 Use the public functions above for orchestration. Private helpers beginning
 with `_` implement individual stages and are not stable entry points.
 

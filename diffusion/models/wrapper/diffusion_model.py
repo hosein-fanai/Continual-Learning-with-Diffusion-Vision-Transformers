@@ -3761,9 +3761,10 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
+        add_null_label: bool = False,
         samples_per_label: int = 1, 
         z: tf.Tensor | Sequence[tf.Tensor] | None = None, 
-        seed: int | None = None
+        seed: int | None = None,
     ) -> tf.Tensor:
         """Generate images by decoding the configured variational bottleneck.
 
@@ -3776,17 +3777,22 @@ class DiffusionModel(ArgumentSaverModel):
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
                 Defaults to ``'ema'``.
-            labels (tf.Tensor | list[int] | None): Condition IDs, one per sample.
+            labels (tf.Tensor | list[int] | None): Network condition IDs to sample.
                 In dynamic mode, ``None`` shifts saved zero-based targets to
-                condition IDs and excludes the CFG null label. Fixed-width
-                mode likewise samples each class condition once and excludes
-                the CFG null label. Explicit values are already network label
-                IDs, not unshifted dataset classes.
+                condition IDs. Fixed-width mode selects all real conditions.
+                The CFG null label is excluded unless ``add_null_label=True``.
+                Explicit IDs override this default selection, including an empty
+                list, and already include any CFG offset.
                 Defaults to ``None``.
+            add_null_label (bool): Prepend condition ID 0 to default labels for
+                a CFG network. Ignored when explicit labels are supplied or CFG
+                is disabled. Defaults to ``False``.
+            samples_per_label (int): Repeat each selected condition contiguously
+                this many times. Pass a positive integer. Defaults to ``1``.
             z (tf.Tensor | Sequence[tf.Tensor] | None): One latent batch per
                 flatten stage. A tensor remains valid for a single-stage VAE.
                 ``None`` draws independent standard-normal values; each batch
-                size must match labels.
+                size must match the repeated labels.
                 Defaults to ``None``.
             seed (int | None): Latent random seed; None uses ``self.seed``.
                 Defaults to ``None``.
@@ -3836,15 +3842,17 @@ class DiffusionModel(ArgumentSaverModel):
             )
         ]
 
-        # Dynamic sampling uses observed classes; fixed-width sampling enumerates real network
-        # labels.
+        # Dynamic sampling uses observed classes;
+        # fixed-width sampling enumerates real network labels.
         default_labels = [
             value + int(network.use_cfg)
             for value in self.seen_classes.values()
         ] if network.dynamic_num_classes else list(
             range(int(network.use_cfg), network.num_labels)
         )
-        # Use default observed conditions only when explicit sampling labels are omitted.
+        # Add a null preview only to default CFG conditions; explicit labels take precedence.
+        if add_null_label and network.use_cfg:
+            default_labels = [0] + default_labels
         labels = self._prepare_sampling_labels(
             network, 
             default_labels if labels is None else labels, 
@@ -3954,6 +3962,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
+        add_null_label: bool = False,
         samples_per_label: int = 1, 
         x_t: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         steps: int | None = None, 
@@ -3962,7 +3971,7 @@ class DiffusionModel(ArgumentSaverModel):
         return_x_ts: bool = False, 
         return_x0s: bool = False, 
         seed: int | None = None, 
-        verbose: bool = False
+        verbose: bool = False,
     ) -> tf.Tensor | list[object]:
         """Generate images with generalized DDIM/DDPM reverse diffusion.
 
@@ -3977,12 +3986,19 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``'ema'``.
             labels (tf.Tensor | list[int] | None): Network condition IDs. In
                 dynamic mode, None shifts observed zero-based targets to
-                condition IDs and excludes the CFG null label. Fixed-width
-                mode likewise samples each class condition once and excludes
-                the CFG null label. The number of labels is the batch size.
+                condition IDs. Fixed-width mode selects all real conditions.
+                The CFG null label is excluded unless ``add_null_label=True``.
+                Explicit IDs override this default selection, including an empty
+                list. The repeated label count determines the batch size.
                 Defaults to ``None``.
+            add_null_label (bool): Prepend condition ID 0 to default labels for
+                a CFG network. Ignored when explicit labels are supplied or CFG
+                is disabled. Defaults to ``False``.
+            samples_per_label (int): Repeat each selected condition contiguously
+                this many times. Pass a positive integer. Defaults to ``1``.
             x_t (tf.Tensor | Sequence[tf.Tensor] | None): Initial Gaussian
                 state ``[B,H,W,C]``. None draws it at the active resolution.
+                Supplied batches must match the repeated label count.
                 In ``swap_noise_image`` VAE mode this argument is instead
                 passed to ``sample_vae`` as ``z`` and may contain one latent
                 tensor per flatten/unflatten pair.
@@ -4037,19 +4053,24 @@ class DiffusionModel(ArgumentSaverModel):
             return self.sample_vae(
                 network_name=network_name, 
                 labels=labels, 
+                add_null_label=add_null_label,
+                samples_per_label=samples_per_label,
                 z=x_t, 
                 seed=seed
             )
 
         network = self.get_network(network_name)
-        # Dynamic default labels enumerate seen classes; fixed models enumerate their full real
-        # vocabulary.
+        # Dynamic default labels enumerate seen classes;
+        # fixed models enumerate their full real vocabulary.
         default_labels = [
             value + int(network.use_cfg)
             for value in self.seen_classes.values()
         ] if network.dynamic_num_classes else list(
             range(int(network.use_cfg), network.num_labels)
         )
+        # Add a null preview only to default CFG conditions; explicit labels take precedence.
+        if add_null_label and network.use_cfg:
+            default_labels = [0] + default_labels
         labels = self._prepare_sampling_labels(
             network, 
             default_labels if labels is None else labels, 

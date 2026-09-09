@@ -1,6 +1,6 @@
 """Epoch-end diffusion sampling, image plotting, and denoising GIF output.
 
-ImageGeneratorCallback samples the selected raw/EMA diffusion network after every
+ImageGenerator samples the selected raw/EMA diffusion network after every
 epoch, displays or saves image grids, and optionally saves denoising trajectories
 as GIFs. Constructor output modes control immediate directory creation; portable
 phase prefixes keep later task artifacts distinct.
@@ -23,7 +23,8 @@ class ImageGenerator(callbacks.Callback):
 
     The callback expects a ``DiffusionModel``-compatible bound model exposing
     ``test_steps``, ``test_cfg_scale``, ``test_eta``, ``test_network_name``, and
-    ``sample``. Valid constructor combinations in the current implementation are:
+    ``sample``, plus ``use_cfg`` to identify null previews. Valid constructor
+    combinations in the current implementation are:
 
     * display only: ``show_images=True``, ``save_gifs=False``, and
       ``results_path=None``;
@@ -35,7 +36,8 @@ class ImageGenerator(callbacks.Callback):
 
     Args:
         add_null_label (bool): Whether a CFG model's null condition is included in
-            the generated grid.
+            the generated grid. Forwarded to ``sample`` with labels omitted, so
+            the wrapper chooses observed dynamic or all fixed-width classes.
             Defaults to ``True``.
         show_images (bool): Whether ``plot_images`` displays the generated image grid.
             Defaults to ``True``.
@@ -131,7 +133,6 @@ class ImageGenerator(callbacks.Callback):
                 "project_tag must be a portable filename fragment."
             )
 
-
         self.add_null_label = add_null_label
         self.show_images = show_images
         self.save_gifs = save_gifs
@@ -143,7 +144,9 @@ class ImageGenerator(callbacks.Callback):
         # Atomically reserve a distinct artifact directory for each new execution.
         if self.results_path is not None:
             self.results_path = str(reserve_result_directory(
-                self.results_path, normalized_project_tag, timestamp=datetime.now()
+                self.results_path,
+                normalized_project_tag,
+                timestamp=datetime.now()
             ))
 
             os.makedirs(
@@ -224,18 +227,9 @@ class ImageGenerator(callbacks.Callback):
             to ``create_gif``.
         """
 
-        network_name = self.model.test_network_name
-        network = self.model.get_network(network_name)
-
-        # Include CFG null label zero when requested; otherwise start with the first real
-        # label.
         sample_kwargs = {
-            "network_name": network_name, 
-            "labels": list(range(
-                0 if self.add_null_label and network.use_cfg \
-                else int(network.use_cfg), 
-                network.num_labels
-            )), 
+            "network_name": self.model.test_network_name,
+            "add_null_label": self.add_null_label,
             "steps": self.model.test_steps, 
             "scale": self.model.test_cfg_scale, 
             "eta": self.model.test_eta, 
@@ -265,10 +259,12 @@ class ImageGenerator(callbacks.Callback):
         else:
             imgs = outputs
 
+        has_null_label = self.add_null_label and self.model.use_cfg
         # Save the image grid, optionally displaying it at the same time.
         if self.results_path is not None: 
             plot_images(
                 imgs, 
+                has_null_label=has_null_label,
                 show_images=self.show_images, 
                 save_path=os.path.join(
                     self.results_path, 
@@ -281,11 +277,11 @@ class ImageGenerator(callbacks.Callback):
             )
         # Display the grid directly when no artifact directory is configured.
         else:
-            plot_images(imgs)
+            plot_images(imgs, has_null_label=has_null_label)
 
 
 def run_self_tests() -> dict[str, str]:
-    """Test display and filesystem modes of :class:`ImageGeneratorCallback`.
+    """Test display and filesystem modes of :class:`ImageGenerator`.
 
     Args:
         None.
@@ -342,19 +338,16 @@ def run_self_tests() -> dict[str, str]:
         test_cfg_scale=1.5, 
         test_eta=0.25, 
         test_network_name="raw",
-        get_network=Mock(return_value=SimpleNamespace(
-            use_cfg=True,
-            num_labels=3,
-        )),
+        use_cfg=True,
         sample=display_sample, 
     ))
     with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
     display_sample.assert_called_once_with(
-        network_name="raw", labels=[1, 2], steps=4, scale=1.5, eta=0.25,
+        network_name="raw", add_null_label=False, steps=4, scale=1.5, eta=0.25,
         return_x_ts=False, return_x0s=False, seed=13,
     )
-    plot_mock.assert_called_once_with("images")
+    plot_mock.assert_called_once_with("images", has_null_label=False)
 
     with tempfile.TemporaryDirectory() as png_directory:
         png_callback = ImageGenerator(
@@ -408,10 +401,7 @@ def run_self_tests() -> dict[str, str]:
             test_cfg_scale=2.0, 
             test_eta=0.125, 
             test_network_name="ema",
-            get_network=Mock(return_value=SimpleNamespace(
-                use_cfg=True,
-                num_labels=3,
-            )),
+            use_cfg=True,
             sample=save_sample, 
         ))
         with patch.object(
@@ -421,7 +411,7 @@ def run_self_tests() -> dict[str, str]:
         ) as saved_plot_mock:
             assert saving_callback.on_epoch_end(1, None) is None
         save_sample.assert_called_once_with(
-            network_name="ema", labels=[0, 1, 2],
+            network_name="ema", add_null_label=True,
             steps=3, 
             scale=2.0, 
             eta=0.125, 
@@ -438,6 +428,7 @@ def run_self_tests() -> dict[str, str]:
         plot_args, plot_kwargs = saved_plot_mock.call_args
         assert plot_args == ("saved-images",)
         assert plot_kwargs["show_images"] is False
+        assert plot_kwargs["has_null_label"] is True
         assert Path(plot_kwargs["save_path"]).name == (
             "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.png"
         )
@@ -453,10 +444,7 @@ def run_self_tests() -> dict[str, str]:
             test_cfg_scale=1.0, 
             test_eta=0.0, 
             test_network_name="raw",
-            get_network=Mock(return_value=SimpleNamespace(
-                use_cfg=False,
-                num_labels=2,
-            )),
+            use_cfg=False,
             sample=shown_sample, 
         ))
         with patch.object(
@@ -466,7 +454,7 @@ def run_self_tests() -> dict[str, str]:
         ) as shown_plot_mock:
             shown_saving_callback.on_epoch_end(0)
         shown_sample.assert_called_once_with(
-            network_name="raw", labels=[0, 1],
+            network_name="raw", add_null_label=True,
             steps=1, 
             scale=1.0, 
             eta=0.0, 
@@ -476,8 +464,9 @@ def run_self_tests() -> dict[str, str]:
         )
         assert shown_gif_mock.call_count == 1
         assert shown_plot_mock.call_args.kwargs["show_images"] is True
+        assert shown_plot_mock.call_args.kwargs["has_null_label"] is False
 
-    return {"ImageGeneratorCallback": "passed"}
+    return {"ImageGenerator": "passed"}
 
 
 # Run the module's focused self-tests when executed directly.
