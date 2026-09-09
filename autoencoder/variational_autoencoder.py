@@ -22,7 +22,7 @@ from common.keras_registry import register_canonical_keras_serializable
 from common.model import get_callbacks
 from common.runtime import derive_seed
 
-from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
+from common.callbacks.decoder_accuracy import DecoderAccuracy
 
 
 @register_canonical_keras_serializable(package="continual_learning")
@@ -962,12 +962,12 @@ class VariationalAutoencoder(models.Model):
 
         return results
 
-    def generate(
+    def sample(
         self: VariationalAutoencoder, 
-        classes: Sequence[int] | None = None, 
-        samples_per_class: int = 500, 
-        onehot_y_output: bool = False,
-        seed: int | None = None,
+        labels: Sequence[int] | None = None, 
+        samples_per_label: int = 500, 
+        onehot_y_output: bool = False, 
+        seed: int | None = None
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | tuple[list, list]:
         """Decode random normal latents into synthetic replay samples.
 
@@ -978,7 +978,7 @@ class VariationalAutoencoder(models.Model):
                 IDs should lie in ``[0, class_num)``.  In unconditional mode
                 this argument is ignored.
                 Defaults to ``None``.
-            samples_per_class (int): Number of examples per class in
+            samples_per_label (int): Number of examples per class in
                 conditional mode, or total examples in unconditional mode.
                 Defaults to ``500``.
             onehot_y_output (bool): In conditional mode, return labels as
@@ -992,8 +992,8 @@ class VariationalAutoencoder(models.Model):
         Returns:
             numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray] | tuple[list,
             list]: Unconditional mode returns samples shaped
-            ``[samples_per_class, data_dim]``.  Conditional mode returns
-            ``(x, y)`` with ``len(classes) * samples_per_class`` rows, ordered
+            ``[samples_per_label, data_dim]``.  Conditional mode returns
+            ``(x, y)`` with ``len(classes) * samples_per_label`` rows, ordered
             in contiguous class groups.  With no conditional classes, both
             outputs are empty Python lists rather than arrays.
 
@@ -1005,54 +1005,55 @@ class VariationalAutoencoder(models.Model):
         # task/callback-specific stream.
         generation_seed = self.seed if seed is None else seed
         conditional_seed = derive_seed(
-            generation_seed,
-            "vae",
-            "generate",
-            "conditional",
+            generation_seed, 
+            "vae", 
+            "sample", 
+            "conditional"
         )
         unconditional_seed = derive_seed(
-            generation_seed,
-            "vae",
-            "generate",
-            "unconditional",
+            generation_seed, 
+            "vae", 
+            "sample", 
+            "unconditional"
         )
-
-        samples_per_class = int(samples_per_class)
 
         # Generate and label each requested class in conditional mode.
         if self.conditioned:
             # Default to classes observed during training.
-            if classes is None:
-                classes = self.seen_classes
+            if labels is None:
+                labels = self.seen_classes
 
             # Return an empty result when no class is available to generate.
-            if len(classes) == 0:
+            if len(labels) == 0:
                 return [], []
 
-            classes = [int(class_id) for class_id in classes]
+            labels = [int(class_id) for class_id in labels]
             # Keep class identifiers within the configured output range.
             if any(
                 class_id < 0 or class_id >= int(self.class_num)
-                for class_id in classes
+                for class_id in labels
             ):
                 raise ValueError("Every class ID must lie in [0, class_num).")
 
-            latent_shape = (samples_per_class * len(classes), self.latent_dim)
+            latent_shape = (samples_per_label * len(labels), self.latent_dim)
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
             # Draw fresh stateful conditional latents without a seed, or a repeatable
             # stateless batch with one.
             z = tf.random.normal(
-                shape=latent_shape,
-                dtype=stable_dtype,
+                shape=latent_shape, 
+                dtype=stable_dtype
             ) if conditional_seed is None else tf.random.stateless_normal(
-                latent_shape,
-                seed=[conditional_seed, 0],
-                dtype=stable_dtype,
+                latent_shape, 
+                seed=[conditional_seed, 0], 
+                dtype=stable_dtype
             )
-            y = tf.concat([tf.one_hot(tf.cast([i]*samples_per_class, tf.int32),
-                                    depth=self.class_num,
-                                    dtype=stable_dtype) for i in classes],
-                                axis=0)
+            y = tf.concat([
+                tf.one_hot(
+                    tf.cast([i]*samples_per_label, tf.int32), 
+                    depth=self.class_num, 
+                    dtype=stable_dtype
+                ) 
+            for i in labels], axis=0)
             x = self.decoder((z, y), training=False)
 
             x = x.numpy()
@@ -1064,7 +1065,7 @@ class VariationalAutoencoder(models.Model):
 
             return x, y
 
-        latent_shape = (samples_per_class, self.latent_dim)
+        latent_shape = (samples_per_label, self.latent_dim)
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         # Draw fresh stateful prior noise without a seed, or a repeatable stateless batch
         # with one.
@@ -1072,9 +1073,9 @@ class VariationalAutoencoder(models.Model):
             shape=latent_shape,
             dtype=stable_dtype,
         ) if unconditional_seed is None else tf.random.stateless_normal(
-            latent_shape,
-            seed=[unconditional_seed, 0],
-            dtype=stable_dtype,
+            latent_shape, 
+            seed=[unconditional_seed, 0], 
+            dtype=stable_dtype
         )
         x = self.decoder(z, training=False)
 
@@ -1237,7 +1238,7 @@ class VariationalAutoencoder(models.Model):
                 callbacks_monitor = "decoder_accuracy"
 
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf, seed=seed),
+                DecoderAccuracy(classifier=clf, seed=seed),
                 *get_callbacks(
                     monitor=callbacks_monitor, 
                     mode="auto",
@@ -1247,7 +1248,7 @@ class VariationalAutoencoder(models.Model):
         # Add decoder evaluation to user callbacks.
         elif clf is not None and callbacks_list is not None:
             callbacks_list = [
-                DecoderAccuracyCallback(classifier=clf, seed=seed),
+                DecoderAccuracy(classifier=clf, seed=seed),
                 *callbacks_list
             ]
         # Build ordinary VAE callbacks.
@@ -1914,7 +1915,7 @@ def run_self_tests() -> dict[str, str]:
         actual_rows = actual_rows[np.lexsort(actual_rows.T[::-1])]
         expected_rows = expected_rows[np.lexsort(expected_rows.T[::-1])]
         np.testing.assert_array_equal(actual_rows, expected_rows)
-        assert isinstance(fit_kwargs["callbacks"][0], DecoderAccuracyCallback)
+        assert isinstance(fit_kwargs["callbacks"][0], DecoderAccuracy)
         assert fit_kwargs["callbacks"][0].classifier is classifier
         assert fit_kwargs["callbacks"][1] is sentinel_callback
         assert set(int(item) for item in conditioned.seen_classes) == {0, 2}
@@ -1938,7 +1939,7 @@ def run_self_tests() -> dict[str, str]:
         callbacks_mock.assert_not_called()
         assert isinstance(fit_mock.call_args.args[1], tf.data.Dataset)
         fit_callbacks = fit_mock.call_args.kwargs["callbacks"]
-        assert isinstance(fit_callbacks[0], DecoderAccuracyCallback)
+        assert isinstance(fit_callbacks[0], DecoderAccuracy)
         assert fit_callbacks[1] is explicit_callback
 
     try:

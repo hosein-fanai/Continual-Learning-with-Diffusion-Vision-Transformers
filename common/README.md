@@ -405,8 +405,14 @@ in the project's TensorFlow 2.10 environment.
 | `argument_saver.py` | Keras constructor-config persistence |
 | `replay_buffer.py` | Bounded seeded sample replay |
 | `masked_loss.py` | Prefix-masked MAE/MSE losses |
-| `lr_logger_callback.py` | Effective learning-rate logging |
+| `callbacks/lr_logger.py` | `LrLogger`: effective learning-rate logging |
+| `callbacks/decoder_accuracy.py` | `DecoderAccuracy`: conditional sample classification accuracy |
 | `utils.py` | Plots, GIFs, CSV/NumPy persistence, and HPO logs |
 
 Use the public functions above for orchestration. Private helpers beginning
 with `_` implement individual stages and are not stable entry points.
+
+The callback modules and VAE sampling API have been renamed. Internal replay,
+reporting, decoder evaluation, and strict recovery still contain old call sites;
+the current refactor is not ready for use on those paths. See the
+[staged review](../STAGED_REVIEW.md) for the migration mapping and findings.

@@ -10,7 +10,7 @@ from tensorflow.keras import callbacks
 from typing import Any
 
 
-class RawNetworkValidationCallback(callbacks.Callback):
+class RawNetworkValidation(callbacks.Callback):
     """Add raw-network validation metrics to Keras epoch logs.
 
     Diffusion wrappers normally evaluate their EMA network. This callback makes
@@ -120,7 +120,7 @@ def run_self_tests() -> dict[str, str]:
     validation_x = [1, 2]
     validation_y = [0, 1]
     evaluate = Mock(return_value={"loss": 0.25, "accuracy": 0.75})
-    callback = RawNetworkValidationCallback(validation_x, validation_y)
+    callback = RawNetworkValidation(validation_x, validation_y)
     callback.set_model(SimpleNamespace(evaluate=evaluate))
     logs = {"loss": 1.0}
     result = callback.on_epoch_end(3, logs)
@@ -140,7 +140,7 @@ def run_self_tests() -> dict[str, str]:
 
     dataset_like = [("x", "y")]
     dataset_evaluate = Mock(return_value={"noise_loss": 0.5})
-    dataset_callback = RawNetworkValidationCallback(dataset_like)
+    dataset_callback = RawNetworkValidation(dataset_like)
     dataset_callback.set_model(SimpleNamespace(evaluate=dataset_evaluate))
     assert dataset_callback.on_epoch_end(0, None) is None
     dataset_evaluate.assert_called_once_with(
@@ -198,7 +198,7 @@ def run_self_tests() -> dict[str, str]:
             return {"loss": 0.125}
 
     v2_model = V2StyleModel()
-    v2_callback = RawNetworkValidationCallback(validation_x, validation_y)
+    v2_callback = RawNetworkValidation(validation_x, validation_y)
     v2_callback.set_model(v2_model)
     v2_logs = {}
     v2_callback.on_epoch_end(0, v2_logs)

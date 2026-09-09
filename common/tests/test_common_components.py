@@ -24,7 +24,7 @@ from common.argument_saver import (
     ArgumentSaverLayer,
     ArgumentSaverModel,
 )
-from common.lr_logger_callback import LrLoggerCallback
+from common.callbacks.lr_logger import LrLogger
 from common.masked_loss import MaskedLoss
 
 
@@ -168,7 +168,7 @@ class CommonComponentTests(unittest.TestCase):
             unittest runner.
         """
 
-        callback = LrLoggerCallback()
+        callback = LrLogger()
         optimizer = SimpleNamespace(
             learning_rate=tf.Variable(0.125, dtype=tf.float32),
             iterations=tf.Variable(2, dtype=tf.int64),

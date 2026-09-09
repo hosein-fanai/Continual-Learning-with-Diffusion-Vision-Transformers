@@ -12,7 +12,7 @@ from tensorflow.keras import callbacks
 from tensorflow.keras import backend as K
 
 
-class LrLoggerCallback(callbacks.Callback):
+class LrLogger(callbacks.Callback):
     """Record an optimizer's current learning rate after every epoch.
 
     Keras assigns ``model`` when the callback is attached to ``fit``.  The
@@ -22,7 +22,7 @@ class LrLoggerCallback(callbacks.Callback):
     """
 
     def on_epoch_end(
-        self: LrLoggerCallback, 
+        self: LrLogger, 
         epoch: int, 
         logs: dict[str, object] | None = None
     ) -> None:

@@ -33,7 +33,7 @@ from copy import deepcopy
 from collections.abc import Callable, Mapping, Sequence
 
 from common.utils import plot_images, plot_history, create_gif
-from common.lr_logger_callback import LrLoggerCallback
+from common.callbacks.lr_logger import LrLogger
 from common.config import (
     Config,
     normalize_training_task,
@@ -56,7 +56,7 @@ from autoencoder.variational_autoencoder import VariationalAutoencoder
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
-from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
+from diffusion.callbacks.image_generator import ImageGenerator
 
 
 _PROGRESSIVE_FIT_KEYS = frozenset({
@@ -685,14 +685,14 @@ def train_model(
     results_path = _normalize_results_path(results_path, result_path_consumers)
 
     base_callbacks = [
-        LrLoggerCallback(),
+        LrLogger(),
         callbacks.ProgbarLogger(count_mode="steps")
     ]
     callbacks_list = list(base_callbacks)
     forwarded_callbacks = []
     generative_forwarded_callbacks = []
 
-    image_callback = ImageGeneratorCallback(
+    image_callback = ImageGenerator(
         show_images=show_images,
         save_gifs=save_gifs,
         results_path=results_path,

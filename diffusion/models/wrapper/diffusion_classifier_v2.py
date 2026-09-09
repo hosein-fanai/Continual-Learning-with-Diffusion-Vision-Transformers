@@ -648,7 +648,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             # Route curriculum arguments to the actual progressive trainer.
             if progressive:
                 return super().fit_progressively(**fit_kwargs)
-
             return super().fit(**fit_kwargs)
         finally:
             self._switch_train_part("")

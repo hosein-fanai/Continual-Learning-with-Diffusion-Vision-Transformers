@@ -88,9 +88,9 @@ _LAZY_EXPORTS = {
         "diffusion.layers.convolution", 
         "ImageDownsample"
     ), 
-    "ImageGeneratorCallback": (
-        "diffusion.callbacks.image_generator_callback", 
-        "ImageGeneratorCallback"
+    "ImageGenerator": (
+        "diffusion.callbacks.image_generator", 
+        "ImageGenerator"
     ), 
     "ImageUpsample": ("diffusion.layers.convolution", "ImageUpsample"), 
     "LayerDict": ("diffusion.layers.convolution", "LayerDict"), 
@@ -102,9 +102,9 @@ _LAZY_EXPORTS = {
         "diffusion.layers.embedding.patch_embedding", 
         "PatchEmbedding"
     ), 
-    "RawNetworkValidationCallback": (
-        "diffusion.callbacks.raw_network_validation_callback", 
-        "RawNetworkValidationCallback"
+    "RawNetworkValidation": (
+        "diffusion.callbacks.raw_network_validation", 
+        "RawNetworkValidation"
     ), 
     "ResidualConvBlock": (
         "diffusion.layers.convolution", 

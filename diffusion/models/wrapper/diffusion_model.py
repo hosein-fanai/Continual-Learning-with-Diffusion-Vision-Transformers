@@ -892,7 +892,8 @@ class DiffusionModel(ArgumentSaverModel):
     def _prepare_sampling_labels(
         self, 
         network: ArgumentSaverModel, 
-        labels: tf.Tensor | Sequence[int]
+        labels: tf.Tensor | Sequence[int], 
+        samples_per_label: int = 1
     ) -> tf.Tensor:
         """Normalize and validate explicit network condition IDs.
 
@@ -927,7 +928,12 @@ class DiffusionModel(ArgumentSaverModel):
             )
             if assertion is not None
         ]):
-            return tf.identity(labels)
+            labels = tf.concat([
+                tf.cast([i]*samples_per_label, tf.int32)
+                for i in labels
+            ], axis=0) if samples_per_label > 1 else tf.identity(labels)
+
+            return labels
 
     def _mask_unknown_teacher_labels(
         self, 
@@ -3755,6 +3761,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
+        samples_per_label: int = 1, 
         z: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         seed: int | None = None
     ) -> tf.Tensor:
@@ -3840,7 +3847,8 @@ class DiffusionModel(ArgumentSaverModel):
         # Use default observed conditions only when explicit sampling labels are omitted.
         labels = self._prepare_sampling_labels(
             network, 
-            default_labels if labels is None else labels
+            default_labels if labels is None else labels, 
+            samples_per_label
         )
         n = tf.shape(labels)[0]
         # Use the wrapper seed unless prior sampling receives a per-call seed.
@@ -3946,6 +3954,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
+        samples_per_label: int = 1, 
         x_t: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         steps: int | None = None, 
         scale: float | None = None, 
@@ -4041,11 +4050,10 @@ class DiffusionModel(ArgumentSaverModel):
         ] if network.dynamic_num_classes else list(
             range(int(network.use_cfg), network.num_labels)
         )
-
-        # Explicit condition IDs override the default one-sample-per-class label list.
         labels = self._prepare_sampling_labels(
-            network,
-            default_labels if labels is None else labels,
+            network, 
+            default_labels if labels is None else labels, 
+            samples_per_label
         )
         n = tf.shape(labels)[0]
         # Use the wrapper sampling seed unless the caller supplies a new stream.

@@ -2,7 +2,7 @@
 
 This directory contains sample diffusion animations retained for visual
 comparison. New training runs normally write GIFs below `results/<project>/`
-through `diffusion.callbacks.ImageGeneratorCallback` or
+through `diffusion.callbacks.image_generator.ImageGenerator` or
 `common.utils.create_gif`.
 
 `create_gif(output_path, images1, images2=None, duration=100, loop=0)` accepts a

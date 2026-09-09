@@ -18,7 +18,7 @@ from common.utils import plot_images, create_gif
 from common.result_directory import reserve_result_directory
 
 
-class ImageGeneratorCallback(callbacks.Callback):
+class ImageGenerator(callbacks.Callback):
     """Generate qualitative diffusion samples after every training epoch.
 
     The callback expects a ``DiffusionModel``-compatible bound model exposing
@@ -308,7 +308,7 @@ def run_self_tests() -> dict[str, str]:
         {"show_images": False, "save_gifs": True, "results_path": None}, 
     ):
         try:
-            ImageGeneratorCallback(**invalid_kwargs)
+            ImageGenerator(**invalid_kwargs)
         except ValueError:
             pass
         # This invalid case should already have raised: Invalid output-mode combinations
@@ -325,13 +325,13 @@ def run_self_tests() -> dict[str, str]:
         "trailing.",
     ):
         try:
-            ImageGeneratorCallback(project_tag=unsafe_tag)
+            ImageGenerator(project_tag=unsafe_tag)
         except ValueError:
             pass
         # Project tags must not escape the callback's results root.
         else:
             raise AssertionError("Path-like project tags must fail.")
-    display_callback = ImageGeneratorCallback(
+    display_callback = ImageGenerator(
         add_null_label=False,
         show_images=True,
         seed=13,
@@ -357,7 +357,7 @@ def run_self_tests() -> dict[str, str]:
     plot_mock.assert_called_once_with("images")
 
     with tempfile.TemporaryDirectory() as png_directory:
-        png_callback = ImageGeneratorCallback(
+        png_callback = ImageGenerator(
             show_images=False, 
             save_gifs=False, 
             results_path=png_directory, 
@@ -365,7 +365,7 @@ def run_self_tests() -> dict[str, str]:
         assert os.path.isdir(png_callback.results_path)
 
     with tempfile.TemporaryDirectory() as temporary_directory:
-        saving_callback = ImageGeneratorCallback(
+        saving_callback = ImageGenerator(
             show_images=False, 
             save_gifs=True, 
             results_path=temporary_directory, 
@@ -442,7 +442,7 @@ def run_self_tests() -> dict[str, str]:
             "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.png"
         )
 
-        shown_saving_callback = ImageGeneratorCallback(
+        shown_saving_callback = ImageGenerator(
             show_images=True, 
             save_gifs=True, 
             results_path=temporary_directory, 

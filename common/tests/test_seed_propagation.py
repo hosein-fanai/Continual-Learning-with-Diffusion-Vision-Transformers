@@ -22,7 +22,7 @@ import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-from autoencoder.decoder_accuracy_callback import DecoderAccuracyCallback
+from common.callbacks.decoder_accuracy import DecoderAccuracy
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 from common.config import Config
 from common.dataloader import preprocess_dataset
@@ -115,7 +115,7 @@ class SeedPropagationTests(TestCase):
 
             return tf.one_hot(tf.cast(inputs[:, 0], tf.int32), depth=2)
 
-        callback = DecoderAccuracyCallback(classifier, 1, seed=37)
+        callback = DecoderAccuracy(classifier, 1, seed=37)
         callback.set_model(SimpleNamespace(generate=generate))
         for epoch in (0, 1, 0):
             logs: dict[str, object] = {}
@@ -129,7 +129,7 @@ class SeedPropagationTests(TestCase):
         ])
         self.assertNotEqual(generated_seeds[0], generated_seeds[1])
         self.assertEqual(
-            DecoderAccuracyCallback(classifier, seed=True).seed,
+            DecoderAccuracy(classifier, seed=True).seed,
             1,
         )
 

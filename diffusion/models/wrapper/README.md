@@ -88,6 +88,9 @@ history = model.fit(dataset, epochs=10, validation_data=validation_dataset)
 
 # Sampling labels are network IDs: 1 and 2 correspond to dataset classes 0 and 1.
 images = model.sample(labels=[1, 2], steps=50, eta=0.0)
+
+# Three consecutive samples for condition 1, then three for condition 2.
+images = model.sample(labels=[1, 2], samples_per_label=3, steps=50, eta=0.0)
 ```
 
 `sample` returns postprocessed float images `[B,H,W,C]` in `[0,1]`. Set
@@ -95,6 +98,21 @@ images = model.sample(labels=[1, 2], steps=50, eta=0.0)
 images plus step-wise NumPy trajectories. `eta=0` is deterministic DDIM;
 `0 < eta < 1` is stochastic DDIM; `eta=1` is DDPM-equivalent only when using
 the full consecutive schedule.
+
+`sample` and `sample_vae` accept `samples_per_label=1`. In ordinary diffusion
+sampling and direct `sample_vae` calls, an integer greater than one repeats
+each explicit or default condition ID contiguously. Supplied `x_t` or latent
+`z` batches must already have one row for each repeated condition ID.
+Only labels are repeated. Prefer keyword arguments:
+the new parameter was inserted before `x_t`/`z`, changing positional calls.
+
+The repetition implementation is incomplete: zero and negative counts silently
+act like one, repeated empty label requests fail, and the label helper cannot
+repeat symbolic labels in graph execution. In addition,
+when the wrapper uses `swap_noise_image=True`, `sample(...)` does not forward
+`samples_per_label` to `sample_vae` and therefore ignores it. Call `sample_vae`
+directly to request multiple variational samples per label. See the
+[staged review](../../../STAGED_REVIEW.md) for validation evidence.
 
 `network_name="ema"` is the default for sampling. Use `"raw"` whenever
 `use_ema=False`. With EMA enabled, a deferred raw network and its clone are

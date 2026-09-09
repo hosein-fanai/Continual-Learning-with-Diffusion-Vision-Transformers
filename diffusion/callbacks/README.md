@@ -29,7 +29,7 @@ callback for each stage, giving each stage independent best and patience state.
 Its `stopper_mode` argument now selects direction for both batch-wise and
 epoch-wise pacing. Use `stopper_mode="max"` for an accuracy monitor.
 
-## `ImageGeneratorCallback`
+## `ImageGenerator`
 
 This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`,
 and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
@@ -39,15 +39,15 @@ The current validation permits two configurations.
 Display only:
 
 ```python
-from diffusion.callbacks.image_generator_callback import ImageGeneratorCallback
+from diffusion.callbacks.image_generator import ImageGenerator
 
-preview = ImageGeneratorCallback(show_images=True)
+preview = ImageGenerator(show_images=True)
 ```
 
 Save PNG and GIF artifacts, optionally also display them:
 
 ```python
-artifacts = ImageGeneratorCallback(
+artifacts = ImageGenerator(
     show_images=False,
     save_gifs=True,
     results_path="results",
@@ -67,18 +67,18 @@ requires a result path.
 New result directories are reserved exclusively using timestamp and tag, with a
 unique suffix on collision. Every writer for the same run shares that reservation.
 
-## `RawNetworkValidationCallback`
+## `RawNetworkValidation`
 
 Diffusion wrappers commonly validate EMA weights. This callback performs a
 second validation pass against raw trainable weights and inserts prefixed
 results into epoch logs:
 
 ```python
-from diffusion.callbacks.raw_network_validation_callback import (
-    RawNetworkValidationCallback, 
+from diffusion.callbacks.raw_network_validation import (
+    RawNetworkValidation,
 )
 
-raw_validation = RawNetworkValidationCallback(
+raw_validation = RawNetworkValidation(
     val_x=validation_dataset, 
     val_y=None, 
 )
@@ -92,3 +92,9 @@ For each returned key such as `noise_loss`, the callback writes
 array/tensor with separate `val_y`, following that wrapper's normal evaluation
 contract. Both populated and empty mappings supplied by Keras or a caller are
 updated in place.
+
+Use the direct imports above. The old `diffusion.ImageGeneratorCallback` and
+`diffusion.RawNetworkValidationCallback` lazy exports still target removed
+modules, and `common.recovery` still recognizes only the old image callback
+class path. The renamed image callback therefore fails strict recovery
+authentication. See the [staged review](../../STAGED_REVIEW.md).

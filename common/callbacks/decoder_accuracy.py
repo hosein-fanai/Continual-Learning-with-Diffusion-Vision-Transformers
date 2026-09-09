@@ -16,7 +16,7 @@ from collections.abc import Callable
 from common.runtime import derive_seed
 
 
-class DecoderAccuracyCallback(callbacks.Callback):
+class DecoderAccuracy(callbacks.Callback):
     """Add conditional generator classification accuracy to epoch logs.
 
     Keras sets ``model`` when training begins.  That model must implement
@@ -39,10 +39,10 @@ class DecoderAccuracyCallback(callbacks.Callback):
     """
 
     def __init__(
-        self: DecoderAccuracyCallback, 
+        self: DecoderAccuracy, 
         classifier: tf.keras.Model | Callable[..., tf.Tensor], 
-        samples_per_class: int = 500,
-        seed: int | None = None,
+        samples_per_label: int = 500, 
+        seed: int | None = None
     ) -> None:
         """Initialize generation count and evaluation classifier.
 
@@ -50,7 +50,7 @@ class DecoderAccuracyCallback(callbacks.Callback):
             classifier (tf.keras.Model | Callable): Maps generated [samples, data_dim] vectors to [samples,
                 classes] scores. Keras layers receive training=False; plain callables receive only the
                 sample tensor.
-            samples_per_class (int): Number of generations
+            samples_per_label (int): Number of generations
                 requested for each class previously seen by the attached VAE.
                 Defaults to ``500``.
             seed (int | None): Optional experiment seed. A stable epoch-specific
@@ -67,7 +67,7 @@ class DecoderAccuracyCallback(callbacks.Callback):
 
         super().__init__()
 
-        self.samples_per_class = int(samples_per_class)
+        self.samples_per_label = int(samples_per_label)
         self.classifier = classifier
         # Validate once and retain the master seed for deterministic epoch
         # streams. ``derive_seed`` also normalizes NumPy integral values.
@@ -77,7 +77,7 @@ class DecoderAccuracyCallback(callbacks.Callback):
         self.seed = None if seed is None else int(seed)
 
     def on_epoch_end(
-        self: DecoderAccuracyCallback, 
+        self: DecoderAccuracy, 
         epoch: int, 
         logs: dict[str, object] | None = None
     ) -> None:
@@ -105,46 +105,45 @@ class DecoderAccuracyCallback(callbacks.Callback):
         if logs is None:
             logs = {}
 
-        x_gen, y_true = self.model.generate(
-            samples_per_class=self.samples_per_class, 
-            onehot_y_output=False,
-            seed=derive_seed(self.seed, "decoder_accuracy", int(epoch)),
-        )
-
-        # Avoid reporting an undefined accuracy for an empty generation.
-        if len(y_true) == 0:
-            raise ValueError(
-                "Decoder accuracy requires at least one generated sample."
+        x_gen, y_true = self.model.sample(
+            samples_per_class=self.samples_per_label, 
+            seed=derive_seed(
+                self.seed, 
+                "decoder_accuracy", 
+                int(epoch)
             )
-
-        # Forward inference state to Keras classifiers.
-        if isinstance(self.classifier, tf.keras.layers.Layer):
-            y_pred = self.classifier(x_gen, training=False)
-        # Support generic callables that accept only the generated samples.
-        else:
-            y_pred = self.classifier(x_gen)
-        y_pred = tf.argmax(y_pred, axis=1)
-        y_true = tf.convert_to_tensor(y_true, dtype=y_pred.dtype)
-        tf.debugging.assert_equal(
-            tf.shape(y_pred), 
-            tf.shape(y_true), 
-            message="Generated labels and classifier predictions must align."
         )
+        y_pred = self.classifier(
+            x_gen, 
+            training=False
+        )
+        y_pred = tf.argmax(y_pred, axis=1)
 
-        classifier_policy = getattr(self.classifier, "dtype_policy", None)
-        model_policy = getattr(self.model, "dtype_policy", None)
+        classifier_policy = getattr(
+            self.classifier, 
+            "dtype_policy", 
+            None
+        )
+        model_policy = getattr(
+            self.model, 
+            "dtype_policy", 
+            None
+        )
         stable_dtype = getattr(
             classifier_policy,
             "variable_dtype",
             getattr(
-                model_policy,
-                "variable_dtype",
-                tf.keras.mixed_precision.global_policy().variable_dtype,
-            ),
+                model_policy, 
+                "variable_dtype", 
+                tf.keras.mixed_precision.global_policy().variable_dtype
+            )
         )
-        corrects = tf.cast(y_pred == y_true, dtype=stable_dtype)
-        acc = tf.reduce_mean(corrects)
+        corrects = tf.cast(
+            y_pred == y_true, 
+            dtype=stable_dtype
+        )
 
+        acc = tf.reduce_mean(corrects)
         logs["decoder_accuracy"] = acc.numpy()
 
 
@@ -220,11 +219,11 @@ def run_self_tests() -> dict[str, str]:
         )
 
 
-    default_callback = DecoderAccuracyCallback(perfect_classifier)
+    default_callback = DecoderAccuracy(perfect_classifier)
     assert default_callback.samples_per_class == 500
     assert default_callback.classifier is perfect_classifier
 
-    callback = DecoderAccuracyCallback(
+    callback = DecoderAccuracy(
         classifier=perfect_classifier, 
         samples_per_class=2, 
         seed=17,
@@ -265,7 +264,7 @@ def run_self_tests() -> dict[str, str]:
         )
 
 
-    partial_callback = DecoderAccuracyCallback(half_correct_classifier, 3)
+    partial_callback = DecoderAccuracy(half_correct_classifier, 3)
     partial_callback.set_model(SimpleNamespace(generate=generate))
     partial_logs = {"existing": 1}
     partial_callback.on_epoch_end(0, partial_logs)
@@ -287,7 +286,7 @@ def run_self_tests() -> dict[str, str]:
         )
 
 
-    plain_callback = DecoderAccuracyCallback(plain_classifier, 1)
+    plain_callback = DecoderAccuracy(plain_classifier, 1)
     plain_callback.set_model(SimpleNamespace(generate=generate))
     plain_logs = {}
     plain_callback.on_epoch_end(0, plain_logs)
@@ -324,7 +323,7 @@ def run_self_tests() -> dict[str, str]:
             tf.zeros((0,), tf.int64))
 
 
-    empty_callback = DecoderAccuracyCallback(perfect_classifier, 1)
+    empty_callback = DecoderAccuracy(perfect_classifier, 1)
     empty_callback.set_model(SimpleNamespace(generate=generate_empty))
     try:
         empty_callback.on_epoch_end(0, {"sentinel": True})
@@ -359,7 +358,7 @@ def run_self_tests() -> dict[str, str]:
             tf.zeros((3,), tf.int64))
 
 
-    invalid_callback = DecoderAccuracyCallback(perfect_classifier, 1)
+    invalid_callback = DecoderAccuracy(perfect_classifier, 1)
     invalid_callback.set_model(SimpleNamespace(generate=generate_bad_labels))
     incompatible_logs = {"sentinel": True}
     try:
@@ -373,7 +372,7 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Incompatible label and prediction shapes must fail.")
 
-    unattached = DecoderAccuracyCallback(perfect_classifier, 1)
+    unattached = DecoderAccuracy(perfect_classifier, 1)
     try:
         unattached.on_epoch_end(0, {"sentinel": True})
     except AttributeError:
