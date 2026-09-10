@@ -5,8 +5,6 @@ distinct from `diffusion/models/`, which contains Python architecture source.
 
 - `DiT/` and `DiTCLF/` pair experiment configuration fragments with HDF5
   weights.
-- root-level `*.weights.h5` files are Keras weight checkpoints for named
-  experiments.
 - `hyperas/` contains older CIFAR hyperparameter-search models and logs.
 
 Load a current diffusion checkpoint only into an architecture created with the

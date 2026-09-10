@@ -154,7 +154,6 @@ class BaseEmbedding(BaseLayer):
         if self.embed_temperature <= 0:
             raise ValueError("embed_temperature must be positive.")
 
-
         # Use the target width for embeddings unless a separate raw frequency width is
         # configured.
         self.embed_dim = self.dim if self.embed_freq_dim is None else self.embed_freq_dim
@@ -184,6 +183,7 @@ class BaseEmbedding(BaseLayer):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         numpy_dtype = stable_dtype.as_numpy_dtype
         positions = np.asarray(positions, dtype=numpy_dtype)
+
         frequency_count = max((dim + 1) // 2, 1)
         frequencies = 1. / (temperature ** (
             np.arange(frequency_count, dtype=numpy_dtype) /
@@ -229,8 +229,8 @@ class BaseEmbedding(BaseLayer):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         numpy_dtype = stable_dtype.as_numpy_dtype
         grid_y, grid_x = np.meshgrid(
-            np.arange(grid_size, dtype=numpy_dtype),
-            np.arange(grid_size, dtype=numpy_dtype),
+            np.arange(grid_size, dtype=numpy_dtype), 
+            np.arange(grid_size, dtype=numpy_dtype), 
             indexing="ij"
         )
         x_positions = grid_x.reshape(-1)
@@ -241,15 +241,19 @@ class BaseEmbedding(BaseLayer):
 
         embedding = np.concatenate([
             self._get_1d_sincos_embedding(
-                x_dim, x_positions, temperature
-            ),
+                x_dim, 
+                x_positions, 
+                temperature
+            ), 
             self._get_1d_sincos_embedding(
-                y_dim, y_positions, temperature
-            ),
+                y_dim, 
+                y_positions, 
+                temperature
+            )
         ], axis=-1)
         embedding = tf.convert_to_tensor(
             embedding[None, ...], 
-            dtype=stable_dtype,
+            dtype=stable_dtype, 
             name=name
         )
 
@@ -536,14 +540,16 @@ class BaseEmbedding(BaseLayer):
             input_dim=kwargs.get("embed_steps", self.embed_steps), 
             output_dim=kwargs.get("embed_dim", self.embed_dim), 
             trainable=kwargs.get("embed_trainable", self.embed_trainable), 
-            name="embeddings",
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
+            name="embeddings"
         )
 
         # Install a deterministic initializer for non-random embedding modes.
         if kwargs["pos_embed_type"] != "new_weight":
             embedding_layer.build(())
-            embedding_layer.set_weights([self._create_embeddings(**kwargs)])
+            embedding_layer.set_weights([
+                self._create_embeddings(**kwargs)
+            ])
         # Keep directly initialized new-weight embeddings trainable.
         else:
             embedding_layer.trainable = True
