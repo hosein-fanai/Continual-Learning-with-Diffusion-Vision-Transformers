@@ -103,16 +103,14 @@ class AdaLNZero(ArgumentSaverLayer):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
-        # Honor an explicit residual-gate width; otherwise match the normalized feature
-        # width.
         self.gate_dim = self.gate_dim if self.gate_dim is not None else self.dim
 
         self.norm = layers.LayerNormalization(
             center=False, 
             scale=False, 
             epsilon=self.epsilon, 
-            name="layer_norm", 
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name="layer_norm"
         )
 
         # Plain normalization infers its width from the input and has no MLP.
@@ -121,34 +119,32 @@ class AdaLNZero(ArgumentSaverLayer):
             self.mlp = None
         # Adaptive normalization constructs the condition-to-modulation network.
         else:
-            # Reserve extra conditioning outputs only when a learned residual gate is
-            # requested.
             self.mlp_output_dim = self.dim * 2 + (
                 self.gate_dim if self.return_gate else 0
             )
             # Use activation-only conditioning when no hidden-width ratio is set.
             if self.mlp_ratio is None:
                 mlp_first_layer = layers.Activation(
-                    "swish",
-                    name=f"{self.name}/mlp/first_layer",
-                    dtype=self.dtype_policy,
+                    "swish", 
+                    dtype=self.dtype_policy, 
+                    name=f"{self.name}/mlp/first_layer"
                 )
             # Otherwise add the configured hidden conditioning projection.
             else:
                 mlp_first_layer = layers.Dense(
-                    int(self.dim * self.mlp_ratio),
-                    activation="swish",
-                    # kernel_initializer="zeros",
-                    name=f"{self.name}/mlp/first_layer",
-                    dtype=self.dtype_policy,
+                    int(self.dim * self.mlp_ratio), 
+                    activation="swish", 
+                    # kernel_initializer="zeros", 
+                    dtype=self.dtype_policy, 
+                    name=f"{self.name}/mlp/first_layer"
                 )
             self.mlp = models.Sequential([
-                mlp_first_layer,
+                mlp_first_layer, 
                 layers.Dense(
-                    self.mlp_output_dim,
-                    kernel_initializer="zeros",
-                    name=f"{self.name}/mlp/final_layer",
-                    dtype=self.dtype_policy,
+                    self.mlp_output_dim, 
+                    kernel_initializer="zeros", 
+                    dtype=self.dtype_policy, 
+                    name=f"{self.name}/mlp/final_layer"
                 )
             ], name="mlp")
 
@@ -193,13 +189,16 @@ class AdaLNZero(ArgumentSaverLayer):
         # Split out the learned residual gate when gated output is enabled.
         if self.return_gate:
             shift, scale, gate = tf.split(
-                params,
-                [self.dim, self.dim, self.gate_dim],
+                params, 
+                [self.dim, self.dim, self.gate_dim], 
                 axis=-1
             )
             return h * (1 + scale) + shift, gate
-
-        shift, scale = tf.split(params, 2, axis=-1)
+        shift, scale = tf.split(
+            params, 
+            2, 
+            axis=-1
+        )
         return h * (1 + scale) + shift
 
 
