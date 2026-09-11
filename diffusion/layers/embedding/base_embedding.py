@@ -154,8 +154,8 @@ class BaseEmbedding(BaseLayer):
         if self.embed_temperature <= 0:
             raise ValueError("embed_temperature must be positive.")
 
-        # Use the target width for embeddings unless a separate raw frequency width is
-        # configured.
+        # Use the target width for embeddings unless a 
+        # separate raw frequency width is configured.
         self.embed_dim = self.dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.pos_embed_mlp = None
 
@@ -259,75 +259,6 @@ class BaseEmbedding(BaseLayer):
 
         return embedding
 
-    def _get_t_embedding(
-        self, 
-        t: tf.Tensor | np.ndarray, 
-        dim: int
-    ) -> tf.Tensor: # old
-        """Build the legacy one-dimensional timestep encoding.
-
-        Args:
-            t (tf.Tensor | np.ndarray): Rank-one numeric values shaped ``[batch]``.
-            dim (int): Requested integer width. The legacy algorithm returns
-                ``2 * (dim // 2)`` channels, so odd values lose one channel.
-
-        Returns:
-            tf.Tensor: shaped ``[batch, 2 * (dim // 2)]``. This helper is
-            retained for compatibility; new code uses
-            :meth:`_get_1d_sincos_embedding`.
-        """
-
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        half = dim // 2
-        freqs = tf.exp(
-            -tf.math.log(tf.cast(10_000, stable_dtype))
-            * tf.cast(tf.range(half), stable_dtype)
-            / tf.cast(half, stable_dtype)
-        )
-        args = tf.cast(t[:, None], stable_dtype) * freqs[None]
-
-        emb = tf.concat([
-            tf.sin(args), 
-            tf.cos(args)
-        ], axis=-1)
-
-        return emb
-
-    def _get_2d_pos_embed(self, h: int, w: int, dim: int) -> tf.Tensor: # old
-        """Build the legacy flattened two-dimensional sinusoidal table.
-
-        Args:
-            h (int): Positive integer grid height.
-            w (int): Positive integer grid width.
-            dim (int): Requested channel width. For exact width it must be a positive
-                multiple of four; otherwise the result is truncated to
-                ``4 * (dim // 4)`` channels.
-
-        Returns:
-            tf.Tensor: in the policy variable dtype shaped
-            ``[1, h * w, 4 * (dim // 4)]``. This compatibility helper is not
-            used by the current positional modes.
-        """
-
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        numpy_dtype = stable_dtype.as_numpy_dtype
-        grid_y, grid_x = np.meshgrid(
-            np.arange(h, dtype=numpy_dtype),
-            np.arange(w, dtype=numpy_dtype),
-        )
-        grid = np.stack([grid_x, grid_y], axis=-1).reshape(-1, 2)
-
-        emb = []
-        for i in range(dim // 4):
-            freq = 1.0 / (10_000 ** (i / (dim//4)))
-            emb.append(np.sin(grid * freq))
-            emb.append(np.cos(grid * freq))
-
-        emb = np.concatenate(emb, axis=-1)
-        emb = tf.convert_to_tensor(emb[None], dtype=stable_dtype)
-
-        return emb
-
     def _create_embeddings(
         self, 
         embed_dim: int | None = None, 
@@ -389,19 +320,12 @@ class BaseEmbedding(BaseLayer):
             policy variable dtype; this factory does not resize or merge content.
         """
 
-        # Inherit the raw embedding width when no table-specific width is supplied.
         embed_dim = self.embed_dim if embed_dim is None else embed_dim
-        # Inherit the source grid when no table-specific grid is supplied.
         grid_size = self.grid_size if grid_size is None else grid_size
-        # Disable positions when neither call nor instance selects a mode; otherwise inherit
-        # or override it.
         pos_embed_type = None if pos_embed_type is None and self.pos_embed_type is None \
                         else pos_embed_type or self.pos_embed_type
-        # Inherit the configured lookup length when the table call omits it.
         embed_steps = self.embed_steps if embed_steps is None else embed_steps
-        # Use the configured sinusoidal temperature when no override is supplied.
         temperature = self.embed_temperature if temperature is None else temperature
-        # Derive the child name from its owner when no explicit name is supplied.
         name = f"{self.name}/positional_embeddings" if name is None else name
 
         self.pos_embed_type = pos_embed_type
@@ -436,7 +360,7 @@ class BaseEmbedding(BaseLayer):
                     if spatial_embedding else embed_steps, 
                     1, 
                     dtype=tf.as_dtype(self.dtype_policy.variable_dtype)
-                ),
+                ), 
                 temperature=temperature
             )
 
@@ -447,13 +371,13 @@ class BaseEmbedding(BaseLayer):
         # Build the fixed one-dimensional source table for later resizing.
         if pos_embed_type == "1d_interpolate":
             return self._get_1d_sincos_embedding(
-                dim=embed_dim,
+                dim=embed_dim, 
                 positions=tf.range(
-                    0,
-                    grid_size * grid_size,
-                    1,
-                    dtype=tf.as_dtype(self.dtype_policy.variable_dtype),
-                ),
+                    0, 
+                    grid_size * grid_size, 
+                    1, 
+                    dtype=tf.as_dtype(self.dtype_policy.variable_dtype)
+                ), 
                 temperature=temperature
             )[None, ...]
 
@@ -461,27 +385,31 @@ class BaseEmbedding(BaseLayer):
         if pos_embed_type == "1d_learned_interpolate":
             return self.add_weight(
                 shape=(
-                    1,
-                    grid_size * grid_size,
+                    1, 
+                    grid_size * grid_size, 
                     embed_dim
-                ),
-                initializer="zeros",
-                trainable=True,
+                ), 
+                initializer="zeros", 
+                trainable=True, 
                 name=name
             )
 
         # Build a fixed two-dimensional table at the target resolution.
         if pos_embed_type == "2d_sincos":
             return self._get_2d_sincos_embedding(
-                dim=embed_dim, grid_size=output_grid_size, 
-                temperature=temperature, name=name
+                dim=embed_dim, 
+                grid_size=output_grid_size, 
+                temperature=temperature, 
+                name=name
             )
 
         # Build the fixed two-dimensional source table for later resizing.
         if pos_embed_type == "2d_interpolate":
             return self._get_2d_sincos_embedding(
-                dim=embed_dim, grid_size=grid_size, 
-                temperature=temperature, name=name
+                dim=embed_dim, 
+                grid_size=grid_size, 
+                temperature=temperature, 
+                name=name
             )
 
         # Build a trainable two-dimensional source grid for later resizing.
@@ -531,8 +459,6 @@ class BaseEmbedding(BaseLayer):
             instance's ``embed_trainable`` flag.
         """
 
-        # Inherit the positional mode for lookup initialization, preserving a fully disabled
-        # mode.
         kwargs["pos_embed_type"] = None if kwargs.get("pos_embed_type", None) is None \
                                 and self.pos_embed_type is None \
                                 else kwargs.get("pos_embed_type", None) or self.pos_embed_type
@@ -590,19 +516,14 @@ class BaseEmbedding(BaseLayer):
         if self.pos_embed_type is None:
             return x
 
-        # Infer positional broadcast batch size from content unless the caller supplies it.
         batch_size = tf.shape(x)[0] if batch_size is None else batch_size
         pos_embed = self.pos_embed
 
         interpolated_pos_embed = "interpolate" in self.pos_embed_type
         # Resize whenever explicitly requested or required by an interpolation mode.
         if output_grid_size is not None or interpolated_pos_embed:
-            # Use the subclass target grid for an omitted resize target; honor an explicit
-            # target.
             output_grid_size = self.output_grid_size if output_grid_size is None \
                             else output_grid_size
-            # Interpolation modes reshape the source grid; direct tables reshape their
-            # original target grid.
             source_grid_size = self.grid_size if interpolated_pos_embed \
                              else self.output_grid_size
 
@@ -643,19 +564,21 @@ class BaseEmbedding(BaseLayer):
             ))
             pos_embed.set_shape((1, None, pos_embed_dim))
 
-        # Project positional features only when a positional MLP was configured.
         pos_embed = self.pos_embed_mlp(
             pos_embed, 
             training=training
         ) if self.pos_embed_mlp is not None else pos_embed
-        # Merge policy constants in the activation dtype selected by Keras.
         pos_embed = tf.cast(pos_embed, x.dtype)
 
         # Append positional channels for concatenation mode.
         if self.pos_merger_type == "concat":
             return tf.concat([
-                x,
-                tf.repeat(pos_embed, batch_size, axis=0),
+                x, 
+                tf.repeat(
+                    pos_embed, 
+                    batch_size, 
+                    axis=0
+                )
             ], axis=-1)
 
         # Add position features elementwise for additive mode.

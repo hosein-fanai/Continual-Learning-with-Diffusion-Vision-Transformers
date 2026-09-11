@@ -11,6 +11,7 @@ from tensorflow.keras import layers, models
 from typing import Any, Literal, TypeAlias
 
 from common.validation import require
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -127,6 +128,7 @@ class Upsample(BaseEmbedding):
         )
 
         self.output_grid_size = self.grid_size * 2
+        self.prefix_tokens_num = int(self.circumvent_tokens)
 
         self.layer_norm = self._create_layer_norm(
             return_gate=False
@@ -184,12 +186,11 @@ class Upsample(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
-        # Concatenated positions double the component width; disabled or additive positions
-        # preserve it.
+        # Concatenated positions double the component width; 
+        # disabled or additive positions preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
-        # Project bypassed tokens only when spatial processing changes their channel width.
         self.token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -223,24 +224,21 @@ class Upsample(BaseEmbedding):
 
         x, cond = inputs
     
-        # Use configured normalization; otherwise preserve incoming features and any
-        # identity gate.
         x = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else x
-        prefix_tokens_num = int(self.circumvent_tokens)
-        # Keep configured prefix tokens outside spatial processing and restore them in
-        # sequence order.
         x, token = (
-            x[:, prefix_tokens_num:, :], 
-            x[:, :prefix_tokens_num, :]
+            x[:, self.prefix_tokens_num:, :], 
+            x[:, :self.prefix_tokens_num, :]
         ) if self.circumvent_tokens else (x, None)
 
         x_shape = tf.shape(x)
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        stable_dtype = tf.as_dtype(
+            self.dtype_policy.variable_dtype
+        )
         input_grid_size = tf.cast(
-            tf.sqrt(tf.cast(x_shape[1], dtype=stable_dtype)),
+            tf.sqrt(tf.cast(x_shape[1], dtype=stable_dtype)), 
             dtype=tf.int32
         )
     
@@ -256,21 +254,17 @@ class Upsample(BaseEmbedding):
         )
 
         x_shape = tf.shape(x)
-        output_grid_size = x_shape[1]
 
         x = tf.reshape(x, (
             x_shape[0], 
-            output_grid_size * output_grid_size, 
+            x_shape[1] * x_shape[1], 
             x.shape[-1]
         ))
         x = self._pos_merger(
             x, 
-            output_grid_size=output_grid_size,
+            output_grid_size=x_shape[1], 
             training=training
         )
-        # Keep configured prefix tokens outside spatial processing and restore them in
-        # sequence order.
-        # Match prefix-token width to spatial output only when projection is required.
         x = tf.concat([
             self.token_projector(
                 token, 
@@ -278,7 +272,6 @@ class Upsample(BaseEmbedding):
             ) if self.token_projector is not None else token, 
             x
         ], axis=1) if self.circumvent_tokens else x
-        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training

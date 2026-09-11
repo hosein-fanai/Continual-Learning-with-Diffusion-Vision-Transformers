@@ -12,6 +12,7 @@ from tensorflow.keras import layers
 from typing import Any
 
 from common.validation import require
+
 from diffusion.layers.embedding.base_embedding import BaseEmbedding
 
 
@@ -147,8 +148,8 @@ class LocalMixer(BaseEmbedding):
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
         else (self.grid_size - self.kernel_size) // self.strides + 1
-        self.add_residual = self.strides == 1 and \
-                            self.output_grid_size == self.grid_size
+        self.add_residual = self.strides == 1 and self.output_grid_size == self.grid_size
+        self.prefix_tokens_num = int(self.circumvent_tokens)
 
         # Allocate a residual-width gate for shape-preserving mixing, or zero gate channels
         # for resized paths.
@@ -163,8 +164,6 @@ class LocalMixer(BaseEmbedding):
             and not self.ln_no_adaptation
         )
 
-        # Zero-initialize the local kernel when no adaptive zero gate supplies the requested
-        # zero correction.
         self.depthwise = layers.DepthwiseConv2D(
             kernel_size=self.kernel_size, 
             strides=self.strides, 
@@ -174,7 +173,6 @@ class LocalMixer(BaseEmbedding):
             dtype=self.dtype_policy, 
             name=f"{self.name}/depthwise"
         )
-        # Create the pointwise channel projection only when pointwise mixing is enabled.
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
@@ -182,8 +180,6 @@ class LocalMixer(BaseEmbedding):
             dtype=self.dtype_policy, 
             name=f"{self.name}/pointwise"
         ) if self.use_pointwise else None
-        # Create a width projector only for a shape-preserving residual with changed
-        # channels.
         self.residual_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
@@ -197,8 +193,8 @@ class LocalMixer(BaseEmbedding):
         # Project the residual to its configured width only when a projector exists.
         residual_token_dim = self.output_dim if self.residual_projector is not None \
                             else self.dim
-        # Concatenated positions double the component width; disabled or additive positions
-        # preserve it.
+        # Concatenated positions double the component width; 
+        # disabled or additive positions preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
@@ -207,8 +203,7 @@ class LocalMixer(BaseEmbedding):
             self.output_dim, 
             dtype=self.dtype_policy, 
             name=f"{self.name}/residual_token_projector"
-        ) if residual_token_dim != self.output_dim and \
-        self.circumvent_tokens else None
+        ) if residual_token_dim != self.output_dim and self.circumvent_tokens else None
         self.mlp = self._create_mlp(
             self.output_dim
         )
@@ -237,21 +232,18 @@ class LocalMixer(BaseEmbedding):
 
         x, cond = inputs
 
-        # Use configured normalization; otherwise preserve incoming features and any
-        # identity gate.
         h, gate = self.layer_norm(
             (x, cond), 
             training=training
         ) if self.layer_norm is not None else (x, 1.)
-        prefix_tokens_num = int(self.circumvent_tokens)
-        # Keep configured prefix tokens outside spatial processing and restore them in
-        # sequence order.
-        h = h[:, prefix_tokens_num:, :] if self.circumvent_tokens else h
+        h = h[:, self.prefix_tokens_num:, :] if self.circumvent_tokens else h
 
         h_shape = tf.shape(h)
-        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        stable_dtype = tf.as_dtype(
+            self.dtype_policy.variable_dtype
+        )
         input_grid_size = tf.cast(
-            tf.sqrt(tf.cast(h_shape[1], dtype=stable_dtype)),
+            tf.sqrt(tf.cast(h_shape[1], dtype=stable_dtype)), 
             dtype=tf.int32
         )
 
@@ -265,52 +257,41 @@ class LocalMixer(BaseEmbedding):
             h, 
             training=training
         )
-        # Mix depthwise output channels only when pointwise convolution is configured.
         h = self.pointwise(
             h, 
             training=training
         ) if self.pointwise is not None else h
 
         h_shape = tf.shape(h)
-        output_grid_size = h_shape[1]
 
         h = tf.reshape(h, (
             h_shape[0], 
-            output_grid_size * output_grid_size, 
+            h_shape[1] * h_shape[1], 
             h.shape[-1]
         ))
-        # Project the residual to its configured width only when a projector exists.
         x = self.residual_projector(
             x, 
             training=training
         ) if self.residual_projector is not None else x
-        # Keep configured prefix tokens outside spatial processing and restore them in
-        # sequence order.
         x, x_token = (
-            x[:, prefix_tokens_num:, :], 
-            x[:, :prefix_tokens_num, :]
+            x[:, self.prefix_tokens_num:, :], 
+            x[:, :self.prefix_tokens_num, :]
         ) if self.circumvent_tokens else (x, None)
-        # Add the gated local correction only when the spatial grid is preserved; otherwise
-        # return resized features.
         x = x + gate * h if self.add_residual else h
 
         x = self._pos_merger(
             x, 
-            output_grid_size=output_grid_size, 
+            output_grid_size=h_shape[1], 
             training=training
         )
-        # Adjust preserved prefix width only when the post-merge projection exists.
         x_token = self.residual_token_projector(
             x_token,
             training=training
         ) if self.residual_token_projector is not None else x_token
-        # Keep configured prefix tokens outside spatial processing and restore them in
-        # sequence order.
         x = tf.concat([
             x_token,
             x
         ], axis=1) if self.circumvent_tokens else x
-        # Apply the final feature projection only when an MLP is configured.
         x = self.mlp(
             x, 
             training=training
