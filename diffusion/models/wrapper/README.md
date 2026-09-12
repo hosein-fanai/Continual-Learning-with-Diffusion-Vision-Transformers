@@ -515,13 +515,24 @@ model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 
 gen_history = model.fit_generator(x=dataset, epochs=5)
 clf_history = model.fit_discriminator(x=dataset, epochs=5)
+merged = model.merge_result_dicts((gen_history.history, clf_history.history))
 
-# Convenience API: runs both and returns a merged history dictionary.
+# Alternatively, run both phases and merge their histories in one call.
 merged = model.fit(
     gen_kwargs={"x": dataset, "epochs": 5}, 
     clf_kwargs={"x": dataset, "epochs": 5}, 
 )
 ```
+
+`merge_result_dicts(dicts, names=("generator", "discriminator"))` combines
+history or evaluation dictionaries. Unique metric names stay unchanged; names
+shared by multiple dictionaries receive their phase prefix, such as
+`generator_loss` and `discriminator_loss`. The returned dictionary is a shallow
+merge: input dictionaries are unchanged, and their values are reused.
+Provide one name per input, including any `None` entries, which are skipped.
+Custom names support additional phases even when a metric appears in only
+some phases. Ambiguous final metric names raise `ValueError` instead of
+overwriting results.
 
 When a classifier noising maximum is `None`, that phase uses clean images and
 timestep 0. A numeric maximum draws noise below that exclusive bound.

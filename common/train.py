@@ -1095,7 +1095,7 @@ def train_model(
             verbose=training_verbose,
             **discriminator_kwargs
         ).history
-        history = model._merge_result_dicts(
+        history = model.merge_result_dicts(
             (generator_history, discriminator_history),
             ("generator", "discriminator")
         )

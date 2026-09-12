@@ -15,7 +15,7 @@ independent frozen protocol inherited from DiffusionClassifier.
 import tensorflow as tf
 from tensorflow.keras import callbacks, optimizers
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from common.gradients import apply_policy_gradients
 from common.validation import require
@@ -345,7 +345,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         require(self.clf_trainable_variables is not None, None)
 
-
         clf_variable_ids = {id(v) for v in self.clf_trainable_variables}
 
         self.gen_trainable_variables = []
@@ -385,63 +384,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
         if self._test_part != part_name:
             self._test_part = part_name
             self.test_function = None
-
-    def _merge_result_dicts(
-        self, 
-        dicts: tuple[dict | None, ...] | list[dict | None], 
-        names: tuple[str, ...] | list[str]
-    ) -> dict[str, object]:
-        """Merge phase result dictionaries, prefixing colliding metric names.
-
-        This helper is designed for the two generator/discriminator dictionaries.
-        If more mappings are supplied, every duplicated key must occur in every
-        retained mapping because the collision-removal loop indexes each one. Names
-        must align one-to-one with dicts; scalar/list Keras results are not accepted.
-
-        Args:
-            dicts (Sequence[dict | None]): Result mappings; None entries are
-                recursively discarded.  Mappings are mutated when collisions
-                are removed.
-            names (Sequence[str]): Prefix aligned with each mapping, normally
-                ``"generator"`` and ``"discriminator"``.
-
-        Returns:
-            dict[str, object]: Merged values.  A key appearing in more than one
-            mapping becomes ``"<phase>_<key>"`` for each phase; unique keys are
-            unchanged.  All-None input returns an empty dictionary.
-        """
-
-        # Remove absent phase results before merging dictionaries.
-        if None in dicts:
-            dicts = list(dicts)
-            names = list(names)
-
-            id_ = dicts.index(None)
-            dicts.pop(id_)
-            names.pop(id_)
-
-            return self._merge_result_dicts(dicts, names)
-
-        same_keys = []
-        for dict1 in dicts:
-            for dict2 in dicts:
-                # Do not compare a result mapping with itself.
-                if dict1 is dict2:
-                    continue
-                for key in dict1:
-                    # Track keys shared by more than one phase for prefixing.
-                    if key in dict2:
-                        same_keys.append(key)
-
-        merged_dict = {}
-        for dict_, name in zip(dicts, names):
-            for key in set(same_keys):
-                merged_dict[f"{name}_{key}"] = dict_[key]
-                del dict_[key]
-
-            merged_dict.update(dict_)
-
-        return merged_dict
 
     def _register_optimizer_variables(self) -> None:
         """Refresh split variable groups after progressive depth growth.
@@ -1016,6 +958,63 @@ class DiffusionClassifierV2(DiffusionClassifier):
             replay_mask
         )
 
+    def merge_result_dicts(
+        self, 
+        dicts: Sequence[Mapping[str, object] | None], 
+        names: Sequence[str] = ("generator", "discriminator")
+    ) -> dict[str, object]:
+        """Merge phase result dictionaries, prefixing colliding metric names.
+
+        Names align one-to-one with input mappings, including absent phases.
+        Any number of phases is supported with explicit names. Input mappings
+        are left unchanged; metric values (including history lists) are shared
+        with the returned dictionary.
+
+        Args:
+            dicts (Sequence[Mapping[str, object] | None]): Result mappings with
+                string metric keys. None entries represent absent phases.
+            names (Sequence[str]): Prefix for each mapping. Defaults to
+                ``("generator", "discriminator")`` for two-phase results.
+
+        Returns:
+            dict[str, object]: Merged values.  A key appearing in more than one
+            mapping becomes ``"<phase>_<key>"`` for each phase; unique keys are
+            unchanged.  All-None input returns an empty dictionary.
+
+        Raises:
+            TypeError: A retained result is not a mapping, or its metric keys
+                or phase name are not strings.
+            ValueError: Input and name counts differ, or prefixing produces
+                a duplicate output key that would overwrite another metric.
+        """
+
+        phases = []
+        key_counts: dict[str, int] = {}
+        for result, name in zip(dicts, names):
+            # Absent results keep their name slot but contribute no metrics.
+            if result is None:
+                continue
+
+            phases.append((result, name))
+
+            for key in result:
+                key_counts[key] = key_counts.get(key, 0) + 1
+
+        merged_dict: dict[str, object] = {}
+        for result, name in phases:
+            for key, value in result.items():
+                output_key = f"{name}_{key}" if key_counts[key] > 1 else key
+
+                if output_key in merged_dict:
+                    raise ValueError(
+                        f"Merged metric name {output_key!r} is ambiguous; "
+                        "use distinct phase names or rename the conflicting metric."
+                    )
+
+                merged_dict[output_key] = value
+
+        return merged_dict
+
     def fit_generator(self, **kwargs: object) -> callbacks.History:
         """Fit only the generator variable group with diffusion objectives.
 
@@ -1109,9 +1108,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         gen_history = self.fit_generator(**gen_kwargs).history
         clf_history = self.fit_discriminator(**clf_kwargs).history
-        merged_history = self._merge_result_dicts(
-            (gen_history, clf_history), 
-            ("generator", "discriminator")
+        merged_history = self.merge_result_dicts(
+            (gen_history, clf_history)
         )
 
         return merged_history
@@ -1174,8 +1172,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         A combined call evaluates the generator first and leaves the discriminator
         selected afterward. With eval_both=True, None/empty test_part is allowed, but
-        an unknown nonempty selector is still rejected. Phase metric dictionaries may
-        be mutated by collision prefixing while building the returned mapping.
+        an unknown nonempty selector is still rejected. Phase metric dictionaries
+        are preserved while collisions are prefixed in the returned mapping.
 
         Args:
             eval_both (bool): Evaluate generator then discriminator regardless of
@@ -1226,9 +1224,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         clf_eval = self.evaluate_discriminator(
             **kwargs
         ) if test_part == "discriminator" or eval_both else None
-        merged_history = self._merge_result_dicts(
-            (gen_eval, clf_eval), 
-            ("generator", "discriminator")
+        merged_history = self.merge_result_dicts(
+            (gen_eval, clf_eval)
         )
 
         return merged_history
@@ -1781,12 +1778,12 @@ def run_self_tests() -> dict[str, str]:
         regularized_split.clf_trainable_variables
     }
 
-    unique = wrapper._merge_result_dicts(
+    unique = wrapper.merge_result_dicts(
         ({"a": 1}, {"b": 2}), 
         ("generator", "discriminator")
     )
     assert unique == {"a": 1, "b": 2}
-    collided = wrapper._merge_result_dicts(
+    collided = wrapper.merge_result_dicts(
         ({"loss": 1, "a": 2}, {"loss": 3, "b": 4}),
         ("generator", "discriminator"),
     )
@@ -1794,8 +1791,8 @@ def run_self_tests() -> dict[str, str]:
         "generator_loss": 1, "a": 2,
         "discriminator_loss": 3, "b": 4,
     }
-    assert wrapper._merge_result_dicts((None, {"x": 1}), ("a", "b")) == {"x": 1}
-    assert wrapper._merge_result_dicts((None, None), ("a", "b")) == {}
+    assert wrapper.merge_result_dicts((None, {"x": 1}), ("a", "b")) == {"x": 1}
+    assert wrapper.merge_result_dicts((None, None), ("a", "b")) == {}
 
     wrapper.train_function = object()
     wrapper._switch_train_part("generator")

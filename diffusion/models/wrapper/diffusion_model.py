@@ -3764,7 +3764,7 @@ class DiffusionModel(ArgumentSaverModel):
         add_null_label: bool = False,
         samples_per_label: int = 1, 
         z: tf.Tensor | Sequence[tf.Tensor] | None = None, 
-        seed: int | None = None,
+        seed: int | None = None
     ) -> tf.Tensor:
         """Generate images by decoding the configured variational bottleneck.
 
@@ -3971,7 +3971,7 @@ class DiffusionModel(ArgumentSaverModel):
         return_x_ts: bool = False, 
         return_x0s: bool = False, 
         seed: int | None = None, 
-        verbose: bool = False,
+        verbose: bool = False
     ) -> tf.Tensor | list[object]:
         """Generate images with generalized DDIM/DDPM reverse diffusion.
 
