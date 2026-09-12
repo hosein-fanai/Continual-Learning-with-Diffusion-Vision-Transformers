@@ -21,8 +21,6 @@ import random
 
 import yaml
 
-from numbers import Integral
-
 from dataclasses import (
     MISSING, 
     Field, 
@@ -32,6 +30,7 @@ from dataclasses import (
     fields, 
     is_dataclass
 )
+from numbers import Integral
 from typing import Any, TextIO, TypeVar
 from collections.abc import Mapping
 
@@ -1809,8 +1808,12 @@ class OptimizerConfig:
             optimizer API. Defaults to ``None``.
         momentum (float): Momentum used by RMSprop/SGD. Defaults to ``0.0``.
         clipnorm (float | None): Optional positive finite norm used to clip each variable's
-            gradient tensor independently. This is Keras ``clipnorm`` semantics, not
-            global-gradient clipping. Defaults to ``None``.
+            gradient tensor independently. Mutually exclusive with ``global_clipnorm``.
+            Defaults to ``None``.
+        global_clipnorm (float | None): Optional positive finite norm used to clip all
+            gradients handled by one optimizer together by their combined norm.
+            Mutually exclusive with ``clipnorm``; Keras validates clipping settings
+            when the optimizer is constructed. Defaults to ``None``.
     """
 
     initial_learning_rate: float = 5e-3
@@ -1820,6 +1823,7 @@ class OptimizerConfig:
     weight_decay: float | None = None
     momentum: float = 0.0
     clipnorm: float | None = None
+    global_clipnorm: float | None = None
 
 
 @dataclass

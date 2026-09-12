@@ -913,6 +913,49 @@ class HpoConfigTests(unittest.TestCase):
                 run_hpo("generation", "vae", **{name: value})
             create.assert_not_called()
 
+    def test_global_clipnorm_choices_reach_optimizer_config(self) -> None:
+        """Search global clipping, including disabled clipping, without clipnorm.
+
+        Returns:
+            None: Sampled thresholds reach Config and the trial parameter log.
+        """
+        for global_clipnorm in (None, 0.5, 1., 5.):
+            with self.subTest(global_clipnorm=global_clipnorm):
+                trial = _SuggestionTrial()
+                config = _build_trial_config(
+                    trial, "classification", "dnn", "mnist",
+                    epochs=1, seed=19, results_path="results/hpo",
+                    search_space_overrides={
+                        "clipnorm": [None],
+                        "global_clipnorm": [global_clipnorm],
+                    },
+                )
+                self.assertIsNone(config.optimizer.clipnorm)
+                self.assertEqual(config.optimizer.global_clipnorm, global_clipnorm)
+                self.assertIn("global_clipnorm", trial.params)
+                self.assertEqual(trial.params["global_clipnorm"], global_clipnorm)
+
+    def test_clipnorm_excludes_global_clipnorm_suggestions(self) -> None:
+        """Keep global clipping inactive whenever per-variable clipping is sampled.
+
+        Returns:
+            None: Per-variable thresholds suppress the conditional global search.
+        """
+        for clipnorm in (0.5, 1., 5.):
+            with self.subTest(clipnorm=clipnorm):
+                trial = _SuggestionTrial()
+                config = _build_trial_config(
+                    trial, "classification", "dnn", "mnist",
+                    epochs=1, seed=19, results_path="results/hpo",
+                    search_space_overrides={
+                        "clipnorm": [clipnorm],
+                        "global_clipnorm": [5.],
+                    },
+                )
+                self.assertEqual(config.optimizer.clipnorm, clipnorm)
+                self.assertIsNone(config.optimizer.global_clipnorm)
+                self.assertNotIn("global_clipnorm", trial.params)
+
     def test_tensorboard_name_hashes_wide_conditional_spaces(self) -> None:
         """Keep Windows event paths short without losing run identity.
 
@@ -2473,14 +2516,15 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 12)
-            self.assertEqual(original["search_space_version"], 12)
+            self.assertEqual(SEARCH_SPACE_VERSION, 13)
+            self.assertEqual(original["search_space_version"], 13)
             self.assertEqual(original["training_semantics_version"], 2)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (
                 ("seed", original, 12),
                 ("protocol", {**original, "search_space_version": 9}, 11),
+                ("legacy_clipping", {**original, "search_space_version": 12}, 11),
                 ("legacy_training_semantics", {key: value for key, value in original.items()
                                                if key != "training_semantics_version"}, 11),
                 ("changed_training_semantics", {**original, "training_semantics_version": 1}, 11),
@@ -2806,6 +2850,8 @@ class HpoConfigTests(unittest.TestCase):
         self.assertGreaterEqual(config.optimizer.initial_learning_rate, 2e-4)
         self.assertLessEqual(config.optimizer.initial_learning_rate, 3e-4)
         self.assertEqual(config.optimizer.clipnorm, 1.)
+        self.assertIsNone(config.optimizer.global_clipnorm)
+        self.assertNotIn("unet_classifier.global_clipnorm", trial.params)
         self.assertTrue(config.continually_learn.use_generative_replay)
         self.assertEqual(config.continually_learn.replay_budget_mode,
                          "fixed_total")

@@ -21,8 +21,10 @@ The top-level sections are:
   `vae_classifier`). The same rule applies to a named diffusion wrapper when
   `wrapper_kwargs` is empty.
 - `optimizer`: optimizer family, learning rate/schedule, decay, momentum, and
-  optional positive finite `clipnorm`, which clips each variable's gradient
-  tensor independently (it is not a global-gradient norm).
+  optional gradient clipping. `clipnorm` limits each variable's gradient norm
+  independently; `global_clipnorm` limits the combined norm of all gradients
+  in an optimizer update. Both default to `null`; set at most one to a positive
+  finite value. Keras rejects enabling both when the optimizer is constructed.
 - `training`: task, ordinary/progressive fit selection, curriculum and
   epoch/validation settings, result directory, early stopping, TensorBoard,
   verbosity, weight persistence, global dtype policy, and deterministic-kernel
@@ -51,6 +53,18 @@ config = load_config("results/resolved-config.yaml")
 `save_config` keeps its full-output behavior by default. Pass `shorten=True` to
 write only values that differ from their dataclass defaults; omitted values are
 restored normally by `load_config`.
+
+Global clipping is available for Adam, AdamW, Nadam, RMSprop, and SGD. For
+example, add this section to a training configuration:
+
+```yaml
+optimizer:
+  global_clipnorm: 1.0
+```
+
+`OptimizerConfig` stores these values without validation; the model factory
+forwards them to Keras. Leave `clipnorm` unset or set it to `null` when using
+`global_clipnorm`.
 
 `training.task` accepts only `legacy`, `generation`, `joint`, `classification`,
 or `continual` (case-insensitive). A path-like `training.results_path` is

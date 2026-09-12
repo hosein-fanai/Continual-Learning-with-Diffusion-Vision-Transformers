@@ -73,6 +73,8 @@ class ReplayConfigTests(unittest.TestCase):
         self.assertEqual(loaded_config.training.task, "classification")
         self.assertIsNone(Config().continually_learn.optimizer_steps_per_epoch)
         self.assertIsNone(loaded.optimizer_steps_per_epoch)
+        self.assertIsNone(Config().optimizer.global_clipnorm)
+        self.assertIsNone(loaded_config.optimizer.global_clipnorm)
 
     def test_runtime_options_remain_passive_config_values(self) -> None:
         """Runtime policy validation belongs to the replay implementation.
@@ -353,15 +355,30 @@ class CoreConfigValidationTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        for value in (2.5, True, "1.0", 0.0, -1.0, float("nan")):
-            with self.subTest(value=value):
-                stored = OptimizerConfig(clipnorm=value).clipnorm
-                # Compare NaN through its defining non-reflexive behavior.
-                if isinstance(value, float) and value != value:
-                    self.assertNotEqual(stored, stored)
-                # All other passive values are preserved exactly.
-                else:
-                    self.assertEqual(stored, value)
+        for option in ("clipnorm", "global_clipnorm"):
+            for value in (None, 2.5, True, "1.0", 0.0, -1.0, float("nan")):
+                with self.subTest(option=option, value=value):
+                    stored = getattr(OptimizerConfig(**{option: value}), option)
+                    # Compare NaN through its defining non-reflexive behavior.
+                    if isinstance(value, float) and value != value:
+                        self.assertNotEqual(stored, stored)
+                    # All other passive values are preserved exactly.
+                    else:
+                        self.assertEqual(stored, value)
+
+    def test_optimizer_global_clipnorm_round_trips_through_yaml(self) -> None:
+        """Preserve global clipping through typed mappings and full/compact YAML."""
+
+        config = Config(optimizer={"global_clipnorm": 2.5})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "optimizer.yaml"
+            for shorten in (False, True):
+                with self.subTest(shorten=shorten):
+                    save_config(config, path, shorten=shorten)
+                    restored = load_config(path)
+                    self.assertEqual(restored, config)
+                    self.assertEqual(restored.optimizer.global_clipnorm, 2.5)
+                    self.assertIsNone(restored.optimizer.clipnorm)
 
 
 # Run this focused suite directly when the module is executed as a script.

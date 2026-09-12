@@ -74,14 +74,13 @@ _DIFFUSION_HPO_MODELS = _DIFFUSION_MODELS | {
 _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
     _DIFFUSION_CLASSIFIER_STUDY
 }
-# Version 12 restricts replay selectors to executable model families and removes
-# inactive reservoir insertion and replay-free reverse-sampling dimensions.
-SEARCH_SPACE_VERSION = 12
+# Version 13 adds global gradient clipping when per-variable clipping is disabled.
+SEARCH_SPACE_VERSION = 13
 TRAINING_SEMANTICS_VERSION = 2
 """Version 2 seals stable logits KD, deployed-head metrics and resolved validation.
 
 Old specifications lack this field and cannot resume into the repaired training
-behavior. The version-12 executable search dimensions remain unchanged.
+behavior. Search-space changes are versioned independently above.
 """
 
 _OPTIMIZATION = {
@@ -91,7 +90,8 @@ _OPTIMIZATION = {
     "optimizer": "family-specific subset of SGD, RMSprop, Adam, AdamW, Nadam",
     "weight_decay": "AdamW-only log-uniform value from 1e-6 to 1e-3",
     "momentum": "SGD/RMSprop only: 0, 0.3, 0.9, or 0.95",
-    "clipnorm": "None, 0.5, 1, or 5"
+    "clipnorm": "per-variable norm: None, 0.5, 1, or 5",
+    "global_clipnorm": "global norm: None, 0.5, 1, or 5; only when clipnorm is None"
 }
 _DIT = {
     **_OPTIMIZATION,
@@ -983,6 +983,10 @@ def _suggest_optimizer(
     clipnorm = trial.suggest_categorical(
         "clipnorm", [None, 0.5, 1., 5.]
     )
+    # Keras permits only one norm-clipping mode at a time.
+    global_clipnorm = trial.suggest_categorical(
+        "global_clipnorm", [None, 0.5, 1., 5.]
+    ) if clipnorm is None else None
     # Use constant learning rates when the update budget is not known in advance.
     if not allow_cosine:
         schedule_choices = ["constant"]
@@ -1004,6 +1008,7 @@ def _suggest_optimizer(
             "weight_decay": weight_decay, 
             "momentum": momentum,
             "clipnorm": clipnorm,
+            "global_clipnorm": global_clipnorm,
             "schedule": schedule
         }
     }
