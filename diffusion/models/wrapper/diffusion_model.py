@@ -18,6 +18,8 @@ import numpy as np
 
 from importlib import import_module
 
+import os
+
 from collections.abc import Mapping
 from typing import Literal, Sequence, get_args
 
@@ -1321,6 +1323,32 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         return self.network.summary(**kwargs)
+
+    def save_weights(
+        self, 
+        filepath: str, 
+        create_dir: bool = True, 
+        overwrite: bool = True
+    ):
+        """Save model weights, optionally creating missing parent directories.
+
+        Args:
+            filepath (str): Destination path for the saved weights.
+            create_dir (bool): Recursively create missing parent directories
+                when True. Defaults to True.
+            overwrite (bool): Whether to overwrite an existing weights file
+                without prompting. Defaults to True.
+
+        Returns:
+            None: Weights are written to ``filepath``.
+        """
+
+        if create_dir:
+            parent_dir = os.path.dirname(filepath)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+
+        return super().save_weights(filepath, overwrite)
 
     def train_step(
         self, 
