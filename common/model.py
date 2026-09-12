@@ -200,6 +200,9 @@ def _make_optimizer(config: Config | None = None,
             (zero for AdamW); nonzero decay requires AdamW. ``momentum``
             defaults to ``0.0`` and applies only to SGD/RMSprop. ``clipnorm``
             defaults to None and otherwise enables Keras per-gradient clipping.
+            ``global_clipnorm`` defaults to None and otherwise clips gradients
+            together by their combined norm. Keras requires at most one of
+            ``clipnorm`` and ``global_clipnorm`` to be set.
 
     Returns:
         tf.keras.optimizers.Optimizer | object: The requested Keras optimizer,
@@ -208,7 +211,7 @@ def _make_optimizer(config: Config | None = None,
     Raises:
         ValueError: If a schedule/optimizer is unsupported, cosine decay lacks
             a positive duration, or weight decay is paired with a non-AdamW
-            optimizer.
+            optimizer, or Keras rejects incompatible clipping settings.
 
     Side Effects:
         Config mode records an inferred cosine duration in
@@ -229,6 +232,7 @@ def _make_optimizer(config: Config | None = None,
         weight_decay = kwargs.get("weight_decay")
         momentum = kwargs.get("momentum", 0.)
         clipnorm = kwargs.get("clipnorm")
+        global_clipnorm = kwargs.get("global_clipnorm")
         trainset_len = kwargs.get("trainset_len", None)
     # Resolve optimizer settings from typed project configuration.
     else:
@@ -240,6 +244,7 @@ def _make_optimizer(config: Config | None = None,
         weight_decay = config.optimizer.weight_decay
         momentum = config.optimizer.momentum
         clipnorm = config.optimizer.clipnorm
+        global_clipnorm = config.optimizer.global_clipnorm
         trainset_len = config.dataset.trainset_len
 
     # Preserve an optimizer object supplied directly by the caller.
@@ -283,6 +288,8 @@ def _make_optimizer(config: Config | None = None,
     # Forward optional gradient clipping to the optimizer.
     if clipnorm is not None:
         optimizer_kwargs["clipnorm"] = clipnorm
+    if global_clipnorm is not None:
+        optimizer_kwargs["global_clipnorm"] = global_clipnorm
 
     # AdamW is the only supported optimizer with decoupled weight decay.
     if name == "adamw":

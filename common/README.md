@@ -282,7 +282,7 @@ descriptors cannot resume into the corrected training semantics; historical
 checkpoints and weight-only loading remain unchanged. Conditional VAE task
 seed, reparameterization seed and observed classes are authenticated and
 restored before topology validation, independently of the initial model seed.
-HPO retains search-space version **12** and separately seals
+HPO uses search-space version **13** and separately seals
 `training_semantics_version=2`; missing or older semantics require a new study.
 
 Checkpoint discovery may fall back past an incomplete or corrupt `task-NNNN`
@@ -346,6 +346,12 @@ continual objectives are validation-only and default to maximizing
 generator and classifier/distillation metrics under task/class/phase paths plus
 final validation/test continual summaries.
 
+Optimizer search samples per-variable `clipnorm` from `[None, 0.5, 1.0, 5.0]`.
+Only trials with `clipnorm=None` also sample `global_clipnorm` from those choices;
+the global threshold limits the combined gradient norm for each optimizer
+update. Otherwise `global_clipnorm` stays `None`, keeping the two clipping modes
+mutually exclusive.
+
 Progressive, ensemble, and teacher-distillation studies use separate resumable
 study paths. Pass an existing study directory as `resume_from` to restore the
 validated study specification, SQLite/TPE state, and committed task checkpoints
@@ -385,10 +391,11 @@ HPO evaluation. Trial `input_config.yaml` files use the ordinary Config APIs
 and can be loaded with `load_config` and executed with `main`. An undefined
 NaN objective fails its Optuna trial and allows subsequent trials to continue.
 
-Checkpoint descriptor schema 6, HPO search version 12 and training-semantics
-version 2 distinguish these
-class-growth and scoring semantics from earlier runs. Start a new study for
-older artifacts; their scores must not be mixed into the corrected protocol.
+Checkpoint descriptor schema 6, HPO search version 13 and training-semantics
+version 2 distinguish the current class-growth, scoring, and optimizer search
+behavior from earlier runs. Search version 13 adds conditional global-gradient
+clipping. Start a new study for older artifacts; their scores must not be mixed
+into the current protocol.
 
 `python -m unittest common.tests.test_distilled_hpo_integration` runs a bounded
 regression with synthetic MNIST-shaped pixels, real V2 training, generated

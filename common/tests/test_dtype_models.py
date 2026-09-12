@@ -26,6 +26,7 @@ import numpy as np
 import tensorflow as tf
 
 from autoencoder import VAEClassifier, VariationalAutoencoder
+from common.config import Config
 from common.dataloader import preprocess_dataset
 from common.model import _get_classifier_model, _make_optimizer, copy_model
 from common.replay_buffer import ReplayBuffer
@@ -348,12 +349,18 @@ class DtypeModelTests(unittest.TestCase):
             test_steps=2,
             seed=19,
         )
-        model.compile(optimizer="adam", loss="mse", run_eagerly=True)
+        model.compile(
+            optimizer=_make_optimizer(global_clipnorm=2.5),
+            loss="mse",
+            run_eagerly=True,
+        )
 
         loss_scale_type = tf.keras.mixed_precision.LossScaleOptimizer
         self.assertIsNot(model.gen_optimizer, model.clf_optimizer)
         self.assertIsInstance(model.gen_optimizer, loss_scale_type)
         self.assertIsInstance(model.clf_optimizer, loss_scale_type)
+        for optimizer in (model.gen_optimizer, model.clf_optimizer):
+            self.assertEqual(float(optimizer.inner_optimizer.global_clipnorm), 2.5)
 
     def test_dense_classifier_keeps_mixed_trunk_and_stable_softmax(self) -> None:
         """Use compute policy in a DNN trunk and stable dtype at its output.
@@ -416,7 +423,9 @@ class DtypeModelTests(unittest.TestCase):
             tf.keras.layers.Dense(2, activation="softmax", name="old_head"),
         ])
         source.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=1.25e-3),
+            optimizer=tf.keras.optimizers.Adam(
+                learning_rate=1.25e-3, global_clipnorm=2.5,
+            ),
             loss="sparse_categorical_crossentropy",
         )
         inputs = np.asarray([
@@ -444,6 +453,7 @@ class DtypeModelTests(unittest.TestCase):
         self.assertEqual(restored.output_shape[-1], 4)
         self.assertIsInstance(restored.optimizer, tf.keras.optimizers.Adam)
         self.assertIsNot(restored.optimizer, source.optimizer)
+        self.assertEqual(float(restored.optimizer.global_clipnorm), 2.5)
         self.assertEqual(int(restored.optimizer.iterations), 0)
         restored.train_on_batch(inputs, labels)
         self.assertEqual(int(restored.optimizer.iterations), 1)
@@ -716,6 +726,75 @@ class DtypeModelTests(unittest.TestCase):
         )
         self.assertEqual(float(optimizer.clipnorm), 2.5)
         self.assertIsNone(optimizer.global_clipnorm)
+
+    def test_optimizer_global_clipnorm_is_forwarded_and_serialized(self) -> None:
+        """Every optimizer supports global clipping through both factory inputs."""
+
+        for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
+            for typed in (False, True):
+                with self.subTest(name=name, typed=typed):
+                    options = {
+                        "name": name,
+                        "schedule": "constant",
+                        "global_clipnorm": 2.5,
+                    }
+                    optimizer = (
+                        _make_optimizer(Config(optimizer=options))
+                        if typed else _make_optimizer(**options)
+                    )
+                    self.assertEqual(float(optimizer.global_clipnorm), 2.5)
+                    self.assertIsNone(optimizer.clipnorm)
+                    restored = tf.keras.optimizers.deserialize(
+                        tf.keras.optimizers.serialize(optimizer)
+                    )
+                    self.assertEqual(float(restored.global_clipnorm), 2.5)
+                    self.assertIsNone(restored.clipnorm)
+
+    def test_optimizer_rejects_both_norm_clipping_modes(self) -> None:
+        """Both input paths let Keras reject incompatible norm clipping modes."""
+
+        for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
+            for typed in (False, True):
+                with self.subTest(name=name, typed=typed):
+                    options = {
+                        "name": name,
+                        "schedule": "constant",
+                        "clipnorm": 1.,
+                        "global_clipnorm": 2.5,
+                    }
+                    with self.assertRaisesRegex(ValueError, "clipnorm"):
+                        if typed:
+                            _make_optimizer(Config(optimizer=options))
+                        else:
+                            _make_optimizer(**options)
+
+    def test_optimizer_global_clipnorm_clips_combined_gradient_norm(self) -> None:
+        """An SGD step distinguishes combined clipping from per-variable clipping."""
+
+        configure_runtime(23, "float32")
+        for clipping, expected in (
+            ({}, [-3., -4.]),
+            ({"clipnorm": 2.5}, [-2.5, -2.5]),
+            ({"global_clipnorm": 2.5}, [-1.5, -2.]),
+        ):
+            for typed in (False, True):
+                with self.subTest(clipping=clipping, typed=typed):
+                    options = {
+                        "name": "sgd",
+                        "schedule": "constant",
+                        "initial_learning_rate": 1.,
+                        **clipping,
+                    }
+                    optimizer = (
+                        _make_optimizer(Config(optimizer=options))
+                        if typed else _make_optimizer(**options)
+                    )
+                    variables = [tf.Variable(0.), tf.Variable(0.)]
+                    gradients = [tf.constant(3.), tf.constant(4.)]
+                    optimizer.apply_gradients(zip(gradients, variables))
+                    np.testing.assert_allclose(
+                        [variable.numpy() for variable in variables], expected,
+                    )
 
     def test_copy_model_leaves_destination_optimizer_state_untouched(self) -> None:
         """Copy classifier parameters without pretending optimizer slots match.
