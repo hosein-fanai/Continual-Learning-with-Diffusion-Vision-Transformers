@@ -2524,21 +2524,17 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         x0 = tf.convert_to_tensor(x0)
-        # Convert integer images before drawing floating Gaussian corruption.
         if not x0.dtype.is_floating:
             x0 = tf.cast(x0, self.compute_dtype)
 
-        # Use the active lower noising bound unless this call overrides it.
         min_timesteps = int(
             self._active_min_timestep
             if min_timesteps is None else min_timesteps
         )
-        # Use the active upper noising bound unless this call overrides it.
         max_timesteps = int(
             self._active_max_timestep
             if max_timesteps is None else max_timesteps
         )
-        # Use the wrapper seed when no per-call noising seed is supplied.
         seed = effective_seed(
             None, 
             self.seed if seed is None else seed, 
@@ -2557,7 +2553,6 @@ class DiffusionModel(ArgumentSaverModel):
                     tf.zeros((x_shape[0],), dtype=tf.int32)
                 )
 
-            # Require a nonempty half-open range inside the diffusion horizon.
             if not 0 <= min_timesteps < max_timesteps <= self.timesteps:
                 raise ValueError(
                     "Expected 0 <= min_timesteps < max_timesteps <= "
@@ -2624,7 +2619,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Resolve the runtime frozen teacher separately from raw and EMA prediction copies.
         if network_name == "teacher":
-            # Teacher prediction cannot proceed before a teacher has been attached.
             if self.teacher_network is None:
                 raise ValueError("No teacher_network is attached.")
 
@@ -2698,9 +2692,9 @@ class DiffusionModel(ArgumentSaverModel):
 
         for w, ew in zip(self.network.weights, self.ema_network.weights):
             selected = selected_ids is None or id(w) in selected_ids or (
-                    not w.trainable and 
-                    w.name.rsplit("/", 1)[0] in selected_scopes
-                )
+                not w.trainable and 
+                w.name.rsplit("/", 1)[0] in selected_scopes
+            )
             # Decay only selected trainables and associated mutable layer state.
             if selected:
                 ew.assign(
@@ -2757,7 +2751,6 @@ class DiffusionModel(ArgumentSaverModel):
             independently with probability ``p_uncond``.
         """
 
-        # Retain the wrapper dropout stream unless a per-call seed is supplied.
         seed = self.seed if seed is None else seed
 
         mask = tf.random.uniform(
@@ -2804,7 +2797,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         x0, labels = inputs
 
-        # Resize clean inputs only when the active curriculum resolution differs from native size.
         x0 = tf.image.resize(x0, 
             size=(
                 self._current_resolution, 
@@ -2817,14 +2809,12 @@ class DiffusionModel(ArgumentSaverModel):
         classes = self._map_classes(labels)
         labels = classes + int(self.use_cfg)
         x_t, noises, t = self.noisify(x0, seed=seed)
-        # Training may drop conditional labels; deterministic evaluation preserves them.
         cfg_labels = self.get_cfg_labels(
             labels, 
             seed=seed
         ) if use_label_dropout else labels
         uncond_labels = tf.zeros_like(labels)
 
-        # Swapped reconstruction uses the noisy image itself as the prediction target.
         noises = x_t if self.swap_noise_image else noises
 
         return x0, noises, t, x_t, cfg_labels, uncond_labels, classes
@@ -2863,7 +2853,6 @@ class DiffusionModel(ArgumentSaverModel):
         t = outputs[2]
         cond_labels = outputs[4]
         uncond_labels = outputs[5]
-        # Use training guidance for training preprocessing and test guidance otherwise.
         cfg_scale = self.train_cfg_scale if self._preprocess_training \
                     else self.test_cfg_scale
 
@@ -2937,7 +2926,6 @@ class DiffusionModel(ArgumentSaverModel):
             cond_mask = tf.ones_like(cond_labels, dtype=tf.bool)
 
         uncond_mask = tf.logical_not(cond_mask)
-        # Promote before the compiled loss squares or reduces mixed-precision values.
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         noises = tf.cast(noises, stable_dtype)
         noises_pred = tf.stop_gradient(tf.cast(noises_pred, stable_dtype))
@@ -2963,7 +2951,6 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_noise_loss, 
             tf.zeros_like(uncond_noise_loss)
         )
-
 
         return cond_noise_loss, uncond_noise_loss
 
@@ -3139,48 +3126,38 @@ class DiffusionModel(ArgumentSaverModel):
             have shape [B, current_num_classes].
         """
 
-        # Use the configured KL branch unless the caller supplies a branch override.
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
-        # Use the configured regularizer branch unless the caller supplies a branch override.
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
-        # Use the configured image objective unless the caller explicitly enables or disables it.
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
 
-        # Casting a reduced float16 loss cannot recover overflow in squared errors.
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         noises = tf.cast(noises, stable_dtype)
         noises_pred = tf.cast(noises_pred, stable_dtype)
         x0 = tf.cast(x0, stable_dtype)
         x0_pred = tf.cast(x0_pred, stable_dtype)
+
         noise_loss = self.compiled_loss(
             noises, 
             noises_pred
         )
-        # Compute conditional/null diagnostics only when split-noise reporting is enabled.
         cond_noise_loss, uncond_noise_loss = self.compute_separate_noise_losses(
             noises, 
             noises_pred, 
             cond_labels
         ) if self.show_separate_noise_losses else (None, None)
-        # Evaluate the teacher objective only while a noise teacher is active.
         noise_distil_loss = self.compute_distil_noise_loss(
             teacher_noises_pred, 
             noises_pred, 
             teacher_noise_mask
         ) if self.use_noise_distil_loss else 0.
-        # Skip reconstruction loss computation when image reporting/training is disabled.
         image_loss = self.compiled_loss(
             x0, 
             x0_pred
         ) if use_image_loss else 0.
-        # Compute KL only for an active variational objective, using its selected CFG branch. Select
-        # conditional latent statistics for cond and null-branch statistics otherwise.
         kl_loss = VariationalAutoencoder.compute_kl(
             z_vals_list_c if kl_train_type == "cond" else z_vals_list_u, 
             dtype=self.dtype_policy.variable_dtype
         ) if self.use_kl_loss else 0.
-        # Compute token loss only for enabled regularizers, selecting their configured CFG branch.
-        # Select conditional token predictions for cond and null-branch predictions otherwise.
         ctr_loss, ctr_preds = self.compute_ctr_loss(
             classes, 
             regs_list_c if ctr_train_type == "cond" else regs_list_u
@@ -3188,10 +3165,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         noise_loss = tf.cast(noise_loss, stable_dtype)
-        # Cast an observed conditional diagnostic while preserving an absent diagnostic as None.
         cond_noise_loss = tf.cast(cond_noise_loss, stable_dtype) \
                         if cond_noise_loss is not None else None
-        # Cast an observed null diagnostic while preserving an absent diagnostic as None.
         uncond_noise_loss = tf.cast(uncond_noise_loss, stable_dtype) \
                         if uncond_noise_loss is not None else None
         noise_distil_loss = tf.cast(noise_distil_loss, stable_dtype)
@@ -3258,6 +3233,7 @@ class DiffusionModel(ArgumentSaverModel):
             while z_vals_list_u
             is an empty list.
         """
+
         network = self.get_network(network_name)
 
 
@@ -3316,7 +3292,6 @@ class DiffusionModel(ArgumentSaverModel):
 
 
         eps_c, regs_list_c, z_vals_list_c = run_network(cond_labels)
-        # Run the null branch only for CFG with an explicit guidance scale.
         eps_u, regs_list_u, z_vals_list_u = run_network(uncond_labels) \
                                             if self.use_cfg and scale is not None \
                                             else (None, None, [])
@@ -3381,8 +3356,6 @@ class DiffusionModel(ArgumentSaverModel):
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         stable_x_t = tf.cast(x_t, stable_dtype)
         stable_eps = tf.cast(eps, stable_dtype)
-        # Invert the forward corruption for epsilon prediction; swapped models already predict
-        # images.
         x0 = tf.cast((
             stable_x_t - sqrt_one_minus_a_t * stable_eps
             ) / sqrt_a_t, 
@@ -3434,7 +3407,6 @@ class DiffusionModel(ArgumentSaverModel):
             match ``x_t``; regularizers and latent pairs preserve branch outputs.
         """
 
-        # Keep ordinary denoiser/caller signatures intact unless logits are explicitly requested.
         network_options = {"return_logits": True} if return_logits else {}
 
         (eps_c, eps_u), *others = self.call_network(
@@ -3628,22 +3600,15 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: If an enabled metric's required value is missing.
         """
 
-        # Inherit noise-distillation reporting from the active loss unless explicitly overridden.
         use_noise_distil_loss = self.use_noise_distil_loss if use_noise_distil_loss is None \
                                 else use_noise_distil_loss
-        # Inherit image reporting from the configured objective unless explicitly overridden.
         use_image_loss = self.use_image_loss if use_image_loss is None else use_image_loss
-        # Inherit KL reporting from active variational layers unless explicitly overridden.
         use_kl_loss = self.use_kl_loss if use_kl_loss is None else use_kl_loss
-        # Inherit token reporting from active regularizers unless explicitly overridden.
         use_ctr_loss = self.use_ctr_loss if use_ctr_loss is None else use_ctr_loss
-        # Auxiliary objectives request a total-loss metric unless the caller overrides that choice.
         use_total_loss = use_image_loss or use_kl_loss or use_ctr_loss or use_noise_distil_loss \
                         if use_total_loss is None else use_total_loss
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        # Weight batch means by known example counts, falling back to one observation without
-        # labels.
         batch_weight = tf.cast(tf.shape(classes)[0], stable_dtype) \
                        if classes is not None else tf.cast(1., stable_dtype)
         results = {}
@@ -3834,20 +3799,16 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         network = self.get_network(network_name)
-        # Collect flattening boundaries only; unflattening layers do not introduce new latent draws.
         flatten_ids = sorted([
             int(id_) for id_, type_ in network.reshaper_ids_dict.items()
             if type_ == "flatten"
         ])
-        # The first flattening boundary starts latent decoding; its absence is rejected below.
         z_id = flatten_ids[0] if flatten_ids else None
 
-        # Require a flattening boundary before attempting latent decoding.
         if z_id is None:
             raise ValueError(
                 "sample_vae requires a flatten reshaper."
             )
-        # Require the flattening reshaper to expose a variational latent.
         if not network.reshaper_kwargs.get("add_kl", False):
             raise ValueError(
                 "sample_vae requires add_kl=True in reshaper_kwargs."
@@ -3860,7 +3821,6 @@ class DiffusionModel(ArgumentSaverModel):
         latent_dim_ratios = network.reshaper_kwargs.get("latent_dim_ratio") or [
             1.0 for _ in flatten_ids
         ]
-        # Project compressed latents back to feature width; unit-ratio latents need no projector.
         z_projectors = [
             reshaper.get_layer(
                 f"{network.name_prefix}depth_{flatten_id}_{network.R[2:]}/z"
@@ -3887,7 +3847,6 @@ class DiffusionModel(ArgumentSaverModel):
             samples_per_label
         )
         n = tf.shape(labels)[0]
-        # Use the wrapper seed unless prior sampling receives a per-call seed.
         seed = effective_seed(
             None, 
             self.seed if seed is None else seed, 
@@ -3925,7 +3884,6 @@ class DiffusionModel(ArgumentSaverModel):
             ) else [z]
         # Multiple variational boundaries require a matching collection of latent batches.
         else:
-            # Reject missing or extra latent batches before pairing them with reshapers.
             if not isinstance(z, (list, tuple)) or len(z) != len(flatten_ids):
                 raise ValueError(
                     f"z must contain {len(flatten_ids)} latent tensors."
@@ -3938,28 +3896,26 @@ class DiffusionModel(ArgumentSaverModel):
             z_vals_list, z_projectors, latent_widths
         ):
             latent = tf.ensure_shape(
-                tf.convert_to_tensor(latent, dtype=stable_dtype),
-                (None, latent_width),
+                tf.convert_to_tensor(latent, dtype=stable_dtype), 
+                (None, latent_width)
             )
-            # Only graph assertions, not eager None results, belong in the dependency list.
             with tf.control_dependencies([
                 assertion for assertion in (
                     tf.debugging.assert_equal(
-                        tf.shape(latent)[0],
-                        n,
-                        message="Latent and label batch sizes must match.",
-                    ),
+                        tf.shape(latent)[0], 
+                        n, 
+                        message="Latent and label batch sizes must match."
+                    )
                 )
                 if assertion is not None
             ]):
-                # Project compressed latent coordinates; retain already full-width coordinates
-                # unchanged.
+                # Project compressed latent coordinates; 
+                # retain already full-width coordinates unchanged.
                 projected_z_vals_list.append(
                     z_projector(latent, training=False)
                     if z_projector is not None else tf.identity(latent)
                 )
 
-        # Single-boundary decoders accept a tensor; multiscale decoders consume the latent list.
         decoder_input = projected_z_vals_list[0] if len(projected_z_vals_list) == 1 \
                         else projected_z_vals_list
         # Standalone decoders require explicit absent encoder context during prior generation.
@@ -4071,7 +4027,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Route sampling through the variational decoder in swapped-objective mode.
         if self.swap_noise_image:
-            # The direct variational path has no reverse-diffusion trajectory.
             if return_x_ts or return_x0s:
                 raise ValueError(
                     "Sampling trajectories are unavailable "
@@ -4105,7 +4060,6 @@ class DiffusionModel(ArgumentSaverModel):
             samples_per_label
         )
         n = tf.shape(labels)[0]
-        # Use the wrapper sampling seed unless the caller supplies a new stream.
         seed = effective_seed(
             None, 
             self.seed if seed is None else seed, 
@@ -4149,19 +4103,14 @@ class DiffusionModel(ArgumentSaverModel):
             ]):
                 x_t = tf.identity(x_t)
 
-        # Use the configured reverse-step count unless this sampling call overrides it.
         steps = int(self.test_steps if steps is None else steps)
-        # Use the configured test guidance scale unless this sampling call overrides it.
         scale = float(self.test_cfg_scale if scale is None else scale)
-        # Use the configured test stochasticity unless this sampling call overrides it.
         eta = float(self.test_eta if eta is None else eta)
 
-        # Validate the requested number of reverse steps against the schedule.
         if not 2 <= steps <= self.timesteps:
             raise ValueError(
                 f"steps must be in [2, {self.timesteps}], got {steps!r}."
             )
-        # Validate stochasticity as a finite scalar in the documented range.
         if not 0. <= float(eta) <= 1.:
             raise ValueError(
                 f"eta must be a finite number in [0, 1], got {eta!r}."
@@ -4186,7 +4135,6 @@ class DiffusionModel(ArgumentSaverModel):
                 print(f"\rSteps: {i+1}/{steps}", end="")
 
             t = ts[i]
-            # Use the next descending timestep, with zero as the terminal placeholder.
             t_next = ts[i + 1] if i < len(ts) - 1 else 0
             t_batch = tf.fill(tf.shape(labels), t)
 

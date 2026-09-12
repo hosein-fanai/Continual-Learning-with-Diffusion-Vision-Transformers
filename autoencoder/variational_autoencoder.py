@@ -21,7 +21,6 @@ from common.gradients import apply_policy_gradients
 from common.keras_registry import register_canonical_keras_serializable
 from common.model import get_callbacks
 from common.runtime import derive_seed
-
 from common.callbacks.decoder_accuracy import DecoderAccuracy
 
 
@@ -261,7 +260,6 @@ class VariationalAutoencoder(models.Model):
         # None are already stable constructor values.
         if activation is None or isinstance(activation, str):
             return activation
-
         return tf.keras.activations.serialize(activation)
 
     @staticmethod
@@ -278,7 +276,6 @@ class VariationalAutoencoder(models.Model):
         # Preserve already-stable public activation spellings unchanged.
         if config is None or isinstance(config, str):
             return config
-
         return tf.keras.activations.deserialize(config)
 
     def get_config(self: VariationalAutoencoder) -> dict[str, object]:
@@ -667,11 +664,7 @@ class VariationalAutoencoder(models.Model):
             a standard normal prior. Sites must share batch size; widths may differ.
         """
 
-        # Accept a sequence of latent sites when log variance is omitted, or wrap one
-        # explicit mean/variance pair.
         z_vals_list = tuple(z_mean) if z_log_var is None else ((z_mean, z_log_var),)
-        # Infer calculation dtype from the first latent site, or Keras floatx when the site
-        # list is empty.
         stable_dtype = tf.as_dtype(
             dtype or (
                 z_vals_list[0][0].dtype
