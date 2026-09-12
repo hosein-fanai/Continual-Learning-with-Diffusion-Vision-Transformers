@@ -458,11 +458,7 @@ see
   is not the `diffusion.models` source package.
 - [`notebooks/`](notebooks/README.md): exploratory, archived, and HPO experiments.
 - [`results/`](results/README.md): generated run artifacts and reports.
-- [`gifs/`](gifs/README.md): retained example animations.
-- [`others/`](others/research-grade-continual-learning.md): research protocol and conceptual reference material.
 - [`semantic_consolidation/`](semantic_consolidation/README.md): semantic modulation experiments.
-- [`gist_memory/`](gist_memory/README.md): byte-budgeted gist and detail memory experiments.
-- [`allocation_study/`](allocation_study/README.md): paired allocation studies and experimental analysis.
 
 Maintained Python sources require module, class, and callable docstrings,
 parameter and return annotations, and comments explaining conditional branches.
@@ -488,21 +484,5 @@ Run the orchestration, HPO, recovery, and continual-learning regressions too:
 
 ```powershell
 conda run -n tf_env python -m unittest discover -s common/tests -t .
-conda run -n tf_env python -m unittest discover -s allocation_study/tests
-conda run -n tf_env python -m unittest discover -s gist_memory/tests
 conda run -n tf_env python -m unittest discover -s semantic_consolidation/tests
 ```
-
-See [the thesis code review](THESIS_CODE_REVIEW.md) for the reviewed scope,
-scientific interpretation, fixes, verification, and remaining experimental work.
-The [September 6 project review](allocation_study/PROJECT_REVIEW.md) records the
-subsequent audit of the research modules and shared numerical corrections.
-The [thesis readiness audit](allocation_study/THESIS_READINESS.md) records the
-end-to-end follow-up, current execution boundaries, and experiment/evidence runbook.
-The [F01–F22 implementation closure](allocation_study/IMPLEMENTATION_CLOSURE.md)
-records the subsequent verified repairs and current test evidence. Use the
-[new development bundle](allocation_study/prepared/thesis_staged_review_20260906/README.md)
-and [claim/control map](allocation_study/CLAIM_CONTROLS.md) for new experiments;
-both earlier prepared bundles remain tied to their archived source.
-The [45-file staged review](allocation_study/STAGED_REVIEW_20260906.md) records
-the subsequent corrections, final verification and staging scope.
