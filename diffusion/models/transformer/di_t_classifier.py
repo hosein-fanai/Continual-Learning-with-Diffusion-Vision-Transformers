@@ -41,11 +41,11 @@ class DiTClassifier(DiffusionTransformer):
     ``feature_aggregation_ids_dict`` reads main depths, whereas
     ``clf_connection_ids_dict`` reads classifier depths.
 
-    Every ``clf_`` option configures the classifier branch.  Values of ``None``
-    inherit the corresponding noise-branch setting only for options handled by
-    :meth:`_set_defaults`; branch-defining IDs, ``clf_dim``, condition/token
-    modes, key/value widths, normalization MLP ratio, reshaper IDs, and
-    regularizer IDs retain their explicit defaults.  See ``__init__`` for the
+    Every ``clf_`` option configures the classifier branch.  With ``set_nones=True``,
+    explicit values of ``None`` inherit the corresponding noise-branch setting
+    only for options handled by :meth:`_set_defaults`; branch-defining IDs,
+    ``clf_dim``, condition/token modes, key/value widths, normalization MLP ratio,
+    reshaper IDs, and regularizer IDs retain their explicit defaults.  See ``__init__`` for the
     exact initial state.
 
     Use :class:`diffusion.models.wrapper.diffusion_classifier.DiffusionClassifier`
@@ -91,31 +91,37 @@ class DiTClassifier(DiffusionTransformer):
         clf_distil_token_type: TokenType | None = None, 
         clf_depth: int = 1, 
         clf_connection_ids_dict: IdsDictType = {-1: (-1,)}, 
-        clf_connection_kwargs: dict | None = None, 
+        clf_connection_kwargs: dict | None = {},
         clf_cross_attention_ids_dict: IdsDictType = {}, 
-        clf_cross_attention_kwargs: dict | None = None, 
-        clf_cross_attention_plug_type: Literal["values", "queries"] | None = None, 
+        clf_cross_attention_kwargs: dict | None = {},
+        clf_cross_attention_plug_type: Literal["values", "queries"] | None = "values",
         clf_vit_block_ids: IdsType = [None], 
         clf_use_decoder_ids: IdsType = [], 
         clf_mha_key_dim: int | None = None, 
         clf_mha_value_dim: int | None = None, 
-        clf_mha_num_heads: int | None = None, 
-        clf_vit_block_mlp_ratio: float | None = None, 
-        clf_vit_block_mlp_output_dims: dict[int, int] | None = None,
+        clf_mha_num_heads: int | None = 4,
+        clf_vit_block_mlp_ratio: float | None = 4.,
+        clf_vit_block_mlp_output_dims: dict[int, int] | None = {},
         clf_ln_mlp_ratio: float | None = None, 
-        clf_ln_no_adaptation: bool | None = None, 
-        clf_drop_prob: float | None = None, 
-        clf_drop_per_sample: bool | None = None, 
+        clf_ln_no_adaptation: bool | None = False,
+        clf_drop_prob: float | None = 0.,
+        clf_drop_per_sample: bool | None = True,
         clf_local_mixer_ids: IdsType = [], 
-        clf_local_mixer_kwargs: dict | None = None, 
+        clf_local_mixer_kwargs: dict | None = {},
         clf_downsample_ids: IdsType = [], 
-        clf_downsample_kwargs: dict | None = None, 
+        clf_downsample_kwargs: dict | None = {},
         clf_upsample_ids: IdsType = [], 
-        clf_upsample_kwargs: dict | None = None, 
+        clf_upsample_kwargs: dict | None = {},
         clf_reshaper_ids_dict: dict[int, str] = {},
-        clf_reshaper_kwargs: dict | None = None, 
+        clf_reshaper_kwargs: dict | None = {},
         clf_cls_token_regularizer_ids: IdsType = [], 
-        clf_cls_token_regularizer_kwargs: dict | None = None, 
+        clf_cls_token_regularizer_kwargs: dict | None = {
+            "start": 0,
+            "end": 1,
+            "train_type": "normal",
+            "distil_type": "hard"
+        },
+        set_nones: bool = False, 
         force_global_avg_pooling: bool = False, 
         classifier_mlp_ratio: int | None = None, 
         classifier_mlp_activation_func: str = "tanh", 
@@ -171,16 +177,16 @@ class DiTClassifier(DiffusionTransformer):
                 merges depth 0 and 1 before classifier stage 2. Defaults to ``{-1: (-1,)}``.
             clf_connection_kwargs (dict[str, object] | None): Connector keys listed for
                 ``feature_aggregation_kwargs``. ``None`` inherits the main branch's
-                ``connection_kwargs``; ``{}`` requests layer defaults/inferred dimensions. Defaults to
-                ``None``.
+                ``connection_kwargs`` when ``set_nones=True``; ``{}`` requests layer
+                defaults/inferred dimensions. Defaults to ``{}``.
             clf_cross_attention_ids_dict (dict[int, list[int | None]]): Maps a classifier stage to
                 earlier classifier features used for cross attention. Empty by default. Defaults to
                 ``{}``.
             clf_cross_attention_kwargs (dict[str, object] | None): Cross- attention connector options;
-                ``None`` inherits the main branch. Defaults to ``None``.
+                ``None`` inherits the main branch when ``set_nones=True``. Defaults to ``{}``.
             clf_cross_attention_plug_type (Literal["values", "queries"] | None): External-attention plug
-                side. ``None`` inherits the main ``cross_attention_plug_type`` (default ``"values"``).
-                Defaults to ``None``.
+                side. ``None`` inherits the main ``cross_attention_plug_type`` when
+                ``set_nones=True``. Defaults to ``"values"``.
             clf_vit_block_ids (list[int | None]): Classifier attention-block depths. ``[None]`` means
                 all 1..``clf_depth``; ``[]`` means no blocks. This list does not inherit from the main
                 branch. Defaults to ``[None]``.
@@ -190,45 +196,49 @@ class DiTClassifier(DiffusionTransformer):
                 and is inferred by the block. Defaults to ``None``.
             clf_mha_value_dim (int | None): Classifier per-head value width; remains ``None`` by
                 default. Defaults to ``None``.
-            clf_mha_num_heads (int | None): Head count; ``None`` inherits ``mha_num_heads`` (4 by
-                default). Defaults to ``None``.
+            clf_mha_num_heads (int | None): Head count; ``None`` inherits ``mha_num_heads``
+                when ``set_nones=True``. Defaults to ``4``.
             clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
-                ``vit_block_mlp_ratio`` (4 by default). Defaults to ``None``.
+                ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
             clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth output
-                widths; ``None`` copies the main mapping, while ``{}`` explicitly requests none.
-                Defaults to ``None``.
+                widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
+                requests no overrides. Defaults to ``{}``.
             clf_ln_mlp_ratio (float | None): Classifier adaptive-normalization MLP ratio. This explicit
                 default remains None; it does not inherit ``ln_mlp_ratio``. Defaults to ``None``.
             clf_ln_no_adaptation (bool | None): Disable condition adaptation; ``None`` inherits the main
-                setting (false by default). Defaults to ``None``.
-            clf_drop_prob (float | None): Residual-drop probability; ``None`` inherits the main value (0
-                by default). Defaults to ``None``.
+                setting when ``set_nones=True``. Defaults to ``False``.
+            clf_drop_prob (float | None): Residual-drop probability; ``None`` inherits the main value
+                when ``set_nones=True``. Defaults to ``0.0``.
             clf_drop_per_sample (bool | None): Drop residuals per sample; ``None`` inherits the main
-                value (true by default). Defaults to ``None``.
+                value when ``set_nones=True``. Defaults to ``True``.
             clf_local_mixer_ids (list[int | None]): Classifier local-mixer depths; empty by default and
                 independent of main IDs. Defaults to ``[]``.
             clf_local_mixer_kwargs (dict[str, object] | None): Exact keys from ``local_mixer_kwargs``;
-                ``None`` inherits the main mapping. Defaults to ``None``.
+                ``None`` inherits the main mapping when ``set_nones=True``. Defaults to ``{}``.
             clf_downsample_ids (list[int | None]): Classifier downsample depths. Defaults to ``[]``.
             clf_downsample_kwargs (dict[str, object] | None): Exact keys from ``downsample_kwargs``;
-                ``None`` inherits the main mapping. Defaults to ``None``.
+                ``None`` inherits the main mapping when ``set_nones=True``. Defaults to ``{}``.
             clf_upsample_ids (list[int | None]): Classifier upsample depths. Defaults to ``[]``.
             clf_upsample_kwargs (dict[str, object] | None): Exact keys from ``upsample_kwargs``;
-                ``None`` inherits the main mapping. Defaults to ``None``.
+                ``None`` inherits the main mapping when ``set_nones=True``. Defaults to ``{}``.
             clf_reshaper_ids_dict (dict[int, str]): Classifier depth to ``"flatten"``/``"unflatten"``
                 mapping; empty by default. Defaults to ``{}``.
-            clf_reshaper_kwargs (dict[str, object]): Classifier reshaper add_kl (bool) and
+            clf_reshaper_kwargs (dict[str, object] | None): Classifier reshaper add_kl (bool) and
                 latent_dim_ratio (one positive ratio per consecutive flatten/unflatten pair, in
-                ascending flatten order). None inherits a deep copy of main reshaper_kwargs; an explicit
-                mapping defines independent classifier values. Defaults to ``None``.
+                ascending flatten order). None inherits a deep copy of main reshaper_kwargs when
+                ``set_nones=True``; an explicit mapping defines independent values. Defaults to ``{}``.
             clf_cls_token_regularizer_ids (list[int | None]): Classifier depths 0..``clf_depth`` with
                 auxiliary class softmax heads. ID 0 uses an existing label embedding consumed by
                 classifier conditioning or tokens, and returns None when none is used.
                 Empty by default; ``[None]`` selects the full range. Defaults to ``[]``.
             clf_cls_token_regularizer_kwargs (dict[str, object] | None): Token slice and optional
-                regularizer MLP settings. ``None`` inherits ``cls_token_regularizer_kwargs``. Missing
-                ``mlp_ratio`` and ``activation_function`` values default to ``None`` and ``"tanh"``,
-                respectively. Defaults to ``None``.
+                regularizer MLP settings. ``None`` inherits ``cls_token_regularizer_kwargs`` when
+                ``set_nones=True``. Missing ``mlp_ratio`` and ``activation_function`` values default
+                to ``None`` and ``"tanh"``,
+                respectively. Defaults to ``{"start": 0, "end": 1, "train_type": "normal",
+                "distil_type": "hard"}``.
+            set_nones (bool): Inherit eligible explicit ``clf_* = None`` values from the main
+                branch. Concrete defaults and overrides are retained. Defaults to ``False``.
             force_global_avg_pooling (bool): Average all final tokens even when a class token is
                 available. The distillation token is always excluded, but a class token remains in this
                 average. Without a usable class token, global average pooling is selected. Defaults to
@@ -258,9 +268,6 @@ class DiTClassifier(DiffusionTransformer):
             kwargs.pop("cls_token_type", None), 
             kwargs.pop("distil_token_type", None)
         )
-        # Suppress the main class token when ownership belongs exclusively to the classifier.
-        # Suppress the main distillation token when ownership belongs exclusively to the
-        # classifier.
         super().__init__(
             cls_token_type=None if classifier_only_cls_token and
                         temp_val[0] is not None else temp_val[0], 
@@ -275,23 +282,16 @@ class DiTClassifier(DiffusionTransformer):
         self._handle_all_clf_ids()
         self.set_max_encoder_num()
 
-        # Infer initial aggregated width unless an explicit forced classifier width can be used
-        # directly.
         self.first_aggregated_dim = self._get_unforced_total_dim(
             ids_set=self.feature_aggregation_ids_dict[1], 
             layers_dicts=self.layers_dicts, 
             base_dim=self.dim, 
             kwargs=self.feature_aggregation_kwargs
         ) if not self.clf_dim_forced or 1 in self.clf_connection_ids_dict else self.clf_dim
-        # For noise-image classification, use patch width appropriate to shared or
-        # classifier-only tokens.
-        # Classifier-only tokens use raw patch width; shared tokens retain main embedding width.
         self.first_aggregated_dim = (
             self.patches_dim if self.classifier_only_cls_token else self.dim
         ) if self.aggregate_from_noises else self.first_aggregated_dim
-        # Infer an omitted classifier width from its initial aggregated features.
         self.clf_dim = self.first_aggregated_dim if self.clf_dim is None else self.clf_dim
-        # Infer the classifier grid from routed features or the predicted-noise patch grid.
         self.clf_grid_size = self._get_ids_grid_size(
             ids_set=self.feature_aggregation_ids_dict[1], 
             layers_dicts=self.layers_dicts, 
@@ -299,16 +299,12 @@ class DiTClassifier(DiffusionTransformer):
             must_be_same=True
         ) if not self.aggregate_from_noises else self.grid_size
         self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, (-1,))
-        # Resolve the active class token from classifier-only or shared-main ownership.
         self.clf_has_cls_token = self.clf_cls_token_type is not None if self.classifier_only_cls_token \
                                 else self.cls_token_type is not None
-        # Resolve the active distillation token from classifier-only or shared-main ownership.
         self.clf_has_distil_token = self.clf_distil_token_type is not None if self.classifier_only_distil_token \
                                     else self.distil_token_type is not None
         self.clf_prepended_tokens_num = int(self.clf_has_cls_token) + int(self.clf_has_distil_token)
-        # Remove main class-token accounting when the classifier owns that token exclusively.
         self.has_cls_token = 0 if self.classifier_only_cls_token else self.has_cls_token
-        # Remove main distillation-token accounting when the classifier owns it exclusively.
         self.has_distil_token = 0 if self.classifier_only_distil_token else self.has_distil_token
         self.prepended_tokens_num = int(self.has_cls_token) + int(self.has_distil_token)
 
@@ -364,8 +360,6 @@ class DiTClassifier(DiffusionTransformer):
                 name=f"{self.name_prefix}classifier_feature_extractor"
             )
 
-        # Choose the distillation-token extractor only when that parallel token exists.
-        # Distillation occupies token one with a class prefix, or token zero without it.
         self.distil_feature_extractor = layers.Lambda(
             select_second_token if self.clf_has_cls_token else select_first_token, 
             dtype=self.dtype_policy,
@@ -375,7 +369,6 @@ class DiTClassifier(DiffusionTransformer):
         self.classifier = self._create_classifier_head(
             "classes"
         )
-        # Create an independent distillation softmax head only when its token exists.
         self.distil_classifier = self._create_classifier_head(
             "distil_classes"
         ) if self.clf_has_distil_token else None
@@ -404,7 +397,6 @@ class DiTClassifier(DiffusionTransformer):
             "use_cfg must be True for classification to work."
         )
 
-        # Noise aggregation requires image-shaped denoiser output.
         if local_vars["aggregate_from_noises"]:
             require(
                 self.use_unpatchify, 
@@ -459,7 +451,6 @@ class DiTClassifier(DiffusionTransformer):
             check_keys=False, 
             id_less_than_key=False
         )
-        # Validate explicit classifier connection options; None will inherit the main mapping.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -474,7 +465,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth"
         )
-        # Validate explicit classifier cross-attention options before inheritance.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -497,7 +487,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth"
         )
-        # Validate an explicit classifier FFN width map; None inherits main widths.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -512,7 +501,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth"
         )
-        # Validate classifier mixer overrides only when supplied explicitly.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -528,7 +516,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth"
         )
-        # Validate classifier downsampling overrides only when supplied explicitly.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -544,7 +531,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth"
         )
-        # Validate classifier upsampling overrides only when supplied explicitly.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -562,7 +548,6 @@ class DiTClassifier(DiffusionTransformer):
             depth_name="clf_depth", 
             second_depth_name="clf_depth", 
         )
-        # Validate explicit classifier reshaper settings before resolving inherited defaults.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -579,7 +564,6 @@ class DiTClassifier(DiffusionTransformer):
             second_depth_name="clf_depth", 
             allowed_values=[None]+list(range(local_vars["clf_depth"]+1))
         )
-        # Validate explicit classifier token-regularizer settings before inheritance.
         self._check_dict_assertions(
             local_vars, 
             key, 
@@ -589,7 +573,6 @@ class DiTClassifier(DiffusionTransformer):
             check_values=False, 
         ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
 
-        # Validate the classifier-specific regularizer training modes when supplied.
         if local_vars["clf_cls_token_regularizer_kwargs"] is not None:
             require(
                 local_vars["clf_cls_token_regularizer_kwargs"].get(
@@ -606,24 +589,37 @@ class DiTClassifier(DiffusionTransformer):
 
         require(
             local_vars["clf_cross_attention_plug_type"] in (
-                None, 
                 "values", 
                 "queries"
+            ) or (
+                local_vars["set_nones"] and local_vars["clf_cross_attention_plug_type"] is None
             ), 
-            "clf_cross_attention_plug_type can only be values or queries."
+            "clf_cross_attention_plug_type must be values or queries, or None with set_nones=True."
         )
 
-    def _set_defaults(self, local_vars: dict, 
-                    exclude: list[str]=["clf_dim", "clf_cond_type", 
-                        "clf_connection_ids_dict", "clf_cross_attention_ids_dict", 
-                        "clf_vit_block_ids", "clf_use_decoder_ids", 
-                        "clf_local_mixer_ids", "clf_downsample_ids", 
-                        "clf_upsample_ids", "clf_cls_token_type", 
-                        "clf_distil_token_type", "clf_mha_key_dim", 
-                        "clf_mha_value_dim", "clf_ln_mlp_ratio", 
-                        "clf_reshaper_ids_dict", "clf_cls_token_regularizer_ids"
-                    ]) -> None:
-        """Resolve inheritable ``clf_*`` values from main-branch attributes.
+    def _set_defaults(
+        self, 
+        local_vars: dict, 
+        exclude: list[str]=[
+            "clf_dim", 
+            "clf_cond_type", 
+            "clf_connection_ids_dict", 
+            "clf_cross_attention_ids_dict", 
+            "clf_vit_block_ids", 
+            "clf_use_decoder_ids", 
+            "clf_local_mixer_ids", 
+            "clf_downsample_ids", 
+            "clf_upsample_ids", 
+            "clf_cls_token_type", 
+            "clf_distil_token_type", 
+            "clf_mha_key_dim", 
+            "clf_mha_value_dim", 
+            "clf_ln_mlp_ratio", 
+            "clf_reshaper_ids_dict", 
+            "clf_cls_token_regularizer_ids"
+        ]
+    ) -> None:
+        """Validate forced width and optionally inherit ``clf_*`` values from the main branch.
 
         Args:
             local_vars (dict[str, object]): Constructor namespace containing
@@ -637,28 +633,29 @@ class DiTClassifier(DiffusionTransformer):
                 'clf_ln_mlp_ratio', 'clf_reshaper_ids_dict', 'clf_cls_token_regularizer_ids']``.
 
         Returns:
-            None: For each non-excluded ``clf_name``, a None value becomes the
-            current ``self.name`` value; non-None values are retained.
+            None: With ``set_nones=True``, each non-excluded ``clf_name`` whose value
+            is None becomes a copy of ``self.name``; non-None values are retained.
 
         Raises:
             AssertionError: If ``clf_dim_forced=True`` but ``clf_dim`` is None.
         """
 
-        for name, clf_part_value in local_vars.items():
-            # Validate only classifier-specific constructor fields not explicitly excluded.
-            if not name.startswith("clf_") or name in exclude:
-                continue
+        # Retain the independent constructor defaults unless inheritance is enabled.
+        if local_vars["set_nones"]:
+            for name, clf_part_value in local_vars.items():
+                # Validate only classifier-specific constructor fields not explicitly excluded.
+                if not name.startswith("clf_") or name in exclude:
+                    continue
 
-            noise_part_name = name.replace("clf_", '')
-            noise_part_value = getattr(self, noise_part_name)
-            # Deep-copy the main option only when the classifier override is omitted.
-            clf_part_value = noise_part_value if clf_part_value is None else clf_part_value
+                noise_part_name = name.replace("clf_", '')
+                noise_part_value = getattr(self, noise_part_name)
+                # Deep-copy the main option only when the classifier override is None.
+                clf_part_value = noise_part_value if clf_part_value is None else clf_part_value
 
-            # Keep inherited and explicitly supplied mutable branch options
-            # independent from the main branch, caller objects, and defaults.
-            setattr(self, name, deepcopy(clf_part_value))
+                # Keep inherited and explicitly supplied mutable branch options
+                # independent from the main branch, caller objects, and defaults.
+                setattr(self, name, deepcopy(clf_part_value))
 
-        # A forced classifier width requires an explicit target width.
         if self.clf_dim_forced:
             require(
                 self.clf_dim is not None, 
@@ -2279,8 +2276,16 @@ def run_self_tests() -> dict[str, str]:
     public_reshaper_default = public_parameters["clf_reshaper_kwargs"].default
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
-    public_default_first = DiTClassifier(**base)
-    public_default_second = DiTClassifier(**base)
+    public_defaults = {
+        key: value for key, value in base.items() if not key.startswith("clf_")
+    }
+    public_default_first = DiTClassifier(**public_defaults)
+    public_default_second = DiTClassifier(**public_defaults)
+    assert public_default_first.set_nones is False
+    assert public_default_first.clf_mha_num_heads == 4 != \
+        public_default_first.mha_num_heads
+    assert public_default_first.clf_vit_block_mlp_ratio == 4.0 != \
+        public_default_first.vit_block_mlp_ratio
     assert public_default_first.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_first.clf_connection_ids_dict == {2: [1]}
@@ -2301,10 +2306,11 @@ def run_self_tests() -> dict[str, str]:
     assert public_default_second.clf_reshaper_kwargs == {}
     assert public_aggregation_default == {1: (-1,)}
     assert public_connection_default == {-1: (-1,)}
-    assert public_reshaper_default is None
+    assert public_reshaper_default == {}
 
     supplied_reshaper_kwargs = {"add_kl": False}
     supplied_options = make_model(
+        set_nones=True,
         clf_reshaper_kwargs=supplied_reshaper_kwargs,
         connection_kwargs={"connect_type": "concat"},
         clf_connection_kwargs=None,
@@ -2347,6 +2353,7 @@ def run_self_tests() -> dict[str, str]:
 
     inherited = make_model(
         build=False, 
+        set_nones=True,
         mha_num_heads=2, 
         vit_block_mlp_ratio=2.0, 
         vit_block_mlp_output_dims={1: 4}, 
@@ -2364,9 +2371,20 @@ def run_self_tests() -> dict[str, str]:
         clf_mha_num_heads=None, 
         clf_vit_block_mlp_ratio=None, 
         clf_vit_block_mlp_output_dims=None, 
+        clf_connection_kwargs=None,
+        clf_cross_attention_kwargs=None,
+        clf_cross_attention_plug_type=None,
+        clf_ln_no_adaptation=None,
+        clf_drop_prob=None,
+        clf_drop_per_sample=None,
+        clf_local_mixer_kwargs=None,
+        clf_downsample_kwargs=None,
+        clf_upsample_kwargs=None,
+        clf_cls_token_regularizer_kwargs=None,
     )
     assert inherited.clf_connection_kwargs == inherited.connection_kwargs
     assert inherited.clf_cross_attention_kwargs == inherited.cross_attention_kwargs
+    assert inherited.clf_cross_attention_plug_type == inherited.cross_attention_plug_type
     assert inherited.clf_mha_num_heads == inherited.mha_num_heads == 2
     assert inherited.clf_vit_block_mlp_ratio == inherited.vit_block_mlp_ratio == 2.0
     assert inherited.clf_vit_block_mlp_output_dims == {1: 4}
@@ -2380,6 +2398,10 @@ def run_self_tests() -> dict[str, str]:
         inherited.clf_cls_token_regularizer_kwargs
         == inherited.cls_token_regularizer_kwargs
     )
+    inherited_clone = DiTClassifier.from_config(inherited.get_config())
+    assert inherited_clone.set_nones is True
+    assert inherited_clone.clf_mha_num_heads == inherited.clf_mha_num_heads
+    assert inherited_clone.clf_connection_kwargs == inherited.clf_connection_kwargs
 
     overridden = make_model(
         build=False, 
@@ -2911,7 +2933,10 @@ def run_self_tests() -> dict[str, str]:
         {"feature_aggregation_ids_dict": {2: [0]}}, 
         {"clf_connection_ids_dict": {1: [0]}}, 
         {"clf_dim_forced": True, "clf_dim": None}, 
+        {"clf_dim_forced": True, "clf_dim": None, "set_nones": True},
+        {"clf_dim_forced": None, "clf_dim": None, "set_nones": True},
         {"clf_cross_attention_plug_type": "unknown"}, 
+        {"clf_cross_attention_plug_type": None},
         {"feature_aggregation_kwargs": {"unknown": 1}}, 
         {"cross_attention_aggregation_kwargs": {"unknown": 1}}, 
         {"clf_connection_kwargs": {"unknown": 1}}, 

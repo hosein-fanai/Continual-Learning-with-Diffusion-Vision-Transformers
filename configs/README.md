@@ -236,8 +236,28 @@ namespaces described above.
 
 Nested model dataclasses expose `kwargs() -> dict[str, Any]`; those dictionaries
 are forwarded to the corresponding transformer or wrapper constructor. Use the
-constructor docstrings as the authoritative valid-value reference. The
-YAML files under `old/` record experiments from earlier API revisions and
+constructor docstrings as the authoritative valid-value reference.
+`DiTClassifierConfig` matches the classifier constructor defaults, including
+`set_nones: false`. To inherit a supported classifier setting from the main
+branch, explicitly use YAML `null` together with `set_nones: true`:
+
+```yaml
+model:
+  name: dit_classifier
+  dit_classifier:
+    mha_num_heads: 8
+    clf_mha_num_heads: null
+    set_nones: true
+```
+
+Here both branches use eight attention heads. Omitting `clf_mha_num_heads`
+keeps its default of four even with `set_nones: true`. See the
+[classifier defaults](../diffusion/models/transformer/README.md#classifier-example-and-clf_-defaults)
+for component defaults and settings that do not inherit.
+Older saved classifier configs with `null` inheritance placeholders need
+`set_nones: true` to retain their previous behavior.
+
+The YAML files under `old/` record experiments from earlier API revisions and
 contain legacy key names. They are archival records, not CLI examples or HPO
 bases. New studies generate current YAML files below
 `results/hpo/<task>/<model>/<dataset>/configs/` and reload every one before

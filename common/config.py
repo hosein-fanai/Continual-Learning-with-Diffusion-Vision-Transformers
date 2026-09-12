@@ -738,16 +738,17 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             before stage 2. Defaults to a fresh ``{-1: [-1]}`` for each instance.
         clf_connection_kwargs (dict | None): Connector keys listed for
             ``feature_aggregation_kwargs``. ``None`` inherits the main branch's
-            ``connection_kwargs``; ``{}`` requests layer defaults/inferred dimensions.
-            Defaults to ``None``.
+            ``connection_kwargs`` when ``set_nones=True``; ``{}`` requests layer defaults/inferred
+            dimensions. Defaults to a fresh ``{}`` for each instance.
         clf_cross_attention_ids_dict (dict): Maps a classifier stage to earlier classifier
             features used for cross attention. Empty by default. Defaults to a fresh ``{}``
             for each instance.
         clf_cross_attention_kwargs (dict | None): Cross-attention connector options;
-            ``None`` inherits the main branch. Defaults to ``None``.
+            ``None`` inherits the main branch when ``set_nones=True``. Defaults to a fresh ``{}``
+            for each instance.
         clf_cross_attention_plug_type (str | None): External-attention plug side. ``None``
-            inherits the main ``cross_attention_plug_type`` (default ``"values"``). Defaults
-            to ``None``.
+            inherits the main ``cross_attention_plug_type`` when ``set_nones=True``. Defaults
+            to ``"values"``.
         clf_vit_block_ids (list[int | None]): Classifier attention-block depths. ``[None]``
             means all 1..``clf_depth``; ``[]`` means no blocks. This list does not inherit
             from the main branch. Defaults to a fresh ``[None]`` for each instance.
@@ -758,50 +759,56 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             default and is inferred by the block. Defaults to ``None``.
         clf_mha_value_dim (int | None): Classifier per-head value width; remains ``None`` by
             default. Defaults to ``None``.
-        clf_mha_num_heads (int | None): Head count; ``None`` inherits ``mha_num_heads`` (4
-            by default). Defaults to ``None``.
+        clf_mha_num_heads (int | None): Head count; ``None`` inherits ``mha_num_heads``
+            when ``set_nones=True``. Defaults to ``4``.
         clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
-            ``vit_block_mlp_ratio`` (4 by default). Defaults to ``None``.
+            ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
         clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth
-            output widths; ``None`` copies the main mapping, while ``{}`` explicitly
-            requests none. Defaults to ``None``.
+            output widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
+            requests no overrides. Defaults to a fresh ``{}`` for each instance.
         clf_ln_mlp_ratio (float | None): Classifier adaptive-normalization MLP ratio. This
             explicit default remains None; it does not inherit ``ln_mlp_ratio``. Defaults to
             ``None``.
         clf_ln_no_adaptation (bool | None): Disable condition adaptation; ``None`` inherits
-            the main setting (false by default). Defaults to ``None``.
+            the main setting when ``set_nones=True``. Defaults to ``False``.
         clf_drop_prob (float | None): Residual-drop probability; ``None`` inherits the main
-            value (0 by default). Defaults to ``None``.
+            value when ``set_nones=True``. Defaults to ``0.0``.
         clf_drop_per_sample (bool | None): Drop residuals per sample; ``None`` inherits the
-            main value (true by default). Defaults to ``None``.
+            main value when ``set_nones=True``. Defaults to ``True``.
         clf_local_mixer_ids (list[int | None]): Classifier local-mixer depths; empty by
             default and independent of main IDs. Defaults to a fresh ``[]`` for each
             instance.
         clf_local_mixer_kwargs (dict | None): Exact keys from ``local_mixer_kwargs``;
-            ``None`` inherits the main mapping. Defaults to ``None``.
+            ``None`` inherits the main mapping when ``set_nones=True``. Defaults to a fresh ``{}``
+            for each instance.
         clf_downsample_ids (list[int | None]): Classifier downsample depths. Defaults to a
             fresh ``[]`` for each instance.
         clf_downsample_kwargs (dict | None): Exact keys from ``downsample_kwargs``; ``None``
-            inherits the main mapping. Defaults to ``None``.
+            inherits the main mapping when ``set_nones=True``. Defaults to a fresh ``{}``
+            for each instance.
         clf_upsample_ids (list[int | None]): Classifier upsample depths. Defaults to a fresh
             ``[]`` for each instance.
         clf_upsample_kwargs (dict | None): Exact keys from ``upsample_kwargs``; ``None``
-            inherits the main mapping. Defaults to ``None``.
+            inherits the main mapping when ``set_nones=True``. Defaults to a fresh ``{}``
+            for each instance.
         clf_reshaper_ids_dict (dict[int, str]): Classifier depth to
             ``"flatten"``/``"unflatten"`` mapping; empty by default. Defaults to a fresh
             ``{}`` for each instance.
         clf_reshaper_kwargs (dict | None): Classifier variational-reshaper controls: add_kl
             (bool) and latent_dim_ratio (one positive float per consecutive
-            flatten/unflatten pair in ascending flatten-depth order). None inherits a
-            separate deep copy of the main reshaper_kwargs; an explicit mapping supplies
-            independent classifier settings. Defaults to ``None``.
+            flatten/unflatten pair in ascending flatten-depth order). None inherits a separate
+            deep copy of the main reshaper_kwargs when ``set_nones=True``; an explicit mapping
+            supplies independent settings. Defaults to a fresh ``{}`` for each instance.
         clf_cls_token_regularizer_ids (list[int | None]): Classifier depths 0..``clf_depth``
             with auxiliary class softmax heads. Empty by default; ``[None]`` selects the
             full range. Defaults to a fresh ``[]`` for each instance.
         clf_cls_token_regularizer_kwargs (dict | None): Token slice and optional regularizer
-            MLP settings. ``None`` inherits ``cls_token_regularizer_kwargs``. Missing
-            ``mlp_ratio`` and ``activation_function`` values default to ``None`` and
-            ``"tanh"``, respectively. Defaults to ``None``.
+            MLP settings. ``None`` inherits ``cls_token_regularizer_kwargs`` when ``set_nones=True``.
+            Missing ``mlp_ratio`` and ``activation_function`` values default to ``None`` and
+            ``"tanh"``, respectively. Defaults to a fresh ``{"start": 0, "end": 1,
+            "train_type": "normal", "distil_type": "hard"}`` for each instance.
+        set_nones (bool): Inherit eligible explicit ``clf_* = None`` values from the main
+            branch. Concrete defaults and overrides are retained. Defaults to ``False``.
         force_global_avg_pooling (bool): Average all final tokens even when a class token is
             available. The distillation token is always excluded, but a class token remains
             in this average. Without a usable class token, global average pooling is
@@ -831,31 +838,34 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     clf_connection_ids_dict: dict = field(
         default_factory=lambda: {-1: [-1]}
     )
-    clf_connection_kwargs: dict | None = None
+    clf_connection_kwargs: dict | None = field(default_factory=dict)
     clf_cross_attention_ids_dict: dict = field(default_factory=dict)
-    clf_cross_attention_kwargs: dict | None = None
-    clf_cross_attention_plug_type: str | None = None
+    clf_cross_attention_kwargs: dict | None = field(default_factory=dict)
+    clf_cross_attention_plug_type: str | None = "values"
     clf_vit_block_ids: list[int | None] = field(default_factory=lambda: [None])
     clf_use_decoder_ids: list[int | None] = field(default_factory=list)
     clf_mha_key_dim: int | None = None
     clf_mha_value_dim: int | None = None
-    clf_mha_num_heads: int | None = None
-    clf_vit_block_mlp_ratio: float | None = None
-    clf_vit_block_mlp_output_dims: dict[int, int] | None = None
+    clf_mha_num_heads: int | None = 4
+    clf_vit_block_mlp_ratio: float | None = 4.0
+    clf_vit_block_mlp_output_dims: dict[int, int] | None = field(default_factory=dict)
     clf_ln_mlp_ratio: float | None = None
-    clf_ln_no_adaptation: bool | None = None
-    clf_drop_prob: float | None = None
-    clf_drop_per_sample: bool | None = None
+    clf_ln_no_adaptation: bool | None = False
+    clf_drop_prob: float | None = 0.0
+    clf_drop_per_sample: bool | None = True
     clf_local_mixer_ids: list[int | None] = field(default_factory=list)
-    clf_local_mixer_kwargs: dict | None = None
+    clf_local_mixer_kwargs: dict | None = field(default_factory=dict)
     clf_downsample_ids: list[int | None] = field(default_factory=list)
-    clf_downsample_kwargs: dict | None = None
+    clf_downsample_kwargs: dict | None = field(default_factory=dict)
     clf_upsample_ids: list[int | None] = field(default_factory=list)
-    clf_upsample_kwargs: dict | None = None
+    clf_upsample_kwargs: dict | None = field(default_factory=dict)
     clf_reshaper_ids_dict: dict[int, str] = field(default_factory=dict)
-    clf_reshaper_kwargs: dict | None = None
+    clf_reshaper_kwargs: dict | None = field(default_factory=dict)
     clf_cls_token_regularizer_ids: list[int | None] = field(default_factory=list)
-    clf_cls_token_regularizer_kwargs: dict | None = None
+    clf_cls_token_regularizer_kwargs: dict | None = field(
+        default_factory=_default_regularizer_range
+    )
+    set_nones: bool = False
     force_global_avg_pooling: bool = False
     classifier_mlp_ratio: int | None = None
     classifier_mlp_activation_func: str = "tanh"

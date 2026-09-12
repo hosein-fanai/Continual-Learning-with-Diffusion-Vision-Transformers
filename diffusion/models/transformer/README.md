@@ -287,8 +287,8 @@ Classifier `feature_aggregation_kwargs` and
 `cross_attention_aggregation_kwargs` use the connector whitelist.
 `clf_connection_kwargs`, `clf_cross_attention_kwargs`,
 `clf_local_mixer_kwargs`, `clf_downsample_kwargs`, and `clf_upsample_kwargs`
-use their main-branch whitelist. Passing `None` makes most of these inherit the
-corresponding main mapping; passing `{}` explicitly uses inferred/layer defaults.
+use their main-branch whitelist. They default to `{}` for inferred/layer defaults.
+Passing `None` with `set_nones=True` inherits the corresponding main mapping.
 See `DiTClassifier.__init__` for the few `clf_*` values that intentionally do
 not inherit.
 
@@ -348,9 +348,20 @@ first aggregation width), `clf_dim_forced=False`,
 `classifier_only_distil_token=True`, `clf_distil_token_type=None`,
 `clf_vit_block_ids=[None]`, and all classifier mixer/scaler/reshaper/regularizer
 ID collections empty. The terminal connection defaults to `{-1: (-1,)}`.
-`clf_mha_num_heads`, block MLP ratio, normalization mode, dropout, and most
-component kwargs inherit the main branch when passed as `None`; key/value widths
-and `clf_ln_mlp_ratio` remain `None` unless explicitly set.
+The constructor uses `clf_cross_attention_plug_type="values"`,
+`clf_mha_num_heads=4`, `clf_vit_block_mlp_ratio=4.0`,
+`clf_vit_block_mlp_output_dims={}`, `clf_ln_no_adaptation=False`,
+`clf_drop_prob=0.0`, and `clf_drop_per_sample=True`. Classifier component kwargs
+default to `{}`, except `clf_cls_token_regularizer_kwargs`, which defaults to
+`{"start": 0, "end": 1, "train_type": "normal", "distil_type": "hard"}`.
+These match the corresponding `DiffusionTransformer` Python defaults.
+
+`set_nones=False` disables main-branch inheritance by default. To inherit a
+supported setting, pass that classifier argument as `None` and enable
+`set_nones=True`; enabling the flag alone does not override concrete defaults.
+Key/value widths and `clf_ln_mlp_ratio` remain `None` unless explicitly set,
+and classifier IDs, width inference, and condition/token modes retain their
+classifier-specific behavior.
 
 ## Encoder-decoder denoiser API
 
