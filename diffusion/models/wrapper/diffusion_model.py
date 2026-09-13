@@ -3905,7 +3905,7 @@ class DiffusionModel(ArgumentSaverModel):
                         tf.shape(latent)[0], 
                         n, 
                         message="Latent and label batch sizes must match."
-                    )
+                    ), 
                 )
                 if assertion is not None
             ]):
