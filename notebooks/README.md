@@ -9,14 +9,6 @@ The notebook supports semantic consolidation and gist memory; changing its
 explicit data mode to CIFAR starts a real development experiment. Preparation
 and synthetic checks do not establish benchmark performance.
 
-[`NOTEBOOK_STATUS.json`](NOTEBOOK_STATUS.json) records the maintained entry,
-24 generated HPO templates and 74 historical archives, excluding editor
-checkpoints. Historical notebooks now begin with an archival notice; original
-code cells, outputs and execution metadata are preserved. Fifty-five have an
-explicit notice that official test arrays supplied validation. Selection from
-those displays makes the observations development data, permanently; these
-repairs do not confer untouched-test status.
-
 The named `cifar10 main.ipynb` and `cifar100 main.ipynb` are historical archives
 with obsolete APIs, not executable replacements for the maintained notebook.
 Do not use them to produce current thesis results. The same rule applies to
