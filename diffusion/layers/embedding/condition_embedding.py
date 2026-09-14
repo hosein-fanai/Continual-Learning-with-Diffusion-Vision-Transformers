@@ -71,21 +71,15 @@ class ConditionEmbedding(BaseEmbedding):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
-        # Require a finite vocabulary size for discrete condition lookup.
         if self.embed_steps is None:
             raise ValueError("ConditionEmbedding requires positive embed_steps.")
-        # Reject spatial positional modes that cannot initialize a lookup table.
         if self.pos_embed_type not in ("new_weight", "1d_sincos"):
             raise ValueError(
                 "ConditionEmbedding supports new_weight or 1d_sincos only."
             )
 
-        # Add the default ratio-one projection only when a raw frequency width needs
-        # projection and no ratio is set.
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
-        # Project raw frequency features to the target component width unless an output
-        # width is explicit.
         self.mlp_output_dim = self.dim if self.mlp_output_dim is None \
                             and self.embed_freq_dim is not None \
                             else self.mlp_output_dim
@@ -121,8 +115,6 @@ class ConditionEmbedding(BaseEmbedding):
             x, 
             training=training
         )
-        # Project looked-up conditions when configured; otherwise retain the raw embedding
-        # width.
         x = self.embed_mlp(
             x, 
             training=training
