@@ -1165,6 +1165,15 @@ class DiffusionModel(ArgumentSaverModel):
 
         return cls(**config)
 
+    def build(self, input_shape: object | None = None) -> None:
+        """Build execution networks; Sequential holders only track replacements."""
+
+        for network in (self.network, self.ema_network):
+            if network is not None and not network.built:
+                network.build()
+
+        super().build(input_shape)
+
     def compile(
         self, 
         loss: losses.Loss | str = "mse", 

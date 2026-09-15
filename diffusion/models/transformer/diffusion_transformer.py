@@ -2396,7 +2396,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             self.unpatchifier = None
 
     def _symbolic_outputs(self):
-        """Trace through Keras so raw TF operations receive backend tensors.
+        """Record layer output shapes, retaining Keras tracing for raw TF ops.
 
         Child layers already exist. Mark the parent built before its symbolic
         call to avoid recursively re-entering this model's custom build method.
@@ -2408,7 +2408,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 [value.shape for value in self.inputs]
             )
 
-        return self(self.inputs)
+        # The original direct call records child nodes for model.summary().
+        try:
+            return self.call(self.inputs)
+        except ValueError as error:
+            if "A KerasTensor cannot be used as input to a TensorFlow function" not in str(error):
+                raise
+            return self(self.inputs)
 
     def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create symbolic Keras inputs for the active resolution.
