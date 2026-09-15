@@ -44,15 +44,15 @@ def init() -> None:
     import tensorflow as tf
 
 
-    # Enable incremental allocation only when a GPU is available.
-    if gpus:=tf.config.list_physical_devices("GPU"):
-        try:
-            tf.config.set_logical_device_configuration(gpus[0], [
-                tf.config.LogicalDeviceConfiguration(memory_limit=6144)
-            ])
-        except RuntimeError as e:
-            print(e)
-            print("Could not limit gpu memory.")
+    # # Enable incremental allocation only when a GPU is available.
+    # if gpus:=tf.config.list_physical_devices("GPU"):
+    #     try:
+    #         tf.config.set_logical_device_configuration(gpus[0], [
+    #             tf.config.LogicalDeviceConfiguration(memory_limit=6144)
+    #         ])
+    #     except RuntimeError as e:
+    #         print(e)
+    #         print("Could not limit gpu memory.")
 
 
 def extract_features(
