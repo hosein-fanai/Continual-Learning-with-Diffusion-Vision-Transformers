@@ -84,7 +84,8 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 # Omitted distillation leaves class/patch positions unchanged.
                 distil_type = "new_weight" if has_distil else None
                 model = self._classifier(
-                    clf_depth=0, aggregate_from_noises=noise,
+                    # A token-only fixture isolates prefix order before attention.
+                    clf_depth=1, clf_vit_block_ids=[], aggregate_from_noises=noise,
                     classifier_only_cls_token=cls_only,
                     classifier_only_distil_token=distil_only,
                     cls_token_type=cls_type, clf_cls_token_type=cls_type,
@@ -219,7 +220,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
-        model = self._classifier(clf_depth=0)
+        model = self._classifier(clf_depth=0, force_global_avg_pooling=True)
         before = model(self.inputs, training=False)
         config = deepcopy(model.get_config())
         identities = [id(weight) for weight in model.weights]
@@ -241,9 +242,10 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
-        ordinary = self._classifier(clf_depth=0)
+        ordinary = self._classifier(clf_depth=0, force_global_avg_pooling=True)
         composite = DiTEncoderDecoderClassifier(
-            encoder_kwargs=dict(self.config, clf_depth=0, clf_mha_num_heads=1),
+            encoder_kwargs=dict(self.config, clf_depth=0, clf_mha_num_heads=1,
+                                force_global_avg_pooling=True),
             decoder_kwargs={"depth": 0, "mha_num_heads": 1},
         )
         for model in (ordinary, composite):

@@ -32,7 +32,7 @@ from . import (
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
-from common.keras_compat import register_optimizer_variables, variable_path
+from common.keras_compat import compute_compiled_loss, register_optimizer_variables, variable_path
 from common.runtime import derive_seed, effective_seed
 from common.random import SeedStream
 from common.validation import require
@@ -1042,12 +1042,12 @@ class DiffusionModel(ArgumentSaverModel):
         Args:
             y_true (tf.Tensor): Floating reference images or noise targets.
             y_pred (tf.Tensor): Predictions with the shape expected by the
-                compiled loss. The loss controls casting and reduction.
+                compiled loss. Loss math uses the model's stable dtype.
             sample_weight (tf.Tensor | None): Optional numeric weights
                 broadcastable to the loss values; ``None`` uses equal weights.
 
         Returns:
-            data_loss (tf.Tensor): Floating loss in the compiled loss's dtype
+            data_loss (tf.Tensor): Floating loss in the model's stable dtype
                 and reduction shape, normally a scalar. Keras 3's loss
                 container excludes layer regularizers handled by the wrapper.
 
@@ -1057,10 +1057,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.errors.InvalidArgumentError: A runtime loss operation fails.
         """
 
-        # Use the native Keras 3 compiled data-loss container when present.
-        if hasattr(self, "_compile_loss"):
-            return self._compile_loss(y_true, y_pred, sample_weight)
-        return self.compiled_loss(y_true, y_pred, sample_weight=sample_weight)
+        return compute_compiled_loss(self, y_true, y_pred, sample_weight)
 
     def _create_metrics(self) -> None:
         """Create diffusion trackers before Keras locks the built model state."""

@@ -695,6 +695,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         self._check_dict_assertions(
             local_vars, 
             "cls_token_regularizer_ids", 
+            check_items_num=False,
             id_less_than_key=False, 
             allowed_values=[None]+list(range(local_vars["depth"]+1))
         )
@@ -2586,7 +2587,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Args:
             config (dict[str, object]): Constructor settings. Integer-like
-                string keys in ``*_ids_dict`` mappings become integers,
+                string keys in route and per-block output-width mappings become integers,
                 including nested encoder/decoder settings. Other values are
                 preserved and the caller's mapping is not modified.
 
@@ -2626,7 +2627,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
                     restore_routes(value)
                 # Restore integer depth keys after JSON converted them to strings.
-                elif name.endswith("_ids_dict") and isinstance(value, dict):
+                elif (name.endswith("_ids_dict") or name in (
+                    "vit_block_mlp_output_dims", 
+                    "clf_vit_block_mlp_output_dims"
+                )) and isinstance(value, dict):
                     options[name] = {
                         int(key) if isinstance(key, str)
                         and key.lstrip("-").isdigit() else key: item

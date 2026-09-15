@@ -2,12 +2,74 @@
 
 import tensorflow as tf
 
-from copy import deepcopy
+from copy import copy, deepcopy
 
 from collections.abc import Sequence
 
 
 NAME_SEPARATOR = "__"
+
+
+def compute_compiled_loss(
+    model: tf.keras.Model,
+    y_true: tf.Tensor,
+    y_pred: tf.Tensor,
+    sample_weight: tf.Tensor | None = None,
+    regularization_losses: Sequence[tf.Tensor] = (),
+) -> tf.Tensor:
+    """Evaluate a single-output compiled loss in the model's stable precision.
+
+    Keras 3 creates its loss container and string/function loss wrappers using
+    the global floatx setting, independently of the model's dtype policy. Align
+    their dtype before evaluation so float64 residuals are never rounded through
+    float32. Mixed policies retain float32 loss math. Copy resolved loss objects
+    before changing their dtype so another model can share the original loss.
+
+    Args:
+        model (tf.keras.Model): Compiled model owning the Keras 3 loss container.
+        y_true (tf.Tensor): Single target tensor accepted by the compiled loss.
+        y_pred (tf.Tensor): Matching prediction tensor before precision reduction.
+        sample_weight (tf.Tensor | None): Native Keras loss weights, or None.
+        regularization_losses (Sequence[tf.Tensor]): Already evaluated layer
+            penalties to add once. The default evaluates only the data loss.
+
+    Returns:
+        loss (tf.Tensor): Native weighted/reduced loss plus supplied penalties,
+            in the model's variable dtype.
+
+    Raises:
+        ValueError: If no loss was compiled or inputs are nested structures.
+        tf.errors.InvalidArgumentError: If loss inputs have incompatible shapes.
+    """
+
+    compiled_loss = model._compile_loss
+    # A custom training step still requires an explicit compiled data loss.
+    if compiled_loss is None:
+        raise ValueError("Compile the model with a loss before evaluating it.")
+    # These custom training steps pass one image/noise tensor pair per objective.
+    if tf.nest.is_nested(y_true) or tf.nest.is_nested(y_pred):
+        raise ValueError("compute_compiled_loss expects one target and prediction tensor.")
+    # Resolve native aliases, output structures, reductions, and loss weights.
+    if not compiled_loss.built:
+        compiled_loss.build(y_true, y_pred)
+
+    dtype = model.dtype_policy.variable_dtype
+    # Keras exposes loss dtype as read-only; keep its two internal fields aligned.
+    if compiled_loss.dtype != dtype:
+        compiled_loss._dtype_policy = tf.keras.dtype_policies.get(dtype)
+        compiled_loss._dtype = dtype
+    for index, entry in enumerate(compiled_loss._flat_losses):
+        # Leave matching objects untouched and never mutate a caller-owned loss.
+        if entry.loss.dtype != dtype:
+            loss_fn = copy(entry.loss)
+            loss_fn._dtype_policy = tf.keras.dtype_policies.get(dtype)
+            loss_fn._dtype = dtype
+            compiled_loss._flat_losses[index] = entry._replace(loss=loss_fn)
+
+    loss = compiled_loss(y_true, y_pred, sample_weight)
+    for penalty in regularization_losses:
+        loss = loss + model._aggregate_additional_loss(tf.cast(penalty, dtype))
+    return loss
 
 
 def display_name(name: object) -> str:

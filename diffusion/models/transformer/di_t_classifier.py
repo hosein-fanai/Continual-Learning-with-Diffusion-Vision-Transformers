@@ -171,7 +171,8 @@ class DiTClassifier(DiffusionTransformer):
                 same choices as ``clf_cls_token_type``. ``None`` disables the classifier-only
                 distillation token. It does not inherit ``distil_token_type``. Defaults to ``None``.
             clf_depth (int): Number of classifier processing depths; default 1. A terminal connector is
-                created separately at depth ``clf_depth + 1``. Defaults to ``1``.
+                created separately at depth ``clf_depth + 1``. Zero stages require pooling,
+                no class token, or a shared image-encoded main class token. Defaults to ``1``.
             clf_connection_ids_dict (dict[int, list[int | None]]): Classifier self-connections keyed by
                 classifier target depth. The special key ``-1`` is mandatory at construction and is
                 moved to ``clf_depth + 1`` for the terminal connector. Its default source ``(-1,)``
@@ -309,6 +310,16 @@ class DiTClassifier(DiffusionTransformer):
         self.has_cls_token = 0 if self.classifier_only_cls_token else self.has_cls_token
         self.has_distil_token = 0 if self.classifier_only_distil_token else self.has_distil_token
         self.prepended_tokens_num = int(self.has_cls_token) + int(self.has_distil_token)
+
+        # A newly appended token needs attention before a token-only head can see images.
+        if self.clf_depth == 0 and self.classifier_only_cls_token \
+        and self.clf_has_cls_token and not self.force_global_avg_pooling:
+            raise ValueError(
+                "clf_depth=0 cannot classify from a classifier-only class token: "
+                "it has no attention stage connecting that token to the image. "
+                "Set force_global_avg_pooling=True, disable clf_cls_token_type, "
+                "or share an image-encoded main class token."
+            )
 
         self._create_clf_embedders()
         self.cls_token = self._create_single_token(
@@ -562,6 +573,7 @@ class DiTClassifier(DiffusionTransformer):
         self._check_dict_assertions(
             local_vars, 
             "clf_cls_token_regularizer_ids", 
+            check_items_num=False,
             id_less_than_key=False, 
             depth_name="clf_depth", 
             second_depth_name="clf_depth", 
@@ -1202,6 +1214,66 @@ class DiTClassifier(DiffusionTransformer):
 
         return classifier
 
+    def _align_main_feature_prefixes(
+        self, 
+        features: tf.Tensor, 
+        missing_prefixes: tf.Tensor | None = None, 
+    ) -> tf.Tensor:
+        """Match main tokens to classifier class/distillation positions.
+
+        Args:
+            features (tf.Tensor): Main-branch tokens shaped [batch, tokens, width].
+            missing_prefixes (tf.Tensor | None): Optional classifier prefix in the
+                same width. Query routing reuses it for missing main tokens;
+                feature merges use zeros so absent sources contribute no feature.
+
+        Returns:
+            aligned (tf.Tensor): Shared prefixes and patches retain their values;
+                classifier-only positions receive zero or the supplied query token.
+
+        Raises:
+            ValueError: Different prefix layouts are routed through a flat feature.
+        """
+
+        # Shared token layouts require no padding or reordering.
+        if self.prepended_tokens_num == self.clf_prepended_tokens_num:
+            return features
+
+        # Flat latent vectors cannot carry separately addressable prefix positions.
+        if len(features.shape) != 3:
+            raise ValueError(
+                "Classifier prefix alignment requires rank-3 token features."
+            )
+
+        prefixes = []
+        main_index = 0
+        classifier_index = 0
+        for main_present, classifier_present in (
+            (self.has_cls_token, self.clf_has_cls_token), 
+            (self.has_distil_token, self.clf_has_distil_token)
+        ):
+            # Omitted classifier tokens consume no output position.
+            if classifier_present:
+                # Reuse the corresponding main token when both branches share it.
+                if main_present:
+                    prefix = features[:, main_index:main_index + 1]
+                # Missing external queries inherit the current classifier token.
+                elif missing_prefixes is not None:
+                    prefix = missing_prefixes[:, classifier_index:classifier_index + 1]
+                # An absent feature source contributes zero to add/concat merges.
+                else:
+                    prefix = tf.zeros_like(features[:, :1])
+
+                prefixes.append(prefix)
+                classifier_index += 1
+
+            main_index += int(main_present)
+
+        return tf.concat([
+            *prefixes, 
+            features[:, self.prepended_tokens_num:]
+        ], axis=1)
+
     @staticmethod
     def _classifier_logits(probabilities: tf.Tensor | None) -> tf.Tensor | None:
         """Read the connected logits cached by the existing Keras softmax head.
@@ -1221,11 +1293,11 @@ class DiTClassifier(DiffusionTransformer):
             None
         )
 
-        # Fail explicitly when an unsupported softmax implementation loses its source tensor.
         if logits is None:
             raise ValueError(
                 "The classifier softmax did not expose its same-pass logits."
             )
+
         return logits
 
     def call(
@@ -1375,8 +1447,8 @@ class DiTClassifier(DiffusionTransformer):
         noises: tf.Tensor | None, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tuple:
         """Compute class probabilities from main features or predicted noises.
 
@@ -1419,7 +1491,6 @@ class DiTClassifier(DiffusionTransformer):
             training=training
         )
 
-        # Regularize depth-zero labels only when an active classifier path embeds them.
         z = self.clf_labels_embed_reg(
             label_embeds, 
             training=training
@@ -1430,11 +1501,16 @@ class DiTClassifier(DiffusionTransformer):
         clf_regs_logits_list = [self._classifier_logits(z)] if return_logits else []
         clf_z_vals_list = []
         for i, layers_dict in enumerate(self.clf_layers_dicts):
-            # Aggregate main features when this classifier stage has a route.
-            # Append previous classifier features only when no self-connector handles that
-            # stream.
+            aggregation_features = features_list
+            # Later merges include an initialized classifier stream with its own prefixes.
+            if self.FA in layers_dict and i != 0:
+                aggregation_features = [
+                    self._align_main_feature_prefixes(feature)
+                    if index in layers_dict[self.FA].ids else feature
+                    for index, feature in enumerate(features_list)
+                ]
             x = layers_dict[self.FA](
-                features_list, 
+                aggregation_features,
                 [x] if self.FC not in layers_dict and i != 0 else [], 
                 cond=clf_cond, 
                 training=training
@@ -1446,8 +1522,6 @@ class DiTClassifier(DiffusionTransformer):
                 if self.aggregate_from_noises:
                 # Embed noise patches without main conditions for a classifier-only token.
                     if self.classifier_only_cls_token:
-                        # Adjust noise patchification to the active progressive resolution when
-                        # needed.
                         x = self.patch_embedder(
                             noises, 
                             output_grid_size=self._current_resolution // self.patch_size if 
@@ -1455,8 +1529,6 @@ class DiTClassifier(DiffusionTransformer):
                                             else None, 
                             training=training
                         )
-                        # Prepend a shared distillation token only when classifier-only
-                        # ownership is disabled.
                         x = self.prepend_single_token(
                             x, self.distil_token, 
                             self.distil_token_type, 
@@ -1489,8 +1561,6 @@ class DiTClassifier(DiffusionTransformer):
                             training=training
                         )
 
-                # Prepend a separate classifier distillation token only when its source is
-                # enabled.
                 x = self.prepend_single_token(
                     x, self.distil_token, 
                     self.clf_distil_token_type, 
@@ -1504,15 +1574,14 @@ class DiTClassifier(DiffusionTransformer):
                 if self.classifier_only_distil_token and self.clf_has_distil_token \
                 and not self.classifier_only_cls_token and self.clf_has_cls_token:
                     x = tf.concat([
-                        x[:, 1: 2],
-                        x[:, :1],
+                        x[:, 1: 2], 
+                        x[:, :1], 
                         x[:, 2:]
                     ], axis=1)
 
-                # Prepend a separate classifier class token only when its source is enabled.
                 x = self.prepend_single_token(
-                    x, self.cls_token,
-                    self.clf_cls_token_type,
+                    x, self.cls_token, 
+                    self.clf_cls_token_type, 
                     time_embeds=time_embeds, 
                     label_embeds=label_embeds, 
                     times=times, labels=labels, 
@@ -1521,9 +1590,6 @@ class DiTClassifier(DiffusionTransformer):
 
                 clf_features_list.append(x)
 
-            # Apply the classifier self-connector when present, including aggregated features if
-            # available.
-            # Supply aggregated main features as a secondary connector input only when present.
             x = layers_dict[self.FC](
                 clf_features_list, 
                 [x] if self.FA in layers_dict else [], 
@@ -1531,18 +1597,20 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.FC in layers_dict else x
 
-            # Prepare encoder-sourced cross-attention features only at selected classifier
-            # depths.
+            cross_attention_features = features_list
+            # A cross connector merges encoder and classifier token positions channel-wise.
+            if self.CAA in layers_dict and self.CAC in layers_dict:
+                cross_attention_features = [
+                    self._align_main_feature_prefixes(feature)
+                    if index in layers_dict[self.CAA].ids else feature
+                    for index, feature in enumerate(features_list)
+                ]
             h = layers_dict[self.CAA](
-                features_list, 
+                cross_attention_features,
                 cond=clf_cond, 
                 training=training
             ) if self.CAA in layers_dict else None
 
-            # Apply a classifier cross connector when present; otherwise keep encoder attention
-            # features.
-            # Supply encoder attention features as a secondary connector input only when
-            # present.
             h = layers_dict[self.CAC](
                 clf_features_list, 
                 [h] if self.CAA in layers_dict else [], 
@@ -1550,10 +1618,21 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.CAC in layers_dict else h
 
-            # Run the classifier attention block when present with the selected
-            # external-attention side.
-            # Provide external classifier queries only for query-side routing.
-            # Provide external classifier keys/values only for value-side routing.
+            if self.VTB in layers_dict and self.CAA in layers_dict \
+            and self.CAC not in layers_dict and \
+            self.clf_cross_attention_plug_type == "queries" \
+            and h is not None \
+            and self.prepended_tokens_num != self.clf_prepended_tokens_num:
+                prefix_queries = x[:, :self.clf_prepended_tokens_num]
+                # Reuse the attention block's residual map for wider or narrower queries.
+                if prefix_queries.shape[-1] != h.shape[-1]:
+                    prefix_queries = layers_dict[self.VTB].mha_residual_projector(
+                        prefix_queries, 
+                        training=training
+                    )
+
+                h = self._align_main_feature_prefixes(h, prefix_queries)
+
             x = layers_dict[self.VTB](
                 (x, clf_cond), 
                 queries=h if self.clf_cross_attention_plug_type == "queries" else None, 
@@ -1561,32 +1640,26 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.VTB in layers_dict else x
 
-            # Apply the classifier spatial mixer only at selected depths.
             x = layers_dict[self.LM](
                 (x, clf_cond), 
                 training=training
             ) if self.LM in layers_dict else x
 
-            # Downsample classifier features only at selected depths.
             x = layers_dict[self.DS](
                 (x, clf_cond), 
                 training=training
             ) if self.DS in layers_dict else x
 
-            # Upsample classifier features only at selected depths.
             x = layers_dict[self.US](
                 (x, clf_cond), 
                 training=training
             ) if self.US in layers_dict else x
 
-            # Apply the classifier bottleneck when configured; otherwise leave latent statistics
-            # absent.
             x, x_mean, x_log_var = layers_dict[self.R](
                 x, 
                 training=training
             ) if self.R in layers_dict else (x, None, None)
 
-            # Compute classifier auxiliary predictions only when this stage has a regularizer.
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
                     x, 
@@ -1598,13 +1671,10 @@ class DiTClassifier(DiffusionTransformer):
 
             clf_features_list.append(x)
             clf_regs_list.append(z)
-            # Collect the same-pass logits in the existing regularizer order, including None.
             if return_logits:
                 clf_regs_logits_list.append(
                     self._classifier_logits(z)
                 )
-            # Keep real classifier variational flatten statistics and exclude unflatten/dummy
-            # outputs.
             if x_mean is not None and \
             self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" \
             and bool(self.clf_reshaper_kwargs.get("add_kl", False)):
@@ -1619,17 +1689,15 @@ class DiTClassifier(DiffusionTransformer):
             training=training
         )
 
-        # Capture the primary head logits only for the explicit distillation interface.
         logits = {
-            "class_logits": self._classifier_logits(classes),
+            "class_logits": self._classifier_logits(classes), 
             "clf_regs_logits_list": clf_regs_logits_list
         } if return_logits else {}
 
         outputs = (
-            classes, clf_cond, clf_features_list,
+            classes, clf_cond, clf_features_list, 
             clf_regs_list, clf_z_vals_list
         )
-        # Compute the parallel token head only when distillation is configured.
         if self.distil_classifier is not None:
             distil_classes = self.distil_feature_extractor(
                 x, 
@@ -1641,13 +1709,11 @@ class DiTClassifier(DiffusionTransformer):
             )
 
             outputs += (distil_classes,)
-            # Keep the independent distillation head's original connected logits.
             if return_logits:
                 logits["distil_logits"] = self._classifier_logits(
                     distil_classes
                 )
 
-        # Append additive numerical metadata without changing any existing tuple positions.
         return outputs + (logits,) if return_logits else outputs
 
     def predict_class(
@@ -1684,7 +1750,6 @@ class DiTClassifier(DiffusionTransformer):
             distribution when active.
         """
 
-        # Use the inferred classifier encoder limit only when the caller passes None.
         max_encoder_num = self.max_encoder_num if max_encoder_num is None \
                         else max_encoder_num
 
@@ -1693,8 +1758,6 @@ class DiTClassifier(DiffusionTransformer):
             max_depth=max_encoder_num, 
             training=training
         )
-        # Reconstruct a noise image only when the classifier consumes predicted noises.
-        # Supply the required condition tensor when no condition was produced.
         noises = self.unpatchifier(
             (x, tf.zeros(
                 (tf.shape(x)[0], self.cond_dim), 
@@ -2486,7 +2549,7 @@ def run_self_tests() -> dict[str, str]:
     model.set_max_encoder_num(None)
     assert model.max_encoder_num == 1
 
-    depth_zero = make_model(clf_depth=0, depth=0)
+    depth_zero = make_model(clf_depth=0, depth=0, force_global_avg_pooling=True)
     assert len(depth_zero.layers_dicts) == 0
     assert len(depth_zero.clf_layers_dicts) == 1
     assert depth_zero(inputs, training=False)["classes"].shape == (2, 2)

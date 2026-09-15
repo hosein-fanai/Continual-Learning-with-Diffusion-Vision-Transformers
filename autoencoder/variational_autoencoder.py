@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 
 from common.dataloader import get_dataset
 from common.gradients import apply_policy_gradients
+from common.keras_compat import compute_compiled_loss
 from common.keras_registry import register_canonical_keras_serializable
 from common.model import get_callbacks
 from common.runtime import derive_seed
@@ -1201,12 +1202,13 @@ class VariationalAutoencoder(models.Model):
             # across the batch.
             row_sample_weight = self._relative_row_weights(sample_weight, x)
             # Compute reconstruction error before reduction in stable precision.
-            recon_loss = tf.cast(self.compiled_loss(
+            recon_loss = compute_compiled_loss(
+                self,
                 tf.cast(x, stable_dtype),
                 tf.cast(x_recon, stable_dtype),
                 sample_weight=row_sample_weight,
                 regularization_losses=self.losses
-            ), stable_dtype)
+            )
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
                 z_log_var,
@@ -1285,12 +1287,13 @@ class VariationalAutoencoder(models.Model):
         # across the batch.
         row_sample_weight = self._relative_row_weights(sample_weight, x)
         # Compute reconstruction error before reduction in stable precision.
-        recon_loss = tf.cast(self.compiled_loss(
+        recon_loss = compute_compiled_loss(
+            self,
             tf.cast(x, stable_dtype),
             tf.cast(x_recon, stable_dtype),
             sample_weight=row_sample_weight,
             regularization_losses=self.losses
-        ), stable_dtype)
+        )
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
             z_log_var,

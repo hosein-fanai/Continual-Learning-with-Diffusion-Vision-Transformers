@@ -12,7 +12,7 @@ GPU access requires a compatible NVIDIA driver and container runtime.
 ## Open and test
 
 Open the repository in VS Code and choose **Dev Containers: Reopen in Container**.
-For notebooks, select **TensorFlow 2.20 (Docker GPU)**. The project is mounted at
+For notebooks, select the configured TensorFlow kernel. The project is mounted at
 `/workspace`; the configured interpreter is `/usr/bin/python`. These container
 conventions are independent of the host checkout location.
 
@@ -40,7 +40,7 @@ docker run --rm --entrypoint /usr/bin/python continual-learning-validation -m pi
 
 Image builds require access to the Ubuntu package repositories and Python package
 index. An index timeout does not establish that a pinned release is unavailable.
-See the [repair validation](../repair_validation.md) for the latest build result.
+See the [repair validation](../repair_validation.md) for the latest runtime checks.
 
 To apply dependency corrections to a previously built local image, pass its
 tag as `BASE_IMAGE`. Verify that it already contains TensorFlow 2.20 and the

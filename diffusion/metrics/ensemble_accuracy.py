@@ -53,8 +53,8 @@ class EnsembleAccuracy(metrics.Metric):
     Attributes:
         diffusion_clf (object): Bound diffusion-classifier wrapper; constructor
             defaults and interface requirements are detailed in __init__.
-        network (tf.keras.Model): Selected raw/EMA network object captured at metric
-            construction; disabled wrapper EMA may resolve to its raw network.
+        network (tf.keras.Model): Current selected raw/EMA network, resolved from
+            the wrapper so class/resolution reconstruction refreshes the reference.
         network_name (NetworkName): Requested raw/EMA selector.
         compute_type (ComputeType): chunked or batched prediction route.
         ensemble_predict (Callable): Bound implementation for the selected compute mode.
@@ -179,7 +179,6 @@ class EnsembleAccuracy(metrics.Metric):
 
         self.diffusion_clf = diffusion_clf
         self.network_name = network_name
-        self.network = self.diffusion_clf.get_network(self.network_name)
         # Label zero is unconditional only when the classifier reserves a CFG row.
         if not getattr(self.network, "use_cfg", False):
             raise ValueError(
@@ -442,6 +441,17 @@ class EnsembleAccuracy(metrics.Metric):
             noised_by_timestep.append(x_t)
 
         return tf.stack(noised_by_timestep, axis=1)
+
+    @property
+    def network(self) -> tf.keras.Model:
+        """Resolve the selected network after any wrapper reconstruction.
+
+        Returns:
+            network (tf.keras.Model): Current raw or EMA prediction copy. Callers
+                tracing a graph must retrace after changing the model topology.
+        """
+
+        return self.diffusion_clf.get_network(self.network_name)
 
     def reset_state(self) -> None:
         """Reset correct-example and example-count accumulators to zero.

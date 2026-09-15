@@ -797,6 +797,48 @@ def _schedule_descriptor(schedule: object) -> dict[str, object]:
             }.items()}}
 
 
+def compile_recovery_descriptor(value: object, *, strict: bool) -> object:
+    """Authenticate compile losses and metrics with the existing callable contract.
+
+    Args:
+        value (object): Compile settings, including nested losses and metrics.
+        strict (bool): Require declarative callable objects or pure functions with
+            immutable captures when task checkpointing or recovery is active.
+
+    Returns:
+        descriptor (object): Existing recovery metadata, with authenticated Python
+            function behavior replacing name-only descriptions in strict mode.
+
+    Raises:
+        ValueError: A strict callable has opaque or mutable dependencies; use a
+            configured Keras Loss or Metric exposing get_config instead.
+        TypeError: Declared configuration cannot be represented safely.
+    """
+    # Ordinary runs retain the existing permissive compile API.
+    if not strict:
+        return _recovery_descriptor(value)
+    # Compile mappings preserve nested output-specific loss and metric settings.
+    if isinstance(value, dict):
+        return {
+            key: compile_recovery_descriptor(item, strict=True)
+            for key, item in sorted(value.items())
+        }
+    # Keras accepts ordered lists and tuples of output losses or metrics.
+    if isinstance(value, (list, tuple)):
+        return [compile_recovery_descriptor(item, strict=True) for item in value]
+    # Configured Keras objects already expose their behavior through get_config.
+    if callable(value) and not callable(getattr(value, "get_config", None)):
+        try:
+            return {"callable": _qualified_name(value), "behavior": _schedule_descriptor(value)}
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Strict recovery cannot authenticate a loss or metric callable; "
+                "use a configured Keras Loss or Metric with get_config(), or "
+                "a pure function with immutable captured values."
+            ) from error
+    return _recovery_descriptor(value)
+
+
 def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -> list[object]:
     """Authenticate supported callback behavior and explicit custom state semantics.
 

@@ -58,6 +58,7 @@ def _make_dit_network() -> DiTClassifier:
         mha_num_heads=1,
         vit_block_mlp_ratio=1.0,
         clf_depth=0,
+        force_global_avg_pooling=True,
         clf_vit_block_ids=[],
         feature_aggregation_ids_dict={1: [0]},
         build=True,

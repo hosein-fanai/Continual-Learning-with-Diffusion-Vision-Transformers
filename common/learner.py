@@ -80,6 +80,7 @@ from common.recovery import (
     _trackable_topology_descriptor, 
     callback_recovery_descriptor, 
     callback_recovery_state, 
+    compile_recovery_descriptor,
     capture_rng_state, 
     fingerprint_state, 
     load_task_checkpoint, 
@@ -1374,6 +1375,18 @@ def _run_continual_tasks(
             propagate from their owning APIs.
     """
 
+    # Explicit update and candidate counts must preserve their declared integer budgets.
+    for name, value in (
+        ("optimizer_steps_per_epoch", optimizer_steps_per_epoch),
+        ("replay_candidate_multiplier", replay_candidate_multiplier),
+    ):
+        # Only the optional update budget may be omitted.
+        if value is None and name == "optimizer_steps_per_epoch":
+            continue
+        # Reject coercions that silently change exposure or remove all replay candidates.
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f"{name} must be a positive integer.")
+
     # A committed checkpoint owns the already-materialized stochastic
     # schedule. Reading it before schedule construction avoids changing class
     # order merely because NumPy's permutation implementation changes between
@@ -2345,9 +2358,12 @@ def _run_continual_tasks(
             "fit_method": fit_method,
             "fit_kwargs": _recovery_descriptor(fit_kwargs),
             "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
-            "compile_args": _recovery_descriptor(compile_args),
-            "generative_compile_args": _recovery_descriptor(
-                generative_model_compile_args
+            "compile_args": compile_recovery_descriptor(
+                compile_args, strict=save_task_checkpoints or resume_from is not None
+            ),
+            "generative_compile_args": compile_recovery_descriptor(
+                generative_model_compile_args,
+                strict=save_task_checkpoints or resume_from is not None,
             ),
             "callbacks": callback_recovery_descriptor(
                 list(callbacks_list or []), strict=save_task_checkpoints or resume_from is not None
