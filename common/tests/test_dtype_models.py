@@ -245,7 +245,13 @@ class DtypeModelTests(unittest.TestCase):
         vae.compile(optimizer="adam", loss="mse", run_eagerly=True)
         vae_metrics = vae.train_step(tf.zeros((2, 4), dtype=tf.float64))
 
-        self.assertTrue(all(variable.dtype == tf.float64 for variable in vae.weights))
+        self.assertTrue(all(
+            tf.as_dtype(variable.dtype) == tf.float64
+            for variable in vae.weights if tf.as_dtype(variable.dtype).is_floating
+        ))
+        for variable in vae.weights:
+            if not tf.as_dtype(variable.dtype).is_floating:
+                self.assertEqual((variable.name, tf.as_dtype(variable.dtype)), ("seed_state", tf.int64))
         self.assertTrue(all(value.dtype == tf.float64 for value in vae_metrics.values()))
 
         network = _make_dit_network()
@@ -454,9 +460,9 @@ class DtypeModelTests(unittest.TestCase):
         self.assertIsInstance(restored.optimizer, tf.keras.optimizers.Adam)
         self.assertIsNot(restored.optimizer, source.optimizer)
         self.assertEqual(float(restored.optimizer.global_clipnorm), 2.5)
-        self.assertEqual(int(restored.optimizer.iterations), 0)
+        self.assertEqual(int(restored.optimizer.iterations.numpy()), 0)
         restored.train_on_batch(inputs, labels)
-        self.assertEqual(int(restored.optimizer.iterations), 1)
+        self.assertEqual(int(restored.optimizer.iterations.numpy()), 1)
 
     def test_hp_tuned_preserves_functional_branching(self) -> None:
         """Replace a Functional head without linearizing its graph.
@@ -820,12 +826,12 @@ class DtypeModelTests(unittest.TestCase):
         inputs = np.asarray([[1., 0.], [0., 1.]], dtype=np.float32)
         previous.train_on_batch(inputs, np.asarray([0, 1], dtype=np.int32))
         expanded.train_on_batch(inputs, np.asarray([2, 3], dtype=np.int32))
-        destination_iteration = int(expanded.optimizer.iterations)
+        destination_iteration = int(expanded.optimizer.iterations.numpy())
         new_head_before = [weight.copy() for weight in expanded.layers[-1].get_weights()]
 
         copy_model(previous, expanded)
 
-        self.assertEqual(int(expanded.optimizer.iterations), destination_iteration)
+        self.assertEqual(int(expanded.optimizer.iterations.numpy()), destination_iteration)
         # Existing class columns are copied and new class columns keep initialization.
         np.testing.assert_array_equal(
             expanded.layers[-1].get_weights()[0][:, :2],

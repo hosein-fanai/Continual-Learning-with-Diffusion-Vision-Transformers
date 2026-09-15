@@ -1160,8 +1160,8 @@ class DiTClassifier(DiffusionTransformer):
                     base_dim=self.clf_dim, 
                 ) * self.classifier_mlp_ratio, 
                 activation=self.classifier_mlp_activation_func, 
-                dtype=self.dtype_policy,
-                name=f"{classifier.name}/first_layer"
+                dtype=self.dtype_policy, 
+                name=f"{classifier.name}__first_layer"
             ))
 
         # Add classifier dropout only for a nonzero rate.
@@ -1169,19 +1169,19 @@ class DiTClassifier(DiffusionTransformer):
             classifier.add(layers.Dropout(
                 self.dropout_rate, 
                 seed=derive_seed(
-                    self.seed,
-                    "classifier_dropout",
-                    classifier.name,
-                ),
-                dtype=self.dtype_policy,
+                    self.seed, 
+                    "classifier_dropout", 
+                    classifier.name, 
+                ), 
+                dtype=self.dtype_policy, 
                 name="dropout_layer"
             ))
 
         classifier.add(layers.Dense(
             self.num_classes, 
             activation="softmax", 
-            dtype=self.dtype_policy.variable_dtype,
-            name=f"{classifier.name}/final_layer"
+            dtype=self.dtype_policy.variable_dtype, 
+            name=f"{classifier.name}__final_layer"
         ))
 
         return classifier
@@ -2585,14 +2585,14 @@ def run_self_tests() -> dict[str, str]:
 
     policy = make_model(
         name="policy_classifier", 
-        name_prefix="policy/", 
+        name_prefix="policy__",
         dtype="float64", 
         trainable=False, 
         dynamic=True, 
     )
     policy_output = policy(inputs, training=False)
     assert policy.name == "policy_classifier"
-    assert policy.name_prefix == "policy/"
+    assert policy.name_prefix == "policy__"
     assert policy.dtype_policy.name == "float64"
     assert policy.dynamic is True
     assert policy.trainable is False

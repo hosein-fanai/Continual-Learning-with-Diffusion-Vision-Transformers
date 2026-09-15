@@ -149,7 +149,7 @@ class DiffusionClassifier(DiffusionModel):
 
         Returns:
             None: Classifier coefficients, threshold, and loss flags are
-            initialized; trackers are created by :meth:`compile`.
+            initialized alongside metric trackers before :meth:`compile`.
 
         Raises:
             AssertionError: Classifier masks, coefficients, temperature, train type, or
@@ -160,6 +160,7 @@ class DiffusionClassifier(DiffusionModel):
         super().__init__(**kwargs)
         self._check_clf_assertions(locals())
         self._save_init_args(locals())
+        DiffusionClassifier._create_metrics(self)
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         self.clf_loss_coef = tf.constant(
@@ -586,6 +587,59 @@ class DiffusionClassifier(DiffusionModel):
             classifier_mask
         )
 
+    def _create_metrics(self) -> None:
+        """Create classifier trackers while the wrapper is still unbuilt."""
+
+        self.ensemble_loss_fn = EnsembleAccuracy(
+            self,
+            network_name="raw",
+            max_t=4,
+            seed=self.seed,
+            dtype=self.dtype_policy.variable_dtype,
+        ) if self.use_ensemble_loss_instead else None
+
+        primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token\
+                                else "avg_pooling_accuracy"
+        configured_distillation = bool(
+            self.clf_distil_loss_coef > 0. and 
+            self.network.distil_token is not None
+        )
+
+        stable_dtype = self.dtype_policy.variable_dtype
+        self.clf_loss_tracker = metrics.Mean(
+            dtype=stable_dtype,
+            name="classifier_loss"
+        )
+        self.clf_kl_loss_tracker = metrics.Mean(
+            dtype=stable_dtype,
+            name="clf_kl_loss"
+        )
+        self.clf_ctr_loss_tracker = metrics.Mean(
+            dtype=stable_dtype,
+            name="clf_ctr_loss"
+        )
+        self.clf_distil_loss_tracker = metrics.Mean(
+            dtype=stable_dtype,
+            name="clf_distil_loss"
+        )
+        self.total_accuracy_tracker = metrics.SparseCategoricalAccuracy(
+            dtype=stable_dtype,
+            name="total_accuracy"
+        )
+        self.accuracy_tracker = metrics.SparseCategoricalAccuracy(
+            dtype=stable_dtype,
+            name=primary_accuracy_name if configured_distillation
+                else "classifier_accuracy"
+        )
+        self.clf_ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
+            dtype=stable_dtype,
+            name="clf_ctr_accuracy"
+        )
+        self.clf_distil_acc_tracker = metrics.SparseCategoricalAccuracy(
+            dtype=stable_dtype,
+            name="clf_distil_acc"
+        )
+
     @property
     def metrics(self) -> list[metrics.Metric]:
         """Return diffusion and classifier metric trackers.
@@ -625,71 +679,16 @@ class DiffusionClassifier(DiffusionModel):
         Returns:
             None: Configures base losses and all base/classifier trackers, including
             distillation trackers even when their objectives are disabled. Installs KL
-            divergence and creates a four-timestep raw-network EnsembleAccuracy helper
-            only when use_ensemble_loss_instead is enabled; otherwise ensemble_loss_fn
-            is None. Recompilation refreshes objective/logits flags and resets
+            divergence and uses the constructor's four-timestep raw-network
+            EnsembleAccuracy helper when use_ensemble_loss_instead is enabled.
+            Recompilation refreshes objective/logits flags and resets
             accumulated tracker state.
         """
 
         self._refresh_loss_flags()
         super().compile(**kwargs)
 
-        # Construct the differentiable four-timestep ensemble only when it replaces primary CE
-        # inputs.
-        self.ensemble_loss_fn = EnsembleAccuracy(
-            self,
-            network_name="raw",
-            max_t=4,
-            seed=self.seed,
-            dtype=self.dtype_policy.variable_dtype,
-        ) if self.use_ensemble_loss_instead else None
         self.kld_loss_fn = losses.kullback_leibler_divergence
-
-        # Distinguish class-token accuracy from average-pooling accuracy when naming the primary
-        # head.
-        primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token\
-                                else "avg_pooling_accuracy"
-        configured_distillation = bool(
-            self.clf_distil_loss_coef > 0. and 
-            self.network.distil_token is not None
-        )
-
-        stable_dtype = self.dtype_policy.variable_dtype
-        self.clf_loss_tracker = metrics.Mean(
-            dtype=stable_dtype,
-            name="classifier_loss"
-        )
-        self.clf_kl_loss_tracker = metrics.Mean(
-            dtype=stable_dtype,
-            name="clf_kl_loss"
-        )
-        self.clf_ctr_loss_tracker = metrics.Mean(
-            dtype=stable_dtype,
-            name="clf_ctr_loss"
-        )
-        self.clf_distil_loss_tracker = metrics.Mean(
-            dtype=stable_dtype,
-            name="clf_distil_loss"
-        )
-        self.total_accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            dtype=stable_dtype,
-            name="total_accuracy"
-        )
-        # Keep a separate primary-head metric name when an independent distillation head is
-        # configured.
-        self.accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            dtype=stable_dtype,
-            name=primary_accuracy_name if configured_distillation
-                else "classifier_accuracy"
-        )
-        self.clf_ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            dtype=stable_dtype,
-            name="clf_ctr_accuracy"
-        )
-        self.clf_distil_acc_tracker = metrics.SparseCategoricalAccuracy(
-            dtype=stable_dtype,
-            name="clf_distil_acc"
-        )
 
     def train_step(
         self, 

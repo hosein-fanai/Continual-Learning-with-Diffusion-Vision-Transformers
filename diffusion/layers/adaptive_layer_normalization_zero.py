@@ -127,7 +127,7 @@ class AdaLNZero(ArgumentSaverLayer):
                 mlp_first_layer = layers.Activation(
                     "swish", 
                     dtype=self.dtype_policy, 
-                    name=f"{self.name}/mlp/first_layer"
+                    name=f"{self.name}__mlp__first_layer"
                 )
             # Otherwise add the configured hidden conditioning projection.
             else:
@@ -136,7 +136,7 @@ class AdaLNZero(ArgumentSaverLayer):
                     activation="swish", 
                     # kernel_initializer="zeros", 
                     dtype=self.dtype_policy, 
-                    name=f"{self.name}/mlp/first_layer"
+                    name=f"{self.name}__mlp__first_layer"
                 )
             self.mlp = models.Sequential([
                 mlp_first_layer, 
@@ -144,7 +144,7 @@ class AdaLNZero(ArgumentSaverLayer):
                     self.mlp_output_dim, 
                     kernel_initializer="zeros", 
                     dtype=self.dtype_policy, 
-                    name=f"{self.name}/mlp/final_layer"
+                    name=f"{self.name}__mlp__final_layer"
                 )
             ], name="mlp")
 
@@ -152,7 +152,7 @@ class AdaLNZero(ArgumentSaverLayer):
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor | None], 
         training: bool | tf.Tensor | None = None
-    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor | float]:
+    ) -> tf.Tensor | tuple[tf.Tensor, tf.Tensor]:
         """Apply conditional normalization.
 
         Args:
@@ -168,7 +168,7 @@ class AdaLNZero(ArgumentSaverLayer):
 
         Returns:
             tf.Tensor: with the shape and dtype of normalized ``x``, or a
-            ``tuple[tf.Tensor, tf.Tensor | float]`` when ``return_gate`` is
+            ``tuple[tf.Tensor, tf.Tensor]`` when ``return_gate`` is
             enabled. See the class-level output contract for gate shapes.
         """
 
@@ -180,7 +180,7 @@ class AdaLNZero(ArgumentSaverLayer):
         if self.no_adaptation:
             # Supply an identity residual gate when the caller requests one.
             if self.return_gate:
-                return h, 1.
+                return h, tf.ones((), dtype=h.dtype)
             return h
 
         params = self.mlp(cond, training=training)

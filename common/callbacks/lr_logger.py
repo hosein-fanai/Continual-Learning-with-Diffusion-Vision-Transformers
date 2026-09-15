@@ -11,6 +11,8 @@ from __future__ import annotations
 from tensorflow.keras import callbacks
 from tensorflow.keras import backend as K
 
+from common.keras_compat import optimizer_iterations
+
 
 class LrLogger(callbacks.Callback):
     """Record an optimizer's current learning rate after every epoch.
@@ -45,9 +47,11 @@ class LrLogger(callbacks.Callback):
         """
 
         lr = self.model.optimizer.learning_rate
-        # Evaluate scheduled learning rates at the current optimizer step.
-        if callable(lr):
-            lr = lr(self.model.optimizer.iterations)
+        lr = lr(
+            optimizer_iterations(
+                self.model.optimizer
+            )
+        ) if callable(lr) else lr
 
         # Create a log mapping when Keras supplies no mapping.
         if logs is None:

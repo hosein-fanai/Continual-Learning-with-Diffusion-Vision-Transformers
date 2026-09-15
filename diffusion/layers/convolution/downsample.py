@@ -74,6 +74,7 @@ class ImageDownsample(ArgumentSaverLayer):
 
         self.output_dim = self.filters
         self.projection = None
+
         # Construct average pooling immediately because it is channel-agnostic.
         if self.scaling_method == "avg_pooling":
             self.scaling_layer = layers.AveragePooling2D(
@@ -81,7 +82,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 strides=self.strides, 
                 padding="same", 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/scaling_layer", 
+                name=f"{self.name}__scaling_layer",
             )
         # Construct max pooling immediately because it is channel-agnostic.
         elif self.scaling_method == "max_pooling":
@@ -90,7 +91,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 strides=self.strides, 
                 padding="same", 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/scaling_layer", 
+                name=f"{self.name}__scaling_layer",
             )
         # Defer the learned strided convolution until input channels are known.
         else:
@@ -155,7 +156,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 padding="same", 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/scaling_layer", 
+                name=f"{self.name}__scaling_layer",
             )
         # Project pooled channels only when the requested width changes.
         elif self.output_dim != int(input_dim):
@@ -164,7 +165,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 kernel_size=1, 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/projection", 
+                name=f"{self.name}__projection",
             )
 
         super().build(input_shape)

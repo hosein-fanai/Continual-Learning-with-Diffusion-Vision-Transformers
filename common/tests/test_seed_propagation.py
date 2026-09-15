@@ -81,15 +81,15 @@ class SeedPropagationTests(TestCase):
 
         generated_seeds: list[int | None] = []
 
-        def generate(
-            samples_per_class: int,
+        def sample(
+            samples_per_label: int,
             onehot_y_output: bool,
             seed: int | None = None,
         ) -> tuple[tf.Tensor, tf.Tensor]:
             """Return class-coded samples while recording the received seed.
 
             Args:
-                samples_per_class (int): Requested samples for each class.
+                samples_per_label (int): Requested samples for each class.
                 onehot_y_output (bool): Whether one-hot labels were requested.
                 seed (int | None): Derived callback sampling seed. Defaults to ``None``.
 
@@ -97,7 +97,7 @@ class SeedPropagationTests(TestCase):
                 tuple[tf.Tensor, tf.Tensor]: Class-coded samples and labels.
             """
 
-            self.assertEqual(samples_per_class, 1)
+            self.assertEqual(samples_per_label, 1)
             self.assertFalse(onehot_y_output)
             generated_seeds.append(seed)
             labels = tf.constant([0, 1], tf.int64)
@@ -116,7 +116,7 @@ class SeedPropagationTests(TestCase):
             return tf.one_hot(tf.cast(inputs[:, 0], tf.int32), depth=2)
 
         callback = DecoderAccuracy(classifier, 1, seed=37)
-        callback.set_model(SimpleNamespace(generate=generate))
+        callback.set_model(SimpleNamespace(sample=sample))
         for epoch in (0, 1, 0):
             logs: dict[str, object] = {}
             callback.on_epoch_end(epoch, logs)
@@ -159,8 +159,8 @@ class SeedPropagationTests(TestCase):
             derive_seed(41, "vae", "reparameterization"),
         )
 
-        first = vae.generate(samples_per_class=4, seed=43)
-        second = vae.generate(samples_per_class=4, seed=43)
+        first = vae.sample(samples_per_label=4, seed=43)
+        second = vae.sample(samples_per_label=4, seed=43)
         np.testing.assert_array_equal(first, second)
 
         means = tf.zeros((3, 2), tf.float32)
@@ -314,7 +314,7 @@ class SeedPropagationTests(TestCase):
         generated = np.zeros((10, 28 * 28), np.float32)
         with mock.patch.object(
             vae,
-            "generate",
+            "sample",
             return_value=generated,
         ) as generate, mock.patch("common.train.plot_images"):
             report(

@@ -71,7 +71,7 @@ class GradientTests(TestCase):
         with tf.GradientTape() as tape:
             loss = trained ** 2
 
-        with self.assertLogs("tensorflow", level="WARNING") as warnings:
+        with self.assertWarnsRegex(UserWarning, "Gradients do not exist"):
             pairs = apply_policy_gradients(
                 tape,
                 optimizer,
@@ -79,15 +79,11 @@ class GradientTests(TestCase):
                 [trained, disconnected],
             )
 
-        self.assertTrue(any(
-            "Gradients do not exist" in message
-            for message in warnings.output
-        ))
         self.assertEqual(len(pairs), 1)
         self.assertIs(pairs[0][1], trained)
         self.assertAlmostEqual(float(trained), 1.6, places=6)
         self.assertAlmostEqual(float(disconnected), 7.0, places=6)
-        self.assertEqual(int(optimizer.iterations), 1)
+        self.assertEqual(int(optimizer.iterations.numpy()), 1)
 
     def test_mixed_float16_scales_and_unscales_once(
         self: GradientTests,
@@ -106,8 +102,8 @@ class GradientTests(TestCase):
         disconnected = tf.Variable(7.0, dtype=tf.float32)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
             tf.keras.optimizers.SGD(learning_rate=0.1),
-            dynamic=False,
             initial_scale=128.0,
+            dynamic_growth_steps=2000,
         )
         with tf.GradientTape() as tape:
             loss = tf.cast(trained, tf.float16) ** 2
@@ -124,7 +120,7 @@ class GradientTests(TestCase):
         self.assertAlmostEqual(float(pairs[0][0]), 4.0, places=6)
         self.assertAlmostEqual(float(trained), 1.6, places=6)
         self.assertAlmostEqual(float(disconnected), 7.0, places=6)
-        self.assertEqual(int(optimizer.iterations), 1)
+        self.assertEqual(int(optimizer.inner_optimizer.iterations.numpy()), 1)
 
     def test_empty_selection_is_a_noop_but_disconnection_fails(
         self: GradientTests,
@@ -157,7 +153,7 @@ class GradientTests(TestCase):
                 loss,
                 [disconnected],
             )
-        self.assertEqual(int(optimizer.iterations), 0)
+        self.assertEqual(int(optimizer.iterations.numpy()), 0)
 
 
 # Run only this focused suite when the file is executed directly.

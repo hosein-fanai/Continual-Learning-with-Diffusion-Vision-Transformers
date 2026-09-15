@@ -7,11 +7,14 @@ their constructor configuration without duplicating ``get_config`` and
 
 from __future__ import annotations
 
+import tensorflow as tf
 from tensorflow.keras import layers, models
 
 from copy import deepcopy
 
 from collections.abc import Collection, Mapping
+
+from common.keras_compat import display_name
 
 
 class ArgumentSaver:
@@ -32,6 +35,36 @@ class ArgumentSaver:
             subclasses that save both base and derived constructor arguments.
     """
 
+    def __init__(
+        self, 
+        *args: object, 
+        dynamic: bool = False, 
+        **kwargs: object
+    ) -> None:
+        """Initialize Keras while retaining removed dynamic metadata in configs."""
+
+        # Keras 3 removed dynamic. Retain it as serialization metadata only.
+        object.__setattr__(self, "_legacy_dynamic", bool(dynamic))
+
+        if kwargs.get("name") is not None:
+            kwargs["name"] = display_name(kwargs["name"])
+
+        super().__init__(*args, **kwargs)
+
+    @property
+    def dynamic(self) -> bool:
+        """Expose historical metadata without changing Keras execution mode."""
+        return self._legacy_dynamic
+
+    def add_weight(self, *args: object, **kwargs: object) -> object:
+        """Normalize explicit project weight names before Keras creates them."""
+        # Automatically generated names stay under framework ownership.
+        
+        if kwargs.get("name") is not None:
+            kwargs["name"] = display_name(kwargs["name"])
+
+        return super().add_weight(*args, **kwargs)
+
     def __setattr__(self, name: str, value: object) -> None:
         """Keep mutable constructor metadata outside the checkpoint graph.
 
@@ -45,10 +78,10 @@ class ArgumentSaver:
 
         saved_config = self.__dict__.get("_init_config", {})
         # Reassign saved mutable metadata without creating TF dependencies.
-        if name in saved_config \
-        and isinstance(value, (list, set, dict)) \
+        if name in saved_config and isinstance(value, (list, set, dict)) \
         and hasattr(self, "_no_dependency"):
             value = self._no_dependency(value)
+
         super().__setattr__(name, value)
 
     def _save_init_args(
@@ -181,6 +214,22 @@ class ArgumentSaverLayer(ArgumentSaver, layers.Layer):
     base and call :meth:`ArgumentSaver._save_init_args`; Keras then uses the
     inherited ``get_config``/``from_config`` pair for round-trip serialization.
     """
+
+    def __call__(
+        self, inputs: object, 
+        *args: object, 
+        **kwargs: object
+    ) -> object:
+        """Preserve optional inputs through Keras 3.4's first-build inspection."""
+
+        # Keras 3.4's automatic shape inspection rejects optional None inputs.
+        # Run the existing build contract first; its state lock stays intact.
+        if not self.built and any(x is None for x in tf.nest.flatten(inputs)):
+            self.build(tf.nest.map_structure(
+                lambda x: None if x is None else x.shape, inputs
+            ))
+
+        return super().__call__(inputs, *args, **kwargs)
 
 
 class ArgumentSaverModel(ArgumentSaver, models.Model):

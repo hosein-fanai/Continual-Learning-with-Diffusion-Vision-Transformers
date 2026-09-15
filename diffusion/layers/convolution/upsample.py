@@ -75,13 +75,15 @@ class ImageUpsample(ArgumentSaverLayer):
 
         self.output_dim = self.filters
         self.projection = None
+        if self.scaling_method != "cnn_transpose" and self.interpolation not in ("nearest", "bilinear"):
+            self.supports_jit = False
         # Interpolation modes need an interpolator; transposed convolution performs its own
         # resize.
         self.interpolator = layers.UpSampling2D(
             size=(self.strides, self.strides), 
             interpolation=self.interpolation, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/interpolator"
+            name=f"{self.name}__interpolator"
         ) if self.scaling_method != "cnn_transpose" else None
         # Pure interpolation is immediately usable; learned scaling is completed during
         # build.
@@ -148,7 +150,7 @@ class ImageUpsample(ArgumentSaverLayer):
                 padding="same", 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/scaling_layer"
+                name=f"{self.name}__scaling_layer"
             )
         # Follow interpolation with convolution in the hybrid mode.
         elif self.scaling_method == "cnn_interpolate":
@@ -160,9 +162,9 @@ class ImageUpsample(ArgumentSaverLayer):
                     padding="same", 
                     activation=self.activation_func, 
                     dtype=self.dtype_policy, 
-                    name=f"{self.name}/convolution"
+                    name=f"{self.name}__convolution"
                 ),
-            ], name=f"{self.name}/scaling_layer")
+            ], name=f"{self.name}__scaling_layer")
         # Project interpolated channels only when the requested width changes.
         elif self.output_dim != int(input_dim):
             self.projection = layers.Conv2D(
@@ -170,7 +172,7 @@ class ImageUpsample(ArgumentSaverLayer):
                 kernel_size=1, 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/projection"
+                name=f"{self.name}__projection"
             )
 
         super().build(input_shape)

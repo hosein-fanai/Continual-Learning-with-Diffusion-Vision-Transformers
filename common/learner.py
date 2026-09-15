@@ -27,79 +27,88 @@ defines these APIs; it does not start an experiment.
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable, Sequence
-from copy import deepcopy
+import tensorflow as tf
 
 import numpy as np
-import tensorflow as tf
+
+from copy import deepcopy
+
+import time
+
+from collections.abc import Callable, Sequence
 
 from common.config import Config, normalize_training_task, resolve_continual_schedule
 from common.utils import CL_plot
-from common.model import get_model, copy_model, get_callbacks, validate_progressive_classifier_growth
+from common.model import (
+    get_model, 
+    copy_model, 
+    get_callbacks, 
+    validate_progressive_classifier_growth
+)
 from common.replay_buffer import (
-    ReplayBuffer,
-    _balanced_generation_labels,
-    _cached_replay_candidates,
-    _replay_cache_path,
-    _restore_replay_label_shape,
+    ReplayBuffer, 
+    _balanced_generation_labels, 
+    _cached_replay_candidates, 
+    _replay_cache_path, 
+    _restore_replay_label_shape, 
     _sample_exact_rows
 )
 from common.dataloader import get_dataset, _limit_samples, _pad_images
 from common.mechanistic import (
-    calibration_metrics,
-    class_centroid_drift,
-    linear_cka,
-    replay_quality_metrics,
+    calibration_metrics, 
+    class_centroid_drift, 
+    linear_cka, 
+    replay_quality_metrics, 
     select_replay_candidates
 )
 from common.continual_reporting import (
-    continual_metrics as _continual_metrics,
-    observed_mean as _observed_mean,
+    continual_metrics as _continual_metrics, 
+    observed_mean as _observed_mean, 
     task_accuracy_summaries as _task_accuracy_summaries
 )
 from common.runtime import configure_runtime, derive_seed
 from common.recovery import (
-    _array_recovery_descriptor,
-    _artifact_recovery_descriptor,
-    _model_topology_descriptor,
-    _model_weight_descriptor,
-    _progressive_depth_specs,
-    _qualified_name,
-    _recovery_descriptor,
-    _trackable_topology_descriptor,
-    callback_recovery_descriptor,
-    callback_recovery_state,
-    capture_rng_state,
-    fingerprint_state,
-    load_task_checkpoint,
-    optimizer_learning_rate_state,
-    restore_replay_buffer,
-    restore_rng_state,
-    restore_callback_recovery_state,
-    restore_optimizer_learning_rate_state,
-    save_task_checkpoint,
+    _array_recovery_descriptor, 
+    _artifact_recovery_descriptor, 
+    _model_topology_descriptor, 
+    _model_weight_descriptor, 
+    _progressive_depth_specs, 
+    _qualified_name, 
+    _recovery_descriptor, 
+    _trackable_topology_descriptor, 
+    callback_recovery_descriptor, 
+    callback_recovery_state, 
+    capture_rng_state, 
+    fingerprint_state, 
+    load_task_checkpoint, 
+    optimizer_learning_rate_state, 
+    restore_replay_buffer, 
+    restore_rng_state, 
+    restore_callback_recovery_state, 
+    restore_optimizer_learning_rate_state, 
+    save_task_checkpoint, 
     validate_checkpoint_destination
 )
+from common.keras_compat import optimizer_iterations
 
 from autoencoder import VariationalAutoencoder, VAEClassifier
 
 from diffusion import (
-    DiffusionModel,
-    DiffusionClassifier,
-    DiffusionClassifierV2,
-    DiffusionTransformer,
-    DiTClassifier,
-    DiTDecoder,
-    DiTEncoderDecoder,
-    DiTEncoderDecoderClassifier,
-    UNet,
+    DiffusionModel, 
+    DiffusionClassifier, 
+    DiffusionClassifierV2, 
+    DiffusionTransformer, 
+    DiTClassifier, 
+    DiTDecoder, 
+    DiTEncoderDecoder, 
+    DiTEncoderDecoderClassifier, 
+    UNet, 
     UNetClassifier
 )
 
 
 DatasetArrays = tuple[
-    np.ndarray, np.ndarray, np.ndarray | None,
+    np.ndarray, np.ndarray, np.ndarray | None, 
     np.ndarray | None, np.ndarray, np.ndarray
 ]
 DatasetLoader = Callable[..., DatasetArrays]
@@ -161,7 +170,8 @@ def _optimizer_iteration_metrics(
 
         for attribute in ("optimizer", "gen_optimizer", "clf_optimizer"):
             optimizer = getattr(model, attribute, None)
-            iterations = getattr(optimizer, "iterations", None)
+
+            iterations = optimizer_iterations(optimizer)
             # Skip optimizer attributes that expose no iteration counter.
             if iterations is None:
                 continue
@@ -341,9 +351,12 @@ def _reset_task_random_streams(
         # Skip shared components already visited through another parent.
         if id(component) in discovered:
             continue
+
         discovered.add(id(component))
         components.append(component)
         children = list(getattr(component, "layers", ()))
+        # Keras 3 tracks nested Layers separately from TensorFlow modules.
+        children.extend(getattr(component, "_layers", ()))
         # Traverse tracked TensorFlow modules; ignore scalar and metadata trackables.
         children.extend(
             child for child in getattr(component, "_self_tracked_trackables", ())
@@ -351,7 +364,9 @@ def _reset_task_random_streams(
         )
         pending.extend(reversed(children))
 
-    for component_index, component in enumerate(components):
+    # Reset children first so a parent's named stream seeds remain authoritative.
+    # Retain the original traversal indices used to derive component seeds.
+    for component_index, component in reversed(list(enumerate(components))):
         # Keras models need cached functions cleared before task-specific retracing.
         if isinstance(component, tf.keras.Model):
             component.train_function = None
@@ -359,12 +374,15 @@ def _reset_task_random_streams(
             component.predict_function = None
 
         component_seed = derive_seed(
-            task_seed,
-            "keras_random_component",
-            component_index,
+            task_seed, 
+            "keras_random_component", 
+            component_index, 
             _qualified_name(component)
         )
         random_generator = getattr(component, "_random_generator", None)
+        seed_generator = getattr(component, "seed_generator", None)
+        if seed_generator is not None and component_seed is not None:
+            seed_generator.state.assign([component_seed, 0])
 
         # Seeded Keras random layers carry a private generator counter to reset.
         if random_generator is not None and component_seed is not None:
@@ -380,18 +398,31 @@ def _reset_task_random_streams(
         # public seed directly instead of Keras BaseRandomLayer.
         if component_seed is not None and random_generator is None \
         and hasattr(component, "seed"):
-            component.seed = component_seed
+            reset_seed = getattr(component, "reset_seed", None)
+            if callable(reset_seed):
+                reset_seed(component_seed)
+            else:
+                component.seed = component_seed
 
     # Propagate a defined task seed to wrappers exposing a public seed.
     if task_seed is not None and hasattr(model, "seed"):
-        model.seed = int(task_seed)
+        reset_seed = getattr(model, "reset_seed", None)
+        if callable(reset_seed):
+            reset_seed(int(task_seed))
+        else:
+            model.seed = int(task_seed)
+
     # VAEs with a reparameterization stream receive a separate derived seed.
     if task_seed is not None and hasattr(model, "reparameterization_seed"):
         model.reparameterization_seed = derive_seed(
-            task_seed,
-            "vae",
+            task_seed, 
+            "vae", 
             "reparameterization"
         )
+
+        # The serializable sampling layer owns the Keras 3 graph's live seed.
+        if isinstance(model, VariationalAutoencoder):
+            model.encoder.get_layer("z_sample").reset_seed(model.reparameterization_seed)
 
 
 def _prepare_diffusion_x(
@@ -2608,10 +2639,6 @@ def _run_continual_tasks(
         # A restarted incomplete task receives the same process-wide streams,
         # independent of how much randomness the preceding process consumed.
         configure_runtime(task_seed, dtype_policy, False)
-        # Reset cached Keras random-op counters as well as wrapper/layer seeds;
-        # TensorFlow intentionally excludes these private counters from normal
-        # checkpoints, so every task must start from its own derived stream.
-        _reset_task_random_streams(generative_model, task_seed)
         seen_classes = [
             label
             for group in internal_task_groups[:task_index + 1]
@@ -2649,6 +2676,9 @@ def _run_continual_tasks(
             # The schedule owns vocabulary order. A sampled generator pool may
             # omit a new class; discovering it later would reorder class logits.
             generative_model._check_new_labels(y=np.asarray(new_classes), verbose=verbose)
+
+        # Reset the final topology's streams after boundary reconstruction.
+        _reset_task_random_streams(generative_model, task_seed)
 
         # Attached diffusion classifiers reuse the wrapper's newly expanded head.
         if use_diffusion_classifier:
@@ -2856,21 +2886,22 @@ def _run_continual_tasks(
                 # VAE replay generates conditioned samples through the VAE API.
                 elif isinstance(generative_model, VariationalAutoencoder):
                     per_class = int(np.ceil(candidate_count / len(old_classes)))
-                    x_buffer, y_buffer = generative_model.generate(
-                        classes=old_classes,
-                        samples_per_class=per_class,
-                        onehot_y_output=load_dataset_fn_kwargs["onehot_labels"],
-                        seed=candidate_seed,
+                    x_buffer, y_buffer = generative_model.sample(
+                        labels=old_classes, 
+                        samples_per_label=per_class, 
+                        onehot_y_output=load_dataset_fn_kwargs["onehot_labels"], 
+                        seed=candidate_seed
                     )
+
                     # Reduce a non-divisible per-class draw to the exact pool size.
                     if len(x_buffer) != candidate_count:
                         generated_ids = _label_ids(y_buffer)
                         x_buffer, generated_ids, _ = select_replay_candidates(
-                            x_buffer,
-                            generated_ids,
-                            candidate_count,
+                            x_buffer, 
+                            generated_ids, 
+                            candidate_count, 
                             strategy="uniform",
-                            seed=derive_seed(candidate_seed, "vae_exact_pool"),
+                            seed=derive_seed(candidate_seed, "vae_exact_pool")
                         )
                         y_buffer = _restore_replay_label_shape(generated_ids, y_train)
                 # Diffusion sampling accepts the exact candidate label vector.

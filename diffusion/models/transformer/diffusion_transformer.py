@@ -13,13 +13,14 @@ from copy import deepcopy
 
 from typing import Literal, get_args
 
-from . import CondType, TokenType, IdsType, IdsDictType
+from . import CondType, TokenType, IdsType, IdsDictType, _unpatchify_tokens
 
 from common.argument_saver import ArgumentSaverModel
+from common.keras_compat import display_name, variable_path
 from common.runtime import derive_seed
 from common.validation import require
 
-from autoencoder.variational_autoencoder import VariationalAutoencoder
+from autoencoder.variational_autoencoder import _GaussianSampling
 
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
@@ -33,6 +34,7 @@ from diffusion.layers.manipulation.upsample import Upsample
 from diffusion.layers.adaptive_layer_normalization_zero import AdaLNZero
 from diffusion.layers.feature_handler import FeatureHandler
 from diffusion.layers.single_token_layer import SingleTokenLayer
+from diffusion.layers.convolution.variational_reshaper import _batch_size
 
 
 class DiffusionTransformer(ArgumentSaverModel): # DiT
@@ -372,19 +374,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "validation"
         )
 
-        # Keep an omitted component seed unset; normalize an explicit seed to int.
         self.seed = None if self.seed is None else int(self.seed)
         self.dynamic_num_classes = self.num_classes is None
-        # Start dynamic class growth with an empty real-class vocabulary.
         self.num_classes = 0 if self.dynamic_num_classes else self.num_classes
         self.num_labels = self.num_classes + int(self.use_cfg)
         self.grid_size = self.image_size // self.patch_size
         self.patches_dim = self.dim
-        # Infer omitted condition width from the patch embedding width.
         self.cond_dim = self.dim if self.cond_dim is None else self.cond_dim
-        # Account for appended condition channels only for concatenation.
         self.dim = self.patches_dim + self.cond_dim if self.patches_conds_merger_type == "concat" else self.dim
-        # Split condition width equally only when time and label vectors concatenate.
         self.cond_embedder_dim = self.cond_dim // 2 if self.conds_merger_type == "concat" and \
                                 self.cond_type == "time_label" else self.cond_dim
         self.has_cls_token = self.cls_token_type is not None
@@ -955,7 +952,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             skip_reshaper
         ) if i < len(layers_dicts) else None
             
-        # Fall back to the preceding width only when this stage establishes none.
         last_output_dim = self._get_last_output_dim(
             i-1, 
             layers_dicts, 
@@ -1129,7 +1125,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             skip_reshaper
         ) if i < len(layers_dicts) else None
 
-        # Search earlier stages only when this stage has no grid metadata.
         grid_size = self._get_last_grid_size(
             i-1, 
             layers_dicts, 
@@ -1326,13 +1321,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             None: Embedder and merger attributes are assigned in place.
         """
 
-        # Create adaptive/patch conditions only when a consumer requires them.
         self._cond_type = self.cond_type if self.cond_type is not None and \
                         (not self.ln_no_adaptation or self.patches_conds_merger_type is not None) \
                         else []
-        # Track class-token condition dependencies only when the token is enabled.
         self._cls_token_type = self.cls_token_type if self.cls_token_type is not None else []
-        # Track distillation-token condition dependencies only when enabled.
         self._distil_token_type = self.distil_token_type if self.distil_token_type is not None else []
 
         embed_times_flag = "time" in self._cls_token_type or \
@@ -1358,27 +1350,22 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             name=f"{self.name_prefix}depth_0_patch_embedder"
         )
 
-        # Create a timestep lookup only when a condition or token consumes time.
         self.time_embedder = self._create_time_embedder(
         ) if embed_times_flag else None
 
-        # Create a label lookup only when a condition or token consumes labels.
         self.label_embedder = self._create_label_embedder(
         ) if embed_labels_flag else None
 
-        # Create a condition merger only when time and label embeddings are combined.
         self.conds_merger = self._create_merger(
             merger_type=self.conds_merger_type, 
             name=f"{self.name_prefix}depth_0_time_label_merger"
         ) if conds_merger_type_flag else None
 
-        # Create a patch-condition merger only when patch conditioning is enabled.
         self.patches_conds_merger = self._create_merger(
             merger_type=self.patches_conds_merger_type, 
             name=f"{self.name_prefix}depth_0_patches_conds_merger_type"
         ) if self.patches_conds_merger_type is not None else None
 
-        # Attach the selected depth-zero head only to labels consumed by this network.
         self.labels_embed_reg = self._create_token_regularizer(
             i=-1, 
             layers_dicts=[], 
@@ -1415,7 +1402,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             or ``None`` when no class token is requested.
         """
 
-        # Build a prefix-token layer when its source is enabled; otherwise expose None.
         token = SingleTokenLayer(
             dim=dim, 
             pos_merger_type=pos_merger_type, 
@@ -1751,11 +1737,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         flag1 = kwargs.get("pos_merger_type", "add") == "concat" and \
                 kwargs.get("pos_embed_type", "new_weight") is not None
-        # Choose spatial reduction or enlargement according to the requested scaler.
         default_method = "avg_pooling" if scaler_type == "downsample" \
                         else "cnn_transpose"
         scaling_method = kwargs.get("scaling_method", default_method)
-        # Choose the downsampling or upsampling component family.
         width_changing_methods = ("cnn_stride",) if scaler_type == "downsample" \
                                 else ("cnn_transpose", "cnn_interpolate")
         flag2 = kwargs.get("cnn_dim_ratio", 1) > 1 and \
@@ -1772,7 +1756,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             scaler = Upsample(**scaler_kwargs)
         # Reject scaler directions outside the supported pair.
         else:
-            raise ValueError("scaler_type can either be downsample or upsample.")
+            raise ValueError(
+                "scaler_type can either be downsample or upsample."
+            )
 
         return scaler
 
@@ -1806,15 +1792,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             return x
 
         input_dtype = x.dtype
-        # Detach prefix tokens before resizing a spatial grid; grids without prefixes stay
-        # intact.
+
         x, token = (
             x[:, int(grid_has_tokens):, :], 
             x[:, :int(grid_has_tokens), :]
         ) if grid_has_tokens else (x, None)
 
         x_shape = tf.shape(x)
-        # Infer an omitted source side from spatial token count.
         input_grid_size = tf.cast(
             tf.sqrt(tf.cast(
                 x_shape[1], 
@@ -1835,7 +1819,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 output_grid_size
             )
         )
-        # Bilinear resize returns float32 even for float64 or mixed-precision input.
         x = tf.cast(x, input_dtype)
         x = tf.reshape(x, (
             x_shape[0], 
@@ -1846,7 +1829,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             (None, output_grid_size * output_grid_size, dim)
         )
 
-        # Restore detached prefix tokens after spatial resizing.
         x = tf.concat([
             token, x
         ], axis=1) if grid_has_tokens else x
@@ -1979,28 +1961,25 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
 
 
-        # Accept variable token count for flattening and a fixed vector width for unflattening.
         inputs = layers.Input(
             shape=(None, dim) if reshape_type == "flatten" else source_shape, 
             dtype=self.compute_dtype
         )
 
-        # Resize active tokens to the base grid before flattening.
         x = layers.Lambda(
             resize_to_base, 
             dtype=self.dtype_policy, 
-            name=name+"/resize_to_base"
+            name=name+"__resize_to_base"
         )(inputs) if reshape_type == "flatten" else inputs
         x = layers.Reshape(
             target_shape, 
             dtype=self.dtype_policy, 
             name=name
         )(x)
-        # Resize reconstructed tokens to the active grid only after unflattening.
         x = layers.Lambda(
             resize_from_base, 
             dtype=self.dtype_policy, 
-            name=name+"/resize_from_base"
+            name=name+"__resize_from_base"
         )(x) if reshape_type == "unflatten" else x
 
         # Add a variational latent projection only on KL-enabled flatten stages.
@@ -2012,16 +1991,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 if r_type == "flatten"
             ).index(key)
             latent_dim_ratio_list = kwargs.get("latent_dim_ratio", [])
-            # Use the configured pair-specific latent ratio, or unit width when none is
-            # supplied.
+            # Use the configured pair-specific latent ratio, 
+            # or unit width when none is supplied.
             latent_dim_ratio = latent_dim_ratio_list[id_] if len(
                 latent_dim_ratio_list
             ) > 0 else 1.
 
             latent_dim = int(target_shape[-1] * latent_dim_ratio)
 
-            # A positive fractional ratio can still truncate to an unusable
-            # zero-width latent for a small flattened feature.
             if latent_dim < 1:
                 raise ValueError(
                     "latent_dim_ratio creates an empty latent vector."
@@ -2030,29 +2007,27 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             z_mean = layers.Dense(
                 latent_dim, 
                 dtype=self.dtype_policy, 
-                name=name+"/z_mean"
+                name=name+"__z_mean"
             )(x)
             z_log_var = layers.Dense(
                 latent_dim, 
                 dtype=self.dtype_policy, 
-                name=name+"/z_log_var"
+                name=name+"__z_log_var"
             )(x)
-            z = VariationalAutoencoder.compute_z(
-                z_mean, 
-                z_log_var, 
+            z = _GaussianSampling(
                 seed=derive_seed(
                     self.seed, 
                     "reshaper", 
                     name, 
                     "reparameterization"
                 ), 
-                dtype=self.dtype_policy.variable_dtype
-            )
-            # Project sampled latents back to flattened width only when their width changed.
+                dtype=self.dtype_policy, 
+                name=name + "__sample"
+            )((z_mean, z_log_var))
             z = layers.Dense(
                 target_shape[-1], 
                 dtype=self.dtype_policy, 
-                name=name+"/z"
+                name=name+"__z"
             )(z) if latent_dim_ratio != 1 else z
 
             reshaper = models.Model(
@@ -2062,7 +2037,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             )
         # Use a scalar batch-size placeholder when no variational statistics exist.
         else:
-            dummy_outputs = tf.shape(inputs)[0]
+            dummy_outputs = layers.Lambda(
+                _batch_size, 
+                name=name + "__batch_size"
+            )(inputs)
 
             reshaper = models.Model(
                 inputs, 
@@ -2109,7 +2087,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         mlp_ratio = kwargs.get("mlp_ratio", None)
         activation_function = kwargs.get(
-            "activation_function", "tanh"
+            "activation_function", 
+            "tanh"
         )
 
         # Preserve the original one-layer topology when no MLP is requested.
@@ -2125,14 +2104,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             layers.Dense(
                 max(1, int(input_dim * mlp_ratio)), 
                 activation=activation_function, 
-                dtype=self.dtype_policy,
-                name=f"{name}/first_layer"
+                dtype=self.dtype_policy, 
+                name=f"{name}__first_layer"
             ), 
             layers.Dense(
                 self.num_classes, 
                 activation="softmax", 
-                dtype=self.dtype_policy.variable_dtype,
-                name=f"{name}/final_layer"
+                dtype=self.dtype_policy.variable_dtype, 
+                name=f"{name}__final_layer"
             )
         ], name=name)
 
@@ -2321,7 +2300,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Derive the final token width required by image unpatchification.
         if self.use_unpatchify:
-            # Image reconstruction requires a known square spatial grid.
             if self._get_last_grid_size(
                 self.depth - 1, 
                 self.layers_dicts, 
@@ -2355,45 +2333,27 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 return_gate=False, 
                 mlp_ratio=self.ln_mlp_ratio, 
                 no_adaptation=self.ln_no_adaptation, 
-                dtype=self.dtype_policy,
-                name=f"{name}/layer_norm"
+                dtype=self.dtype_policy, 
+                name=f"{name}__layer_norm"
             )((token_inputs, cond_inputs))
             x = layers.Dense(
                 self.patch_size * self.patch_size * self.channels, 
                 kernel_initializer="zeros", 
                 activation=self.final_ffn_activation_func, 
-                dtype=self.dtype_policy,
-                name=f"{name}/ffn"
+                dtype=self.dtype_policy, 
+                name=f"{name}__ffn"
             )(x)
 
-            x_shape = tf.shape(x)
-            batch_size = x_shape[0]
-            grid_size = tf.cast(
-                tf.sqrt(tf.cast(
-                    x_shape[1], 
-                    self.dtype_policy.variable_dtype
-                )), 
-                tf.int32
-            )
-
-            x = tf.reshape(x, (
-                batch_size, 
-                grid_size, # self._current_resolution // self.patch_size, 
-                grid_size, # self._current_resolution // self.patch_size, 
-                self.patch_size, 
-                self.patch_size, 
-                self.channels
-            ), name=f"{name}/reshape_1")
-            x = tf.transpose(x, 
-                perm=(0, 1, 3, 2, 4, 5), 
-                name=f"{name}/transpose"
-            )
-            x = tf.reshape(x, (
-                batch_size, 
-                grid_size * self.patch_size, # self._current_resolution, 
-                grid_size * self.patch_size, # self._current_resolution, 
-                self.channels
-            ), name=f"{name}/reshape_2")
+            x = layers.Lambda(
+                _unpatchify_tokens, 
+                arguments={
+                    "patch_size": self.patch_size, 
+                    "channels": self.channels, 
+                    "grid_dtype": self.dtype_policy.variable_dtype
+                }, 
+                dtype=self.dtype_policy, 
+                name=f"{name}__reshape_patches"
+            )(x)
 
             # Optionally refine the unpatchified image with residual convolutions.
             if self.use_refiner_cnn:
@@ -2406,11 +2366,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     kernel_size=3, 
                     padding="same", 
                     activation="swish", 
-                    dtype=self.dtype_policy,
-                    name=f"{name}/refiner_conv_1"
+                    dtype=self.dtype_policy, 
+                    name=f"{name}__refiner_conv_1"
                 )(x)
-                # Zero-initialize residual refinement so it starts as an identity; use ordinary
-                # initialization when the refinement is the whole output.
                 h = layers.Conv2D(
                     self.channels, 
                     kernel_size=3, 
@@ -2418,15 +2376,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     kernel_initializer="zeros" if self.refiner_cnn_residual else "glorot_uniform",
                     bias_initializer="zeros", 
                     dtype=self.dtype_policy,
-                    name=f"{name}/refiner_conv_2"
+                    name=f"{name}__refiner_conv_2"
                 )(h)
-                # Add a residual refinement to the image or return the refinement directly.
                 x = x + h if self.refiner_cnn_residual else h 
 
             outputs = layers.Activation(
                 self.final_activation_func, 
-                dtype=self.dtype_policy,
-                name=f"{name}/noises"
+                dtype=self.dtype_policy, 
+                name=f"{name}__noises"
             )(x)
 
             self.unpatchifier = models.Model(
@@ -2437,6 +2394,21 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         # Leave the output head absent when unpatchification is disabled.
         else:
             self.unpatchifier = None
+
+    def _symbolic_outputs(self):
+        """Trace through Keras so raw TF operations receive backend tensors.
+
+        Child layers already exist. Mark the parent built before its symbolic
+        call to avoid recursively re-entering this model's custom build method.
+        """
+
+        if not self.built:
+            tf.keras.Model.build(
+                self, 
+                [value.shape for value in self.inputs]
+            )
+
+        return self(self.inputs)
 
     def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create symbolic Keras inputs for the active resolution.
@@ -2473,9 +2445,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         )
 
         self.inputs = (noisy_images, ts, labels)
-        # Optionally execute the symbolic inputs to materialize the model graph.
-        self.outputs = self.call(
-            self.inputs
+        self.outputs = self._symbolic_outputs(
         ) if call_model else None
 
         input_shape = [
@@ -2506,7 +2476,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if regularizer is None:
             return None
 
-        # Expand the final softmax layer of a sequential head, or the head itself.
         old_layer = regularizer.layers[-1] if isinstance(regularizer, models.Sequential) \
                     else regularizer
         old_kernel, old_bias = old_layer.get_weights()
@@ -2524,8 +2493,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Initialize only the new EMA output from the expanded raw head.
         if source_regularizer is not None:
-            # Read matching source weights from its final softmax layer when the source is
-            # sequential.
             source_layer = source_regularizer.layers[-1] \
                         if isinstance(source_regularizer, models.Sequential) \
                         else source_regularizer
@@ -2539,6 +2506,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         if isinstance(regularizer, models.Sequential):
             regularizer.pop()
             regularizer.add(new_layer)
+
             return regularizer
 
         return new_layer
@@ -2618,8 +2586,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             min_depth=min_depth, 
             training=training
         )
-        # Unpatchify final features only when an image output head is enabled.
-        # Supply the required condition tensor when no condition was produced.
         noises = self.unpatchifier(
             (x, tf.zeros(
                 (tf.shape(x)[0], self.cond_dim), 
@@ -2650,7 +2616,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 divisible by ``patch_size``.
         """
 
-        # Restore native image resolution when no active resolution is supplied.
         resolution = self.image_size if resolution is None else resolution
 
         require(
@@ -2661,7 +2626,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             resolution % self.patch_size == 0, 
             "resolution must be divisible by patch_size."
         )
-
 
         self._current_resolution = int(resolution)
 
@@ -2711,14 +2675,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             ``"add"`` preserves per-embedder width; ``"concat"`` appends it.
         """
 
-        # Treat an absent main condition as requesting no components.
         cond_type = "" if cond_type is None else cond_type
-        # Treat an absent class token as requesting no components.
         cls_token_type = "" if cls_token_type is None else cls_token_type
-        # Treat an absent distillation token as requesting no components.
         distil_token_type = "" if distil_token_type is None else distil_token_type
 
-        # Look up time embeddings when the selected condition or either token consumes time.
         time_embeds = self.time_embedder(
             times, 
             training=training
@@ -2728,7 +2688,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "time" in distil_token_type
         ) else None
 
-        # Look up labels when conditioning, either token, or the selected regularizer needs them.
         label_embeds = self.label_embedder(
             labels, 
             training=training
@@ -2739,7 +2698,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             has_label_reg
         ) else None
 
-        # Merge embeddings only when the main condition requests both components.
         conds = self.conds_merger(
             (time_embeds, label_embeds), 
             training=training
@@ -2747,10 +2705,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "time" in cond_type and "label" in cond_type
         ) else None
 
-        # Derive the combined condition from the configured condition type.
         if conds is None:
-            # Select a requested time condition; otherwise inspect the label request.
-            # Select a requested label condition; otherwise leave conditioning absent.
             conds = time_embeds if "time" in cond_type else \
                     label_embeds if "label" in cond_type else None
 
@@ -2810,10 +2765,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             full_return=full_return, 
             training=training
         )
-        # Request component embeddings only when the caller needs full embedding metadata.
         conds_merged = conds_list[0] if full_return else conds_list
 
-        # Override patch-grid size only when the active resolution differs from the native one.
         x = self.patch_embedder(
             images, 
             output_grid_size=self._current_resolution // self.patch_size if 
@@ -2821,7 +2774,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                             else None, 
             training=training
         )
-        # Merge conditions into patches only when the patch-condition layer exists.
         x = self.patches_conds_merger((
             x, 
             tf.repeat(
@@ -2932,7 +2884,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # A variational flatten reshaper has already combined token and channel
         # axes, so there is no token interval left to slice.
-        if x.shape.rank == 2:
+        if len(x.shape) == 2:
             return x
 
         x = x[:, start: end, :]
@@ -3039,7 +2991,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             )
 
-        # Evaluate the configured depth-zero label head during initial and resumed execution.
         z = self.labels_embed_reg(
             label_embeds, 
             training=training
@@ -3058,15 +3009,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 continue
 
             is_flatten = self.reshaper_ids_dict.get(i + 1) == "flatten"
-            # During latent decoding, inject the next supplied latent at each later flatten
-            # boundary.
+            # During latent decoding, inject the next supplied 
+            # latent at each later flatten boundary.
             if self.R in layers_dict and min_depth > 0 and is_flatten:
                 x = latent_inputs[latent_index]
                 latent_index += 1
                 x_mean, x_log_var = None, None
 
-                # Evaluate an auxiliary head on an injected latent only when this stage owns
-                # one.
                 z = layers_dict[self.CTR](
                     self.slice_and_flatten_tokens(
                         x, 
@@ -3080,25 +3029,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 regs_list.append(z)
                 continue
 
-            # Apply the stage's feature connector when present; otherwise retain the current
-            # stream.
             x = layers_dict[self.FC](
                 features_list, 
                 cond=cond, 
                 training=training
             ) if self.FC in layers_dict else x
 
-            # Prepare external attention features only when this stage has a cross connector.
             h = layers_dict[self.CAC](
                 features_list, 
                 cond=cond, 
                 training=training
             ) if self.CAC in layers_dict else None
 
-            # Run the attention block when present, routing external features to the configured
-            # query/value side.
-            # Use external queries only for query-side cross attention.
-            # Use external keys/values only for value-side cross attention.
             x = layers_dict[self.VTB](
                 (x, cond), 
                 queries=h if self.cross_attention_plug_type == "queries" else None, 
@@ -3106,31 +3048,26 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 training=training
             ) if self.VTB in layers_dict else x
 
-            # Apply a configured local spatial mixer or retain the current stream.
             x = layers_dict[self.LM](
                 (x, cond), 
                 training=training
             ) if self.LM in layers_dict else x
 
-            # Reduce the spatial grid only at configured downsampling stages.
             x = layers_dict[self.DS](
                 (x, cond), 
                 training=training
             ) if self.DS in layers_dict else x
 
-            # Enlarge the spatial grid only at configured upsampling stages.
             x = layers_dict[self.US](
                 (x, cond), 
                 training=training
             ) if self.US in layers_dict else x
 
-            # Apply a configured bottleneck reshaper and collect its optional latent statistics.
             x, x_mean, x_log_var = layers_dict[self.R](
                 x, 
                 training=training
             ) if self.R in layers_dict else (x, None, None)
 
-            # Compute an auxiliary class distribution only at selected regularizer stages.
             z = layers_dict[self.CTR](
                 self.slice_and_flatten_tokens(
                     x, 
@@ -3142,8 +3079,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
-            # Record statistics only for actual variational flatten outputs, not injected
-            # latents or dummy values.
             if x_mean is not None and is_flatten and bool(
                 self.reshaper_kwargs.get("add_kl", False)
             ):
@@ -3151,7 +3086,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         prefix_tokens_num = int(self.cls_token_type is not None) + \
                             int(self.distil_token_type is not None)
-        # Remove class/distillation prefixes from the returned spatial token stream.
         x = x[:, prefix_tokens_num:] if prefix_tokens_num else x
 
         return x, cond, features_list, regs_list, z_vals_list
@@ -3170,11 +3104,32 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             list[str]: Variable names in input/model order.
         """
 
-        # Inspect all trainable variables unless a caller provides an explicit subset.
         vars = self.trainable_variables if vars is None else vars
-        names = [var.name for var in vars]
+        names = [display_name(variable_path(var)) for var in vars]
 
         return names
+
+    @classmethod
+    def from_config(cls, config):
+        """Restore integer depth keys after Keras serializes config as JSON."""
+
+        config = deepcopy(config)
+
+
+        def restore_routes(options):
+            for name, value in options.items():
+                if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
+                    restore_routes(value)
+                elif name.endswith("_ids_dict") and isinstance(value, dict):
+                    options[name] = {
+                        int(key) if isinstance(key, str)
+                        and key.lstrip("-").isdigit() else key: item
+                        for key, item in value.items()
+                    }
+            return options
+
+
+        return cls(**restore_routes(config))
 
     def add_depths(
         self, 
@@ -4276,22 +4231,22 @@ def run_self_tests() -> dict[str, str]:
     policy = DiffusionTransformer(
         depth=0, 
         name="policy_transformer", 
-        name_prefix="policy/", 
+        name_prefix="policy__",
         dtype="float64", 
         **base
     )
     assert policy.name == "policy_transformer"
     assert policy.dtype_policy.name == "float64"
-    assert policy.patch_embedder.name.startswith("policy/")
+    assert policy.patch_embedder.name.startswith("policy__")
     assert policy(inputs, training=False).dtype == tf.float64
     policy_config = policy.get_config()
-    assert policy_config["name_prefix"] == "policy/"
+    assert policy_config["name_prefix"] == "policy__"
     assert policy_config["name"] == policy.name
     assert policy_config["dtype"] == "float64"
     policy_clone = DiffusionTransformer.from_config(policy_config)
     assert policy_clone.name == policy.name
     assert policy_clone.dtype_policy.name == "float64"
-    assert policy_clone.patch_embedder.name.startswith("policy/")
+    assert policy_clone.patch_embedder.name.startswith("policy__")
 
     invalid_cases = (
         {"image_size": 5}, 

@@ -138,12 +138,8 @@ class LocalMixer(BaseEmbedding):
             "LocalMixer requires grid_size."
         )
 
-        # Use the pointwise channel multiplier when enabled; otherwise keep depthwise output
-        # channels.
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
-        # Same padding rounds the strided grid up; valid padding removes the
-        # convolution/pooling border.
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" \
@@ -151,8 +147,6 @@ class LocalMixer(BaseEmbedding):
         self.add_residual = self.strides == 1 and self.output_grid_size == self.grid_size
         self.prefix_tokens_num = int(self.circumvent_tokens)
 
-        # Allocate a residual-width gate for shape-preserving mixing, or zero gate channels
-        # for resized paths.
         self.layer_norm = self._create_layer_norm(
             gate_dim=self.output_dim if self.add_residual else 0, 
             return_gate=True
@@ -171,38 +165,34 @@ class LocalMixer(BaseEmbedding):
             depth_multiplier=self.depth_multiplier, 
             depthwise_initializer="zeros" if zero_kernel else "glorot_uniform", 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/depthwise"
+            name=f"{self.name}__depthwise"
         )
         self.pointwise = layers.Conv2D(
             filters=self.output_dim, 
             kernel_size=1, 
             padding="same", 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/pointwise"
+            name=f"{self.name}__pointwise"
         ) if self.use_pointwise else None
         self.residual_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/residual_projector"
+            name=f"{self.name}__residual_projector"
         ) if self.dim != self.output_dim and self.add_residual else None
         self.pos_embed = self._create_embeddings(
             embed_dim=self.output_dim, 
             output_grid_size=self.output_grid_size
         )
 
-        # Project the residual to its configured width only when a projector exists.
         residual_token_dim = self.output_dim if self.residual_projector is not None \
                             else self.dim
-        # Concatenated positions double the component width; 
-        # disabled or additive positions preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
-        # Project preserved prefix tokens only when their post-merge channel width differs.
         self.residual_token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/residual_token_projector"
+            name=f"{self.name}__residual_token_projector"
         ) if residual_token_dim != self.output_dim and self.circumvent_tokens else None
         self.mlp = self._create_mlp(
             self.output_dim

@@ -970,7 +970,7 @@ class DiTDecoder(DiffusionTransformer):
         )
         self.inputs = decoder_inputs + (encoder_cond,) + encoder_features
         # Execute the symbolic decoder graph only when construction requests a model call.
-        self.outputs = self.call(self.inputs) if call_model else None
+        self.outputs = self._symbolic_outputs() if call_model else None
 
         return [input_layer.shape for input_layer in self.inputs]
 

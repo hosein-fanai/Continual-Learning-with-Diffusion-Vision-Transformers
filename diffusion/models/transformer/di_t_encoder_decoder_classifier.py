@@ -12,6 +12,7 @@ from tensorflow.keras import layers
 from copy import deepcopy
 
 from common.runtime import derive_seed
+from common.keras_compat import variable_path
 
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.transformer.di_t_decoder import DiTDecoder
@@ -135,7 +136,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             classifier_kwargs.get("aggregate_from_noises", False)
         )
         classifier_kwargs["use_unpatchify"] = aggregate_from_noises
-        classifier_kwargs.setdefault("name_prefix", "encoder_model/")
+        classifier_kwargs.setdefault("name_prefix", "encoder_model__")
         classifier_kwargs.setdefault(
             "feature_aggregation_ids_dict", {1: (-1,)}
         )
@@ -149,7 +150,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         decoder_config = deepcopy(saved_decoder_kwargs)
         decoder_config["build"] = False
-        decoder_config.setdefault("name_prefix", "decoder_model/")
+        decoder_config.setdefault("name_prefix", "decoder_model__")
         # Keep the nested decoder on the same dynamic vocabulary contract.
         if self.dynamic_num_classes:
             decoder_config["num_classes"] = None
@@ -308,7 +309,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         self.inputs = (noisy_images, times, labels, decoder_images)
         # Call the symbolic composite only when requested during construction.
-        self.outputs = self.call(self.inputs) if call_model else None
+        self.outputs = self._symbolic_outputs() if call_model else None
         return [input_layer.shape for input_layer in self.inputs]
 
     def call(
@@ -790,8 +791,8 @@ def run_self_tests() -> dict[str, str]:
     assert model.num_classes == model.decoder.num_classes == 2
     assert model.decoder.encoder_output_grid_size == 2
     assert model.decoder.encoder_output_dim == 4
-    assert model.name_prefix == "encoder_model/"
-    assert model.decoder.name_prefix == "decoder_model/"
+    assert model.name_prefix == "encoder_model__"
+    assert model.decoder.name_prefix == "decoder_model__"
 
     public_apis = {
         "build", "_build_model", "call", "set_current_resolution", 
@@ -904,7 +905,7 @@ def run_self_tests() -> dict[str, str]:
     # Select decoder output-projection weights for the decoder-gradient regression.
     decoder_head_kernels = [
         variable for variable in model.decoder.trainable_variables
-        if "unpatchifier/ffn/kernel" in variable.name
+        if "unpatchifier__ffn/kernel" in variable_path(variable)
     ]
     assert len(decoder_head_kernels) == 1
     decoder_head_kernel = decoder_head_kernels[0]
@@ -954,7 +955,7 @@ def run_self_tests() -> dict[str, str]:
     assert isinstance(model.max_encoder_num, int)
     variable_names = model.get_variables_names()
     assert len(variable_names) == len(model.trainable_variables)
-    assert not any("encoder_model/unpatchifier" in name for name in variable_names)
+    assert not any("encoder_model__unpatchifier" in name for name in variable_names)
     decoder_variable_ids = {id(value) for value in model.decoder.trainable_variables}
     assert decoder_variable_ids
     assert any(id(value) in decoder_variable_ids for value in model.trainable_variables)
@@ -1106,13 +1107,13 @@ def run_self_tests() -> dict[str, str]:
     )
     assert aggregate_model.use_unpatchify is False
     assert not any(
-        "encoder_model/unpatchifier" in variable.name
+        "encoder_model__unpatchifier" in variable_path(variable)
         for variable in aggregate_model.trainable_variables
     )
     # Locate the decoder output projection for the resumed-gradient regression.
     aggregate_head_kernels = [
         variable for variable in aggregate_model.decoder.trainable_variables
-        if "unpatchifier/ffn/kernel" in variable.name
+        if "unpatchifier__ffn/kernel" in variable_path(variable)
     ]
     assert len(aggregate_head_kernels) == 1
     aggregate_head_kernel = aggregate_head_kernels[0]
@@ -1123,8 +1124,8 @@ def run_self_tests() -> dict[str, str]:
     # Locate the classifier adaptive-normalization bias for the classifier-gradient regression.
     aggregate_gate_biases = [
         variable for variable in aggregate_model.trainable_variables
-        if "clf_depth_1_encoder_block/mha_layer_norm/"
-           "mlp/final_layer/bias" in variable.name
+        if "clf_depth_1_encoder_block__mha_layer_norm__"
+           "mlp__final_layer/bias" in variable_path(variable)
     ]
     assert len(aggregate_gate_biases) == 1
     aggregate_gate_bias = aggregate_gate_biases[0]
@@ -1158,7 +1159,7 @@ def run_self_tests() -> dict[str, str]:
     assert aggregate_clone.aggregate_from_noises is True
     assert aggregate_clone.use_unpatchify is False
     assert not any(
-        "encoder_model/unpatchifier" in variable.name
+        "encoder_model__unpatchifier" in variable_path(variable)
         for variable in aggregate_clone.trainable_variables
     )
     assert aggregate_clone(four_inputs)["classes"].shape == (2, 2)

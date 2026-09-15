@@ -210,7 +210,10 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 outputs = model(inputs)
                 self.assertEqual(model.dtype_policy.name, policy_name)
                 self.assertEqual(outputs[0].dtype.name, policy.compute_dtype)
-                self.assertTrue(all(weight.dtype.name == policy.variable_dtype for weight in model.weights))
+                self.assertTrue(all(tf.as_dtype(weight.dtype).name == policy.variable_dtype for weight in model.weights if tf.as_dtype(weight.dtype).is_floating))
+                for weight in model.weights:
+                    if not tf.as_dtype(weight.dtype).is_floating:
+                        self.assertEqual((weight.name, tf.as_dtype(weight.dtype)), ("seed_state", tf.int64))
                 # Only variational flatten statistics are floating latent tensors.
                 if mode == "flatten" and kl:
                     self.assertEqual([value.dtype.name for value in outputs], [policy.compute_dtype] * 3)
@@ -223,13 +226,13 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertEqual(clone.dtype_policy.name, policy_name)
                 self.assertEqual(clone(inputs)[0].dtype.name, policy.compute_dtype)
                 self.assertEqual([weight.name for weight in clone.weights], [weight.name for weight in model.weights])
-                self.assertTrue(all(weight.dtype.name == policy.variable_dtype for weight in clone.weights))
+                self.assertTrue(all(tf.as_dtype(weight.dtype).name == policy.variable_dtype for weight in clone.weights if tf.as_dtype(weight.dtype).is_floating))
 
     def test_float64_sampling_does_not_round_through_float32(self) -> None:
         """A deterministic latent limit preserves information below float32 resolution."""
         model = VariationalReshaper("flatten", (2, 2, 2), add_kl=True, dtype="float64", name="precise")
-        mean = model.get_layer("precise/z_mean")
-        log_var = model.get_layer("precise/z_log_var")
+        mean = model.get_layer("precise__z_mean")
+        log_var = model.get_layer("precise__z_log_var")
         precise = 1.0 + 2.0 ** -35
         mean.kernel.assign(tf.zeros_like(mean.kernel))
         mean.bias.assign(tf.fill(mean.bias.shape, tf.constant(precise, tf.float64)))
@@ -298,11 +301,13 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
             for training in (True, False):
                 with self.subTest(method=name, training=training):
                     tf.keras.utils.set_random_seed(709)
+                    dropout.seed_generator.state.assign([709, 0])
                     with patch.object(dropout, "call", wraps=dropout.call) as observed:
                         positional = method(*arguments, training)
                     self.assertEqual(observed.call_count, 1)
                     self.assertEqual(observed.call_args.kwargs["training"], training)
                     tf.keras.utils.set_random_seed(709)
+                    dropout.seed_generator.state.assign([709, 0])
                     keyword = method(*arguments, training=training)
                     # Joint calls preserve their original probability mapping.
                     if name == "call":

@@ -124,12 +124,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
         effective_encoder_kwargs.update(deepcopy(kwargs))
         effective_encoder_kwargs["build"] = False
         effective_encoder_kwargs["use_unpatchify"] = False
-        effective_encoder_kwargs.setdefault("name_prefix", "encoder_model/")
+        effective_encoder_kwargs.setdefault("name_prefix", "encoder_model__")
         DiffusionTransformer.__init__(self, **effective_encoder_kwargs)
 
         decoder_config = deepcopy(saved_decoder_kwargs)
         decoder_config["build"] = False
-        decoder_config.setdefault("name_prefix", "decoder_model/")
+        decoder_config.setdefault("name_prefix", "decoder_model__")
         # Keep the nested decoder on the same dynamic vocabulary contract.
         if self.dynamic_num_classes:
             decoder_config["num_classes"] = None
@@ -391,6 +391,11 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         return handler_kwargs.get("connect_axis", -1) == -1
 
+    def __dir__(self):
+        # Keras 3 discovers saved children through dir(). The public encoder
+        # property aliases this model, so visiting it would recurse on load.
+        return [name for name in super().__dir__() if name != "encoder"]
+
     def get_config(self) -> dict[str, object]:
         """Serialize architecture settings and standard Keras model state.
 
@@ -494,7 +499,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         self.inputs = (encoder_images, times, labels, decoder_images)
         # Call the symbolic composite only when eager graph construction is requested.
-        self.outputs = self.call(self.inputs) if call_model else None
+        self.outputs = self._symbolic_outputs() if call_model else None
 
         return [input_layer.shape for input_layer in self.inputs]
 

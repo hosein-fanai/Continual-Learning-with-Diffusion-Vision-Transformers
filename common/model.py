@@ -102,14 +102,13 @@ def get_compile_args(
             ``"sparse_categorical_crossentropy"``, which expects integer labels.
 
     Returns:
-        dict[str, object]: A new mapping with exactly ``optimizer``, ``loss``,
-        and ``metrics`` keys, suitable for ``model.compile(**result)``.
+        dict[str, object]: Compile settings that leave JIT selection to Keras.
     """
 
     return {
         "optimizer": optimizer, 
         "loss": loss, 
-        "metrics": metrics
+        "metrics": list(metrics),
     }
 
 

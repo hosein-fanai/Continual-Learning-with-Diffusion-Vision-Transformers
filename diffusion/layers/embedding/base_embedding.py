@@ -158,6 +158,9 @@ class BaseEmbedding(BaseLayer):
         # separate raw frequency width is configured.
         self.embed_dim = self.dim if self.embed_freq_dim is None else self.embed_freq_dim
         self.pos_embed_mlp = None
+        # Keras' auto mode does not inspect TensorFlow resize kernels itself.
+        if self.pos_embed_type is not None and "interpolate" in self.pos_embed_type:
+            self.supports_jit = self.pos_interpolation_method in ("nearest", "bilinear")
 
     def _get_1d_sincos_embedding(
         self, 
@@ -326,7 +329,7 @@ class BaseEmbedding(BaseLayer):
                         else pos_embed_type or self.pos_embed_type
         embed_steps = self.embed_steps if embed_steps is None else embed_steps
         temperature = self.embed_temperature if temperature is None else temperature
-        name = f"{self.name}/positional_embeddings" if name is None else name
+        name = f"{self.name}__positional_embeddings" if name is None else name
 
         self.pos_embed_type = pos_embed_type
 

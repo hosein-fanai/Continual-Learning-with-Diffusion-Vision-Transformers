@@ -19,6 +19,7 @@ from copy import deepcopy
 from . import UNetFullOutput, UNetInputs
 
 from common.argument_saver import ArgumentSaverModel
+from common.keras_compat import format_variable_name
 from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
@@ -180,6 +181,7 @@ class UNet(ArgumentSaverModel):
         """
 
         widths = tuple(widths)
+        name_prefix = name_prefix.replace("/", "__")
         # Normalize numeric YAML mapping keys to depth IDs while preserving other keys for
         # validation.
         reshaper_ids_dict = {
@@ -525,7 +527,7 @@ class UNet(ArgumentSaverModel):
             regularizer_layers.append(
                 layers.GlobalAveragePooling2D(
                     dtype=self.dtype_policy,
-                    name=f"{name}/pool",
+                    name=f"{name}__pool",
                 )
             )
 
@@ -536,7 +538,7 @@ class UNet(ArgumentSaverModel):
                     self.num_classes,
                     activation="softmax",
                     dtype=self.dtype_policy.variable_dtype,
-                    name=f"{name}/classes",
+                    name=f"{name}__classes",
                 ),
             ],
             name=name,
@@ -1079,7 +1081,7 @@ class UNet(ArgumentSaverModel):
             training=training,
         ) if self.labels_embed_reg is not None else None
 
-        features_list: list[tf.Tensor | None] = [None] * min_depth + [x]
+        features_list = [tf.zeros((), dtype=x.dtype)] * min_depth + [x]
         regs_list: list[tf.Tensor | None] = [label_reg] + [None] * min_depth
         z_vals_list: list[tuple[tf.Tensor, tf.Tensor]] = []
         latent_index = 1
@@ -1283,8 +1285,9 @@ class UNet(ArgumentSaverModel):
         """
 
         del input_shape
-        shapes = self.build_model()
+        shapes = self.build_model(call_model=False)
         super().build(shapes)
+        self.outputs = self(self.inputs)
 
     def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create symbolic image, timestep, and label inputs.
@@ -1304,10 +1307,13 @@ class UNet(ArgumentSaverModel):
         times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
         labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
         self.inputs = (noisy_images, times, labels)
-        # Materialize the symbolic U-Net graph only when a model call is requested.
-        self.outputs = self.call(self.inputs) if call_model else None
-
-        return [value.shape for value in self.inputs]
+        shapes = [value.shape for value in self.inputs]
+        # Enter the Keras symbolic call boundary after marking this parent built.
+        if call_model:
+            if not self.built:
+                super().build(shapes)
+            self.outputs = self(self.inputs)
+        return shapes
 
     def add_class(self, source_network: object | None = None) -> None:
         """Append one label embedding while preserving existing rows.
@@ -1438,7 +1444,7 @@ class UNet(ArgumentSaverModel):
         # Inspect all trainable variables unless a caller supplies an explicit subset.
         vars = self.trainable_variables if vars is None else vars
 
-        return [variable.name for variable in vars]
+        return [format_variable_name(variable) for variable in vars]
 
 
 # TensorFlow 2.10 writes the plain root name for subclassed model JSON.

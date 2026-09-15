@@ -166,24 +166,15 @@ class VisionTransformerBlock(BaseLayer):
             "validation"
         )
 
-        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
-        # integer.
         self.seed = None if self.seed is None else int(self.seed)
-        # Infer per-head key/query width from model width and head count when omitted.
         self.key_dim = self.dim // self.num_heads if self.key_dim is None else self.key_dim
-        # Keep the original feature width unless an MLP output width is configured.
         self.mlp_output_dim = self.dim if self.mlp_output_dim is None else self.mlp_output_dim
-        # Use the original feature width when attention output width is omitted.
         self.query_dim = self.dim if self.query_dim is None else self.query_dim
 
-        # Use query-width gates and attention outputs when enabled; otherwise retain the
-        # input width.
         self.mha_layer_norm = self._create_layer_norm(
             gate_dim=self.query_dim if self.gate_query_flag else self.dim, 
-            name=f"{self.name}/mha_layer_norm"
+            name=f"{self.name}__mha_layer_norm"
         )
-        # Use query-width gates and attention outputs when enabled; otherwise retain the
-        # input width.
         self.mha = PolicyMultiHeadAttention(
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
@@ -192,7 +183,6 @@ class VisionTransformerBlock(BaseLayer):
             dtype=self.dtype_policy, 
             name="mha"
         )
-        # Create an attention residual projector only when the resolved query width changes.
         self.mha_residual_projector = layers.Dense(
             self.query_dim, 
             dtype=self.dtype_policy, 
@@ -203,18 +193,17 @@ class VisionTransformerBlock(BaseLayer):
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path"), 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/mha_drop_path",
+            name=f"{self.name}__mha_drop_path",
         )
 
         self.mlp_layer_norm = self._create_layer_norm(
             dim=self.query_dim, 
             gate_dim=self.mlp_output_dim, 
-            name=f"{self.name}/mlp_layer_norm"
+            name=f"{self.name}__mlp_layer_norm"
         )
         self.mlp = self._create_mlp(
             self.query_dim
         )
-        # Create an MLP residual projector only when feed-forward output width changes.
         self.mlp_residual_projector = layers.Dense(
             self.mlp_output_dim, 
             dtype=self.dtype_policy, 
@@ -225,7 +214,7 @@ class VisionTransformerBlock(BaseLayer):
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mlp_drop_path"),
             dtype=self.dtype_policy, 
-            name=f"{self.name}/mlp_drop_path"
+            name=f"{self.name}__mlp_drop_path"
         )
 
     def _call_self_attention(
@@ -261,10 +250,6 @@ class VisionTransformerBlock(BaseLayer):
             (x, cond), 
             training=training
         )
-        # Use normalized local tokens for omitted queries; otherwise use the supplied query
-        # tensor.
-        # Use normalized local tokens for omitted values; otherwise attend to the supplied
-        # source tensor.
         h = self.mha(
             query=h if queries is None else queries, 
             value=h if values is None else values, 
@@ -272,7 +257,6 @@ class VisionTransformerBlock(BaseLayer):
             training=training
         )
         h = tf.cast(h, x.dtype)
-        # Project the residual only when its channel width differs from the branch output.
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -303,7 +287,6 @@ class VisionTransformerBlock(BaseLayer):
             tf.Tensor: shaped ``[batch, tokens, mlp_output_dim]``.
         """
 
-        # Bring the first attention output to query width before the feed-forward branch.
         x = self.mha_residual_projector(
             x,
             training=training
@@ -316,7 +299,6 @@ class VisionTransformerBlock(BaseLayer):
             h, 
             training=training
         )
-        # Project the residual only when its channel width differs from the branch output.
         x = self.mlp_residual_projector(
             x, 
             training=training
@@ -364,6 +346,12 @@ class VisionTransformerBlock(BaseLayer):
         """
 
         x, cond = inputs
+
+        # Keras 3 supplies one automatic mask per input, even when both are absent.
+        if isinstance(mask, (tuple, list)) and all(
+            value is None for value in tf.nest.flatten(mask)
+        ):
+            mask = None
 
         x = self._call_self_attention(
             x, cond, 

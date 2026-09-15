@@ -20,8 +20,8 @@ class BaseLayer(ArgumentSaverLayer):
 
     ``BaseLayer`` centralizes construction of :class:`AdaLNZero` and the small
     dense networks used throughout the transformer, embedding, and token
-    manipulation layers. It is a factory-bearing base class and does not
-    implement ``call`` itself.
+    manipulation layers. Its direct call preserves Keras 2's identity behavior;
+    concrete token processors override it.
 
     Args:
         use_layer_norm (bool): Whether :meth:`_create_layer_norm` creates an adaptive
@@ -103,6 +103,11 @@ class BaseLayer(ArgumentSaverLayer):
         self._check_assertions(locals())
         self._save_init_args(locals())
 
+    def call(self, inputs):
+        """Preserve the former base-layer identity call on Keras 3."""
+
+        return inputs
+
     def _check_assertions(self, local_vars: dict[str, Any]) -> None:
         """Validate base constructor arguments.
 
@@ -118,10 +123,7 @@ class BaseLayer(ArgumentSaverLayer):
             ValueError: If adaptive normalization is requested without a feature width.
         """
 
-        # Adaptive normalization requires an explicitly known feature width.
-        if local_vars["use_layer_norm"] and \
-        not local_vars["ln_no_adaptation"]:
-            # Reject the missing width before constructing adaptive layers.
+        if local_vars["use_layer_norm"] and not local_vars["ln_no_adaptation"]:
             if local_vars["ln_dim"] is None:
                 raise ValueError(
                     "ln_dim cannot be None when use_layer_norm is true."
@@ -163,24 +165,14 @@ class BaseLayer(ArgumentSaverLayer):
             ``None`` tells the caller to leave features unchanged.
         """
 
-        # Inherit the stored normalization width when no per-call width override is
-        # supplied.
         dim = self.ln_dim if dim is None else dim
-        # Inherit the stored gate width when no per-call override is supplied.
         gate_dim = self.ln_dim if gate_dim is None else gate_dim
-        # Omit the conditioning hidden layer only when neither call nor instance supplies
-        # its ratio.
         mlp_ratio = None if mlp_ratio is None and self.ln_mlp_ratio is None \
                     else mlp_ratio or self.ln_mlp_ratio
-        # Inherit plain/adaptive normalization mode unless the caller explicitly overrides
-        # it.
         no_adaptation = self.ln_no_adaptation if no_adaptation is None else no_adaptation
-        # Inherit the normalization toggle unless the caller explicitly overrides it.
         use_layer_norm = self.use_layer_norm if use_layer_norm is None else use_layer_norm
-        # Derive the child name from its owner when no explicit name is supplied.
-        name = f"{self.name}/layer_norm" if name is None else name
+        name = f"{self.name}__layer_norm" if name is None else name
 
-        # Create a normalizer only when enabled; None denotes an identity path.
         layer_norm = AdaLNZero(
             dim=dim, 
             gate_dim=gate_dim, 
@@ -221,17 +213,12 @@ class BaseLayer(ArgumentSaverLayer):
             effective ``output_dim`` on this object.
         """
 
-        # Use the stored feed-forward ratio when the call leaves it unspecified.
         mlp_ratio = self.mlp_ratio if mlp_ratio is None else mlp_ratio
-        # Use the stored hidden activation when the call leaves it unspecified.
         mlp_activation_func = self.mlp_activation_func if mlp_activation_func is None \
                             else mlp_activation_func
-        # Use the stored output width when the call leaves it unspecified.
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
 
-        # Treat a missing input width as valid only for a disabled MLP.
         if prev_output_dim is None:
-            # A requested projection cannot be built without its input width.
             if mlp_output_dim is not None:
                 raise ValueError(
                     "prev_output_dim is required when mlp_output_dim is set."
@@ -246,20 +233,21 @@ class BaseLayer(ArgumentSaverLayer):
         # Build the requested output projection when an output width is set.
         if mlp_output_dim is not None:
             self.output_dim = mlp_output_dim
-            mlp = models.Sequential(name=f"{self.name}/mlp")
+            mlp = models.Sequential(name=f"{self.name}__mlp")
+
             # Add a hidden dense layer when a hidden-width ratio is configured.
             if mlp_ratio is not None:
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{mlp.name}/first_layer",
+                    name=f"{mlp.name}__first_layer",
                     dtype=self.dtype_policy,
                 ))
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
                 dtype=self.dtype_policy, 
-                name=f"{mlp.name}/final_layer"
+                name=f"{mlp.name}__final_layer"
             ))
         # Otherwise expose an identity transformation with unchanged width.
         else:

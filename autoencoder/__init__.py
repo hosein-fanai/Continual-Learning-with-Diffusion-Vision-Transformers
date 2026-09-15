@@ -19,8 +19,8 @@ __all__ = (
 
 _LAZY_EXPORTS = {
     "DecoderAccuracyCallback": (
-        "autoencoder.decoder_accuracy_callback", 
-        "DecoderAccuracyCallback"
+        "common.callbacks.decoder_accuracy",
+        "DecoderAccuracy"
     ), 
     "VAEClassifier": ("autoencoder.vae_classifier", "VAEClassifier"), 
     "VariationalAutoencoder": (

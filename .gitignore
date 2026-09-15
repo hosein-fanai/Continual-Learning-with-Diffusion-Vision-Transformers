@@ -6,29 +6,29 @@ __pycache__
 
 old
 
-*.h5
 *.tf
 
 test.ipynb
+AGENTS.md
+cifar10_cnn_model_00.h5
+cifar100_dnn_model_00.h5
 
-# Keep directory-level documentation visible while ignoring generated/data
-# contents in the directories above.
+# Keep directory-level documentation visible while ignoring
+# generated/data contents in the directories above.
 data
 !data/
 data/*
 !data/README.md
 
-gifs
-!gifs/
-gifs/*
-!gifs/README.md
-
-others
-!others/
-others/*
-!others/README.md
-
 results
 !results/
 results/*
 !results/README.md
+
+gifs
+others
+/thesis
+
+allocation_study
+gist_memory
+semantic_consolidation

@@ -1,0 +1,10 @@
+FROM tensorflow/tensorflow:2.20.0-gpu-jupyter
+
+RUN python -m pip install --no-cache-dir --timeout 120 --retries 5 \
+    "tensorflow[and-cuda]==2.20.0" \
+    pandas \
+    scipy \
+    scikit-learn \
+    PyYAML \
+    optuna \
+    psutil

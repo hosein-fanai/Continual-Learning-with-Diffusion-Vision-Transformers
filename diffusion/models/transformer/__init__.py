@@ -9,6 +9,8 @@ import tensorflow as tf
 
 from typing import Literal, TypeAlias
 
+from common.keras_registry import register_canonical_keras_serializable
+
 
 CondType: TypeAlias = Literal[
     "time_label", 
@@ -83,3 +85,33 @@ def remove_second_token(x: tf.Tensor) -> tf.Tensor:
     """
 
     return tf.concat((x[:, :1, :], x[:, 2:, :]), axis=1)
+
+
+@register_canonical_keras_serializable(package="continual_learning")
+def _unpatchify_tokens(x, patch_size, channels, grid_dtype="float32"):
+    """Reassemble square patch tokens inside a Keras layer call."""
+
+    shape = tf.shape(x)
+    grid_size = tf.cast(
+        tf.sqrt(tf.cast(shape[1], grid_dtype)), 
+        tf.int32
+    )
+
+    x = tf.reshape(x, (
+            shape[0], 
+            grid_size, 
+            grid_size, 
+            patch_size, 
+            patch_size, 
+            channels
+    ))
+    x = tf.transpose(x, 
+        (0, 1, 3, 2, 4, 5)
+    )
+
+    return tf.reshape(x, (
+        shape[0], 
+        grid_size * patch_size, 
+        grid_size * patch_size, 
+        channels
+    ))

@@ -13,6 +13,7 @@ from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
 from common.runtime import derive_seed
+from common.random import SeedStream
 
 
 class DropPath(ArgumentSaverLayer):
@@ -46,7 +47,7 @@ class DropPath(ArgumentSaverLayer):
         drop_prob (float): Drop probability retained from construction.
         scale_by_keep (bool): Whether retained paths preserve their expectation.
         per_sample (bool): Whether mask decisions are independent across batch rows.
-        seed (int | None): Optional stateful TensorFlow mask-operation seed.
+        seed (int | None): Optional initial seed for the saved path-mask stream.
     """
 
     def __init__(
@@ -67,9 +68,9 @@ class DropPath(ArgumentSaverLayer):
                 Defaults to ``True``.
             per_sample (bool): Whether examples receive independent masks.
                 Defaults to ``True``.
-            seed (int | None): TensorFlow mask-operation seed. Defaults to ``None``, leaving the operation
-                seed unspecified; a supplied seed combines with global TensorFlow RNG state to reproduce a
-                draw sequence, not a constant mask.
+            seed (int | None): Initial stream seed. Defaults to ``None`` for a
+                randomly initialized stream. Masks advance on every training call;
+                reset_seed restores a sequence and weight checkpoints retain its counter.
             **kwargs (Any): Standard Keras layer options.
 
         Returns:
@@ -84,11 +85,9 @@ class DropPath(ArgumentSaverLayer):
         self._save_init_args(locals())
         derive_seed(self.seed, "drop_path", "validation")
 
-        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
-        # integer.
         self.seed = None if self.seed is None else int(self.seed)
+        self.random_stream = SeedStream(self.seed, name=f"{self.name}__path_random")
 
-        # Keep the path-drop probability within its valid half-open interval.
         if not 0. <= self.drop_prob < 1.:
             raise ValueError(
                 "drop_prob must satisfy 0.0 <= drop_prob < 1.0."
@@ -104,7 +103,7 @@ class DropPath(ArgumentSaverLayer):
             tf.Tensor: Masked tensor with the same shape and dtype.
 
         Side Effects:
-            Advances the stateful TensorFlow RNG stream used for this path mask.
+            Advances the checkpointed counter used for this path mask.
         """
 
         keep_prob = 1. - self.drop_prob
@@ -122,12 +121,12 @@ class DropPath(ArgumentSaverLayer):
         else:
             mask_shape = tf.ones((rank,), dtype=tf.int32)
 
-        random_tensor = keep_prob + tf.random.uniform(
+        random_tensor = keep_prob + tf.random.stateless_uniform(
             mask_shape, 
             minval=0., 
             maxval=1., 
             dtype=x.dtype, 
-            seed=self.seed
+            seed=self.random_stream.next_seed()
         )
         binary_mask = tf.floor(random_tensor)
         # Rescale retained paths to preserve their expected magnitude when requested.
@@ -135,6 +134,12 @@ class DropPath(ArgumentSaverLayer):
             binary_mask = binary_mask / keep_prob
 
         return x * binary_mask
+
+    def reset_seed(self, seed: int | None) -> None:
+        """Start the task's new path-mask sequence without changing weights."""
+
+        self.seed = seed
+        self.random_stream.reset_seed(seed)
 
     def call(self, x: tf.Tensor, training: bool | None = None) -> tf.Tensor:
         """Apply a training-only path mask.
@@ -153,16 +158,17 @@ class DropPath(ArgumentSaverLayer):
             probability.
         """
 
-        # Return identity for zero drop probability or an unspecified training flag.
+        # Return identity for zero drop probability 
+        # or an unspecified training flag.
         if self.drop_prob == 0. or training is None:
             return x
 
-        # Resolve ordinary Python training flags directly; tensor flags use graph control
-        # flow below.
+        # Resolve ordinary Python training flags directly; 
+        # tensor flags use graph control flow below.
         if not tf.is_tensor(training):
-            # Apply stochastic depth for training; preserve the input for evaluation.
+            # Apply stochastic depth for training; 
+            # preserve the input for evaluation.
             return self._apply_mask(x) if training else x
-
         return tf.cond(
             tf.cast(training, tf.bool), 
             partial(self._apply_mask, x), 

@@ -116,7 +116,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
             center=False, 
             scale=False, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/normalization", 
+            name=f"{self.name}__normalization",
         ) if self.use_batch_norm else None
         self.first_convolution = layers.Conv2D(
             filters=self.filters,
@@ -124,14 +124,14 @@ class ResidualConvBlock(ArgumentSaverLayer):
             padding="same",
             activation=self.activation_func,
             dtype=self.dtype_policy,
-            name=f"{self.name}/first_convolution",
+            name=f"{self.name}__first_convolution",
         )
         # Create spatial dropout only for a nonzero drop probability.
         self.dropout = layers.SpatialDropout2D(
             rate=self.dropout_rate, 
             seed=derive_seed(self.seed, "spatial_dropout"),
             dtype=self.dtype_policy, 
-            name=f"{self.name}/dropout"
+            name=f"{self.name}__dropout"
         ) if self.dropout_rate > 0.0 else None
         # Start the residual correction at zero when requested; otherwise use Glorot
         # initialization.
@@ -142,12 +142,12 @@ class ResidualConvBlock(ArgumentSaverLayer):
             kernel_initializer="zeros" if self.zero_init else "glorot_uniform", 
             bias_initializer="zeros", 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/second_convolution"
+            name=f"{self.name}__second_convolution"
         )
         self.condition_projector = layers.Dense(
             self.filters, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/condition_projector"
+            name=f"{self.name}__condition_projector"
         )
         self.residual_projector = None
 
@@ -181,7 +181,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
                 filters=self.filters, 
                 kernel_size=1, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/residual_projector"
+                name=f"{self.name}__residual_projector"
             )
 
         super().build(input_shape)
@@ -326,7 +326,7 @@ class ResidualConvStack(ArgumentSaverLayer):
                 zero_init=self.zero_init and block_id == self.depth - 1, 
                 seed=derive_seed(self.seed, "block", block_id),
                 dtype=self.dtype_policy, 
-                name=f"{self.name}/block_{block_id + 1}"
+                name=f"{self.name}__block_{block_id + 1}"
             )
             for block_id in range(self.depth)
         ]

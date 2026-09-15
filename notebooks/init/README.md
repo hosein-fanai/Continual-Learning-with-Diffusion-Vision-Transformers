@@ -1,15 +1,20 @@
 # Notebook initialization helper
 
-Importing this package from a notebook whose working directory is
-`notebooks/` moves the process to the repository root, imports the local
-`autoencoder` and `diffusion` packages, and calls `common.utils.init()`. That
-helper attempts to cap TensorFlow's first GPU logical device at 6,144 MiB.
+Start each experiment notebook with:
 
 ```python
 import init
 ```
 
-The import has process-wide side effects and takes no arguments. Do not use it
-when the working directory is already the repository root: its relative
-`os.chdir("../")` would move one directory too far upward. Scripts should
-instead use explicit imports and call `common.utils.init()` directly.
+All working-directory and Python search-path setup lives in `__init__.py` here.
+It resolves the repository from its own file location, adds the repository and
+thesis helpers to the import path, changes to the repository root, and calls
+`common.utils.init()`. Small forwarding modules support starting from the
+repository root or `notebooks/thesis` as well as `notebooks`.
+
+The resolved path is available as `init.REPOSITORY_ROOT`. Initialization runs
+on import; no separate `init()` call is needed in a notebook.
+
+The runtime helper caps the first TensorFlow GPU at 6,144 MiB. If more GPU
+memory is needed, change `memory_limit=6144` in `common/utils.py` before starting
+a fresh kernel.

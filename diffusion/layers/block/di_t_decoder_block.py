@@ -77,7 +77,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
 
         self.mha_layer_norm2 = self._create_layer_norm(
             gate_dim=self.query_dim, 
-            name=f"{self.name}/mha_layer_norm_2"
+            name=f"{self.name}__mha_layer_norm_2"
         )
         self.mha2 = PolicyMultiHeadAttention(
             num_heads=self.num_heads, 
@@ -91,7 +91,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path_2"),
-            name=f"{self.name}/mha_drop_path_2",
+            name=f"{self.name}__mha_drop_path_2",
             dtype=self.dtype_policy,
         )
 

@@ -34,17 +34,16 @@ class MaskedLoss(losses.Loss):
     def __init__(
         self: MaskedLoss, 
         loss_type: str = "mae", 
-        name: str = "masked_loss", 
-        reduction: str = losses.Reduction.AUTO
+        reduction: str = "sum_over_batch_size", 
+        name: str = "masked_loss"
     ) -> None:
         """Initialize the selected elementwise regression loss.
 
         Args:
             loss_type (str): Exactly ``"mae"`` or ``"mse"``.  The default is
                 mean absolute error.
+            reduction (str): Keras loss reduction; defaults to batch averaging.
             name (str): Keras loss name; defaults to ``"masked_loss"``.
-            reduction (str): Keras loss reduction. The TensorFlow 2.10 default
-                is ``tf.keras.losses.Reduction.AUTO``.
 
         Returns:
             None.
@@ -53,7 +52,10 @@ class MaskedLoss(losses.Loss):
             ValueError: If ``loss_type`` is unsupported.
         """
 
-        super(MaskedLoss, self).__init__(name=name, reduction=reduction)
+        super(MaskedLoss, self).__init__(
+            reduction="sum_over_batch_size" if reduction == "auto" else reduction, 
+            name=name
+        )
 
         # Use absolute elementwise error for MAE mode.
         if loss_type == "mae":
@@ -104,6 +106,7 @@ class MaskedLoss(losses.Loss):
         # Attach graph assertion operations; omit eager assertions that return None.
         with tf.control_dependencies([check for check in checks if check is not None]):
             error = self.loss(prefix - y_pred)
+
             return tf.reduce_mean(error, axis=tf.range(1, tf.rank(error)))
 
     def get_config(self: MaskedLoss) -> dict[str, object]:

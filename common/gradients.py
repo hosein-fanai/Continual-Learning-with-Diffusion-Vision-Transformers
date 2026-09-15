@@ -1,7 +1,7 @@
 """Apply policy-aware gradients in custom TensorFlow training steps.
 
 ``apply_policy_gradients`` differentiates an unscaled objective, handles the
-TensorFlow 2.10 LossScaleOptimizer protocol, and updates the selected variables.
+Keras LossScaleOptimizer protocol, and updates the selected variables.
 Ordinary and mixed-precision callers share one API; empty selections are no-ops,
 and disconnected objectives are reported before applying an update.
 """
@@ -60,9 +60,11 @@ def apply_policy_gradients(
     uses_loss_scaling = isinstance(optimizer, loss_scale_type)
 
     # Re-enter the still-unconsumed tape so loss scaling itself is recorded.
+    modern_scaling = uses_loss_scaling and hasattr(optimizer, "scale_loss")
     if uses_loss_scaling:
         with tape:
-            gradient_loss = optimizer.get_scaled_loss(loss)
+            gradient_loss = optimizer.scale_loss(loss) if modern_scaling \
+                            else optimizer.get_scaled_loss(loss)
     # Ordinary optimizers differentiate the original loss directly.
     else:
         gradient_loss = loss
@@ -70,7 +72,7 @@ def apply_policy_gradients(
     gradients = tape.gradient(gradient_loss, selected_variables)
 
     # Convert scaled gradients back exactly once before optimizer application.
-    if uses_loss_scaling:
+    if uses_loss_scaling and not modern_scaling:
         gradients = optimizer.get_unscaled_gradients(gradients)
 
     gradient_variable_pairs = list(zip(gradients, selected_variables))
@@ -80,11 +82,35 @@ def apply_policy_gradients(
         for gradient, variable in gradient_variable_pairs
         if gradient is not None
     ]
-    # Reject a selected objective that is disconnected from every variable.
+
     if not pairs:
         raise ValueError(
             "The loss is disconnected from every selected variable."
         )
+
+    if modern_scaling:
+        # Keras 3 unscales inside apply_gradients. Only the diagnostic return
+        # values are unscaled here, using the scale before it may be updated.
+        scale = optimizer.dynamic_scale if optimizer.built \
+                else optimizer.initial_scale
+
+
+        def unscale(gradient: Gradient) -> Gradient:
+            """Return diagnostic gradients without densifying sparse updates."""
+
+            # Sparse embeddings keep their original indices and dense shape.
+            if isinstance(gradient, tf.IndexedSlices):
+                return tf.IndexedSlices(
+                    gradient.values / tf.cast(scale, gradient.values.dtype), 
+                    gradient.indices, gradient.dense_shape
+                )
+            return gradient / tf.cast(scale, gradient.dtype)
+
+
+        pairs = [
+            (unscale(gradient), variable) 
+            for gradient, variable in pairs
+        ]
 
     optimizer.apply_gradients(gradient_variable_pairs)
 

@@ -1,6 +1,6 @@
 # Continual learning with Diffusion Vision Transformers
 
-This TensorFlow 2.10 research codebase combines two related workflows:
+This TensorFlow 2.17 / Keras 3 research codebase combines two related workflows:
 
 - class-incremental CIFAR learning with ordinary fine-tuning, replay-buffer
   rehearsal, or conditional-VAE generative replay; and
@@ -31,17 +31,26 @@ SavedModels as their canonical Python classes.
 
 ## Environment
 
-Use Python 3.10, which is the version exercised by this project and supported
-by the pinned TensorFlow 2.10 runtime. Install the runtime and reporting/HPO
-dependencies with:
+Use the configured TensorFlow 2.17 Docker environment for the migration
+baseline. Install runtime and reporting/HPO dependencies with:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-The requirements include a TensorFlow-compatible NumPy 1.21--1.23 range plus
-Optuna, TensorBoard, PyYAML, pandas, scikit-learn, Matplotlib, and Pillow used
-by the experiment pipeline.
+The requirements pin TensorFlow 2.17.0, Keras 3.4.1, and NumPy 1.26.4, plus
+the supporting scientific packages. These pins reproduce the migration target;
+they are not a claim of compatibility with every newer hosted runtime. Read
+[the migration report](compatibility_migration.md) before launching continual
+thesis runs: post-build architecture growth and two variable-metadata failures
+remain unresolved under the requested scope restrictions.
+
+`common.utils.init()` caps the first GPU at **6,144 MiB**. If you need more GPU
+RAM, modify `memory_limit=6144` in `common/utils.py` before initializing
+TensorFlow, then restart the kernel. Choose a limit suitable for your GPU.
+Project hierarchy names use `__`; `get_variables_names()` and
+`common.keras_compat.format_variable_name()` display full variable paths using
+that separator. Native Keras/TF paths still use their framework separators.
 
 ## How the diffusion API fits together
 
@@ -476,7 +485,7 @@ conda run -n tf_env python test.py
 
 This command first enforces the source-wide documentation, type-annotation,
 and adjacent branch-comment contracts. It then discovers the
-maintained model and layer classes and runs every registered TensorFlow 2.10
+maintained model and layer classes and runs every registered TensorFlow
 self-test. A missing class, an omitted self-test result, or any non-passing
 result makes the command fail.
 

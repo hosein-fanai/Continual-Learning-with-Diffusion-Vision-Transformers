@@ -27,7 +27,8 @@ ClusteringType: TypeAlias = Literal["uniform", "log_snr"]
 
 def copy_network_weights_by_layer(
     source_network: models.Model, 
-    target_network: models.Model
+    target_network: models.Model, 
+    allow_class_growth: bool = False
 ) -> None:
     """Copy all model weights through stable active-layer names.
 
@@ -37,7 +38,8 @@ def copy_network_weights_by_layer(
 
     Pairs active top-level layers by name, then additionally pairs composite
     decoder internals and terminal classifier components. Each matched pair must
-    have the same ordered weight shapes; both models must receive complete coverage.
+    have the same ordered weight shapes unless class expansion is requested;
+    both models must receive complete coverage.
     The operation changes target values in place without cloning layers, changing
     topology, or transferring optimizer state. A later mismatch can leave earlier
     pairs already copied; copying is not rolled back on failure.
@@ -49,6 +51,9 @@ def copy_network_weights_by_layer(
         target_network (tf.keras.Model): Built clone with topology-equivalent active layers
             and assignable
             variables. Source and target architecture objects are not replaced.
+        allow_class_growth (bool): Copy leading slices into expanded class
+            embeddings/heads, retaining initialized new rows/columns. Also copy
+            layer RNG variables when reconstructing a live training network.
 
     Returns:
         None: Every target weight receives its matching source value.
@@ -59,10 +64,12 @@ def copy_network_weights_by_layer(
     """
 
     source_layers = {
-        layer.name: layer for layer in source_network.layers
+        layer.name: layer 
+        for layer in source_network.layers
     }
     target_layers = {
-        layer.name: layer for layer in target_network.layers
+        layer.name: layer 
+        for layer in target_network.layers
     }
     # Pair only active layer names shared by the source and target.
     layer_pairs = [
@@ -84,7 +91,8 @@ def copy_network_weights_by_layer(
         layer_pairs.extend(
             (source_decoder_layers[name], target_layer)
             for name, target_layer in {
-                layer.name: layer for layer in target_decoder.layers
+                layer.name: layer 
+                for layer in target_decoder.layers
             }.items()
             if name in source_decoder_layers
         )
@@ -116,22 +124,45 @@ def copy_network_weights_by_layer(
         source_shapes = [tuple(weight.shape) for weight in source_layer.weights]
         target_shapes = [tuple(weight.shape) for weight in target_layer.weights]
 
+        if allow_class_growth:
+            # Preserve independently frozen children as well as their parents.
+            for source_child, target_child in zip(
+                source_layer._flatten_layers(), 
+                target_layer._flatten_layers()
+            ):
+                target_child.trainable = source_child.trainable
+
+            source_variables = source_layer.variables
+            target_variables = target_layer.variables
+
+            if len(source_variables) != len(target_variables):
+                raise ValueError("Class growth must preserve the layer variable count.")
+
+            for source, target in zip(source_variables, target_variables):
+                if len(source.shape) != len(target.shape) or any(
+                    old > new for old, new in zip(source.shape, target.shape)
+                ):
+                    raise ValueError("Class growth cannot shrink or reshape existing weights.")
+
+                values = target.numpy()
+                values[tuple(slice(0, size) for size in source.shape)] = source.numpy()
+                target.assign(values)
         # Reject a same-named layer whose reconstructed topology is different.
-        if source_shapes != target_shapes:
+        elif source_shapes != target_shapes:
             raise ValueError(
                 "Teacher snapshot layer mismatch for "
                 f"{source_layer.name!r}/{target_layer.name!r}: "
                 f"{source_shapes} != {target_shapes}."
             )
+        else:
+            target_layer.set_weights(source_layer.get_weights())
 
-        target_layer.set_weights(source_layer.get_weights())
         copied_source_ids.update(id(weight) for weight in source_layer.weights)
         copied_target_ids.update(id(weight) for weight in target_layer.weights)
 
     source_weight_ids = {id(weight) for weight in source_network.weights}
     target_weight_ids = {id(weight) for weight in target_network.weights}
 
-    # Require complete coverage so a partial teacher can never be returned.
     if not source_weight_ids <= copied_source_ids \
     or not target_weight_ids <= copied_target_ids:
         raise ValueError(

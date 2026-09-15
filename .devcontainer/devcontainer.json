@@ -1,0 +1,38 @@
+{
+  "name": "TensorFlow 2.20 GPU",
+  "image": "tensorflow/tensorflow-others:2.20.0-gpu-jupyter",
+  "runArgs": ["--gpus", "all"],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "shutdownAction": "stopContainer",
+  "containerEnv": {
+    "TF_FORCE_GPU_ALLOW_GROWTH": "true"
+  },
+  "postCreateCommand": [
+    "/usr/bin/python",
+    "-m",
+    "ipykernel",
+    "install",
+    "--user",
+    "--name",
+    "tensorflow-220",
+    "--display-name",
+    "TensorFlow 2.20 (Docker GPU)"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter"
+      ],
+      "settings": {
+        "python.useEnvironmentsExtension": false,
+        "python.defaultInterpreterPath": "/usr/bin/python",
+        "jupyter.notebookFileRoot": "/workspace",
+        "terminal.integrated.cwd": "/workspace"
+      }
+    }
+  }
+}

@@ -151,22 +151,18 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *self.clf_vars_noise_part_ids
         ]))
 
-        # Normalize an omitted classifier training cap to clean-only inputs.
         self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
                                                 else int(self.clf_train_noisified_max_timesteps)
-        # Resolve classifier training cap -1 to the full diffusion horizon.
         self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
                                                 else self.clf_train_noisified_max_timesteps
-        # Normalize an omitted classifier evaluation cap to clean-only inputs.
         self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
                                                 else int(self.clf_test_noisified_max_timesteps)
-        # Resolve classifier evaluation cap -1 to the full diffusion horizon.
         self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
                                                 else self.clf_test_noisified_max_timesteps
         
-        self.clf_trainable_variables = None
-        self.gen_trainable_variables = None
-        self._active_trainable_variables = None
+        object.__setattr__(self, "clf_trainable_variables", None)
+        object.__setattr__(self, "gen_trainable_variables", None)
+        object.__setattr__(self, "_active_trainable_variables", None)
         self._train_part = None
         self._test_part = None
 
@@ -250,7 +246,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 Supported optional attributes whose value is None are skipped.
         """
 
-        self.clf_trainable_variables = []
+        object.__setattr__(self, "clf_trainable_variables", [])
 
         for embedding_id in self.clf_vars_embedding_ids:
             # Assign patch-embedding variables to the classifier optimizer for ID 0.
@@ -281,9 +277,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 )
 
         for layers_dict_id in self.clf_vars_noise_part_ids:
-            self.clf_trainable_variables.extend(
-                self.network.layers_dicts[layers_dict_id-1].trainable_variables 
-            )
+            for layer in self.network.layers_dicts[layers_dict_id-1].values():
+                self.clf_trainable_variables.extend(
+                    layer.trainable_variables
+                )
 
         # Always train an available classifier-side label regularizer here.
         if self.network.clf_labels_embed_reg is not None:
@@ -305,9 +302,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
             )
 
         for clf_layers_dict in self.network.clf_layers_dicts:
-            self.clf_trainable_variables.extend(
-                clf_layers_dict.trainable_variables 
-            )
+            for layer in clf_layers_dict.values():
+                self.clf_trainable_variables.extend(
+                    layer.trainable_variables
+                )
 
         self.clf_trainable_variables.extend(
             self.network.classifier.trainable_variables
@@ -327,7 +325,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 seen_variable_ids.add(id(variable))
                 unique_variables.append(variable)
 
-        self.clf_trainable_variables = unique_variables
+        object.__setattr__(self, "clf_trainable_variables", unique_variables)
 
     def _set_gen_variables(self) -> None:
         """Assign all remaining raw-network variables to the generator group.
@@ -347,7 +345,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         clf_variable_ids = {id(v) for v in self.clf_trainable_variables}
 
-        self.gen_trainable_variables = []
+        object.__setattr__(self, "gen_trainable_variables", [])
         for v in self.network.trainable_variables:
             # Assign every variable not owned by the classifier to the generator.
             if id(v) not in clf_variable_ids:
@@ -430,30 +428,32 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # Drop only replaced raw-network variables; retain ordinary weight ordering
         # and every unrelated wrapper/teacher/optimizer variable.
         if obsolete_group_ids:
-            object.__setattr__(self, "_trainable_weights", [
-                value for value in self._trainable_weights
-                if id(value) not in obsolete_group_ids
-            ])
-            object.__setattr__(self, "_non_trainable_weights", [
-                value for value in self._non_trainable_weights
-                if id(value) not in obsolete_group_ids
-            ])
+            for attribute in ("_trainable_weights", "_non_trainable_weights"):
+                if hasattr(self, attribute):
+                    object.__setattr__(self, attribute, [
+                        value for value in getattr(self, attribute)
+                        if id(value) not in obsolete_group_ids
+                    ])
 
-        super()._register_optimizer_variables(
+        gen_optimizer = super()._register_optimizer_variables(
             getattr(self, "gen_optimizer", getattr(self, "optimizer", None)), 
             self.gen_trainable_variables
         )
-        super()._register_optimizer_variables(
+        clf_optimizer = super()._register_optimizer_variables(
             getattr(self, "clf_optimizer", None), 
             self.clf_trainable_variables
         )
+        if gen_optimizer is not None:
+            self.gen_optimizer = gen_optimizer
+        if clf_optimizer is not None:
+            self.clf_optimizer = clf_optimizer
 
         # Refresh the active phase reference after rebuilding variable groups.
         if self._train_part == "generator":
-            self._active_trainable_variables = self.gen_trainable_variables
+            object.__setattr__(self, "_active_trainable_variables", self.gen_trainable_variables)
         # Keep discriminator growth aligned with its refreshed variable group.
         elif self._train_part == "discriminator":
-            self._active_trainable_variables = self.clf_trainable_variables
+            object.__setattr__(self, "_active_trainable_variables", self.clf_trainable_variables)
 
     def _is_prepared_dataset_spec(self, element_spec: object) -> bool:
         """Recognize phase-specific mapped dataset structures.
@@ -584,7 +584,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self._switch_train_part(part_name)
         self._switch_test_part(part_name)
         self.optimizer = optimizer
-        self._active_trainable_variables = variables
+        object.__setattr__(self, "_active_trainable_variables", variables)
 
         try:
             # Route curriculum arguments to the actual progressive trainer.
@@ -595,7 +595,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             self._switch_train_part("")
             self._switch_test_part("")
             self.optimizer = self.gen_optimizer
-            self._active_trainable_variables = None
+            object.__setattr__(self, "_active_trainable_variables", None)
 
     @property
     def clf_vars_names(self) -> list[str]:

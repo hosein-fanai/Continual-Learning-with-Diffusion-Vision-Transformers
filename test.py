@@ -371,7 +371,7 @@ def assert_static_contracts() -> dict[str, int]:
 PROJECT_SELF_TEST_CLASSES = {
     "autoencoder.vae_classifier": ("VAEClassifier",),
     "autoencoder.decoder_accuracy_callback": ("DecoderAccuracyCallback",), 
-    "autoencoder.variational_autoencoder": ("VariationalAutoencoder",), 
+    "autoencoder.variational_autoencoder": ("_GaussianSampling", "VariationalAutoencoder"),
     "diffusion.callbacks.batch_loss_plateau": ("BatchLossPlateau",), 
     "diffusion.callbacks.image_generator_callback": ("ImageGeneratorCallback",), 
     "diffusion.callbacks.raw_network_validation_callback": (

@@ -686,7 +686,7 @@ def train_model(
 
     base_callbacks = [
         LrLogger(),
-        callbacks.ProgbarLogger(count_mode="steps")
+        callbacks.ProgbarLogger()
     ]
     callbacks_list = list(base_callbacks)
     forwarded_callbacks = []
@@ -1185,10 +1185,7 @@ def train_model(
 
     # Persist final trained weights when requested.
     if save_weights:
-        # Diffusion wrappers use TensorFlow weight prefixes; other models use HDF5 filenames.
-        weights_name = "model.weights" if isinstance(
-            model, DiffusionModel
-        ) else "model.weights.h5"
+        weights_name = "model.weights.h5"
         weights_path = os.path.join(
             image_callback.results_path,
             weights_name,
@@ -1278,11 +1275,7 @@ def train_model(
         # Save continual classifier and optional replay-model weights separately.
         if is_continual:
             model["classifier"].save_weights(weights_path)
-            # Replay diffusion models use TensorFlow weight prefixes; replay VAEs use HDF5
-            # filenames.
-            replay_weights_name = "replay-model.weights" if isinstance(
-                model["generative_model"], DiffusionModel
-            ) else "replay-model.weights.h5"
+            replay_weights_name = "replay-model.weights.h5"
             replay_weights_path = os.path.join(
                 image_callback.results_path,
                 replay_weights_name,
@@ -1386,15 +1379,15 @@ def _report_final_visuals(
         # Generate one example for each known conditional class.
         if model.conditioned:
             classes = model.seen_classes or list(range(model.class_num or 0))
-            imgs, _ = model.generate(
-                classes=classes,
-                samples_per_class=1,
+            imgs, _ = model.sample(
+                labels=classes,
+                samples_per_label=1,
                 seed=final_seed
             )
         # Generate one unconditional example per dataset class.
         else:
-            imgs = model.generate(
-                samples_per_class=class_num,
+            imgs = model.sample(
+                samples_per_label=class_num,
                 seed=final_seed
             )
 

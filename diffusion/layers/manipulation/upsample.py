@@ -129,12 +129,16 @@ class Upsample(BaseEmbedding):
 
         self.output_grid_size = self.grid_size * 2
         self.prefix_tokens_num = int(self.circumvent_tokens)
+        if self.pos_embed_type is not None and self.pos_interpolation_method not in ("nearest", "bilinear"):
+            self.supports_jit = False
+        if self.scaling_method != "cnn_transpose" and self.scaling_interpolation_method not in ("nearest", "bilinear"):
+            self.supports_jit = False
 
         self.layer_norm = self._create_layer_norm(
             return_gate=False
         )
 
-        name = f"{self.name}/scaling_layer"
+        name = f"{self.name}__scaling_layer"
         # Learn spatial and channel enlargement with transposed convolution.
         if self.scaling_method == "cnn_transpose":
             self.output_dim = self.dim * self.cnn_dim_ratio
@@ -186,15 +190,13 @@ class Upsample(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
-        # Concatenated positions double the component width; 
-        # disabled or additive positions preserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
         self.token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/token_projector"
+            name=f"{self.name}__token_projector"
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim

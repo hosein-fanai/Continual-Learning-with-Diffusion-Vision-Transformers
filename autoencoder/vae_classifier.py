@@ -191,6 +191,7 @@ class VAEClassifier(VariationalAutoencoder):
             isinstance(classifier_config, dict)
             and classifier_config.get("class_name")
             in {"Functional", "Model", "Sequential"}
+            and hasattr(tf.keras.models, "model_from_config")
         ):
             classifier = tf.keras.models.model_from_config(classifier_config)
         # Preserve support for registered callable classifier objects.
@@ -240,8 +241,7 @@ class VAEClassifier(VariationalAutoencoder):
 
         # Include compiled metrics once their container exists; otherwise expose only local
         # trackers.
-        compiled_metrics = self.compiled_metrics.metrics \
-            if self.compiled_metrics is not None else []
+        compiled_metrics = self._reconstruction_metrics()
 
         return [
             self.total_loss_tracker,
@@ -382,10 +382,12 @@ class VAEClassifier(VariationalAutoencoder):
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
         self.clf_accuracy_tracker.update_state(
-            y, y_pred, sample_weight=row_sample_weight
+            y, y_pred, 
+            sample_weight=row_sample_weight
         )
-        self.compiled_metrics.update_state(
-            x, x_recon, sample_weight=row_sample_weight
+        reconstruction_metrics = self._update_reconstruction_metrics(
+            x, x_recon, 
+            sample_weight=row_sample_weight
         )
 
         results = {
@@ -396,10 +398,7 @@ class VAEClassifier(VariationalAutoencoder):
             "clf_loss": self.clf_loss_tracker.result(), 
             "clf_accuracy": self.clf_accuracy_tracker.result()
         }
-        results.update({
-            metric.name: metric.result()
-            for metric in self.compiled_metrics.metrics
-        })
+        results.update(reconstruction_metrics)
 
         return results
 
@@ -488,24 +487,23 @@ class VAEClassifier(VariationalAutoencoder):
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
         self.clf_loss_tracker.update_state(clf_loss, sample_weight=batch_weight)
         self.clf_accuracy_tracker.update_state(
-            y, y_pred, sample_weight=row_sample_weight
+            y, y_pred, 
+            sample_weight=row_sample_weight
         )
-        self.compiled_metrics.update_state(
-            x, x_recon, sample_weight=row_sample_weight
+        reconstruction_metrics = self._update_reconstruction_metrics(
+            x, x_recon, 
+            sample_weight=row_sample_weight
         )
 
         results = {
-            "loss": self.total_loss_tracker.result(),
-            "generative_loss": self.generative_loss_tracker.result(),
+            "loss": self.total_loss_tracker.result(), 
+            "generative_loss": self.generative_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
             "clf_accuracy": self.clf_accuracy_tracker.result()
         }
-        results.update({
-            metric.name: metric.result()
-            for metric in self.compiled_metrics.metrics
-        })
+        results.update(reconstruction_metrics)
 
         return results
 
@@ -622,7 +620,7 @@ def run_self_tests() -> dict[str, str]:
         latent_dim=2,
         hiddens_dims=(),
     )
-    assert compile_disabled._is_compiled is False
+    assert getattr(compile_disabled, "compiled", getattr(compile_disabled, "_is_compiled", False)) is False
     compile_args_none = VAEClassifier(
         3,
         classifier,
@@ -632,7 +630,7 @@ def run_self_tests() -> dict[str, str]:
         latent_dim=2,
         hiddens_dims=(),
     )
-    assert compile_args_none._is_compiled is False
+    assert getattr(compile_args_none, "compiled", getattr(compile_args_none, "_is_compiled", False)) is False
 
     for invalid_alpha in (-0.1, float("nan"), float("inf")):
         try:
@@ -661,7 +659,7 @@ def run_self_tests() -> dict[str, str]:
             hiddens_dims=(),
             unsupported_option=True,
         )
-    except TypeError:
+    except (TypeError, ValueError):
         pass
     # This invalid case should already have raised: Unknown Keras model options must be
     # rejected.
@@ -690,7 +688,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert model.conditioned is True and model.class_num == 3
     assert model.classifier is classifier and model.alpha == 0.5
-    assert model.name == "vae_classifier" and model._is_compiled is True
+    assert model.name == "vae_classifier" and getattr(model, "compiled", getattr(model, "_is_compiled", False)) is True
     assert isinstance(model.optimizer, tf.keras.optimizers.SGD)
     assert model.run_eagerly is True
     joint_config = model.get_config()
@@ -707,7 +705,7 @@ def run_self_tests() -> dict[str, str]:
     assert joint_clone.data_dim == model.data_dim
     assert joint_clone.latent_dim == model.latent_dim
     assert joint_clone.hiddens_dims == model.hiddens_dims
-    assert joint_clone._is_compiled is False
+    assert getattr(joint_clone, "compiled", getattr(joint_clone, "_is_compiled", False)) is False
     assert isinstance(joint_clone.classifier, tf.keras.Model)
     assert joint_clone.classifier is not model.classifier
     assert len(joint_clone.classifier.weights) == len(model.classifier.weights)
@@ -877,8 +875,8 @@ def run_self_tests() -> dict[str, str]:
         np.testing.assert_array_equal(before, after.numpy())
 
     model.seen_classes = [0, 2]
-    generated_x, generated_y = model.generate(
-        samples_per_class=1, 
+    generated_x, generated_y = model.sample(
+        samples_per_label=1,
         onehot_y_output=False
     )
     assert generated_x.shape == (2, 4)

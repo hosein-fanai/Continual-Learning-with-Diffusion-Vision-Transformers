@@ -14,6 +14,9 @@ from tensorflow.keras import metrics, layers, models, optimizers
 
 import numpy as np
 
+from inspect import signature
+
+from types import GeneratorType
 from collections.abc import Callable, Mapping, Sequence
 
 from common.dataloader import get_dataset
@@ -21,7 +24,40 @@ from common.gradients import apply_policy_gradients
 from common.keras_registry import register_canonical_keras_serializable
 from common.model import get_callbacks
 from common.runtime import derive_seed
+from common.random import SeedStream
 from common.callbacks.decoder_accuracy import DecoderAccuracy
+
+
+@register_canonical_keras_serializable(package="continual_learning")
+class _GaussianSampling(layers.Layer):
+    """Keep TensorFlow reparameterization inside a serializable layer call."""
+
+    def __init__(self, seed: int | None = None, **kwargs: object) -> None:
+        """Retain the seed and owning numeric policy for serialization."""
+
+        super().__init__(**kwargs)
+        self.seed = seed
+        self.seed_stream = SeedStream(seed=seed, name=f"{self.name}__random_stream")
+
+    def reset_seed(self, seed: int) -> None:
+        """Restart the advancing, checkpointed stream at a task boundary."""
+
+        self.seed = int(seed)
+        self.seed_stream.reset_seed(self.seed)
+
+    def call(self, inputs: Sequence[tf.Tensor]) -> tf.Tensor:
+        """Sample from the supplied mean and log variance inside Keras."""
+
+        return VariationalAutoencoder.compute_z(
+            *inputs, 
+            seed=self.seed_stream.next_seed(), 
+            dtype=self.dtype_policy.variable_dtype
+        )
+
+    def get_config(self) -> dict[str, object]:
+        """Include the sampling seed alongside standard Keras layer settings."""
+
+        return {**super().get_config(), "seed": self.seed}
 
 
 @register_canonical_keras_serializable(package="continual_learning")
@@ -111,13 +147,13 @@ class VariationalAutoencoder(models.Model):
                 construction.  False leaves compilation to the caller.
                 Defaults to ``True``.
             compile_args (Mapping[str, object] | None): Keras compile overrides. Defaults to ``None``, using
-                a fresh Nadam(learning_rate=0.1, decay=0.0) and loss="mean_squared_error". Empty mappings
+                a fresh Nadam(learning_rate=0.1) and loss="mean_squared_error". Empty mappings
                 preserve these defaults; compile=False leaves the model uncompiled regardless of this
                 mapping.
             seed (int | None): Optional experiment seed for the VAE's explicit
                 reparameterization operation and default generation/training
-                streams. Continual task-level global reseeding combines with
-                this component seed to reproduce its stateful draw sequence.
+                streams. Continual task-level reseeding restarts its advancing,
+                checkpointed reparameterization stream.
                 Defaults to ``None``.
                 None leaves component operation/initializer seeds unspecified; global
                 TensorFlow RNG state can still affect draws.
@@ -135,7 +171,10 @@ class VariationalAutoencoder(models.Model):
             TypeError: If either keyword mapping contains unsupported keys.
         """
 
+        dynamic = kwargs.pop("dynamic", False)
         super().__init__(**kwargs)
+        # Retain legacy configuration metadata without passing a removed Keras argument.
+        self._legacy_dynamic = bool(dynamic)
 
         conditioned = bool(conditioned)
         compile = bool(compile)
@@ -190,9 +229,8 @@ class VariationalAutoencoder(models.Model):
         self.beta = beta
         self.conditioned = conditioned
         self.class_num = class_num
-        # Keep reparameterization's operation seed independent from dataset
-        # shuffling and callback generation. A stateful op remains compatible
-        # with TF 2.10 Functional KerasTensors; task-level runtime reseeding
+        # Keep the checkpointed reparameterization stream independent from
+        # dataset shuffling and callback generation. Task-level reseeding
         # resets its deterministic sequence at each recovery boundary.
         self.reparameterization_seed = derive_seed(
             seed,
@@ -234,7 +272,7 @@ class VariationalAutoencoder(models.Model):
         )
 
         compile_args_default = {
-            "optimizer": optimizers.Nadam(learning_rate=0.1, decay=0.),
+            "optimizer": optimizers.Nadam(learning_rate=0.1),
             "loss": "mean_squared_error",
         }
         compile_args = {**compile_args_default, **(compile_args or {})}
@@ -242,6 +280,11 @@ class VariationalAutoencoder(models.Model):
         # Compile immediately when requested by the caller.
         if compile:
             self.compile(**compile_args)
+
+    @property
+    def dynamic(self):
+        """Retain the legacy constructor flag as configuration metadata."""
+        return self._legacy_dynamic
 
     @staticmethod
     def _serialize_activation(
@@ -510,12 +553,11 @@ class VariationalAutoencoder(models.Model):
             dtype=self.dtype_policy,
             name="z_log_var",
         )(x)
-        z = VariationalAutoencoder.compute_z(
-            z_mean,
-            z_log_var,
+        z = _GaussianSampling(
             seed=self.reparameterization_seed,
-            dtype=self.dtype_policy.variable_dtype,
-        )
+            dtype=self.dtype_policy,
+            name="z_sample",
+        )([z_mean, z_log_var])
 
         encoder = models.Model(
             inputs, 
@@ -592,9 +634,9 @@ class VariationalAutoencoder(models.Model):
     @staticmethod
     def compute_z(
         z_mean: tf.Tensor, 
-        z_log_var: tf.Tensor,
-        seed: int | None = None,
-        dtype: tf.dtypes.DType | str | None = None,
+        z_log_var: tf.Tensor, 
+        seed: int | tf.Tensor | None = None, 
+        dtype: tf.dtypes.DType | str | None = None
     ) -> tf.Tensor:
         """Sample a latent vector with the reparameterization trick.
 
@@ -602,7 +644,9 @@ class VariationalAutoencoder(models.Model):
             z_mean (tf.Tensor): Floating Gaussian means shaped
                 ``[batch, latent_dim]``.
             z_log_var (tf.Tensor): Matching floating elementwise log variances.
-            seed (int | None): Optional stateful TensorFlow operation seed.
+            seed (int | tf.Tensor | None): Optional stateful TensorFlow operation
+                seed, or an integer tensor of shape ``[2]`` for stateless sampling.
+                The sampling layer advances its own tensor seed for XLA execution.
                 Defaults to ``None``.
                 None leaves component operation/initializer seeds unspecified; global
                 TensorFlow RNG state can still affect draws.
@@ -622,10 +666,13 @@ class VariationalAutoencoder(models.Model):
         stable_dtype = tf.as_dtype(dtype or output_dtype)
         stable_mean = tf.cast(z_mean, stable_dtype)
         stable_log_var = tf.cast(z_log_var, stable_dtype)
-        epsilon = tf.random.normal(
-            shape=tf.shape(stable_mean),
-            dtype=stable_dtype,
-            seed=seed,
+        random_normal = tf.random.stateless_normal if tf.is_tensor(seed) \
+                        else tf.random.normal
+
+        epsilon = random_normal(
+            shape=tf.shape(stable_mean), 
+            dtype=stable_dtype, 
+            seed=seed
         )
         z = stable_mean + tf.exp(0.5 * stable_log_var) * epsilon
 
@@ -725,6 +772,82 @@ class VariationalAutoencoder(models.Model):
         scaled = tf.math.divide_no_nan(weights, tf.reduce_max(weights))
         return tf.math.divide_no_nan(scaled, tf.reduce_mean(scaled))
 
+    def _checked_sample_weights(self, sample_weight):
+        """Validate weights before they enter an XLA-compiled training step."""
+        if sample_weight is None:
+            return None
+        weights = tf.cast(sample_weight, self.dtype_policy.variable_dtype)
+        with tf.control_dependencies([
+            tf.debugging.assert_all_finite(weights, "Sample weights must be finite."),
+            tf.debugging.assert_non_negative(weights, "Sample weights must be nonnegative."),
+        ]):
+            return tf.identity(sample_weight)
+
+    def _checked_weight_data(self, data):
+        """Keep dataset weight checks in the input pipeline, outside XLA."""
+        if isinstance(data, tf.data.Dataset):
+            if isinstance(data.element_spec, tuple) and len(data.element_spec) == 3:
+                def check_batch(x, y, sample_weight):
+                    return x, y, self._checked_sample_weights(sample_weight)
+                return data.map(check_batch)
+        elif isinstance(data, GeneratorType):
+            def checked_batches():
+                for batch in data:
+                    yield self._checked_weight_data(batch)
+            return checked_batches()
+        elif isinstance(data, (tuple, list)) and len(data) == 3:
+            self._checked_sample_weights(data[2])
+        return data
+
+    def _call_with_checked_weights(self, method, args, kwargs):
+        """Retain Keras argument binding while checking its public input boundary."""
+        bound = signature(method).bind(*args, **kwargs)
+        arguments = bound.arguments
+        self._checked_sample_weights(arguments.get("sample_weight"))
+        class_weight = arguments.get("class_weight")
+        if class_weight is not None:
+            self._checked_sample_weights(list(class_weight.values()))
+        if "x" in arguments and isinstance(arguments["x"], (tf.data.Dataset, GeneratorType)):
+            arguments["x"] = self._checked_weight_data(arguments["x"])
+        if "validation_data" in arguments:
+            arguments["validation_data"] = self._checked_weight_data(arguments["validation_data"])
+        return method(*bound.args, **bound.kwargs)
+
+    def fit(self, *args, **kwargs):
+        """Train with weight validation outside Keras' compiled numerical step."""
+        return self._call_with_checked_weights(super().fit, args, kwargs)
+
+    def evaluate(self, *args, **kwargs):
+        """Evaluate with weight validation outside the compiled numerical step."""
+        return self._call_with_checked_weights(super().evaluate, args, kwargs)
+
+    def train_on_batch(self, *args, **kwargs):
+        """Validate one batch's weights before compiled training."""
+        return self._call_with_checked_weights(super().train_on_batch, args, kwargs)
+
+    def test_on_batch(self, *args, **kwargs):
+        """Validate one batch's weights before compiled evaluation."""
+        return self._call_with_checked_weights(super().test_on_batch, args, kwargs)
+
+    def _reconstruction_metric_container(self):
+        """Return the compiled reconstruction metrics without the Keras 3 shim."""
+        if hasattr(self, "_compile_metrics"):
+            return self._compile_metrics
+        return self.compiled_metrics
+
+    def _reconstruction_metrics(self):
+        container = self._reconstruction_metric_container()
+        return [] if container is None else list(container.metrics)
+
+    def _update_reconstruction_metrics(self, x, reconstruction, sample_weight=None):
+        container = self._reconstruction_metric_container()
+        if container is None:
+            return {}
+        container.update_state(x, reconstruction, sample_weight=sample_weight)
+        if hasattr(container, "result"):
+            return container.result()
+        return {metric.name: metric.result() for metric in container.metrics}
+
     @property
     def metrics(
         self: VariationalAutoencoder
@@ -739,8 +862,7 @@ class VariationalAutoencoder(models.Model):
 
         # Include compiled metrics once their container exists; otherwise expose only local
         # trackers.
-        compiled_metrics = self.compiled_metrics.metrics \
-            if self.compiled_metrics is not None else []
+        compiled_metrics = self._reconstruction_metrics()
 
         return [
             self.total_loss_tracker, 
@@ -863,7 +985,7 @@ class VariationalAutoencoder(models.Model):
         self.kl_loss_tracker.update_state(
             kl_loss, sample_weight=batch_weight
         )
-        self.compiled_metrics.update_state(
+        reconstruction_metrics = self._update_reconstruction_metrics(
             x, x_recon, sample_weight=row_sample_weight
         )
 
@@ -872,10 +994,7 @@ class VariationalAutoencoder(models.Model):
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result()
         }
-        results.update({
-            metric.name: metric.result()
-            for metric in self.compiled_metrics.metrics
-        })
+        results.update(reconstruction_metrics)
 
         return results
 
@@ -939,7 +1058,7 @@ class VariationalAutoencoder(models.Model):
         self.recon_loss_tracker.update_state(
             recon_loss, sample_weight=batch_weight
         )
-        self.compiled_metrics.update_state(
+        reconstruction_metrics = self._update_reconstruction_metrics(
             x, x_recon, sample_weight=row_sample_weight
         )
 
@@ -948,10 +1067,7 @@ class VariationalAutoencoder(models.Model):
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result()
         }
-        results.update({
-            metric.name: metric.result()
-            for metric in self.compiled_metrics.metrics
-        })
+        results.update(reconstruction_metrics)
 
         return results
 
@@ -1351,6 +1467,12 @@ def run_self_tests() -> dict[str, str]:
     tf.random.set_seed(2026)
     np.random.seed(2026)
 
+    sampler = _GaussianSampling(seed=2026, dtype="float64")
+    latent_inputs = (tf.zeros((2, 3), tf.float64), tf.zeros((2, 3), tf.float64))
+    sample_clone = _GaussianSampling.from_config(sampler.get_config())
+    np.testing.assert_array_equal(sampler(latent_inputs), sample_clone(latent_inputs))
+    assert sampler(latent_inputs).dtype == tf.float64
+
     for conditioned, class_num in ((True, None), (False, 2)):
         try:
             VariationalAutoencoder(
@@ -1415,7 +1537,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert uncompiled.name == "uncompiled_vae"
     assert uncompiled.trainable is False
-    assert uncompiled._is_compiled is False
+    assert getattr(uncompiled, "compiled", getattr(uncompiled, "_is_compiled", False)) is False
     assert uncompiled.latent_dim == 2 and uncompiled.beta == 0.0
     assert uncompiled.conditioned is False and uncompiled.class_num is None
     assert len(uncompiled.encoder.layers) > 0 and len(uncompiled.decoder.layers) > 0
@@ -1441,7 +1563,7 @@ def run_self_tests() -> dict[str, str]:
         },
         name="unconditional_vae",
     )
-    assert unconditioned._is_compiled is True
+    assert getattr(unconditioned, "compiled", getattr(unconditioned, "_is_compiled", False)) is True
     assert isinstance(unconditioned.optimizer, tf.keras.optimizers.SGD)
     assert unconditioned.run_eagerly is True
     architecture_config = unconditioned.get_config()
@@ -1462,7 +1584,7 @@ def run_self_tests() -> dict[str, str]:
     assert architecture_clone.last_activation is None
     assert architecture_clone.beta == unconditioned.beta
     assert architecture_clone.conditioned is False
-    assert architecture_clone._is_compiled is False
+    assert getattr(architecture_clone, "compiled", getattr(architecture_clone, "_is_compiled", False)) is False
 
     relu_no_bn = unconditioned._dense_layer(
         3, 
@@ -1682,12 +1804,12 @@ def run_self_tests() -> dict[str, str]:
     assert set(paired_train_result) == set(train_result)
     assert set(paired_test_result) == set(test_result)
 
-    generated = unconditioned.generate(classes=[999], samples_per_class=3)
+    generated = unconditioned.sample(labels=[999], samples_per_label=3)
     assert isinstance(generated, np.ndarray)
     assert generated.shape == (3, 4) and generated.dtype == np.float32
-    generated_zero = unconditioned.generate(samples_per_class=0)
+    generated_zero = unconditioned.sample(samples_per_label=0)
     assert generated_zero.shape == (0, 4)
-    normalized_count_samples = unconditioned.generate(samples_per_class=1.5)
+    normalized_count_samples = unconditioned.sample(samples_per_label=1.5)
     assert normalized_count_samples.shape == (1, 4)
     sigmoid_vae = VariationalAutoencoder(
         data_dim=3, 
@@ -1696,7 +1818,7 @@ def run_self_tests() -> dict[str, str]:
         last_activation="sigmoid", 
         compile=False, 
     )
-    sigmoid_samples = sigmoid_vae.generate(samples_per_class=2)
+    sigmoid_samples = sigmoid_vae.sample(samples_per_label=2)
     assert sigmoid_samples.shape == (2, 3)
     assert np.all(sigmoid_samples >= 0.0) and np.all(sigmoid_samples <= 1.0)
 
@@ -1730,36 +1852,36 @@ def run_self_tests() -> dict[str, str]:
     cond_test_result = conditioned.test_step((x, y))
     assert set(cond_test_result) == {"loss", "kl_loss", "recon_loss"}
 
-    assert conditioned.generate(classes=[], samples_per_class=2) == ([], [])
+    assert conditioned.sample(labels=[], samples_per_label=2) == ([], [])
     conditioned.seen_classes = [1]
-    seen_x, seen_y = conditioned.generate(classes=None, samples_per_class=2)
+    seen_x, seen_y = conditioned.sample(labels=None, samples_per_label=2)
     assert seen_x.shape == (2, 4)
     np.testing.assert_array_equal(seen_y, np.array([1, 1]))
-    explicit_x, explicit_y = conditioned.generate(
-        classes=[2, 0], 
-        samples_per_class=2, 
+    explicit_x, explicit_y = conditioned.sample(
+        labels=[2, 0],
+        samples_per_label=2,
         onehot_y_output=False
     )
     assert explicit_x.shape == (4, 4)
     np.testing.assert_array_equal(explicit_y, np.array([2, 2, 0, 0]))
-    onehot_x, onehot_y = conditioned.generate(
-        classes=[0, 2], 
-        samples_per_class=1, 
+    onehot_x, onehot_y = conditioned.sample(
+        labels=[0, 2],
+        samples_per_label=1,
         onehot_y_output=True
     )
     assert onehot_x.shape == (2, 4)
     assert onehot_y.shape == (2, 3) and onehot_y.dtype == np.float32
     np.testing.assert_array_equal(onehot_y, np.eye(3, dtype=np.float32)[[0, 2]])
-    zero_cond_x, zero_cond_y = conditioned.generate(
-        classes=[1], 
-        samples_per_class=0, 
+    zero_cond_x, zero_cond_y = conditioned.sample(
+        labels=[1],
+        samples_per_label=0,
         onehot_y_output=True
     )
     assert zero_cond_x.shape == (0, 4) and zero_cond_y.shape == (0, 3)
     try:
-        conditioned.generate(
-            classes=[3],
-            samples_per_class=1,
+        conditioned.sample(
+            labels=[3],
+            samples_per_label=1,
             onehot_y_output=True
         )
     except ValueError:
@@ -1768,8 +1890,8 @@ def run_self_tests() -> dict[str, str]:
     # fail.
     else:
         raise AssertionError("Out-of-range conditional class IDs must fail.")
-    normalized_class_x, normalized_class_y = conditioned.generate(
-        classes=[1.5], samples_per_class=1
+    normalized_class_x, normalized_class_y = conditioned.sample(
+        labels=[1.5], samples_per_label=1
     )
     assert normalized_class_x.shape == (1, 4)
     np.testing.assert_array_equal(normalized_class_y, np.array([1]))
@@ -1991,7 +2113,7 @@ def run_self_tests() -> dict[str, str]:
         assert unconditional_rows.shape == (3, 4)
 
     tf.keras.backend.clear_session()
-    return {"VariationalAutoencoder": "passed"}
+    return {"_GaussianSampling": "passed", "VariationalAutoencoder": "passed"}
 
 
 # Run this module's executable self-test entry point when invoked directly.

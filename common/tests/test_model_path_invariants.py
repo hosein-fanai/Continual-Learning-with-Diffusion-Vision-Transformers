@@ -194,12 +194,12 @@ class ModelPathInvariantTests(unittest.TestCase):
                 source = model_class(**options)
                 source.train(x, y, train_num=-1, epochs=1, batch_size=2,
                              callbacks_list=[], verbose=0)
-                expected_x, expected_y = source.generate(samples_per_class=2, seed=17)
+                expected_x, expected_y = source.sample(samples_per_label=2, seed=17)
                 with tempfile.TemporaryDirectory() as directory:
                     source.save(str(Path(directory) / "vae"), include_optimizer=False)
                     restored = tf.keras.models.load_model(str(Path(directory) / "vae"), compile=False)
                     self.assertEqual(list(restored.seen_classes), [2])
-                    actual_x, actual_y = restored.generate(samples_per_class=2, seed=17)
+                    actual_x, actual_y = restored.sample(samples_per_label=2, seed=17)
                     np.testing.assert_array_equal(actual_y, expected_y)
                     np.testing.assert_allclose(actual_x, expected_x, rtol=1e-6, atol=1e-6)
 

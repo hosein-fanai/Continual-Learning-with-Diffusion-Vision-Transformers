@@ -96,28 +96,16 @@ class SingleTokenLayer(BaseEmbedding):
         self._save_init_args(locals())
         derive_seed(self.seed, "single_token", "validation")
 
-        # Split target channels between token and position only for concatenated positional
-        # tokens.
         component_dim = self.dim // 2 if self.with_pos_embed and self.pos_merger_type == "concat" \
                         else self.dim
-        # Add the default ratio-one projection only when a raw frequency width needs
-        # projection and no ratio is set.
         self.mlp_ratio = 1 if self.mlp_ratio is None and self.embed_freq_dim is not None \
                         else self.mlp_ratio
-        # Project raw frequency features to the target component width unless an output
-        # width is explicit.
         self.mlp_output_dim = component_dim if self.mlp_output_dim is None and self.embed_freq_dim is not None \
                             else self.mlp_output_dim
-        # Use a learned positional token when enabled; otherwise disable position merging.
         self.pos_embed_type = "new_weight" if self.with_pos_embed else None
-        # Use the target width for embeddings unless a separate raw frequency width is
-        # configured.
         self.embed_dim = component_dim if self.embed_freq_dim is None else self.embed_freq_dim
-        # Keep an omitted component seed unseeded; otherwise normalize it to a Python
-        # integer.
         self.seed = None if self.seed is None else int(self.seed)
 
-        # Create trainable token content only when the caller will not supply token vectors.
         self.token = self.add_weight(
             shape=(1, 1, self.embed_dim), 
             initializer=initializers.RandomNormal(
@@ -129,10 +117,8 @@ class SingleTokenLayer(BaseEmbedding):
                 ),
             ),
             trainable=True, 
-            name=f"{self.name}/token_embeddings"
+            name=f"{self.name}__token_embeddings"
         ) if not self.input_as_token else None
-        # Project supplied tokens to component width by default; otherwise use the
-        # configured token projection.
         self.token_mlp = self._create_mlp(
             self.embed_dim, 
             mlp_output_dim=component_dim
@@ -142,12 +128,10 @@ class SingleTokenLayer(BaseEmbedding):
         self.pos_embed = self._create_embeddings(
             output_grid_size=1
         )
-        # Build a positional projection only when a positional table exists.
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
         ) if self.pos_embed is not None else None
 
-        # Count both content and positional channels only when a table is concatenated.
         self.output_dim *= 2 if self.pos_embed is not None and self.pos_merger_type == "concat" \
                         else 1
 
@@ -174,14 +158,11 @@ class SingleTokenLayer(BaseEmbedding):
 
         images, token = inputs
 
-        # Add a token axis to supplied vectors, or repeat the learned token across the image
-        # batch.
         x = token[:, None, :] if self.input_as_token else tf.repeat(
             self.token,
             tf.shape(images)[0],
             axis=0,
         )
-        # Project token content when configured; otherwise retain the resolved token values.
         x = self.token_mlp(
             x, 
             training=training

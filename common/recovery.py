@@ -891,7 +891,7 @@ def _model_topology_descriptor(model: object) -> dict[str, object] | None:
     return {
         "object": _recovery_descriptor(model),
         "weights": [{
-            "shape": weight.shape.as_list(),
+            "shape": list(weight.shape),
             "dtype": tf.as_dtype(weight.dtype).name,
             "trainable": bool(getattr(weight, "trainable", False))
         } for weight in weights]
@@ -926,7 +926,7 @@ def _trackable_topology_descriptor(
         result[name] = {
             "object": _recovery_descriptor(value),
             "variables": [{
-                "shape": variable.shape.as_list(),
+                "shape": list(variable.shape),
                 "dtype": tf.as_dtype(variable.dtype).name,
                 "trainable": bool(getattr(variable, "trainable", False))
             } for variable in variables]
@@ -1402,6 +1402,8 @@ def _validate_trackables(
     None-valued entries are omitted. Remaining names must be strings matching a
     Python-style identifier; actual TensorFlow trackability is checked when the
     TensorFlow checkpoint object is constructed, not by this normalization helper.
+    Keras models are adapted with their complete variable list because Keras 3
+    layer containers are not always traversed by TensorFlow checkpoints.
 
     Args:
         trackables (Mapping[str, object] | None): Dependency names mapped to model,
@@ -1409,7 +1411,8 @@ def _validate_trackables(
 
     Returns:
         dict[str, object]: Fresh mapping of non-None dependency values by validated
-        name. The dependency objects themselves are retained by reference.
+        name. Keras models are wrapped in checkpoints referencing the original
+        model and variables; other dependency objects are retained by reference.
 
     Raises:
         ValueError: If a remaining dependency name is not a valid identifier.
@@ -1426,6 +1429,17 @@ def _validate_trackables(
         if not isinstance(name, str) or not _TRACKABLE_NAME_PATTERN.fullmatch(name):
             raise ValueError(
                 f"Invalid TensorFlow checkpoint dependency name: {name!r}."
+            )
+
+        value = normalized[name]
+        # Include every Keras variable even when nested layers lack TF dependencies.
+        if isinstance(value, tf.keras.Model):
+            normalized[name] = tf.train.Checkpoint(
+                model=value,
+                variables=[
+                    variable if isinstance(variable, tf.Variable) else variable.value
+                    for variable in value.variables
+                ],
             )
 
     return normalized

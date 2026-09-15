@@ -116,7 +116,7 @@ class ResultDirectoryTests(unittest.TestCase):
                 model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
                 state = {}
                 history = train_model(config=config, model=model, trainset=dataset, valset=dataset, _run_state=state)
-                self.assertEqual(int(model.optimizer.iterations), 2)
+                self.assertEqual(int(model.optimizer.iterations.numpy()), 2)
                 output = Path(state['results_path'])
                 self.assertEqual(str(output), config.training.results_path)
                 self.assertTrue((output / 'input_config.yaml').is_file())

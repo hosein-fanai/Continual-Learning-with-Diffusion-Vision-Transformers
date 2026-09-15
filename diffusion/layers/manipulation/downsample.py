@@ -134,17 +134,15 @@ class Downsample(BaseEmbedding):
             **kwargs
         )
         self._save_init_args(locals())
+        if self.pos_embed_type is not None and self.pos_interpolation_method not in ("nearest", "bilinear"):
+            self.supports_jit = False
         require(
             self.grid_size is not None and self.grid_size >= 2, 
             "grid_size must be at least 2 for downsampling."
         )
 
-        # Mirror Keras's spatial output formula so later transformer 
-        # stages receive the grid that this layer actually produces.
         window_size = self.cnn_kernel_size if self.scaling_method == "cnn_stride" \
                     else 2
-        # Same padding rounds the strided grid up; valid 
-        # padding removes the convolution/pooling border.
         self.output_grid_size = (
             self.grid_size + self.strides - 1
         ) // self.strides if self.padding == "same" else (
@@ -156,11 +154,12 @@ class Downsample(BaseEmbedding):
             return_gate=False
         )
 
-        name = f"{self.name}/scaling_layer"
+        name = f"{self.name}__scaling_layer"
         # Preserve channels while reducing with average pooling.
         if self.scaling_method == "avg_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.AveragePooling2D(
+                pool_size=2,
                 strides=self.strides, 
                 padding=self.padding, 
                 dtype=self.dtype_policy, 
@@ -170,6 +169,7 @@ class Downsample(BaseEmbedding):
         elif self.scaling_method == "max_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.MaxPooling2D(
+                pool_size=2,
                 strides=self.strides, 
                 padding=self.padding, 
                 dtype=self.dtype_policy, 
@@ -198,15 +198,13 @@ class Downsample(BaseEmbedding):
             output_grid_size=self.output_grid_size
         )
 
-        # Concatenated positions double the component width; 
-        # disabled or additive positionspreserve it.
         self.output_dim = self.output_dim * 2 if self.pos_embed_type is not None and \
                         self.pos_merger_type == "concat" else self.output_dim
 
         self.token_projector = layers.Dense(
             self.output_dim, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}/token_projector"
+            name=f"{self.name}__token_projector"
         ) if self.dim != self.output_dim else None
         self.mlp = self._create_mlp(
             self.output_dim

@@ -7,20 +7,20 @@ placeholders in the same three-output protocol.
 """
 
 import tensorflow as tf
-from tensorflow.keras import layers
-from keras.engine.functional import Functional
+from tensorflow.keras import layers, models
 
 import math
 
 from typing import Any
 
-from common.argument_saver import ArgumentSaverModel
+from common.argument_saver import ArgumentSaver
 from common.keras_registry import register_canonical_keras_serializable
 from common.runtime import derive_seed
 
-from autoencoder.variational_autoencoder import VariationalAutoencoder
+from autoencoder.variational_autoencoder import VariationalAutoencoder, _GaussianSampling
 
 
+@register_canonical_keras_serializable(package="continual_learning")
 def _sample_latent(
     values: tuple[tf.Tensor, tf.Tensor],
     seed: int | None = None,
@@ -50,6 +50,7 @@ def _sample_latent(
     )
 
 
+@register_canonical_keras_serializable(package="continual_learning")
 def _batch_size(value: tf.Tensor) -> tf.Tensor:
     """Return the dynamic batch size used for deterministic dummy outputs.
 
@@ -64,12 +65,12 @@ def _batch_size(value: tf.Tensor) -> tf.Tensor:
 
 
 @register_canonical_keras_serializable(package="continual_learning")
-class VariationalReshaper(ArgumentSaverModel, Functional):
+class VariationalReshaper(ArgumentSaver, models.Model):
     """Flatten or restore one static image-feature shape.
 
     The model always returns ``(x, mean, log_variance)``. A KL-enabled flatten
     samples a latent and projects it back to the flattened width when
-    ``latent_dim_ratio != 1``. The projection is named ``<model-name>/z`` so
+    ``latent_dim_ratio != 1``. The projection is named ``<model-name>__z`` so
     ``DiffusionModel.sample_vae`` can retrieve it without wrapper changes.
 
     Attributes:
@@ -159,10 +160,10 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             inputs = layers.Input(
                 shape=source_shape, 
                 dtype=input_dtype, 
-                name=f"{model_name}/inputs"
+                name=f"{model_name}__inputs"
             )
             x = layers.Flatten(
-                name=f"{model_name}/flatten", 
+                name=f"{model_name}__flatten",
                 **layer_dtype_kwargs,
             )(inputs)
         # Build a vector input and unflattening path for decoder use.
@@ -170,11 +171,11 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             inputs = layers.Input(
                 shape=(flattened_dim,), 
                 dtype=input_dtype, 
-                name=f"{model_name}/inputs"
+                name=f"{model_name}__inputs"
             )
             x = layers.Reshape(
                 source_shape, 
-                name=f"{model_name}/unflatten", 
+                name=f"{model_name}__unflatten",
                 **layer_dtype_kwargs
             )(inputs)
 
@@ -184,35 +185,31 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             latent_dim = int(flattened_dim * latent_dim_ratio)
             z_mean = layers.Dense(
                 latent_dim, 
-                name=f"{model_name}/z_mean", 
+                name=f"{model_name}__z_mean",
                 **layer_dtype_kwargs
             )(x)
             z_log_var = layers.Dense(
                 latent_dim, 
-                name=f"{model_name}/z_log_var", 
+                name=f"{model_name}__z_log_var",
                 **layer_dtype_kwargs
             )(x)
-            z = layers.Lambda(
-                _sample_latent,
-                arguments={
-                    "seed": reparameterization_seed,
-                    "dtype": policy.variable_dtype,
-                },
-                name=f"{model_name}/sample",
+            z = _GaussianSampling(
+                seed=reparameterization_seed,
+                name=f"{model_name}__sample",
                 **layer_dtype_kwargs,
             )((z_mean, z_log_var))
             # Project sampled latents back to flattened width only when the latent ratio
             # changes it.
             x = layers.Dense(
                 flattened_dim, 
-                name=f"{model_name}/z", 
+                name=f"{model_name}__z",
                 **layer_dtype_kwargs
             )(z) if latent_dim_ratio != 1.0 else z
         # Return batch-sized dummy statistics when no variational latent exists.
         else:
             dummy = layers.Lambda(
                 _batch_size,
-                name=f"{model_name}/dummy",
+                name=f"{model_name}__dummy",
                 **layer_dtype_kwargs,
             )(inputs)
             z_mean, z_log_var = dummy, dummy
@@ -223,7 +220,10 @@ class VariationalReshaper(ArgumentSaverModel, Functional):
             **kwargs
         )
         # Keras 2.10 Functional rejects a dtype argument; set its owning policy after graph setup.
-        self._set_dtype_policy(policy)
+        if hasattr(self, "_set_dtype_policy"):
+            self._set_dtype_policy(policy)
+        else:
+            self.dtype_policy = policy
         self._save_init_args({
             "reshape_type": reshape_type, 
             "source_shape": source_shape, 
@@ -320,7 +320,7 @@ def run_self_tests() -> dict[str, str]:
     assert z.shape == (2, 48)
     assert mean.shape == log_var.shape == (2, 24)
     assert variational.output_shape[1][-1] == 24
-    assert variational.get_layer("depth_2_reshaper/z") is not None
+    assert variational.get_layer("depth_2_reshaper__z") is not None
     assert variational.get_config()["seed"] == 37
 
     unflatten = VariationalReshaper(

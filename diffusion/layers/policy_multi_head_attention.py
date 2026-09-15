@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from tensorflow.keras import layers
 
+import numpy as np
+
 from common.keras_registry import register_canonical_keras_serializable
 
 
@@ -30,6 +32,11 @@ class PolicyMultiHeadAttention(layers.MultiHeadAttention):
         """Keep attention-score normalization and dropout in the same compute policy."""
 
         super()._build_attention(rank)
+        # Keras 3 casts a Python float through float32 before float64. Keep the
+        # cached scale typed so the existing double-precision equation is exact.
+        if self.variable_dtype == "float64" and hasattr(self, "_inverse_sqrt_key_dim"):
+            self._inverse_sqrt_key_dim = np.float64(self._inverse_sqrt_key_dim)
+
         self._softmax = layers.Softmax(
             axis=self._softmax.axis, 
             dtype=self.dtype_policy
