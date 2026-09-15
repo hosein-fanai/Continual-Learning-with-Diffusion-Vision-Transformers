@@ -8,7 +8,7 @@ dataset:
 
 model:
   name: cnn
-  show_network_summary: false
+  show_network_summary: true
 
 optimizer:
   name: adam

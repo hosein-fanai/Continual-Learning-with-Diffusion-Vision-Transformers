@@ -281,6 +281,9 @@ class RouteController:
         self.introduced: set[int] = set()
         self._boundary: dict | None = None
         self.diagnostic_seconds = 0.
+        # Display controls follow each fit and stay outside scientific checkpoint state.
+        self.verbose: bool | int | str = False
+        self._diagnostic_stage = "validation"
 
     def _fit(self, phase: RoutePhase, steps: int, random_control: bool = False) -> dict:
         """Use existing data and training APIs for a fixed number of phase updates.
@@ -409,8 +412,21 @@ class RouteController:
         started = time.perf_counter()
         # Missing validation produces an unavailable observation instead of fabricated metrics.
         if probe is None:
+            if self.verbose:
+                print(f"Boundary diagnostics ({self._diagnostic_stage}): validation unavailable.", flush=True)
             return {"split": "unavailable"}, None, None
         x, y = probe
+        progress = None
+        if self.verbose:
+            print(
+                f"Boundary diagnostics ({self._diagnostic_stage}): "
+                f"evaluating {len(x)} validation samples...",
+                flush=True,
+            )
+            progress = tf.keras.utils.Progbar(
+                len(x), verbose=1 if self.verbose == "auto" else int(self.verbose),
+                unit_name="sample",
+            )
         features, probabilities = [], []
         for start in range(0, len(x), self.settings.batch_size):
             images = tf.convert_to_tensor(x[start:start + self.settings.batch_size])
@@ -418,6 +434,8 @@ class RouteController:
             hidden, predicted = semantic_features(wrapper.network, images, times)
             features.append(hidden.numpy())
             probabilities.append(predicted.numpy())
+            if progress is not None:
+                progress.update(min(start + self.settings.batch_size, len(x)))
         features, probabilities = np.concatenate(features), np.concatenate(probabilities)
         predictions = probabilities.argmax(axis=1)
         is_old = np.isin(y, list(old))
@@ -444,6 +462,12 @@ class RouteController:
                 list(frozen_bank), old, self.settings.probe_max_gates,
                 derive_seed(self.settings.seed, len(self.records), "alignment_probe_gates"),
             )
+            if self.verbose:
+                print(
+                    f"Boundary diagnostics ({self._diagnostic_stage}): "
+                    f"comparing frozen-target features across {len(coverage['gate_ids'])} gates...",
+                    flush=True,
+                )
             # Construct diagnostic views only once so both endpoints share exact target tensors.
             if views is None:
                 views = []
@@ -507,7 +531,18 @@ class RouteController:
                 "predictor_representation_by_view": predicted_stats,
                 "views": len(views),
             }
-        self.diagnostic_seconds += time.perf_counter() - started
+        elapsed = time.perf_counter() - started
+        self.diagnostic_seconds += elapsed
+        if self.verbose:
+            measures = [f"accuracy={result['clean_accuracy']:.4f}"]
+            for group in ("old", "new"):
+                value = result[f"{group}_accuracy"]
+                measures.append(f"{group}_accuracy={value:.4f}" if value is not None else f"{group}_accuracy=unavailable")
+            print(
+                f"Boundary diagnostics ({self._diagnostic_stage}) finished in {elapsed:.1f}s: "
+                + " - ".join(measures),
+                flush=True,
+            )
         return result, features, views
 
     def _functional(self, wrapper: object, probe: tuple | None, old: set[int], gates: list[int]) -> tuple:
@@ -565,6 +600,9 @@ class RouteController:
         """
 
         self.diagnostic_seconds = 0.
+        self._diagnostic_stage = "before joint training"
+        if self.verbose:
+            print("Boundary diagnostics: selecting validation probes before joint training...", flush=True)
         started = time.perf_counter()
         probe = self._probe_data(validation, wrapper.seen_classes)
         old = set(self.introduced)
@@ -662,6 +700,7 @@ class RouteController:
 
         started, previous_seconds = time.perf_counter(), self.diagnostic_seconds
         old = set(self.introduced)
+        self._diagnostic_stage = "after consolidation" if endpoint == "post_consolidation" else "final task boundary"
         final, features = self._functional(wrapper, boundary["probe"], old, boundary["gate_coverage"]["gate_ids"])
         record["functional_drift"] = {
             "scope": "fixed permitted validation cohort; clean inputs; pre_joint is after head expansion",
@@ -684,6 +723,8 @@ class RouteController:
             features.nbytes for features in (boundary["pre_features"], post_features) if features is not None
         )
         self._boundary = None
+        if self.verbose:
+            print(f"Route boundary diagnostics complete: {self.diagnostic_seconds:.1f}s total.", flush=True)
 
     def run(self, wrapper: object, dataset: tf.data.Dataset, fit_kwargs: dict) -> dict:
         """Execute missing phases before common evaluates or snapshots this increment.
@@ -708,6 +749,7 @@ class RouteController:
         """
 
         started = time.perf_counter()
+        self.verbose = fit_kwargs.get("verbose", self.verbose)
         settings = self.settings
         joint_updates = int(fit_kwargs.get("route_joint_updates", 0))
         seen = set(range(wrapper.network.num_classes))
@@ -736,6 +778,7 @@ class RouteController:
             boundary.update(pre_joint={"availability": "pre_joint_hook_not_called"},
                             pre_features=None, old_gate_parameters=None, before_joint_seconds=0.)
         probe = boundary["probe"]
+        self._diagnostic_stage = "after joint training"
         post_joint, post_features = self._functional(wrapper, probe, old, boundary["gate_coverage"]["gate_ids"])
         # Joint training changed old modulation parameters.
         if boundary["old_gate_parameters"] is not None and boundary["old_gate_parameters"] != self._old_gate_digest(old):
@@ -850,10 +893,12 @@ class RouteController:
             derive_seed(settings.seed, len(self.records), "consolidation"),
             target=target, frozen_bank=frozen_bank,
         )
+        self._diagnostic_stage = "before consolidation"
         record["before_consolidation"], before_features, views = self._probe(
             wrapper, probe, old, target, frozen_bank, consolidation.predictor
         )
         record["consolidation"] = self._fit(consolidation, settings.consolidation_steps)
+        self._diagnostic_stage = "after consolidation"
         record["after_consolidation"], after_features, _ = self._probe(
             wrapper, probe, old, target, frozen_bank, consolidation.predictor, views
         )

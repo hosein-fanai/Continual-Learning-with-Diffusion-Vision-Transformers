@@ -337,6 +337,7 @@ class ExperimentalController:
         """
         from semantic_consolidation.experimental_diagnostics import FixedHiddenProbe
         self.project, self.settings, self.seed = project, dict(values), seed
+        self.verbose = getattr(getattr(project, "training", None), "verbose", False)
         self.bundle = bundle
         self.probe = FixedHiddenProbe(per_class=values.get("probe_per_class", 8),
                                      batch_size=values.get("batch_size", 32), seed=seed)
@@ -372,6 +373,11 @@ class ExperimentalController:
             KeyError: If a supplied label is absent from the wrapper mapping.
         """
         from semantic_consolidation.extensions import _validation_arrays
+        self.verbose = kwargs.get(
+            "verbose", getattr(getattr(self.project, "training", None), "verbose", False)
+        )
+        if self.verbose:
+            print("Boundary diagnostics: preparing held-out validation data...", flush=True)
         self.validation = _validation_arrays(wrapper, validation_data)
         self.accepting_candidates = False
         self.fit_started = time.perf_counter()
@@ -382,7 +388,8 @@ class ExperimentalController:
             result["callbacks"] = list(kwargs.get("callbacks") or []) + [_LearningCurve(self, wrapper)]
         return result
 
-    def _classify(self, wrapper: object, images: np.ndarray, labels: object) -> tuple[dict, dict]:
+    def _classify(self, wrapper: object, images: np.ndarray, labels: object, *,
+                  verbose: bool | int | str = False) -> tuple[dict, dict]:
         """Evaluate the clean primary classifier and report old/new outcomes and work.
 
         Args:
@@ -392,6 +399,8 @@ class ExperimentalController:
                 scale, normally float32 NHWC values in [-1, 1].
             labels (object): Sparse integer label vector aligned with the image rows; the label
                 convention for this operation is described above.
+            verbose (bool | int | str): Keras-style progress verbosity for classifier batches;
+                defaults to quiet for per-epoch learning-curve observations.
 
         Returns:
             observation (tuple[dict, dict]): (outcomes, cost): JSON-compatible dictionaries of
@@ -402,7 +411,7 @@ class ExperimentalController:
         """
         from semantic_consolidation.evaluation import EnsembleEvaluationSettings, _predict
         settings = EnsembleEvaluationSettings(batch_size=self.settings.get("batch_size", 32), seed=self.seed)
-        probabilities, cost = _predict(wrapper, images, settings, None, "section11")
+        probabilities, cost = _predict(wrapper, images, settings, None, "section11", verbose=verbose)
         return classification_outcomes(probabilities, labels, self.old_count,
                                        self.settings.get("ece_bins", 15)), cost
 
@@ -478,17 +487,31 @@ class ExperimentalController:
         images, labels = self.validation
         fit_seconds = time.perf_counter() - self.fit_started
         started = time.perf_counter()
-        outcome, cost = self._classify(wrapper, images, labels)
+        if self.verbose:
+            print(f"Boundary diagnostics (task {len(self.records) + 1}): "
+                  f"validation evaluation on {len(images)} images", flush=True)
+        outcome, cost = self._classify(wrapper, images, labels, verbose=self.verbose)
+        if self.verbose:
+            metrics = ", ".join(
+                f"{name}={outcome[name]:.4f}" if outcome.get(name) is not None else f"{name}=unavailable"
+                for name in ("accuracy", "old_accuracy", "new_accuracy", "ece")
+            )
+            print(f"Validation: {metrics}", flush=True)
+            print("Boundary diagnostics: fixed hidden-feature probes", flush=True)
         inverse_labels = {dense: original for original, dense in wrapper.seen_classes.items()}
         hidden_labels = np.asarray([inverse_labels[int(label)] for label in labels], dtype=np.int64)
         hidden = self.probe.observe(wrapper, images, hidden_labels, len(self.records) + 1)
         generation = {"available": False, "reason": "No actual generated replay before this task."}
         # Generated-memory diagnostics require actual captured replay candidates.
         if self.candidates:
+            if self.verbose:
+                print(f"Boundary diagnostics: generated replay audit on {len(self.candidates)} images", flush=True)
             gx = np.stack([row[2] for row in self.candidates])
             gy = np.asarray([row[0] for row in self.candidates], dtype=np.int64)
             settings = EnsembleEvaluationSettings(batch_size=self.settings.get("batch_size", 32), seed=self.seed)
-            probabilities, generation_cost = _predict(wrapper, gx, settings, None, "section11-generated")
+            probabilities, generation_cost = _predict(
+                wrapper, gx, settings, None, "section11-generated", verbose=self.verbose
+            )
             generation = generated_memory_diagnostics(gx, gy, list(range(self.old_count)),
                 real_images=images, real_labels=labels, probabilities=probabilities,
                 seed=self.seed, max_per_class=self.settings.get("generation_per_class", 8))
@@ -497,6 +520,10 @@ class ExperimentalController:
                                "classifier": "current learner primary head; internal label consistency, not independent semantic labels",
                                "prediction_cost": generation_cost})
             self.representatives.append((len(self.records) + 1, gx, gy))
+        elif self.verbose:
+            print("Boundary diagnostics: generated replay audit unavailable (no captured replay)", flush=True)
+        if self.verbose:
+            print("Boundary diagnostics: resource accounting", flush=True)
         route = getattr(wrapper, "route_controller", None)
         memory = getattr(wrapper, "memory_controller", None)
         bank = getattr(route, "bank", None)
@@ -529,6 +556,8 @@ class ExperimentalController:
                               "generated_replay_sampling": self.sampling_seconds,
                               "boundary_diagnostics": time.perf_counter() - started}}
         self.records.append(record)
+        if self.verbose:
+            print(f"Boundary diagnostics complete in {record['seconds']['boundary_diagnostics']:.2f}s", flush=True)
         self.old_count = wrapper.network.num_classes
         self.candidates.clear()
         self.generated_counts.clear()

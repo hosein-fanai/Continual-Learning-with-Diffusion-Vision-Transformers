@@ -428,6 +428,12 @@ Use the public runner to reconstruct a fresh model for a normal resume.
 
 ## Reading the corrected diagnostics
 
+Boundary diagnostics follow `training.verbose`: `0` keeps evaluations quiet;
+`1` (or `true`) shows progress, and `2` shows completed progress summaries.
+Route probes and the experimental observer identify each evaluation stage and
+print measured accuracy and elapsed time. These display settings do not change
+the diagnostic cohorts, calculations, or training updates.
+
 New records use `diagnostic_schema_version: 2`. Old `unweighted_infonce` values
 compared raw hidden features before training with predictor features afterward;
 they must not be interpreted as deployed-representation improvement. That

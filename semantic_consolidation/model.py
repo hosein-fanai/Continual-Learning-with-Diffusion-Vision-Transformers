@@ -381,6 +381,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         before = int(optimizer_iterations(self.optimizer).numpy())
         # Capture the pre-joint feature boundary only when semantic phases are attached.
         if self.route_controller is not None:
+            self.route_controller.verbose = kwargs.get("verbose", True)
             self.route_controller.before_joint(self, kwargs.get("validation_data"))
         extensions = self.section10_controller
         # Opt-in scheduling preserves the existing fit and optimizer implementation.

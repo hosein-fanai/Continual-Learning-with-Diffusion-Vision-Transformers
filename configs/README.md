@@ -118,7 +118,7 @@ from common.learner import continually_learn
 
 config = Config(
     dataset={"name": "cifar10", "preprocess": "min-max"}, 
-    model={"name": "cnn", "show_network_summary": False}, 
+    model={"name": "cnn"},
     training={
         "task": "continual",
         "epochs": 20,

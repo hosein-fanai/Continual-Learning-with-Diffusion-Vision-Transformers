@@ -49,6 +49,10 @@ because dimensions, optimizer schedules, paths, progressive training, and
 continual settings are resolved consistently. Exact fields and edge cases are
 documented by each function and configuration dataclass.
 
+Model construction prints architecture summaries by default in both modes.
+Set `show_network_summary: false` under `model` in YAML, or pass
+`show_network_summary=False` to `get_model` in direct-keyword mode to suppress them.
+
 ## Datasets
 
 `load_mnist`, `load_fmnist`, `load_cifar10`, and `load_cifar100` return:
@@ -212,6 +216,10 @@ accuracy and its task matrix use the same predictions. Ensemble accuracy is
 task-balanced, and singleton-first classification scores remain unavailable
 until at least two classes have been introduced.
 
+`training.verbose` also controls replay-generation progress. Zero keeps it quiet;
+nonzero values show candidate generation or cache loading and elapsed time.
+Diffusion replay additionally shows batch counts and reverse-diffusion steps.
+
 For a diffusion classifier with an active distillation token and positive
 teacher loss, set `continually_learn.use_distillation=True`. Task one may start
 teacher-free; each following task snapshots the completed
@@ -230,7 +238,7 @@ from common.learner import continually_learn
 
 config = Config(
     dataset={"name": "cifar10", "preprocess": "fixed-min-max"},
-    model={"name": "cnn", "show_network_summary": False},
+    model={"name": "cnn"},
     training={"task": "continual", "epochs": 20},
     continually_learn={
         "class_num": 10,

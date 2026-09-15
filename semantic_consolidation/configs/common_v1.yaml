@@ -12,7 +12,7 @@ dataset:
 model:
   name: dit_classifier
   wrapper_name: diffusion_classifier
-  show_network_summary: false
+  show_network_summary: true
   kwargs:
     use_cfg: true
     timesteps: 1000

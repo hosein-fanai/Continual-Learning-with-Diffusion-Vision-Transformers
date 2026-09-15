@@ -791,7 +791,8 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         x: object | None = None, 
         y: object | None = None, 
-        verbose: int | bool = True
+        original_labels: Mapping[object, object] | None = None,
+        verbose: int | bool = True,
     ) -> None:
         """Discover labels and reconstruct a dynamic network before fitting.
 
@@ -808,6 +809,11 @@ class DiffusionModel(ArgumentSaverModel):
             y (object | None): Separate Keras labels.  When supplied, these take
                 precedence over labels contained in ``x``.
                 Defaults to ``None``.
+            original_labels (Mapping[object, object] | None): Input-label to
+                original dataset-label mapping when a caller has remapped its
+                targets. Used only for reporting; class discovery and head
+                indices still use the input labels. Must cover each new label.
+                Defaults to ``None``, which reports the input labels directly.
             verbose (int | bool): Whether to print newly discovered labels.
                 Defaults to ``True``.
 
@@ -818,6 +824,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         Raises:
             ValueError: Dynamic label discovery receives a dataset known to be infinite.
+            KeyError: original_labels is supplied but omits a newly discovered label.
             Exception: Incompatible label tensors or delegated network growth failures
                 propagate.
         """
@@ -863,13 +870,23 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Refresh symbolic outputs, optimizer variables, and cached traces once.
         if len(new_classes) > 0:
-            self._rebuild_classes(len(self.seen_classes) + len(new_classes))
+            # Resolve dataset identities before growth so incomplete reporting 
+            # metadata cannot leave the vocabulary partially updated.
+            discovered_labels = new_classes if original_labels is None else [
+                original_labels[label] 
+                for label in new_classes
+            ]
+            self._rebuild_classes(
+                len(self.seen_classes) + 
+                len(new_classes)
+            )
+
             for real_label in new_classes:
                 self.seen_classes[real_label] = len(self.seen_classes)
 
             # Report the labels added during this scan when requested.
             if verbose:
-                print("Found new classes:", new_classes)
+                print("Found new classes:", discovered_labels)
 
             self._register_optimizer_variables()
             self.train_function = None
@@ -4342,7 +4359,7 @@ class DiffusionModel(ArgumentSaverModel):
         for i in range(steps):
             # Report reverse-diffusion progress when requested.
             if verbose:
-                print(f"\rSteps: {i+1}/{steps}", end="")
+                print(f"\rSteps: {i+1}/{steps}", end="", flush=True)
 
             t = ts[i]
             t_next = ts[i + 1] if i < len(ts) - 1 else 0
@@ -4402,7 +4419,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Finish the in-place progress line after sampling.
         if verbose:
-            print()
+            print(flush=True)
 
         outputs = [self.postprocess(x0)]
         # Append noisy-state history only when requested.

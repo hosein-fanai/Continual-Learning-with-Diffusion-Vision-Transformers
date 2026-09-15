@@ -357,6 +357,8 @@ def _predict(
     settings: EnsembleEvaluationSettings,
     horizon: int | None,
     stream: str,
+    *,
+    verbose: bool | int | str = False,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Predict with existing APIs and account for each classifier invocation.
 
@@ -377,6 +379,8 @@ def _predict(
             exactly clean primary-head inference.
         stream (str): Named random-stream component separating calibration and reporting
             draws.
+        verbose (bool | int | str): Keras-style progress verbosity: False/0 is quiet,
+            True/1 or "auto" updates progress, and 2 prints only completion.
 
     Returns:
         prediction (tuple[np.ndarray, dict[str, object]]): (probabilities, cost): float64
@@ -404,6 +408,9 @@ def _predict(
     factor = network.num_classes + 1 if horizon is not None and settings.separate_probas else 1
     batches = math.ceil(len(samples) / settings.batch_size)
     probabilities = []
+    progress = tf.keras.utils.Progbar(
+        len(samples), verbose=1 if verbose == "auto" else int(verbose), unit_name="sample"
+    ) if verbose else None
     started = time.perf_counter()
     for start in range(0, len(samples), settings.batch_size):
         batch = tf.convert_to_tensor(samples[start:start + settings.batch_size], dtype=network.compute_dtype)
@@ -423,6 +430,8 @@ def _predict(
         # Validate before correcting only floating-point row-sum roundoff.
         probability = _probability_matrix(probability)
         probabilities.append(probability / probability.sum(axis=1, keepdims=True))
+        if progress is not None:
+            progress.update(min(start + settings.batch_size, len(samples)))
     elapsed = time.perf_counter() - started
     return np.concatenate(probabilities), {
         "sample_count": len(samples),

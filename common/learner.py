@@ -863,6 +863,7 @@ def _sample_diffusion_replay(
     batch_size: int,
     seed: int | None,
     empty_samples: np.ndarray,
+    verbose: bool | int = False,
 ) -> np.ndarray:
     """Generate aligned replay images in bounded label-conditioned batches.
 
@@ -879,6 +880,8 @@ def _sample_diffusion_replay(
             for each chunk. None is forwarded to sample, which falls back to the model seed.
         empty_samples (np.ndarray): Correctly shaped empty loader array returned by identity
             when no labels are requested.
+        verbose (bool | int): Nonzero values print batch and reverse-step progress.
+            Defaults to ``False``; the task runner supplies training verbosity.
 
     Returns:
         np.ndarray: Generated samples concatenated in label order, or the supplied
@@ -887,12 +890,20 @@ def _sample_diffusion_replay(
     """
 
     chunks = []
-    for chunk_index, start in enumerate(range(0, len(labels), batch_size)):
+    batch_starts = range(0, len(labels), batch_size)
+    for chunk_index, start in enumerate(batch_starts):
         chunk_labels = labels[start:start + batch_size]
+        if verbose:
+            print(
+                f"Replay generation batch {chunk_index + 1}/{len(batch_starts)} "
+                f"({len(chunk_labels)} samples)",
+                flush=True,
+            )
         chunks.append(generative_model.sample(
             network_name=generative_model.test_network_name,
             labels=chunk_labels + int(generative_model.use_cfg),
             seed=derive_seed(seed, "replay_sample_chunk", chunk_index),
+            verbose=bool(verbose),
         ).numpy())
 
     # Concatenate generated replay chunks; preserve the empty sample shape otherwise.
@@ -1218,8 +1229,9 @@ def _run_continual_tasks(
             ``None``.
         plot_results (bool): Whether to display the final accuracy trajectory after
             completing tasks. Defaults to ``True``.
-        verbose (bool | int): Training/reporting verbosity and whether task summaries and
-            history plots are displayed. Defaults to ``True``.
+        verbose (bool | int): Training/reporting verbosity, replay-generation progress,
+            and whether task summaries and history plots are displayed.
+            Defaults to ``True``.
         generative_model (tf.keras.Model | None): Conditioned VAE, raw supported diffusion
             network, or diffusion wrapper; None selects standalone classification without a
             generator. Defaults to ``None``.
@@ -2901,7 +2913,11 @@ def _run_continual_tasks(
         if isinstance(generative_model, DiffusionModel):
             # The schedule owns vocabulary order. A sampled generator pool may
             # omit a new class; discovering it later would reorder class logits.
-            generative_model._check_new_labels(y=np.asarray(new_classes), verbose=verbose)
+            generative_model._check_new_labels(
+                y=np.asarray(new_classes), 
+                original_labels=dict(zip(new_classes, original_task_groups[task_index])), 
+                verbose=verbose
+            )
 
         # Reset the final topology's streams after boundary reconstruction.
         _reset_task_random_streams(generative_model, task_seed)
@@ -3092,6 +3108,8 @@ def _run_continual_tasks(
             # Read mode, or an existing automatic cache, supplies the candidate pool from
             # disk.
             if read_cached_pool:
+                if verbose and candidate_count:
+                    print(f"Loading {candidate_count} replay candidates from cache...", flush=True)
                 # The read branch ignores candidate x bytes; only exact count,
                 # stream seed, class set, and archive checksums authenticate it.
                 x_buffer, y_buffer, cache_path = _cached_replay_candidates(
@@ -3106,6 +3124,8 @@ def _run_continual_tasks(
                 )
             # Without a readable candidate cache, generate a fresh replay pool.
             else:
+                if verbose and candidate_count:
+                    print(f"Generating {candidate_count} replay candidates...", flush=True)
                 # VAE generation exposes a per-class API; reduce only the
                 # opt-in non-divisible fixed-total case to an exact pool.
                 # Preserve a correctly shaped pool for an explicit zero budget.
@@ -3143,6 +3163,7 @@ def _run_continual_tasks(
                         batch_size,
                         candidate_seed,
                         x_train[:0],
+                        verbose=verbose,
                     )
                     # Restore images to the shared loader preprocessing space.
                     # Convert generated diffusion values only when rows exist.
@@ -3171,6 +3192,12 @@ def _run_continual_tasks(
             task_resource["seconds"]["generator_sampling"] = float(
                 time.perf_counter() - sample_started
             )
+            if verbose and candidate_count:
+                print(
+                    f"Replay candidates ready: {len(x_buffer)} samples "
+                    f"in {task_resource['seconds']['generator_sampling']:.1f}s",
+                    flush=True,
+                )
             task_resource["replay"]["cache_path"] = cache_path
             candidate_ids = _label_ids(y_buffer)
 

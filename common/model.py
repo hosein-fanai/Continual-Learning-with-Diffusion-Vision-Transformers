@@ -726,8 +726,9 @@ def get_model(
         ``classifier_name=None`` selects DNN for VAE replay and CNN otherwise.
         ``onehot_labels=False`` selects sparse classifier loss; conditioned
         VAEs require their separate one-hot conditioning inputs.
-        ``loss_function="mse"``, ``show_network_summary=False``, and
-        ``weights_path=None`` disable summaries/weight restoration by default.
+        ``loss_function="mse"`` selects mean squared error.
+        ``show_network_summary=True`` prints architecture summaries after construction;
+        ``weights_path=None`` skips initial weight restoration.
         Optimizer arguments follow ``_make_optimizer``; the optimizer name
         comes from ``optimizer_name`` or ``optimizer`` (default ``"adam"``).
         ``seed=None`` keeps unseeded behavior, ``dtype_policy`` retains the
@@ -878,7 +879,7 @@ def get_model(
         trainset_len = kwargs.get("trainset_len")
         onehot_labels = data_contract["onehot_labels"]
         loss_function = kwargs.get("loss_function", "mse")
-        show_network_summary = kwargs.get("show_network_summary", False)
+        show_network_summary = kwargs.get("show_network_summary", True)
         weights_path = kwargs.get("weights_path")
 
         # A direct continual bundle uses the same declared vocabulary as its learner.

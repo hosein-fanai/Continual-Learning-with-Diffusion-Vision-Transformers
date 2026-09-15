@@ -2123,7 +2123,9 @@ class TrainingConfig:
         deterministic_ops (bool): Request deterministic TensorFlow kernels when supported.
             Continual runs still derive every random source from ``continually_learn.seed``.
             Defaults to ``False``.
-        verbose (int): Keras and project reporting verbosity. Defaults to ``1``.
+        verbose (int): Keras, replay-generation, boundary-diagnostic, and project
+            reporting verbosity.
+            Defaults to ``1``.
         patience (int): Early-stopping patience; ``0`` disables it. Defaults to ``0``.
         monitor (str | None): Ordinary early-stopping metric. None selects val_loss when an
             explicit validation dataset exists and loss otherwise; progressive pacing uses

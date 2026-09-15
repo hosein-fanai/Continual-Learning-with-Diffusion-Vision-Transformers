@@ -3793,8 +3793,7 @@ def _build_trial_config(
             "wrapper_kwargs": wrapper_kwargs, 
             "classifier_name": classifier_name, 
             "classifier_kwargs": classifier_kwargs, 
-            "loss_function": loss_function, 
-            "show_network_summary": False
+            "loss_function": loss_function,
         }, 
         optimizer=optimization["optimizer"], 
         training={
