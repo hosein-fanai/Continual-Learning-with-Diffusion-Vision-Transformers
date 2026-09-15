@@ -1,0 +1,9 @@
+# Replace consolidation's alignment term by zero, retaining supervised CE steps.
+# Acquisition and unused semantic forward/loss work still execute and are counted.
+base_config: ../common_v1.yaml
+route:
+  condition: no_consolidation
+  acquisition_steps: 100
+  consolidation_steps: 100
+  batch_size: 32
+  noise_levels: [0]

@@ -1,0 +1,61 @@
+# Section 10 pilot: fixed budgets, drift timing/selection and same-checkpoint evaluation.
+# These are unvalidated development settings, not a benchmark recipe.
+base_config: common_v1.yaml
+route:
+  condition: learned
+  acquisition_steps: 100
+  consolidation_steps: 100
+  batch_size: 32
+  learning_rate: 0.001
+  temperature: 0.1
+  alignment_weight: 1.0
+  ce_weight: 1.0
+  orthogonality_weight: 1.0
+  gain_limit: 1.0
+  bias_limit: 1.0
+  modulation_init_std: 0.02
+  acquisition_noise_level: 0
+  ce_noise_level: 0
+  noise_levels:
+  - 0
+  reliability: alpha_bar
+  reliability_floor: 0.05
+  consolidation_scope: semantic
+  acquisition_objective: contrastive
+  retain_modulators: true
+  probe_batches: 4
+  extensions:
+    schedule:
+      mode: drift
+      wake_updates: 32
+      replay_updates: 32
+      wake_block_updates: 8
+      replay_block_updates: 8
+      batch_size: 32
+      drift_threshold: 0.05
+    replay:
+      strategy: drift
+      candidate_multiplier: 2
+      batch_size: 32
+      noise_levels:
+      - 0
+      - 50
+      quality_quantile: 0.0
+      class_coverage: true
+      min_per_class: 2
+    evaluation:
+      enabled: true
+      horizons:
+      - 1
+      - 4
+      noise_draws: 1
+      batch_size: 32
+      seed: 17
+      calibration_fraction: 0.2
+    reselect_each_wake: false
+    quality_fit_split: training
+common:
+  continually_learn:
+    replay_candidate_multiplier: 2
+  training:
+    results_path: ./results/semantic_consolidation_extensions_cifar10

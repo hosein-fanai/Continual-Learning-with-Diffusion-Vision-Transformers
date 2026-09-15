@@ -1,0 +1,51 @@
+# Section 10 CIFAR-100 development configuration; no efficacy claim.
+base_config: common_v1.yaml
+common:
+  dataset:
+    name: cifar100
+  continually_learn:
+    class_num: 100
+    class_order: null
+    task_size: 10
+    replay_candidate_multiplier: 2
+  training:
+    results_path: ./results/semantic_consolidation_extensions_cifar100
+route:
+  condition: learned
+  acquisition_steps: 100
+  consolidation_steps: 100
+  batch_size: 32
+  noise_levels:
+  - 0
+  reliability: alpha_bar
+  consolidation_scope: semantic
+  extensions:
+    schedule:
+      mode: drift
+      wake_updates: 32
+      replay_updates: 32
+      wake_block_updates: 8
+      replay_block_updates: 8
+      batch_size: 32
+      drift_threshold: 0.05
+    replay:
+      strategy: drift
+      candidate_multiplier: 2
+      batch_size: 32
+      noise_levels:
+      - 0
+      - 50
+      quality_quantile: 0.0
+      class_coverage: true
+      min_per_class: 2
+    evaluation:
+      enabled: true
+      horizons:
+      - 1
+      - 4
+      noise_draws: 1
+      batch_size: 32
+      seed: 17
+      calibration_fraction: 0.2
+    reselect_each_wake: false
+    quality_fit_split: training

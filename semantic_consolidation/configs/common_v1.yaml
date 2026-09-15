@@ -1,0 +1,120 @@
+# Shared replay + classifier-KD + noise-KD platform. No external image prior.
+# These are starting hyperparameters, not a validated benchmark recipe.
+dataset:
+  name: cifar10
+  preprocess: fixed-standardize
+  validation_ratio: 0.2
+  batch_size: 64
+  shuffle_buffer: 10000
+  return_features: false
+  onehot_labels: false
+
+model:
+  name: dit_classifier
+  wrapper_name: diffusion_classifier
+  show_network_summary: false
+  kwargs:
+    use_cfg: true
+    timesteps: 1000
+    patch_size: 4
+    dim: 64
+    depth: 2
+    mha_num_heads: 4
+    vit_block_mlp_ratio: 2.0
+    clf_depth: 1
+    clf_mha_num_heads: 4
+    clf_vit_block_mlp_ratio: 2.0
+    classifier_only_cls_token: true
+    classifier_only_distil_token: true
+    clf_cls_token_type: new_weight
+    clf_distil_token_type: new_weight
+    classifier_mlp_ratio: 1
+    classifier_mlp_activation_func: tanh
+    dropout_rate: 0.0
+    drop_prob: 0.0
+    clf_drop_prob: 0.0
+  wrapper_kwargs:
+    use_ema: false
+    test_network_name: raw
+    scheduler_name: clipped_cosine
+    p_uncond: 0.5
+    test_steps: 50
+    test_eta: 0.0
+    test_cfg_scale: 3.0
+    noise_loss_coef: 1.0
+    noise_distil_loss_coef: 0.1
+    image_loss_coef: 0.0
+    kl_loss_coef: 0.0
+    ctr_loss_coef: 0.0
+    clf_loss_coef: 1.0
+    clf_distil_loss_coef: 0.1
+    clf_distil_type: soft
+    clf_distil_temperature: 2.0
+    clf_distil_scope: replay_only
+    clf_acc_coef: 1.0
+    clf_distil_acc_coef: 0.0
+    ctr_acc_coef: 0.0
+    mask_by_nulls: true
+    train_noisified_min_timesteps: 0
+    train_noisified_max_timesteps: -1
+    test_noisified_min_timesteps: 0
+    test_noisified_max_timesteps: 0
+
+optimizer:
+  name: adam
+  schedule: constant
+  initial_learning_rate: 0.0003
+
+training:
+  task: continual
+  fit_method: fit
+  epochs: 20
+  seed: 41
+  dtype_policy: float32
+  deterministic_ops: true
+  patience: 0
+  verbose: 0
+  use_valset: true
+  show_images: false
+  save_gifs: false
+  report_every_epoch: false
+  save_weights: true
+  results_path: ./results/semantic_consolidation
+
+continually_learn:
+  class_num: 10
+  class_order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  task_size: 2
+  seed: 41
+  remove_prev_classes: true
+  use_buffer: false
+  use_generative_model_classifier: true
+  use_generative_replay: true
+  use_distillation: true
+  snapshot_network_name: raw
+  replay_budget_mode: fixed_total
+  replay_current_examples: 1024
+  replay_old_examples: 1024
+  replay_candidate_multiplier: 1
+  replay_selection: uniform
+  generative_model_kwargs:
+    train_num: -1
+    samples_per_class: 1
+  optimizer_steps_per_epoch: null
+  experiment_phase: development
+  use_ensemble_accuracy: false
+  evaluate_ensemble_accuracy: false
+  return_details: true
+  plot_results: false
+  mechanistic_metrics: true
+  mechanistic_max_samples: 128
+
+reporting:
+  show_history_plot: false
+  save_history_plot: false
+  show_final_images: false
+  save_final_images: false
+  save_final_gifs: false
+  run_trainset_eval: false
+  run_valset_eval: true
+  save_csv: true

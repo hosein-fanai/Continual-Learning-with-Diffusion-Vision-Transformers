@@ -1,0 +1,59 @@
+# Real MNIST by default; integration tests replace only downloaded pixels.
+# Two tasks and real generated replay exercise every route phase cheaply.
+base_config: common_v1.yaml
+common:
+  dataset:
+    name: mnist
+    batch_size: 4
+    max_train_samples: 48
+    max_val_samples: 64
+  model:
+    kwargs:
+      timesteps: 8
+      patch_size: 7
+      dim: 8
+      depth: 1
+      mha_num_heads: 2
+      vit_block_mlp_ratio: 1.0
+      clf_mha_num_heads: 2
+      clf_vit_block_mlp_ratio: 1.0
+      compile_args:
+        run_eagerly: true
+    wrapper_kwargs:
+      test_steps: 2
+  training:
+    epochs: 1
+    results_path: ./results/semantic_consolidation_section11_smoke
+  continually_learn:
+    class_num: 4
+    class_order: [2, 0, 3, 1]
+    task_size: 2
+    replay_current_examples: 12
+    replay_old_examples: 8
+    mechanistic_max_samples: 8
+route:
+  condition: learned
+  acquisition_steps: 2
+  consolidation_steps: 1
+  batch_size: 4
+  noise_levels: [0, 2]
+  probe_batches: 1
+  experimental:
+    enabled: true
+    probe_per_class: 4
+    generation_per_class: 4
+    batch_size: 8
+    ece_bins: 15
+    feature_extractor: fixed_pixels
+    learning_curves: true
+  extensions:
+    evaluation:
+      enabled: true
+      horizons: [1, 4]
+      noise_draws: 1
+      batch_size: 8
+      network_name: raw
+      head_weights: [1.0, 0.0, 0.0]
+      calibration_fraction: 0.2
+      ece_bins: 15
+      seed: 41

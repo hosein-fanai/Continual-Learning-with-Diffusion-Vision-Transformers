@@ -1,0 +1,24 @@
+# Five two-class increments; validation-only development run.
+base_config: common_v1.yaml
+route:
+  condition: learned
+  acquisition_steps: 100
+  consolidation_steps: 100
+  batch_size: 32
+  learning_rate: 0.001
+  temperature: 0.1
+  alignment_weight: 1.0
+  ce_weight: 1.0
+  orthogonality_weight: 1.0
+  gain_limit: 1.0
+  bias_limit: 1.0
+  modulation_init_std: 0.02
+  acquisition_noise_level: 0
+  ce_noise_level: 0
+  noise_levels: [0]
+  reliability: alpha_bar
+  reliability_floor: 0.05
+  consolidation_scope: semantic
+  acquisition_objective: contrastive
+  retain_modulators: true
+  probe_batches: 4

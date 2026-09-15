@@ -1,0 +1,77 @@
+# Section 10 pilot: fixed budgets, drift timing/selection and same-checkpoint evaluation.
+# These are unvalidated development settings, not a benchmark recipe.
+base_config: common_v1.yaml
+common:
+  dataset:
+    name: mnist
+    batch_size: 4
+    max_train_samples: 48
+    max_val_samples: 64
+  model:
+    kwargs:
+      timesteps: 8
+      patch_size: 7
+      dim: 8
+      depth: 1
+      mha_num_heads: 2
+      vit_block_mlp_ratio: 1.0
+      clf_mha_num_heads: 2
+      clf_vit_block_mlp_ratio: 1.0
+      compile_args:
+        run_eagerly: true
+    wrapper_kwargs:
+      test_steps: 2
+  training:
+    epochs: 1
+    results_path: ./results/semantic_consolidation_extensions_smoke
+  continually_learn:
+    class_num: 4
+    class_order:
+    - 2
+    - 0
+    - 3
+    - 1
+    task_size: 2
+    replay_current_examples: 12
+    replay_old_examples: 8
+    mechanistic_max_samples: 8
+    replay_candidate_multiplier: 2
+route:
+  condition: learned
+  acquisition_steps: 2
+  consolidation_steps: 1
+  batch_size: 4
+  noise_levels:
+  - 0
+  - 2
+  probe_batches: 1
+  extensions:
+    schedule:
+      mode: drift
+      wake_updates: 2
+      replay_updates: 2
+      wake_block_updates: 1
+      replay_block_updates: 1
+      batch_size: 4
+      drift_threshold: 0.05
+    replay:
+      strategy: drift
+      candidate_multiplier: 2
+      batch_size: 4
+      noise_levels:
+      - 0
+      - 2
+      quality_quantile: 0.0
+      class_coverage: true
+      min_per_class: 2
+    evaluation:
+      enabled: true
+      horizons:
+      - 1
+      - 2
+      noise_draws: 1
+      batch_size: 4
+      seed: 17
+      calibration_fraction: 0.5
+    reselect_each_wake: false
+    quality_fit_split: training

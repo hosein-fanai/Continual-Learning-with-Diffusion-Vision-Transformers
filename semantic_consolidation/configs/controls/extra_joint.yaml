@@ -1,0 +1,9 @@
+# Spend acquisition_steps + consolidation_steps as extra ordinary joint updates.
+# Equal optimizer counts do not imply equal examples, forward work, or runtime.
+base_config: ../common_v1.yaml
+route:
+  condition: extra_joint
+  acquisition_steps: 100
+  consolidation_steps: 100
+  batch_size: 32
+  noise_levels: [0]
