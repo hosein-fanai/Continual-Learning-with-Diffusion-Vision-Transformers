@@ -1293,6 +1293,7 @@ class DiTClassifier(DiffusionTransformer):
             None
         )
 
+        # Reject heads that cannot supply connected logits from the existing forward pass.
         if logits is None:
             raise ValueError(
                 "The classifier softmax did not expose its same-pass logits."
@@ -1447,8 +1448,8 @@ class DiTClassifier(DiffusionTransformer):
         noises: tf.Tensor | None, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
-        return_logits: bool = False, 
-        training: bool | None = None
+        training: bool | None = None,
+        return_logits: bool = False,
     ) -> tuple:
         """Compute class probabilities from main features or predicted noises.
 
@@ -1618,6 +1619,7 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             ) if self.CAC in layers_dict else h
 
+            # Align encoder query prefixes when no classifier cross connector has supplied them.
             if self.VTB in layers_dict and self.CAA in layers_dict \
             and self.CAC not in layers_dict and \
             self.clf_cross_attention_plug_type == "queries" \
@@ -1671,10 +1673,12 @@ class DiTClassifier(DiffusionTransformer):
 
             clf_features_list.append(x)
             clf_regs_list.append(z)
+            # Collect requested auxiliary logits without evaluating its head a second time.
             if return_logits:
                 clf_regs_logits_list.append(
                     self._classifier_logits(z)
                 )
+            # Record latent statistics only for variational flattening stages.
             if x_mean is not None and \
             self.clf_reshaper_ids_dict.get(i+1, "unflatten") == "flatten" \
             and bool(self.clf_reshaper_kwargs.get("add_kl", False)):
@@ -1698,6 +1702,7 @@ class DiTClassifier(DiffusionTransformer):
             classes, clf_cond, clf_features_list, 
             clf_regs_list, clf_z_vals_list
         )
+        # Evaluate the independent distillation head only when the architecture includes it.
         if self.distil_classifier is not None:
             distil_classes = self.distil_feature_extractor(
                 x, 
@@ -1709,6 +1714,7 @@ class DiTClassifier(DiffusionTransformer):
             )
 
             outputs += (distil_classes,)
+            # Include distillation logits only in explicitly requested metadata.
             if return_logits:
                 logits["distil_logits"] = self._classifier_logits(
                     distil_classes
