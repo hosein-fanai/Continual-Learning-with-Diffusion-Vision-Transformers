@@ -660,7 +660,7 @@ class TrainReportingTests(unittest.TestCase):
         """
         for epochs, fit_kwargs in ((0, {}), (1.5, {}), (True, {}), (3, {"epochs": 0})):
             with self.subTest(epochs=epochs, fit_kwargs=fit_kwargs), patch(
-                "common.train.ImageGeneratorCallback"
+                "common.train.ImageGenerator"
             ) as callback, self.assertRaisesRegex(ValueError, "positive integer"):
                 train_model(model=object(), trainset=object(), epochs=epochs, fit_kwargs=fit_kwargs)
             callback.assert_not_called()

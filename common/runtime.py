@@ -202,8 +202,8 @@ def configure_runtime(
 
     This function must run before dataset or model construction.  Setting
     ``deterministic_ops=False`` leaves TensorFlow's current process-wide
-    determinism state unchanged because TensorFlow 2.10 does not expose a
-    symmetric disable operation.
+    determinism state unchanged because TensorFlow's public API does not expose
+    a symmetric disable operation.
 
     Args:
         seed (int | None): Effective experiment seed already resolved by

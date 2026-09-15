@@ -103,10 +103,10 @@ For each returned key such as `noise_loss`, the callback writes
 `val_raw_noise_loss` into the Keras `logs` mapping. `val_x` may instead be an
 array/tensor with separate `val_y`, following that wrapper's normal evaluation
 contract. Both populated and empty mappings supplied by Keras or a caller are
-updated in place.
+updated in place. If the evaluator exposes `eval_both`, the callback enables
+it so V2 reports both generator and discriminator phases.
 
-Use the direct imports above. The old `diffusion.ImageGeneratorCallback` and
-`diffusion.RawNetworkValidationCallback` lazy exports still target removed
-modules, and `common.recovery` still recognizes only the old image callback
-class path. The renamed image callback therefore fails strict recovery
-authentication. See the [staged review](../../STAGED_REVIEW.md).
+Use the direct imports above or the lazy package exports
+`diffusion.ImageGenerator` and `diffusion.RawNetworkValidation`.
+Strict recovery recognizes the current image callback class and its stable
+configuration. See the [current audit](../../research_audit.md).

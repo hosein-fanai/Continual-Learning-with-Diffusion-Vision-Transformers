@@ -2395,11 +2395,20 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         else:
             self.unpatchifier = None
 
-    def _symbolic_outputs(self):
+    def _symbolic_outputs(self) -> tf.Tensor | dict[str, tf.Tensor]:
         """Record layer output shapes, retaining Keras tracing for raw TF ops.
 
         Child layers already exist. Mark the parent built before its symbolic
         call to avoid recursively re-entering this model's custom build method.
+
+        Returns:
+            outputs (tf.Tensor | dict[str, tf.Tensor]): Symbolic denoiser
+                output, or named prediction tensors for classifier subclasses,
+                in the active compute dtype. Shapes follow ``call`` defaults.
+
+        Raises:
+            ValueError: Model geometry or an operation remains incompatible
+                with symbolic execution after the Keras tracing fallback.
         """
 
         if not self.built:
@@ -2414,6 +2423,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         except ValueError as error:
             if "A KerasTensor cannot be used as input to a TensorFlow function" not in str(error):
                 raise
+
             return self(self.inputs)
 
     def _build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
@@ -3116,13 +3126,46 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         return names
 
     @classmethod
-    def from_config(cls, config):
-        """Restore integer depth keys after Keras serializes config as JSON."""
+    def from_config(cls, config: dict[str, object]) -> "DiffusionTransformer":
+        """Construct a model after restoring JSON-serialized depth keys.
+
+        Args:
+            config (dict[str, object]): Constructor settings. Integer-like
+                string keys in ``*_ids_dict`` mappings become integers,
+                including nested encoder/decoder settings. Other values are
+                preserved and the caller's mapping is not modified.
+
+        Returns:
+            model (DiffusionTransformer): A new instance of the invoked class
+                with the saved numeric policy and architecture. Weight values
+                must be restored separately.
+
+        Raises:
+            TypeError: Configuration cannot be copied or contains unsupported
+                constructor arguments or argument types.
+            ValueError: Constructor validation rejects the restored settings.
+        """
 
         config = deepcopy(config)
 
 
-        def restore_routes(options):
+        def restore_routes(options: dict[str, object]) -> dict[str, object]:
+            """Restore depth keys in one copied configuration mapping.
+
+            Args:
+                options (dict[str, object]): Copied constructor options;
+                    nested encoder/decoder mappings are visited recursively.
+
+            Returns:
+                restored (dict[str, object]): The same mapping, updated in
+                    place with integer keys for signed numeric depth strings.
+                    Other keys and values keep their existing types.
+
+            Raises:
+                None: Supported string-keyed configuration mappings need no
+                    further validation here; the constructor validates them.
+            """
+
             for name, value in options.items():
                 if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
                     restore_routes(value)
@@ -3132,6 +3175,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                         and key.lstrip("-").isdigit() else key: item
                         for key, item in value.items()
                     }
+
             return options
 
 

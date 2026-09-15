@@ -15,10 +15,25 @@ from diffusion.models.transformer.diffusion_transformer import DiffusionTransfor
 class JitLatentTests(unittest.TestCase):
     """Preserve advancing, reproducible latent draws and saved RNG state."""
 
-    def tearDown(self):
+    def tearDown(self) -> None:
+        """Restore the Keras session or numeric policy after this isolated test case.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+        """
+
         tf.keras.backend.clear_session()
 
-    def test_multiple_bottlenecks_and_blocks_have_unique_weight_paths(self):
+    def test_multiple_bottlenecks_and_blocks_have_unique_weight_paths(self) -> None:
+        """Keep independent sampling state paths unique across several bottlenecks and attention blocks.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         configurations = (
             dict(depth=4, vit_block_ids=[],
                  reshaper_ids_dict={1: "flatten", 2: "unflatten", 3: "flatten", 4: "unflatten"},
@@ -37,7 +52,26 @@ class JitLatentTests(unittest.TestCase):
                 self.assertEqual(len(paths), len(set(paths)))
 
     @staticmethod
-    def _fixture(kind, dtype="float32"):
+    def _fixture(
+        kind: str, dtype: str = "float32",
+    ) -> tuple[tf.keras.Model, tf.keras.Model, _GaussianSampling, tf.Tensor]:
+        """Build one real variational bottleneck and locate its checkpointed sampler.
+
+        Args:
+            kind (str): ``convolution`` selects a spatial reshaper; other fixture
+                values select the transformer token reshaper.
+            dtype (str): Keras numeric policy, default float32; float64 and
+                mixed_float16 exercise variable/compute dtype differences.
+
+        Returns:
+            fixture (tuple): Owning model, reshaper model, Gaussian sampling
+                layer, and zero input Tensor in the owner's compute dtype.
+
+        Raises:
+            StopIteration: If the constructed bottleneck has no sampling layer.
+            ValueError: If Keras rejects the requested numeric policy.
+        """
+        # The convolution fixture consumes spatial activations.
         if kind == "convolution":
             owner = VariationalReshaper(
                 "flatten", (2, 2, 2), add_kl=True, latent_dim_ratio=0.5,
@@ -45,6 +79,7 @@ class JitLatentTests(unittest.TestCase):
             )
             reshaper = owner
             shape = (2, 2, 2, 2)
+        # The transformer fixture consumes token activations.
         else:
             owner = DiffusionTransformer(
                 image_size=4, channels=1, patch_size=2, dim=4, depth=2,
@@ -60,7 +95,16 @@ class JitLatentTests(unittest.TestCase):
                        if isinstance(layer, _GaussianSampling))
         return owner, reshaper, sampler, inputs
 
-    def test_xla_draws_advance_and_reseed_under_each_numeric_policy(self):
+    def test_xla_draws_advance_and_reseed_under_each_numeric_policy(self) -> None:
+        """Check advancing finite XLA latent draws and reproducible reset under float32, float64, and mixed policies.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         for kind in ("convolution", "transformer"):
             for dtype in ("float32", "float64", "mixed_float16"):
                 with self.subTest(kind=kind, dtype=dtype):
@@ -75,7 +119,16 @@ class JitLatentTests(unittest.TestCase):
                     sampler.reset_seed(137)
                     np.testing.assert_array_equal(draw(inputs)[0].numpy(), first)
 
-    def test_xla_sampling_restores_the_next_draw_from_model_weights(self):
+    def test_xla_sampling_restores_the_next_draw_from_model_weights(self) -> None:
+        """Restore the next compiled latent draw through the owning model weight state.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         for kind in ("convolution", "transformer"):
             with self.subTest(kind=kind):
                 owner, reshaper, _, inputs = self._fixture(kind)
@@ -87,13 +140,31 @@ class JitLatentTests(unittest.TestCase):
                 owner.set_weights(weights)
                 np.testing.assert_array_equal(draw(inputs)[0].numpy(), expected)
 
-    def test_xla_sampling_preserves_gradients_to_gaussian_parameters(self):
+    def test_xla_sampling_preserves_gradients_to_gaussian_parameters(self) -> None:
+        """Verify finite nonzero compiled gradients reach each variational bottleneck parameter.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         for kind in ("convolution", "transformer"):
             with self.subTest(kind=kind):
                 _, reshaper, _, inputs = self._fixture(kind)
 
                 @tf.function(jit_compile=True)
-                def gradients(value):
+                def gradients(value: tf.Tensor) -> list[tf.Tensor | None]:
+                    """Differentiate squared sampled activation through the XLA graph.
+
+                    Args:
+                        value (tf.Tensor): Bottleneck input in its compute dtype.
+
+                    Returns:
+                        gradients (list[tf.Tensor | None]): One gradient per
+                            trainable bottleneck variable, or None if disconnected.
+                    """
                     with tf.GradientTape() as tape:
                         sample = reshaper(value, training=True)[0]
                         loss = tf.reduce_sum(tf.square(sample))
@@ -104,7 +175,16 @@ class JitLatentTests(unittest.TestCase):
                 self.assertTrue(all(np.isfinite(value.numpy()).all() for value in values))
                 self.assertTrue(any(np.any(value.numpy() != 0) for value in values))
 
-    def test_keras_round_trip_preserves_sampler_and_next_xla_draw(self):
+    def test_keras_round_trip_preserves_sampler_and_next_xla_draw(self) -> None:
+        """Round-trip native Keras models with the sampler policy and next compiled draw intact.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         for kind in ("convolution", "transformer"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
                 owner, reshaper, sampler, inputs = self._fixture(kind)
@@ -129,5 +209,6 @@ class JitLatentTests(unittest.TestCase):
                 np.testing.assert_array_equal(restored_draw(inputs)[0].numpy(), expected)
 
 
+# Run compiled latent regressions when invoked directly.
 if __name__ == "__main__":
     unittest.main()

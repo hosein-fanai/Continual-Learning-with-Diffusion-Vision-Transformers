@@ -8,8 +8,17 @@ from common.model import _get_classifier_model, get_compile_args
 
 
 class JitDefaultsTests(unittest.TestCase):
-    def test_factory_default_and_explicit_xla_training(self):
-        """The default metrics train correctly and caller JIT overrides survive."""
+    """Preserve native Keras JIT defaults and explicit compilation choices."""
+    def test_factory_default_and_explicit_xla_training(self) -> None:
+        """The default metrics train correctly and caller JIT overrides survive.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         for override in ({}, {"jit_compile": True}, {"jit_compile": False}):
             with self.subTest(override=override):
                 tf.keras.backend.clear_session()
@@ -36,5 +45,6 @@ class JitDefaultsTests(unittest.TestCase):
                 self.assertTrue(all(np.isfinite(value) for value in result.values()))
 
 
+# Run JIT factory regressions when invoked directly.
 if __name__ == "__main__":
     unittest.main()

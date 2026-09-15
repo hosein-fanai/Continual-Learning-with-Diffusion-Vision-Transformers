@@ -123,12 +123,11 @@ in `sample` or `z` in `sample_vae`.
 With `swap_noise_image=True`, `sample(...)` forwards both `add_null_label` and
 `samples_per_label` to `sample_vae(...)`, and passes `x_t` as the latent `z`.
 
-The repetition implementation is incomplete: zero and negative counts silently
-act like one, repeated empty label requests fail, and the label helper cannot
-repeat symbolic labels in graph execution. Use positive integer counts and
-nonempty labels for repeated sampling. See the
-[staged review](../../../STAGED_REVIEW.md) for the earlier findings and current
-follow-up validation.
+Repeat counts must be positive integers; boolean, fractional, zero and negative
+counts are rejected. The existing label helper uses `tf.repeat`, preserving
+empty requests and supporting symbolic label tensors. Supplied image/latent
+batches must still match the repeated labels. See the
+[current audit](../../../research_audit.md) for verification and limits.
 
 `network_name="ema"` is the default for sampling. Use `"raw"` whenever
 `use_ema=False`. With EMA enabled, a deferred raw network and its clone are
@@ -277,12 +276,6 @@ model.fit_progressively("timesteps_only", stages_num=4, x=dataset)
 model.fit_progressively(
     "resolutions_only", resolutions=[7, 14, 28], x=dataset
 )
-model.fit_progressively(
-    "depths_only", 
-    depths=["vision_transformer_block", "local_mixer"], 
-    final_epochs=1, 
-    x=dataset, 
-)
 ```
 
 Generated timestep clusters are `uniform` or `log_snr`. Fixed pacing runs every
@@ -291,7 +284,9 @@ project's batch-wise plateau callback. `stopper_mode` selects `"min"`, `"max"`,
 or `"auto"` for either callback; use `"max"` when monitoring accuracy.
 The returned `History` includes a
 `progressive_stages` record and the resolved schedules. Timestep bounds and
-resolution are restored on exit; completed depth growth remains.
+resolution are restored on exit. Legacy post-build depth growth is unsupported
+under native Keras 3; construct the full depth before fitting. See the
+[compatibility guide](../../../compatibility_migration.md).
 
 ## Joint diffusion classification
 
@@ -329,7 +324,9 @@ configured test network, accepts the `EnsembleAccuracy` options, and is also
 inherited by `DiffusionClassifierV2`; pass `network_name="raw"` or `"ema"` to
 select a network explicitly.
 
-Classifier progressive depth can target both branches:
+The legacy classifier depth specification can describe both branches. The
+following documents its format; execution on an already built model fails
+under native Keras 3 and is outside the supported training path:
 
 ```python
 depths = [{

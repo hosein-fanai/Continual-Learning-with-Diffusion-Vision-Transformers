@@ -955,13 +955,13 @@ class DiTDecoder(DiffusionTransformer):
             dtype=self.compute_dtype,
             name="encoder_cond"
         )
-        # Build rank-two symbolic inputs for flat features and rank-three inputs for token
-        # features.
+        # Build rank-two symbolic inputs for flat features 
+        # and rank-three inputs for token features.
         encoder_features = tuple(
             layers.Input(
                 shape=(dim,) if is_flat else (None, dim),
                 dtype=self.compute_dtype,
-                name=f"encoder_feature_{index}", 
+                name=f"encoder_feature_{index}"
             )
             for index, (dim, is_flat) in enumerate(zip(
                 self.encoder_feature_dims, 
@@ -969,7 +969,6 @@ class DiTDecoder(DiffusionTransformer):
             ))
         )
         self.inputs = decoder_inputs + (encoder_cond,) + encoder_features
-        # Execute the symbolic decoder graph only when construction requests a model call.
         self.outputs = self._symbolic_outputs() if call_model else None
 
         return [input_layer.shape for input_layer in self.inputs]

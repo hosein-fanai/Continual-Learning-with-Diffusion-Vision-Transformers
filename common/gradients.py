@@ -61,6 +61,7 @@ def apply_policy_gradients(
 
     # Re-enter the still-unconsumed tape so loss scaling itself is recorded.
     modern_scaling = uses_loss_scaling and hasattr(optimizer, "scale_loss")
+    # Loss-scale optimizers need the scaling operation recorded on the tape.
     if uses_loss_scaling:
         with tape:
             gradient_loss = optimizer.scale_loss(loss) if modern_scaling \
@@ -83,11 +84,13 @@ def apply_policy_gradients(
         if gradient is not None
     ]
 
+    # A wholly disconnected selected objective cannot produce a training update.
     if not pairs:
         raise ValueError(
             "The loss is disconnected from every selected variable."
         )
 
+    # Native Keras returns unscaled diagnostics while applying its own scaled gradients.
     if modern_scaling:
         # Keras 3 unscales inside apply_gradients. Only the diagnostic return
         # values are unscaled here, using the scale before it may be updated.
@@ -96,7 +99,17 @@ def apply_policy_gradients(
 
 
         def unscale(gradient: Gradient) -> Gradient:
-            """Return diagnostic gradients without densifying sparse updates."""
+            """Return diagnostic gradients without densifying sparse updates.
+
+            Args:
+                gradient (Gradient): Scaled dense tensor or IndexedSlices from
+                    the current loss-scale optimizer update.
+
+            Returns:
+                unscaled_gradient (Gradient): Original gradient representation
+                    and dtype with values divided by the pre-update loss scale.
+                    Sparse indices and dense_shape are retained unchanged.
+            """
 
             # Sparse embeddings keep their original indices and dense shape.
             if isinstance(gradient, tf.IndexedSlices):

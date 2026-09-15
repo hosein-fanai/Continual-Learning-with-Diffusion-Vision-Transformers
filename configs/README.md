@@ -290,6 +290,8 @@ initialize the incremental classifier and visible head columns. Continual
 diffusion uses it with the paired config's current raw `num_classes` and wrapper
 zero-based `seen_classes`; the wrapper rebuilds the grown raw/EMA topology before loading
 the checkpoint. Dynamic diffusion weight saving requires a `Config` and writes
-this paired `config.yaml` even when `save_config_=False`. Progressive weight
-saving follows the same final-rewrite rule so permanent depth additions are
-represented by the saved constructor mapping.
+this paired `config.yaml` even when `save_config_=False`. Curriculum saving
+rewrites the final constructor mapping. Native Keras 3 does not support the
+legacy post-build depth additions, so construct the full depth before training;
+serialization metadata does not make that growth path executable. See the
+[compatibility guide](../compatibility_migration.md).

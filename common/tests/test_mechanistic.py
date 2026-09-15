@@ -118,7 +118,14 @@ class MechanisticLabelTests(unittest.TestCase):
         self.assertEqual(result["nll"], 0.)
 
     def test_invalid_metric_labels_and_calibration_settings_fail(self) -> None:
-        """Reject ambiguous identities and undefined calibration partitions."""
+        """Reject ambiguous identities and undefined calibration partitions.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         for labels in ([.75], [True], [2 ** 63], [-1], [[1., 0., 0.]]):
             with self.subTest(labels=labels), self.assertRaises(ValueError):
@@ -133,7 +140,14 @@ class MechanisticLabelTests(unittest.TestCase):
         np.testing.assert_array_equal(retained, largest_id)
 
     def test_cka_preserves_scale_and_orthogonal_invariance(self) -> None:
-        """Both CKA algorithms agree with centered Gram alignment at extreme scales."""
+        """Both CKA algorithms agree with centered Gram alignment at extreme scales.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         rng = np.random.default_rng(7)
         for width in (3, 12):

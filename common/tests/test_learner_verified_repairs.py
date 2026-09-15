@@ -26,7 +26,15 @@ from common.tests import test_continual_integration as integration_fixtures
 
 
 def image_loader(indices: list[int], **kwargs: object) -> tuple:
-    """Return tiny canonical images with separate validation and test arrays."""
+    """Return tiny canonical images with separate validation and test arrays.
+
+    Args:
+        indices (list[int]): Original class IDs; four float32 4x4x1 rows are generated per class.
+        **kwargs (object): onehot_labels=True returns float32 width-four targets; otherwise sparse int64 IDs. Other loader options are ignored.
+
+    Returns:
+        arrays (tuple): Six NumPy arrays in train/validation/test image-label order; validation and test are independent copies.
+    """
     labels = np.repeat(np.asarray(indices, dtype="int64"), 4)
     images = np.repeat((labels[:, None] / 2. - .75).astype("float32"), 16, axis=1)
     images = images.reshape((-1, 4, 4, 1))
@@ -38,28 +46,71 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
     """A declared custom policy whose fit counter must survive task recovery."""
 
     def __init__(self, rate: float = .002) -> None:
-        """Retain immutable behavior separately from the evolving fit count."""
+        """Retain immutable behavior separately from the evolving fit count.
+
+        Args:
+            rate (float): Numerator for the rate divided by the persistent fit count, default .002.
+
+        Returns:
+            result (None): Initialize the callback and its integer zero fit count.
+        """
         super().__init__()
         self.rate, self.fit_count = rate, 0
 
     def get_recovery_config(self) -> dict:
-        """Describe the behavior without serializing framework-owned runtime objects."""
+        """Describe the behavior without serializing framework-owned runtime objects.
+
+        Returns:
+            config (dict): Immutable behavior declaration containing the floating rate.
+        """
         return {"rate": self.rate}
 
     def get_recovery_state(self) -> dict:
-        """Expose the counter needed by the next task's callback invocation."""
+        """Expose the counter needed by the next task's callback invocation.
+
+        Returns:
+            state (dict): Persistent integer fit_count required by the next training phase.
+        """
         return {"fit_count": self.fit_count}
 
     def set_recovery_state(self, state: dict) -> None:
-        """Restore the authenticated fit counter before resumed optimization."""
+        """Restore the authenticated fit counter before resumed optimization.
+
+        Args:
+            state (dict): Authenticated callback state containing integer fit_count.
+
+        Returns:
+            result (None): Replace the live fit counter.
+
+        Raises:
+            KeyError: If fit_count is absent.
+        """
         self.fit_count = state["fit_count"]
 
     def on_train_begin(self, logs: dict | None = None) -> None:
-        """Count each task fit across interruption and recovery."""
+        """Count each task fit across interruption and recovery.
+
+        Args:
+            logs (dict | None): Optional Keras metric mapping, unused by this counter.
+
+        Returns:
+            result (None): Increment fit_count once for this fit.
+        """
         self.fit_count += 1
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
-        """Make restored persistent state materially affect the optimizer updates."""
+        """Make restored persistent state materially affect the optimizer updates.
+
+        Args:
+            epoch (int): Zero-based epoch index, unused by this per-fit policy.
+            logs (dict | None): Optional Keras logs, unused.
+
+        Returns:
+            result (None): Set the optimizer learning rate to rate/fit_count in its variable dtype.
+
+        Raises:
+            ZeroDivisionError: If invoked before any on_train_begin call.
+        """
         self.model.optimizer.learning_rate.assign(self.rate / self.fit_count)
 
 
@@ -67,15 +118,31 @@ class AliasedRateSchedule:
     """Expose nested configuration owned by a configured learning-rate policy."""
 
     def __init__(self) -> None:
-        """Initialize one mutable dictionary whose aliases must not escape recovery."""
+        """Initialize one mutable dictionary whose aliases must not escape recovery.
+
+        Returns:
+            result (None): Initialize the mutable nested floating rate configuration.
+        """
         self.config = {"rate": {"value": .01}}
 
     def get_config(self) -> dict:
-        """Return the original nested mapping, as supported configured objects may do."""
+        """Return the original nested mapping, as supported configured objects may do.
+
+        Returns:
+            config (dict): Live nested configuration, intentionally aliased for the snapshot regression.
+        """
         return self.config
 
     def __call__(self, epoch: int, rate: float) -> float:
-        """Apply the currently declared constant learning rate."""
+        """Apply the currently declared constant learning rate.
+
+        Args:
+            epoch (int): Epoch argument accepted by LearningRateScheduler, unused.
+            rate (float): Previous optimizer rate, ignored by this constant schedule.
+
+        Returns:
+            rate (float): Current configured rate, independent of epoch and prior rate.
+        """
         return self.config["rate"]["value"]
 
 
@@ -85,16 +152,32 @@ class AliasedRateCallback(tf.keras.callbacks.Callback):
     recovery_state_scope = "per_fit"
 
     def __init__(self) -> None:
-        """Initialize the callback policy independently of Keras-owned state."""
+        """Initialize the callback policy independently of Keras-owned state.
+
+        Returns:
+            result (None): Initialize a Keras callback with mutable nested rate configuration.
+        """
         super().__init__()
         self.config = {"rate": {"value": .01}}
 
     def get_recovery_config(self) -> dict:
-        """Return the callback's live configuration to exercise defensive snapshots."""
+        """Return the callback's live configuration to exercise defensive snapshots.
+
+        Returns:
+            config (dict): Live nested callback policy; the recovery layer must snapshot it.
+        """
         return self.config
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
-        """Make the declared policy affect the optimizer used by real fitting."""
+        """Make the declared policy affect the optimizer used by real fitting.
+
+        Args:
+            epoch (int): Accepted epoch index, unused.
+            logs (dict | None): Optional metric logs, unused.
+
+        Returns:
+            result (None): Assign the configured constant optimizer rate in its variable dtype.
+        """
         self.model.optimizer.learning_rate.assign(self.config["rate"]["value"])
 
 
@@ -102,13 +185,24 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
     """Verify complete small streams rather than substituting mocked optimizer updates."""
 
     def tearDown(self) -> None:
-        """Release Keras state and retain the ordinary float32 test environment."""
+        """Release Keras state and retain the ordinary float32 test environment.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
 
     @staticmethod
     def bundle(classifier: str = "dnn") -> dict:
-        """Construct the actual conditional VAE and requested independent classifier."""
+        """Construct the actual conditional VAE and requested independent classifier.
+
+        Args:
+            classifier (str): dnn selects the dense classifier; cnn selects a small convolutional classifier.
+
+        Returns:
+            models (dict): Compiled conditional VAE and separate classifier in the current policy, initialized with seed 13.
+        """
         tf.keras.backend.clear_session()
         classifier_kwargs = {"architecture_kwargs": {"conv_filters": (2,), "conv_depths": (1,)}} \
             if classifier == "cnn" else {}
@@ -122,7 +216,16 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
 
     @staticmethod
     def arguments(root: Path, template: Path, generator: object) -> dict:
-        """Build the same two-task protocol for uninterrupted and resumed models."""
+        """Build the same two-task protocol for uninterrupted and resumed models.
+
+        Args:
+            root (Path): Destination for task checkpoints.
+            template (Path): Saved independent classifier architecture.
+            generator (object): Conditional VAE instance to train and recover.
+
+        Returns:
+            options (dict): Two tasks of two classes, one epoch each, with actual replay and strict task checkpoints.
+        """
         return dict(
             class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]],
             load_dataset_fn=image_loader,
@@ -135,15 +238,26 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         )
 
     def assert_same_run(self, expected: dict, actual: dict) -> None:
-        """Compare weights, optimizer slots, task seeds, metadata and metric histories."""
+        """Compare weights, optimizer slots, task seeds, metadata and metric histories.
+
+        Args:
+            expected (dict): Uninterrupted detailed learner result.
+            actual (dict): Resumed detailed learner result.
+
+        Returns:
+            result (None): Verify exact model/optimizer state, equal-NaN accuracy matrices, histories, task seeds, and VAE metadata.
+
+        Raises:
+            AssertionError: If any paired state or metric differs.
+        """
         for role in ("model", "generative_model"):
             first, second = expected[role], actual[role]
             self.assertEqual(len(first.weights), len(second.weights))
             for left, right in zip(first.get_weights(), second.get_weights()):
                 np.testing.assert_array_equal(left, right)
-            for left, right in zip(first.optimizer.variables(), second.optimizer.variables()):
+            for left, right in zip(first.optimizer.variables, second.optimizer.variables):
                 np.testing.assert_array_equal(left.numpy(), right.numpy())
-            self.assertEqual(len(first.optimizer.variables()), len(second.optimizer.variables()))
+            self.assertEqual(len(first.optimizer.variables), len(second.optimizer.variables))
         for key in ("ordinary_accuracy_matrix", "validation_accuracy_matrix"):
             np.testing.assert_allclose(expected[key], actual[key], rtol=0., atol=0., equal_nan=True)
         for key in ("histories", "generative_histories", "task_seeds", "classifier_evaluations", "generative_evaluations"):
@@ -152,7 +266,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             self.assertEqual(getattr(expected["generative_model"], name), getattr(actual["generative_model"], name))
 
     def test_automatic_vae_preprocessing_uses_actual_target_ranges(self) -> None:
-        """Omitted and explicit None follow activation for aliases and both kwargs forms."""
+        """Omitted and explicit None follow activation for aliases and both kwargs forms.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         labels = np.tile(np.asarray([0, 1], dtype="uint8"), 4)
         values = np.arange(8, dtype="uint8") * 32
         images = np.broadcast_to(values[:, None, None], (8, 28, 28)).copy()
@@ -185,7 +306,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             self.assertEqual(options["preprocess"], explicit)
 
     def test_vae_dnn_interruption_resume_matches_full_state(self) -> None:
-        """A failed second generator fit resumes from task zero without losing any state."""
+        """A failed second generator fit resumes from task zero without losing any state.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         from autoencoder import VariationalAutoencoder
 
         with tempfile.TemporaryDirectory() as directory:
@@ -200,7 +328,19 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             fit_count = 0
 
             def interrupt(model: object, *args: object, **kwargs: object) -> object:
-                """Inject a failure outside the experiment callback identity."""
+                """Inject a failure outside the experiment callback identity.
+
+                Args:
+                    model (object): VAE whose train call is intercepted.
+                    *args (object): Positional training arguments.
+                    **kwargs (object): Keyword training options.
+
+                Returns:
+                    history (object): Actual training history on the first and later noninterrupted calls.
+
+                Raises:
+                    RuntimeError: On the second VAE training call, before generator training can commit.
+                """
                 nonlocal fit_count
                 fit_count += 1
                 # Fail after task two's classifier fit, before its generator can commit.
@@ -229,7 +369,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 _run_continual_tasks(**options, resume_from=str(root / "invalid_metadata"))
 
     def test_vae_cnn_real_generated_replay_and_reload(self) -> None:
-        """Both task phases and checkpoint recovery preserve independent image/flat views."""
+        """Both task phases and checkpoint recovery preserve independent image/flat views.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initial = self.bundle("cnn")
@@ -251,7 +398,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             np.testing.assert_array_equal(independently_scored, resumed["ordinary_accuracy_matrix"][-1])
 
     def test_public_direct_and_config_vae_contracts_match(self) -> None:
-        """Actual public two-task runs share inferred labels, seed, scaling and reports."""
+        """Actual public two-task runs share inferred labels, seed, scaling and reports.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         labels = np.repeat(np.arange(4, dtype="uint8"), 8)
         images = np.broadcast_to((labels * 60)[:, None, None], (32, 28, 28)).copy()
         raw = ((images, labels), (images.copy(), labels.copy()))
@@ -320,7 +474,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                     "continually_learn_kwargs": {"class_num": 6}})
 
     def test_mutable_callback_declarations_are_frozen_before_task_commits(self) -> None:
-        """Changed nested policy cannot bypass a three-task run's commit identity check."""
+        """Changed nested policy cannot bypass a three-task run's commit identity check.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.h5"
@@ -336,7 +497,16 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                     original_fit = tf.keras.Model.fit
 
                     def fit_then_change_policy(model: object, *args: object, **kwargs: object) -> object:
-                        """Inject an external policy change after a real task fit has completed."""
+                        """Inject an external policy change after a real task fit has completed.
+
+                        Args:
+                            model (object): Model passed to the real Keras fit method.
+                            *args (object): Positional fit arguments.
+                            **kwargs (object): Keyword fit options.
+
+                        Returns:
+                            history (object): Actual fit history; the nested callback policy is changed to .2 before returning.
+                        """
                         fit_calls.append(model)
                         history = original_fit(model, *args, **kwargs)
                         policy.config["rate"]["value"] = .2
@@ -358,14 +528,29 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                     self.assertNotEqual(callback_recovery_descriptor(callbacks, strict=True), frozen)
 
     def test_callback_policy_and_persistent_state_are_authenticated(self) -> None:
-        """Same schedule resumes exactly; changed closures fail before the first fit."""
+        """Same schedule resumes exactly; changed closures fail before the first fit.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.h5"
             integration_fixtures.ContinualIntegrationTests._template(template)
 
             def options(path: Path, rate: float) -> dict:
-                """Declare a pure closure schedule alongside a stateful custom callback."""
+                """Declare a pure closure schedule alongside a stateful custom callback.
+
+                Args:
+                    path (Path): Checkpoint destination for this run.
+                    rate (float): Constant closure learning rate that enters callback identity.
+
+                Returns:
+                    options (dict): Seeded three-task replay-buffer run with closure and persistent callback policies.
+                """
                 return dict(class_num=3, load_dataset_fn=integration_fixtures.ContinualIntegrationTests._loader,
                     tuned_model_path=str(template), compile_args={"optimizer": tf.keras.optimizers.Adam(.01),
                     "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]},
@@ -390,7 +575,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             self.assertEqual(len(callback_recovery_descriptor([opaque], strict=False)), 1)
 
     def test_invalid_future_checkpoint_requires_fresh_root_before_fit(self) -> None:
-        """Incomplete and corrupted evidence survives fallback followed by a new commit."""
+        """Incomplete and corrupted evidence survives fallback followed by a new commit.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initial = self.bundle()
@@ -423,7 +615,14 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                                            for item in damaged_root.rglob("*") if item.is_file()})
 
     def test_depth_zero_growth_preflight_covers_composite_classifier(self) -> None:
-        """The shared depth contract rejects requested growth before wrapper fitting."""
+        """The shared depth contract rejects requested growth before wrapper fitting.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         from types import SimpleNamespace
 
         for wrapped in (SimpleNamespace(clf_depth=0), SimpleNamespace(network=SimpleNamespace(clf_depth=0))):

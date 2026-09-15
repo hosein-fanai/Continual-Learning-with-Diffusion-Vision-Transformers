@@ -2,8 +2,16 @@
 
 The `diffusion` package provides conditional image-diffusion architectures,
 Keras training/sampling wrappers, reusable transformer and spatial layers,
-noise schedules, callbacks, and metrics. The package targets TensorFlow 2.10
+noise schedules, callbacks, and metrics. The package targets TensorFlow 2.20
+with native Keras 3
 and uses channels-last image tensors.
+
+Fixed-depth models support class growth through the wrapper's task-boundary
+reconstruction. Direct `network.add_class()` and progressive depth mutation of
+built models remain unsupported under Keras 3; depth-growth APIs described below
+and in child guides describe the retained legacy interface. Choose the full
+depth in the constructor for current training. See
+[compatibility notes](../compatibility_migration.md).
 
 Its existing package-level public exports are lazy and cached. Imports such as
 `from diffusion import DiffusionModel, UNet` keep the same API while a plain
@@ -35,8 +43,9 @@ teacher-forcing image. `DiffusionModel` uses the ordinary three-input wrapper
 pipeline; the raw model reuses `x_t` for its decoder, so
 training, evaluation, and sampling stay aligned and the target noise is never
 exposed to the network.
-Encoder and decoder depth are owned separately; targeted `add_depths` calls
-can grow either branch. See the transformer README for exact contracts.
+Encoder and decoder depth are owned separately. Construct both before training;
+legacy `add_depths` calls on built models are unsupported by native Keras 3.
+See the transformer README for the construction contracts.
 
 ## Basic conditional model
 
@@ -108,7 +117,8 @@ images = model.sample_vae(labels=[1, 2], network_name="ema")
 KL mode inserts the computed flatten/unflatten depths and disables skips by
 default, ensuring the decoder cannot route around the latent. Ordinary U-Net
 mode keeps the standard skip hierarchy. Both modes support active-resolution
-changes and shape-preserving residual depth growth through `add_depths(...)`.
+changes. Post-build residual growth through the legacy `add_depths(...)` path
+is unsupported by native Keras 3; construct the intended full depth first.
 The ratio list has exactly one entry per contiguous flatten/unflatten pair in
 ascending flatten-depth order; if omitted, every pair uses ratio `1.0`.
 Convolutional multiscale U-Net places stochastic pairs at successive encoder

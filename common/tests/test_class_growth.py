@@ -14,7 +14,24 @@ from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 
 
-def make_wrapper(wrapper_class=DiffusionClassifier, **kwargs):
+def make_wrapper(
+    wrapper_class: type[DiffusionClassifier] = DiffusionClassifier,
+    **kwargs: object,
+) -> DiffusionClassifier:
+    """Build a seeded dynamic classifier with main, distillation, and auxiliary heads.
+
+    Args:
+        wrapper_class (type[DiffusionClassifier]): Ordinary wrapper by default;
+            DiffusionClassifierV2 exercises two independent optimizers.
+        **kwargs (object): Additional wrapper constructor options.
+
+    Returns:
+        model (DiffusionClassifier): Compiled float32 two-block transformer
+            wrapper with EMA and an initially empty class vocabulary.
+
+    Raises:
+        TypeError: If constructor options conflict with the fixed fixture.
+    """
     network = DiTClassifier(
         num_classes=None, use_cfg=True, timesteps=4, image_size=4,
         channels=1, patch_size=2, dim=4, depth=2, mha_num_heads=1,
@@ -35,10 +52,26 @@ def make_wrapper(wrapper_class=DiffusionClassifier, **kwargs):
 
 
 class ClassGrowthTests(unittest.TestCase):
-    def tearDown(self):
+    """Check transactional class growth, exact state transfer, and strict recovery."""
+    def tearDown(self) -> None:
+        """Restore the Keras session or numeric policy after this isolated test case.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+        """
+
         tf.keras.backend.clear_session()
 
-    def test_growth_preserves_weights_ema_optimizer_and_teacher(self):
+    def test_growth_preserves_weights_ema_optimizer_and_teacher(self) -> None:
+        """Grow old and new classes while preserving raw, EMA, teacher, and compatible optimizer state.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper()
         model._check_new_labels(y=np.array([7, 3]), verbose=False)
         self.assertEqual(model.seen_classes, {3: 0, 7: 1})
@@ -50,6 +83,7 @@ class ClassGrowthTests(unittest.TestCase):
 
         # Distinguish existing EMA state from raw state before expanding both.
         for variable in model.ema_network.weights:
+            # Offset floating EMA values while preserving valid integer RNG counters.
             if tf.as_dtype(variable.dtype).is_floating:
                 variable.assign_add(tf.ones_like(variable) * .25)
         teacher = model.snapshot_teacher_network("raw")
@@ -89,6 +123,7 @@ class ClassGrowthTests(unittest.TestCase):
             prefix = tuple(slice(0, size) for size in old_raw_value.shape)
             np.testing.assert_array_equal(raw[prefix], old_raw_value)
             np.testing.assert_array_equal(ema[prefix], old_ema_value)
+            # Check raw/EMA initialization only at positions introduced by class expansion.
             if raw.shape != old_raw_value.shape:
                 expanded_count += 1
                 new_positions = np.ones(raw.shape, dtype=bool)
@@ -111,8 +146,10 @@ class ClassGrowthTests(unittest.TestCase):
         reset_slots = 0
         for variable in model.optimizer.variables:
             previous = slots_before[variable.name]
+            # Unchanged optimizer slot shapes retain their exact learned state.
             if tuple(variable.shape) == previous.shape:
                 np.testing.assert_array_equal(variable.numpy(), previous)
+            # Resized optimizer slots restart from the native zero initialization.
             else:
                 reset_slots += 1
                 np.testing.assert_array_equal(variable.numpy(), np.zeros(variable.shape))
@@ -123,11 +160,21 @@ class ClassGrowthTests(unittest.TestCase):
         evaluation = model.evaluate(second_dataset, verbose=0, return_dict=True)
         self.assertTrue(all(np.isfinite(value) for value in evaluation.values()))
 
-    def test_grown_config_and_weight_file_restore(self):
+    def test_grown_config_and_weight_file_restore(self) -> None:
+        """Restore expanded configuration and every saved weight, then allow another class boundary.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper()
         model._check_new_labels(y=np.array([3, 7]), verbose=False)
         model._check_new_labels(y=np.array([11]), verbose=False)
         for variable in model.network.weights:
+            # Distinguish saved floating values without corrupting random counters.
             if tf.as_dtype(variable.dtype).is_floating:
                 variable.assign_add(tf.ones_like(variable) * .125)
         clone = type(model).from_config(model.get_config())
@@ -144,7 +191,16 @@ class ClassGrowthTests(unittest.TestCase):
         clone._check_new_labels(y=np.array([19]), verbose=False)
         self.assertEqual(clone.seen_classes, {3: 0, 7: 1, 11: 2, 19: 3})
 
-    def test_failed_ema_construction_keeps_live_state(self):
+    def test_failed_ema_construction_keeps_live_state(self) -> None:
+        """Reject an EMA construction failure without changing the live vocabulary, weights, or optimizer.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper()
         model._check_new_labels(y=np.array([3, 7]), verbose=False)
         raw, ema, optimizer = model.network, model.ema_network, model.optimizer
@@ -152,9 +208,21 @@ class ClassGrowthTests(unittest.TestCase):
         reconstruct = DiTClassifier.from_config
         calls = 0
 
-        def fail_second(config):
+        def fail_second(config: dict[str, object]) -> DiTClassifier:
+            """Inject an EMA reconstruction failure after building the candidate raw model.
+
+            Args:
+                config (dict[str, object]): Candidate network constructor settings.
+
+            Returns:
+                model (DiTClassifier): Reconstructed network on calls other than two.
+
+            Raises:
+                RuntimeError: On the second call, simulating a failed EMA candidate.
+            """
             nonlocal calls
             calls += 1
+            # The second construction call builds the EMA candidate and deliberately fails.
             if calls == 2:
                 raise RuntimeError("EMA construction failed")
             return reconstruct(config)
@@ -169,7 +237,16 @@ class ClassGrowthTests(unittest.TestCase):
         for expected, actual in zip(before, model.get_weights()):
             np.testing.assert_array_equal(actual, expected)
 
-    def test_grown_task_checkpoint_restores_all_variables(self):
+    def test_grown_task_checkpoint_restores_all_variables(self) -> None:
+        """Restore raw, EMA, teacher, optimizer, and the next diffusion random draw from a grown checkpoint.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper()
         model._check_new_labels(y=np.array([3, 7]), verbose=False)
         teacher = model.snapshot_teacher_network("raw")
@@ -180,6 +257,7 @@ class ClassGrowthTests(unittest.TestCase):
         )
         for role, network in enumerate((model.network, model.ema_network, teacher)):
             for index, variable in enumerate(network.variables):
+                # Encode role-specific floating values while retaining valid RNG metadata.
                 if tf.as_dtype(variable.dtype).is_floating:
                     variable.assign(tf.ones_like(variable) * (role + (index + 1) / 1000.))
         images = tf.ones((2, 4, 4, 1))
@@ -218,7 +296,16 @@ class ClassGrowthTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual.numpy(), expected)
         np.testing.assert_array_equal(clone.noisify(images)[1].numpy(), expected_noise)
 
-    def test_v2_replaces_both_optimizer_registries(self):
+    def test_v2_replaces_both_optimizer_registries(self) -> None:
+        """Rebuild both V2 optimizer registries and retain their independent completed update counts.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper(DiffusionClassifierV2)
         model._check_new_labels(y=np.array([3, 7]), verbose=False)
         old_variable_ids = {id(variable) for variable in model.network.weights}
@@ -246,5 +333,6 @@ class ClassGrowthTests(unittest.TestCase):
             self.assertEqual(int(optimizer.iterations.numpy()), 2)
 
 
+# Run class-growth regressions through the standalone unittest entry point.
 if __name__ == "__main__":
     unittest.main()

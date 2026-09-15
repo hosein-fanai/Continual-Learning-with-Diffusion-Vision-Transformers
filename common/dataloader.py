@@ -1120,6 +1120,24 @@ def _resolve_dataset_options(
     for direct and typed calls. Explicit preprocessing overrides are retained;
     conditioned models require full-width one-hot labels. Config mode records
     the resolved representation so saved settings describe consumed inputs.
+
+    Args:
+        config (Config | None): Typed data/model/runtime settings. None selects
+            direct keyword mode. Typed preprocessing and label fields can be
+            updated when automatic family-specific defaults are resolved.
+        kwargs (Mapping[str, object]): Direct factory settings, including model
+            name/options, preprocessing, and nested continual schedule/seed.
+            Explicit preprocessing strings, including the unscaled empty string,
+            take precedence over automatic activation-dependent scaling.
+
+    Returns:
+        options (dict[str, object]): Effective loader, geometry, representation,
+            and runtime settings. No arrays or model variables are allocated;
+            floating input dtype is resolved later from the active Keras policy.
+
+    Raises:
+        ValueError: If top-level and nested continual schedules conflict, a seed
+            is invalid, or the model/task/dataset option resolver rejects a value.
     """
     from common.runtime import effective_seed
 

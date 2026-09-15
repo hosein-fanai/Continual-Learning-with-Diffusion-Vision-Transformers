@@ -391,7 +391,18 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         return handler_kwargs.get("connect_axis", -1) == -1
 
-    def __dir__(self):
+    def __dir__(self) -> list[str]:
+        """Expose model attributes while omitting the self-alias ``encoder``.
+
+        Returns:
+            names (list[str]): Attribute names for introspection and Keras
+                child discovery. Omitting the alias avoids recursive loading;
+                direct access to ``self.encoder`` remains available.
+
+        Raises:
+            None: No additional validation is performed.
+        """
+
         # Keras 3 discovers saved children through dir(). The public encoder
         # property aliases this model, so visiting it would recurse on load.
         return [name for name in super().__dir__() if name != "encoder"]

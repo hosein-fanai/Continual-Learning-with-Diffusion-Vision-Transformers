@@ -24,6 +24,7 @@ from common.config import (
     resolve_continual_schedule
 )
 from common.dataloader import get_dataset_spec, _resolve_dataset_options
+from common.keras_compat import register_optimizer_variables
 from common.runtime import (
     configure_runtime, 
     derive_seed, 
@@ -66,21 +67,41 @@ def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[st
     The raw model retains its transactional guard. This orchestration preflight
     also covers the encoder-decoder classifier, which exposes the same
     classifier depth and targeted growth mapping.
+
+    Args:
+        model (object): Raw model or wrapper exposing a network and optional
+            clf_depth. Models without a zero-depth classifier pass unchanged.
+        fit_kwargs (Mapping[str, object]): Progressive settings containing
+            optional stage tasks and depth specifications.
+
+    Returns:
+        result (None): No targeted classifier growth from depth zero was found.
+            This preflight does not construct layers or mutate the model.
+
+    Raises:
+        ValueError: If a non-None depth addition targets a zero-depth classifier,
+            or the shared depth-specification parser rejects a setting.
     """
+
     from common.recovery import _progressive_depth_specs
+
 
     network = getattr(model, "network", model)
     # Ordinary denoiser growth and positive-depth classifier growth retain their APIs.
     if getattr(network, "clf_depth", None) != 0:
         return
+
     for specification in _progressive_depth_specs(dict(fit_kwargs)):
         # Only an explicitly targeted classifier addition reaches this unsupported case.
         if isinstance(specification, dict) and "classifier" in specification:
             requested = specification["classifier"]
             requested = requested if isinstance(requested, list) else [requested]
-            # Disabled placeholders do not request classifier growth.
+
             if any(item is not None for item in requested):
-                raise ValueError("Classifier depth growth from clf_depth=0 is unsupported; choose a positive initial classifier depth before training.")
+                raise ValueError(
+                    "Classifier depth growth from clf_depth=0 is unsupported; " 
+                    "choose a positive initial classifier depth before training."
+                )
 
 
 def get_compile_args(
@@ -108,7 +129,7 @@ def get_compile_args(
     return {
         "optimizer": optimizer, 
         "loss": loss, 
-        "metrics": list(metrics),
+        "metrics": list(metrics)
     }
 
 
@@ -182,7 +203,7 @@ def get_callbacks(
 
 def _make_optimizer(config: Config | None = None, 
                     **kwargs: object) -> object:
-    """Build a TensorFlow 2.10 optimizer and optional learning-rate schedule.
+    """Build a Keras optimizer and optional learning-rate schedule.
 
     Args:
         config (Config | None): Typed optimizer/training settings.  When
@@ -254,7 +275,6 @@ def _make_optimizer(config: Config | None = None,
     schedule = schedule.lower() if isinstance(schedule, str) else schedule
     # Derive a cosine duration from epochs and prepared dataset length.
     if schedule == "cosine" and decay_steps is None:
-        # Require dataset sizing when cosine duration cannot be inferred otherwise.
         if trainset_len is None:
             raise ValueError(
                 "trainset_len is required when decay_steps is not provided."
@@ -265,7 +285,6 @@ def _make_optimizer(config: Config | None = None,
         if config is not None:
             config.optimizer.decay_steps = decay_steps
 
-    # Catch the common invalid duration; Keras owns detailed type validation.
     if schedule == "cosine" and decay_steps <= 0:
         raise ValueError("decay_steps must be positive for cosine decay.")
 
@@ -276,7 +295,7 @@ def _make_optimizer(config: Config | None = None,
             initial_learning_rate=initial_learning_rate, 
             decay_steps=decay_steps
         )
-    # Reject schedule modes outside constant and cosine decay.
+
     elif schedule not in ("constant", None):
         raise ValueError(
             "schedule must be None, 'cosine', or 'constant'."
@@ -287,17 +306,14 @@ def _make_optimizer(config: Config | None = None,
     # Forward optional gradient clipping to the optimizer.
     if clipnorm is not None:
         optimizer_kwargs["clipnorm"] = clipnorm
+    # Global clipping is independent from the optional per-variable clip norm.
     if global_clipnorm is not None:
         optimizer_kwargs["global_clipnorm"] = global_clipnorm
 
     # AdamW is the only supported optimizer with decoupled weight decay.
     if name == "adamw":
-        adamw = getattr(optimizers, "AdamW", None)
-        # TensorFlow 2.10 exposes AdamW below the experimental namespace.
-        if adamw is None:
-            adamw = optimizers.experimental.AdamW
         # Use zero AdamW decay when no explicit regularization strength was supplied.
-        return adamw(
+        return optimizers.AdamW(
             weight_decay=0. if weight_decay is None else weight_decay,
             **optimizer_kwargs
         )
@@ -618,6 +634,12 @@ def _get_classifier_model(
         )
 
     model.compile(**compile_args)
+    # Reconstructed heads have new variable identities even when names/shapes match.
+    # Preserve compatible state when a caller supplies an already built optimizer.
+    model.optimizer = register_optimizer_variables(
+        model.optimizer, 
+        model.trainable_variables
+    )
 
     # Print the constructed classifier architecture when requested.
     if verbose:
@@ -1480,8 +1502,8 @@ def get_model(
 
 
 def copy_model(
-    prev_model: Any,
-    new_model: Any,
+    prev_model: tf.keras.Model,
+    new_model: tf.keras.Model,
     allow_truncate: bool = False,
 ) -> None:
     """Copy a classifier while preserving its existing softmax-head prefix.
@@ -1489,7 +1511,9 @@ def copy_model(
     All non-final layers receive exact copies of their predecessors' weights.
     The old output weights and biases are copied into the matching leading
     columns of ``new_model``; every newly added class retains its initializer.
-    Optimizer state is not copied.
+    Optimizer state is not copied. All shapes and the output width are checked
+    before changing destination weights, so an incompatible architecture leaves
+    the destination unchanged.
 
     Args:
         prev_model (tf.keras.Model): Built source classifier with ``L`` layers
@@ -1502,25 +1526,41 @@ def copy_model(
             Defaults to ``False``.
 
     Returns:
-        None: ``new_model`` is modified in place.
+        result (None): ``new_model`` is modified in place. Weight values are
+            converted to each destination variable's dtype by Keras.
 
     Raises:
         ValueError: If layer counts, corresponding weights, or output-head
-            widths are incompatible.
+            widths are incompatible, a model has no layers, or the final layer
+            does not expose one rank-two kernel and one rank-one bias.
     """
     layers_num = len(prev_model.layers)
     # Require matching layer structures before copying classifier weights.
-    if layers_num != len(new_model.layers):
+    if layers_num == 0 or layers_num != len(new_model.layers):
         raise ValueError("Source and destination models must have equal layer counts.")
 
+    source_weights = [layer.get_weights() for layer in prev_model.layers]
+    destination_weights = [layer.get_weights() for layer in new_model.layers]
+    # Validate every shared layer before copying any learned state.
+    for old_weights, new_weights in zip(source_weights[:-1], destination_weights[:-1]):
+        # An incompatible trunk must fail before any earlier layer is assigned.
+        if len(old_weights) != len(new_weights) or any(
+            old.shape != new.shape for old, new in zip(old_weights, new_weights)
+        ):
+            raise ValueError("Corresponding non-final layer weight shapes must match.")
 
-    for i in range(layers_num-1):
-        new_model.layers[i].set_weights(
-            prev_model.layers[i].get_weights()
-        )
+    # The supported classifier head is a Dense kernel and its bias.
+    for head in (source_weights[-1], destination_weights[-1]):
+        # Output width and bias length must agree within both candidate heads.
+        if len(head) != 2 or head[0].ndim != 2 or head[1].ndim != 1 \
+        or head[0].shape[-1] != head[1].shape[0]:
+            raise ValueError("Classifier heads must contain one Dense kernel and bias.")
 
-    old_last_layer_weights, old_last_layer_bias = prev_model.layers[-1].get_weights()
-    new_last_layer_weights, new_last_layer_bias = new_model.layers[-1].get_weights()
+    old_last_layer_weights, old_last_layer_bias = source_weights[-1]
+    new_last_layer_weights, new_last_layer_bias = destination_weights[-1]
+    # Class expansion may change only the output axis of the Dense kernel.
+    if old_last_layer_weights.shape[0] != new_last_layer_weights.shape[0]:
+        raise ValueError("Classifier head input widths must match.")
 
     old_width = old_last_layer_bias.shape[0]
     # A truncating initializer must already contain every destination class.
@@ -1538,4 +1578,7 @@ def copy_model(
     ]
     new_last_layer_bias[:copy_width] = old_last_layer_bias[:copy_width]
 
+    # All compatibility checks succeeded; copy the shared trunk and prepared head.
+    for layer, weights in zip(new_model.layers[:-1], source_weights[:-1]):
+        layer.set_weights(weights)
     new_model.layers[-1].set_weights([new_last_layer_weights, new_last_layer_bias])

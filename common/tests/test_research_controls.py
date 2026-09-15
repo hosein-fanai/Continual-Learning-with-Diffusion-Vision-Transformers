@@ -54,6 +54,9 @@ def _assert_no_test_sentinel(data: object) -> None:
 
     Returns:
         None.
+
+    Raises:
+        AssertionError: If a model API receives any reserved locked-test row.
     """
 
     # Ignore a missing optional evaluation input.
@@ -1072,6 +1075,11 @@ class ResearchControlTests(unittest.TestCase):
 
             Returns:
                 None.
+
+            Raises:
+                FileExistsError: After publishing the candidate to simulate a
+                    competing writer winning immediately before this call.
+                OSError: If the underlying hard-link publication fails.
             """
 
             real_link(source, destination)

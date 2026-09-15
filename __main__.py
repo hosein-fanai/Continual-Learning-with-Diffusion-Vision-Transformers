@@ -25,8 +25,11 @@ def build_parser() -> ArgumentParser:
         None.
 
     Returns:
-        ArgumentParser: A new independently configurable parser with config and
+        parser (ArgumentParser): A new independently configurable parser with config and
         train destinations; train defaults to False when arguments are parsed.
+
+    Raises:
+        argparse.ArgumentError: If a parser argument cannot be registered.
     """
 
     parser = ArgumentParser(
@@ -59,7 +62,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
             None reads process arguments from sys.argv. Defaults to None.
 
     Returns:
-        int: Zero after successful loading or training. No model is returned.
+        status (int): Zero after successful loading or training. No model is returned.
 
     Raises:
         SystemExit: ArgumentParser displays help or rejects missing/invalid options.

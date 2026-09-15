@@ -1,20 +1,10 @@
-# Notebook initialization helper
+# Notebook import initialization
 
-Start each experiment notebook with:
+`import init` makes repository modules importable and sets the working directory
+to the repository root resolved from the helper's file location. It works from
+the root and the notebook directory without a machine-specific checkout path.
 
-```python
-import init
-```
-
-All working-directory and Python search-path setup lives in `__init__.py` here.
-It resolves the repository from its own file location, adds the repository and
-thesis helpers to the import path, changes to the repository root, and calls
-`common.utils.init()`. Small forwarding modules support starting from the
-repository root or `notebooks/thesis` as well as `notebooks`.
-
-The resolved path is available as `init.REPOSITORY_ROOT`. Initialization runs
-on import; no separate `init()` call is needed in a notebook.
-
-The runtime helper caps the first TensorFlow GPU at 6,144 MiB. If more GPU
-memory is needed, change `memory_limit=6144` in `common/utils.py` before starting
-a fresh kernel.
+Importing the helper changes process-wide import and working-directory state.
+The retained runtime initialization call does not impose a GPU memory cap.
+Use a fresh TensorFlow 2.20 kernel and configure device memory before the first
+GPU operation when custom limits are required.

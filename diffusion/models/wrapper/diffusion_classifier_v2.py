@@ -932,8 +932,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         if self._test_part != "discriminator":
             return DiffusionModel.prep_inputs_map(self, x0, labels)
 
-        # Validation uses the classifier test cap; training/default preprocessing uses the training
-        # cap.
+        # Validation uses the classifier test cap; 
+        # training/default preprocessing uses the training cap.
         max_timesteps = self.clf_test_noisified_max_timesteps if self._preprocess_training is False \
                         else self.clf_train_noisified_max_timesteps
         prepared_inputs = self.prep_clfv2_inputs(
@@ -959,7 +959,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         )
 
     def merge_result_dicts(
-        self, 
+        self: "DiffusionClassifierV2", 
         dicts: Sequence[Mapping[str, object] | None], 
         names: Sequence[str] = ("generator", "discriminator")
     ) -> dict[str, object]:
@@ -977,7 +977,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 ``("generator", "discriminator")`` for two-phase results.
 
         Returns:
-            dict[str, object]: Merged values.  A key appearing in more than one
+            results (dict[str, object]): Merged values. A key appearing in more than one
             mapping becomes ``"<phase>_<key>"`` for each phase; unique keys are
             unchanged.  All-None input returns an empty dictionary.
 
@@ -988,12 +988,26 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 a duplicate output key that would overwrite another metric.
         """
 
+        if len(dicts) != len(names):
+            raise ValueError(
+                "Each phase result must have exactly one aligned name."
+            )
+        if any(not isinstance(name, str) for name in names):
+            raise TypeError("Phase names must be strings.")
+
         phases = []
         key_counts: dict[str, int] = {}
         for result, name in zip(dicts, names):
             # Absent results keep their name slot but contribute no metrics.
             if result is None:
                 continue
+
+            if not isinstance(result, Mapping) or any(
+                not isinstance(key, str) for key in result
+            ):
+                raise TypeError(
+                    "Phase results must be mappings with string metric keys."
+                )
 
             phases.append((result, name))
 
@@ -1726,7 +1740,8 @@ def run_self_tests() -> dict[str, str]:
     assert abs(float(positive_depth.clf_loss_coef) - 0.25) < 1e-7
     first_depth_ids = {
         id(value)
-        for value in positive_depth.network.layers_dicts[0].trainable_variables
+        for layer in positive_depth.network.layers_dicts[0].values()
+        for value in layer.trainable_variables
     }
     assert first_depth_ids <= {
         id(value) for value in positive_depth.clf_trainable_variables

@@ -1,12 +1,13 @@
 """Epoch-end validation against raw rather than EMA diffusion weights.
 
-RawNetworkValidationCallback performs an additional evaluation with raw network
+RawNetworkValidation performs an additional evaluation with raw network
 weights and appends val_raw_* metrics to epoch logs. It relies on diffusion
 wrappers accepting keyword evaluation inputs and the network_name selector.
 """
 
 from tensorflow.keras import callbacks
 
+from inspect import signature
 from typing import Any
 
 
@@ -84,19 +85,27 @@ class RawNetworkValidation(callbacks.Callback):
                 Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
-            None: The bound model's ``evaluate`` call is executed with
-            ``verbose=0`` and ``return_dict=True``.
+            result (None): Adds scalar raw metrics from evaluation with
+                ``verbose=0`` and ``return_dict=True``. Split V2 wrappers
+                evaluate both generator and discriminator phases.
+
+        Raises:
+            ValueError: If the bound wrapper rejects its validation input.
         """
 
         # Create a local empty mapping only when Keras supplies no log mapping.
         logs = {} if logs is None else logs
 
+        phase_options = {"eval_both": True} if "eval_both" in signature(
+            self.model.evaluate
+        ).parameters else {}
         raw_results = self.model.evaluate(
             x=self.val_x,
             y=self.val_y,
             network_name="raw", 
             verbose=0, 
             return_dict=True,
+            **phase_options,
         )
 
         for name, value in raw_results.items():
@@ -203,7 +212,7 @@ def run_self_tests() -> dict[str, str]:
     v2_logs = {}
     v2_callback.on_epoch_end(0, v2_logs)
     assert v2_model.call == (
-        False,
+        True,
         None,
         {
             "x": validation_x,
@@ -215,7 +224,7 @@ def run_self_tests() -> dict[str, str]:
     )
     assert v2_logs == {"val_raw_loss": 0.125}
 
-    return {"RawNetworkValidationCallback": "passed"}
+    return {"RawNetworkValidation": "passed"}
 
 
 # Run the module's focused self-tests when executed directly.

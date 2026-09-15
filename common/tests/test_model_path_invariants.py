@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 
 from autoencoder import VAEClassifier, VariationalAutoencoder
+from common.keras_compat import variable_path
 from diffusion import (
     DiTClassifier,
     DiTDecoder,
@@ -21,7 +22,11 @@ from diffusion import (
 
 
 def _transformer_options() -> dict[str, object]:
-    """Return an independent tiny architecture with nontrivial attention and conditions."""
+    """Return an independent tiny architecture with attention and conditioning.
+
+    Returns:
+        options (dict[str, object]): Two-class, four-timestep transformer settings.
+    """
 
     return dict(
         num_classes=2, use_cfg=True, timesteps=4, image_size=4, channels=1,
@@ -33,14 +38,49 @@ def _transformer_options() -> dict[str, object]:
 class ModelPathInvariantTests(unittest.TestCase):
     """Exercise model contracts that require crossing more than one component boundary."""
 
+    def assert_float64_weights(self, model: tf.keras.Model) -> None:
+        """Check learned precision separately from integer random-stream state.
+
+        Args:
+            model (tf.keras.Model): Built model expected to use float64 variables.
+
+        Returns:
+            result (None): All floating weights are float64 and the only integer
+                state consists of named int64 PHILOX counters of shape (3,).
+
+        Raises:
+            AssertionError: If learned precision or RNG state dtype/shape differs.
+        """
+        self.assertTrue(model.weights)
+        for weight in model.weights:
+            dtype = tf.as_dtype(weight.dtype)
+            # Learned weights retain full precision; random counters stay integral.
+            if dtype.is_floating:
+                self.assertEqual(dtype, tf.float64)
+            # Only the known integer RNG state is outside the float64 weight policy.
+            else:
+                self.assertEqual((weight.name, dtype, tuple(weight.shape)),
+                                 ("seed_state", tf.int64, (3,)))
+
     def tearDown(self) -> None:
-        """Release model graphs and restore the default numerical policy."""
+        """Release model graphs and restore the default numerical policy.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
 
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
 
     def test_transformer_config_preserves_dtype_across_global_policy_change(self) -> None:
-        """Restore all five transformer families without silently lowering child precision."""
+        """Restore all five transformer families without silently lowering child precision.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         decoder_options = dict(depth=1, mha_num_heads=1, vit_block_mlp_ratio=1.)
         classifier_options = dict(clf_mha_num_heads=1, clf_vit_block_mlp_ratio=1.)
@@ -63,7 +103,7 @@ class ModelPathInvariantTests(unittest.TestCase):
                 restored = model_class.from_config(config)
                 self.assertEqual(restored.dtype_policy.name, "float64")
                 self.assertTrue(restored.weights)
-                self.assertTrue(all(weight.dtype == tf.float64 for weight in restored.weights))
+                self.assert_float64_weights(restored)
                 self.assertEqual(restored.patch_embedder.compute_dtype, "float64")
                 restored.set_weights(original.get_weights())
                 for actual, expected in zip(restored.weights, original.weights):
@@ -84,7 +124,14 @@ class ModelPathInvariantTests(unittest.TestCase):
                         np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-12, atol=1e-12)
 
     def test_explicit_transformer_policy_reaches_spatial_and_connection_layers(self) -> None:
-        """Keep optional token, mixer, resampling and feature projections in float64."""
+        """Keep optional token, mixer, resampling and feature projections in float64.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         tf.keras.mixed_precision.set_global_policy("float32")
         options = _transformer_options()
@@ -97,7 +144,7 @@ class ModelPathInvariantTests(unittest.TestCase):
         )
         network = DiffusionTransformer(**options)
         self.assertTrue(network.weights)
-        self.assertTrue(all(weight.dtype == tf.float64 for weight in network.weights))
+        self.assert_float64_weights(network)
         wrapper = DiffusionModel(network, dtype="float64", use_ema=True, test_steps=2,
                                  ctr_loss_coef=.01)
         wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
@@ -105,10 +152,17 @@ class ModelPathInvariantTests(unittest.TestCase):
             tf.ones((2, 4, 4, 1), dtype=tf.float64), tf.constant([0, 1]),
         ))
         self.assertTrue(all(np.isfinite(value.numpy()) for value in results.values()))
-        self.assertTrue(all(weight.dtype == tf.float64 for weight in wrapper.ema_network.weights))
+        self.assert_float64_weights(wrapper.ema_network)
 
     def test_relative_vae_weights_preserve_objective_and_analytical_gradients(self) -> None:
-        """Scale row weights without changing reconstruction, KL or classifier balance."""
+        """Scale row weights without changing reconstruction, KL or classifier balance.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         x = tf.ones((2, 1))
         y = tf.one_hot([0, 0], 2)
@@ -152,7 +206,14 @@ class ModelPathInvariantTests(unittest.TestCase):
                                                    expected_bias, atol=1e-7)
 
     def test_trained_wrapper_checkpoint_preserves_ema_sampling_under_new_global_policy(self) -> None:
-        """Reload learned float64 raw and EMA weights under the ordinary float32 policy."""
+        """Reload learned float64 raw and EMA weights under the ordinary float32 policy.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         tf.keras.mixed_precision.set_global_policy("float64")
         source = DiffusionModel(DiffusionTransformer(**_transformer_options()),
@@ -162,19 +223,28 @@ class ModelPathInvariantTests(unittest.TestCase):
         initial = tf.ones((2, 4, 4, 1), tf.float64) * .125
         expected = source.sample(labels=[1, 2], x_t=initial, steps=2, eta=0.)
         with tempfile.TemporaryDirectory() as directory:
-            path = str(Path(directory) / "weights")
+            path = str(Path(directory) / "model.weights.h5")
             source.save_weights(path)
             tf.keras.mixed_precision.set_global_policy("float32")
             restored = DiffusionModel.from_config(source.get_config())
-            restored.load_weights(path).expect_partial()
-            self.assertTrue(all(weight.dtype == tf.float64 for weight in restored.network.weights))
-            self.assertTrue(all(weight.dtype == tf.float64 for weight in restored.ema_network.weights))
+            restored.load_weights(path)
+            self.assert_float64_weights(restored.network)
+            self.assert_float64_weights(restored.ema_network)
+            for expected_weight, actual_weight in zip(source.get_weights(), restored.get_weights()):
+                np.testing.assert_array_equal(actual_weight, expected_weight)
             actual = restored.sample(labels=[1, 2], x_t=initial, steps=2, eta=0.)
             np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=1e-12, atol=1e-12)
 
 
     def test_conditional_vae_reload_retains_observed_replay_classes(self) -> None:
-        """Preserve the trained replay vocabulary and generated samples through SavedModel."""
+        """Preserve trained replay vocabulary and generated samples through native Keras.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         x = tf.ones((2, 2))
         y = tf.one_hot([2, 2], 3)
@@ -196,32 +266,44 @@ class ModelPathInvariantTests(unittest.TestCase):
                              callbacks_list=[], verbose=0)
                 expected_x, expected_y = source.sample(samples_per_label=2, seed=17)
                 with tempfile.TemporaryDirectory() as directory:
-                    source.save(str(Path(directory) / "vae"), include_optimizer=False)
-                    restored = tf.keras.models.load_model(str(Path(directory) / "vae"), compile=False)
+                    source.save(str(Path(directory) / "vae.keras"), include_optimizer=False)
+                    restored = tf.keras.models.load_model(str(Path(directory) / "vae.keras"), compile=False)
                     self.assertEqual(list(restored.seen_classes), [2])
                     actual_x, actual_y = restored.sample(samples_per_label=2, seed=17)
                     np.testing.assert_array_equal(actual_y, expected_y)
                     np.testing.assert_allclose(actual_x, expected_x, rtol=1e-6, atol=1e-6)
 
     def test_legacy_keras_attention_weights_load_into_policy_attention(self) -> None:
-        """Preserve checkpoint paths and learned predictions from ordinary Keras attention."""
+        """Preserve checkpoint paths and learned predictions from ordinary Keras attention.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         source = DiffusionTransformer(**_transformer_options(), build=False)
         block = source.layers_dicts[0][source.VTB]
         block.mha = tf.keras.layers.MultiHeadAttention.from_config(block.mha.get_config())
         source.build()
         for index, weight in enumerate(source.weights):
-            weight.assign(tf.random.stateless_normal(weight.shape, seed=[61, index]) * .03)
+            # RNG counters are saved state, not learned floating parameters.
+            if tf.as_dtype(weight.dtype).is_floating:
+                weight.assign(tf.random.stateless_normal(weight.shape, seed=[61, index]) * .03)
         inputs = (tf.ones((2, 4, 4, 1)), tf.constant([0, 3]), tf.constant([1, 2]))
         expected = source(inputs, training=False)
         with tempfile.TemporaryDirectory() as directory:
-            path = str(Path(directory) / "legacy")
+            path = str(Path(directory) / "attention.weights.h5")
             source.save_weights(path)
             restored = DiffusionTransformer.from_config(source.get_config())
             restored.build()
-            restored.load_weights(path).assert_consumed()
-            original_weights = {weight.name: weight.numpy() for weight in source.weights}
-            restored_weights = {weight.name: weight.numpy() for weight in restored.weights}
+            restored.load_weights(path)
+            self.assertEqual(len(source.weights), len(restored.weights))
+            original_weights = {variable_path(weight): weight.numpy() for weight in source.weights}
+            restored_weights = {variable_path(weight): weight.numpy() for weight in restored.weights}
+            self.assertEqual(len(original_weights), len(source.weights))
+            self.assertEqual(len(restored_weights), len(restored.weights))
             self.assertEqual(set(original_weights), set(restored_weights))
             for name, expected_weight in original_weights.items():
                 np.testing.assert_array_equal(restored_weights[name], expected_weight)

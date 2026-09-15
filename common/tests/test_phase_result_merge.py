@@ -17,7 +17,11 @@ from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifier
 
 
 def _model() -> MagicMock:
-    """Provide V2 phase mocks while retaining the actual public merge behavior."""
+    """Provide V2 phase mocks while retaining the actual public merge behavior.
+
+    Returns:
+        model (MagicMock): V2-compatible phase mock delegating result merging to the real implementation.
+    """
 
     model = MagicMock(spec=DiffusionClassifierV2)
     model.merge_result_dicts.side_effect = partial(
@@ -32,7 +36,14 @@ class PhaseResultMergeTests(unittest.TestCase):
     """Check that merged names preserve every value and leave source maps intact."""
 
     def test_default_names_preserve_history_inputs_and_value_identity(self) -> None:
-        """Prefix shared metrics and preserve unique names with a shallow result."""
+        """Prefix shared metrics and preserve unique names with a shallow result.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         generator = {"loss": [1.0], "noise_loss": [2.0]}
         discriminator = {"loss": [3.0], "classifier_accuracy": [0.8]}
@@ -49,7 +60,14 @@ class PhaseResultMergeTests(unittest.TestCase):
         self.assertIs(result["discriminator_loss"], discriminator["loss"])
 
     def test_absent_phases_preserve_name_alignment(self) -> None:
-        """Discard None results without shifting prefixes or discarding empty maps."""
+        """Discard None results without shifting prefixes or discarding empty maps.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _model()
         self.assertEqual(model.merge_result_dicts((None, {"loss": 2})), {"loss": 2})
@@ -65,7 +83,14 @@ class PhaseResultMergeTests(unittest.TestCase):
         )
 
     def test_partial_overlaps_across_three_phases(self) -> None:
-        """Prefix each shared key only in the phases where it occurs."""
+        """Prefix each shared key only in the phases where it occurs.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         mappings = ({"loss": 1}, {"loss": 2, "accuracy": 3}, {"accuracy": 4})
         before = tuple(dict(mapping) for mapping in mappings)
@@ -76,7 +101,14 @@ class PhaseResultMergeTests(unittest.TestCase):
         self.assertEqual(mappings, before)
 
     def test_same_mapping_in_two_phases_is_counted_twice(self) -> None:
-        """Phase entries remain distinct when callers reuse one result object."""
+        """Phase entries remain distinct when callers reuse one result object.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         shared = {"loss": [1.0]}
         result = _model().merge_result_dicts((shared, shared))
@@ -85,7 +117,14 @@ class PhaseResultMergeTests(unittest.TestCase):
         self.assertIs(result["generator_loss"], result["discriminator_loss"])
 
     def test_read_only_mappings_are_supported(self) -> None:
-        """Merge Mapping inputs without requiring a mutable dictionary."""
+        """Merge Mapping inputs without requiring a mutable dictionary.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         result = _model().merge_result_dicts((
             MappingProxyType({"loss": 1}), MappingProxyType({"loss": 2})
@@ -93,7 +132,14 @@ class PhaseResultMergeTests(unittest.TestCase):
         self.assertEqual(result, {"generator_loss": 1, "discriminator_loss": 2})
 
     def test_misaligned_names_fail_before_skipping_or_mutating_inputs(self) -> None:
-        """Reject missing or surplus names instead of silently truncating phases."""
+        """Reject missing or surplus names instead of silently truncating phases.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         cases = (
             (({"loss": 1}, {"loss": 2}, {"third": 3}), ("generator", "discriminator")),
@@ -109,7 +155,14 @@ class PhaseResultMergeTests(unittest.TestCase):
             self.assertEqual(mappings, before)
 
     def test_invalid_mapping_keys_and_prefixes_fail_clearly(self) -> None:
-        """Reject nonmapping results and nonstring names at the public boundary."""
+        """Reject nonmapping results and nonstring names at the public boundary.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         cases = (
             ((1.0, {"loss": 2}), ("generator", "discriminator")),
@@ -122,7 +175,14 @@ class PhaseResultMergeTests(unittest.TestCase):
                 _model().merge_result_dicts(mappings, names)
 
     def test_ambiguous_output_names_raise_without_mutation(self) -> None:
-        """Reject prefix collisions and duplicate phase names before any metric is lost."""
+        """Reject prefix collisions and duplicate phase names before any metric is lost.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         cases = (
             (({"loss": 1, "generator_loss": 9}, {"loss": 2}), ("generator", "discriminator")),
@@ -140,7 +200,14 @@ class PhaseMergeCallerTests(unittest.TestCase):
     """Exercise production callers against the public helper with isolated phase fits."""
 
     def test_combined_fit_uses_public_merge_and_preserves_histories(self) -> None:
-        """Merge both Keras history mappings and retain their original loss entries."""
+        """Merge both Keras history mappings and retain their original loss entries.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _model()
         generator = {"loss": [1.0]}
@@ -160,7 +227,14 @@ class PhaseMergeCallerTests(unittest.TestCase):
         self.assertEqual(discriminator, {"loss": [2.0]})
 
     def test_combined_evaluation_forces_dictionaries_and_uses_public_merge(self) -> None:
-        """Combine both phase metrics even when the caller requests scalar results."""
+        """Combine both phase metrics even when the caller requests scalar results.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _model()
         generator = {"loss": 1.0}
@@ -181,7 +255,14 @@ class PhaseMergeCallerTests(unittest.TestCase):
         self.assertEqual(discriminator, {"loss": 2.0})
 
     def test_single_phase_evaluation_retains_unprefixed_metrics(self) -> None:
-        """A discriminator-only evaluation handles the absent generator result."""
+        """A discriminator-only evaluation handles the absent generator result.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _model()
         model._test_part = "discriminator"
@@ -195,7 +276,14 @@ class PhaseMergeCallerTests(unittest.TestCase):
         model.merge_result_dicts.assert_called_once_with((None, {"loss": 2.0}))
 
     def test_progressive_training_merges_through_public_helper(self) -> None:
-        """The common trainer merges progressive and ordinary phase histories."""
+        """The common trainer merges progressive and ordinary phase histories.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _model()
         generator = {"loss": [1.0]}

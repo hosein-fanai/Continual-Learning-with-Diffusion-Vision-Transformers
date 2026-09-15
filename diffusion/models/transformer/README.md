@@ -503,6 +503,11 @@ symbolic inputs even though eager three-input calls remain supported.
 
 ## Progressive depth API
 
+This section describes the retained legacy interface. With TensorFlow 2.20 /
+Keras 3, configure depth at construction; direct depth mutation and raw-network
+`add_class()` are unsupported. Current class growth rebuilds fixed-depth raw/EMA
+networks through the wrapper and preserves its observed-label mapping.
+
 `add_depths` appends supported components without replacing existing weights.
 Exact main-network names are `feature_connector`,
 `cross_attention_connector`, `vision_transformer_block`, `local_mixer`,

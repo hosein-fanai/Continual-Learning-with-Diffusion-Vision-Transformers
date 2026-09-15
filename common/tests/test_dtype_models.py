@@ -121,7 +121,7 @@ class DtypeModelTests(unittest.TestCase):
         ))
 
     def test_package_only_import_restores_canonical_vae_class(self) -> None:
-        """Load a SavedModel canonically after only importing its package.
+        """Load native Keras models after only importing their package.
 
         Returns:
             None: A fresh process resolves the lazy Keras registration proxy to the real
@@ -163,16 +163,16 @@ class DtypeModelTests(unittest.TestCase):
             "assert 'autoencoder.variational_autoencoder' not in sys.modules\n"
             "assert 'autoencoder.vae_classifier' not in sys.modules\n"
             "import tensorflow as tf\n"
-            "vae = tf.keras.models.load_model(sys.argv[1] + '/vae')\n"
-            "joint = tf.keras.models.load_model(sys.argv[1] + '/joint')\n"
+            "vae = tf.keras.models.load_model(sys.argv[1] + '/vae.keras')\n"
+            "joint = tf.keras.models.load_model(sys.argv[1] + '/joint.keras')\n"
             "assert type(vae) is autoencoder.VariationalAutoencoder\n"
             "assert type(joint) is autoencoder.VAEClassifier\n"
             "assert type(joint.classifier) is tf.keras.Sequential\n"
         )
         with tempfile.TemporaryDirectory() as directory:
-            model.save(Path(directory) / "vae", include_optimizer=False)
+            model.save(Path(directory) / "vae.keras", include_optimizer=False)
             joint_model.save(
-                Path(directory) / "joint",
+                Path(directory) / "joint.keras",
                 include_optimizer=False,
             )
             child_environment = dict(os.environ)
@@ -250,6 +250,7 @@ class DtypeModelTests(unittest.TestCase):
             for variable in vae.weights if tf.as_dtype(variable.dtype).is_floating
         ))
         for variable in vae.weights:
+            # Integer sampling state remains int64 even for a float64 model policy.
             if not tf.as_dtype(variable.dtype).is_floating:
                 self.assertEqual((variable.name, tf.as_dtype(variable.dtype)), ("seed_state", tf.int64))
         self.assertTrue(all(value.dtype == tf.float64 for value in vae_metrics.values()))
@@ -443,7 +444,7 @@ class DtypeModelTests(unittest.TestCase):
         expected_trunk = [weight.copy() for weight in source.layers[0].get_weights()]
 
         with tempfile.TemporaryDirectory() as directory:
-            model_path = Path(directory) / "compiled_classifier"
+            model_path = Path(directory) / "compiled_classifier.keras"
             source.save(str(model_path), include_optimizer=True)
             restored = _get_classifier_model(
                 class_num=4,
@@ -491,7 +492,7 @@ class DtypeModelTests(unittest.TestCase):
         )(values, training=False)
 
         with tempfile.TemporaryDirectory() as directory:
-            model_path = Path(directory) / "functional_classifier"
+            model_path = Path(directory) / "functional_classifier.keras"
             source.save(str(model_path), include_optimizer=True)
             restored = _get_classifier_model(
                 class_num=3,
@@ -534,8 +535,8 @@ class DtypeModelTests(unittest.TestCase):
                     compile_args={
                         "optimizer": tf.keras.mixed_precision.LossScaleOptimizer(
                             tf.keras.optimizers.SGD(learning_rate=0.),
-                            dynamic=False,
                             initial_scale=1.,
+                            dynamic_growth_steps=2000,
                         ),
                         "loss": "mse",
                     },
@@ -704,7 +705,7 @@ class DtypeModelTests(unittest.TestCase):
             tf.keras.layers.Dense(2, activation="softmax"),
         ])
         with tempfile.TemporaryDirectory() as directory:
-            model_path = Path(directory) / "uncompiled_classifier"
+            model_path = Path(directory) / "uncompiled_classifier.keras"
             source.save(str(model_path), include_optimizer=False)
             with self.assertRaisesRegex(ValueError, "compiled optimizer"):
                 _get_classifier_model(
@@ -734,7 +735,14 @@ class DtypeModelTests(unittest.TestCase):
         self.assertIsNone(optimizer.global_clipnorm)
 
     def test_optimizer_global_clipnorm_is_forwarded_and_serialized(self) -> None:
-        """Every optimizer supports global clipping through both factory inputs."""
+        """Every optimizer supports global clipping through both factory inputs.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
             for typed in (False, True):
@@ -757,7 +765,14 @@ class DtypeModelTests(unittest.TestCase):
                     self.assertIsNone(restored.clipnorm)
 
     def test_optimizer_rejects_both_norm_clipping_modes(self) -> None:
-        """Both input paths let Keras reject incompatible norm clipping modes."""
+        """Both input paths let Keras reject incompatible norm clipping modes.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
             for typed in (False, True):
@@ -769,13 +784,22 @@ class DtypeModelTests(unittest.TestCase):
                         "global_clipnorm": 2.5,
                     }
                     with self.assertRaisesRegex(ValueError, "clipnorm"):
+                        # Exercise the typed configuration path for conflicting norm clipping.
                         if typed:
                             _make_optimizer(Config(optimizer=options))
+                        # Exercise direct keyword options with the same invalid clipping pair.
                         else:
                             _make_optimizer(**options)
 
     def test_optimizer_global_clipnorm_clips_combined_gradient_norm(self) -> None:
-        """An SGD step distinguishes combined clipping from per-variable clipping."""
+        """An SGD step distinguishes combined clipping from per-variable clipping.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         configure_runtime(23, "float32")
         for clipping, expected in (
@@ -864,7 +888,7 @@ class DtypeModelTests(unittest.TestCase):
         stale_teacher = _make_dit_network()
 
         with tempfile.TemporaryDirectory() as directory:
-            model_path = Path(directory) / "stale_classifier"
+            model_path = Path(directory) / "stale_classifier.keras"
             stale_classifier.save(str(model_path), include_optimizer=False)
             configure_runtime(22, "mixed_float16")
             loaded_classifier = _get_classifier_model(

@@ -24,7 +24,11 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
     """Exercise each previously reproduced defect and its nearby valid cases."""
 
     def setUp(self) -> None:
-        """Prepare deterministic, small CPU inputs on the ordinary policy."""
+        """Prepare deterministic, small CPU inputs on the ordinary policy.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.keras.utils.set_random_seed(127)
@@ -39,19 +43,37 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        """Restore global numeric state after independent model fixtures."""
+        """Restore global numeric state after independent model fixtures.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.keras.backend.clear_session()
 
     def _classifier(self, **kwargs: object) -> DiTClassifier:
-        """Construct a tiny classifier with explicit classifier feature routing."""
+        """Construct a tiny classifier with explicit classifier feature routing.
+
+        Args:
+            **kwargs (object): Overrides to the seeded classifier configuration and feature routing.
+
+        Returns:
+            model (DiTClassifier): Built float32 classifier with the requested constructor options.
+        """
         config = dict(self.config, clf_mha_num_heads=1,
                       feature_aggregation_ids_dict={1: [0]})
         config.update(kwargs)
         return DiTClassifier(**config)
 
     def test_prefix_order_for_all_ownership_and_presence_combinations(self) -> None:
-        """Read class=11 and distillation=22 from their canonical positions."""
+        """Read class=11 and distillation=22 from their canonical positions.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for cls_only, distil_only, has_cls, has_distil, noise in itertools.product(
             (False, True), repeat=5
         ):
@@ -87,7 +109,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     np.testing.assert_array_equal(model.distil_feature_extractor(features), 22.0)
 
     def test_mixed_prefix_pooling_and_auxiliary_slice_keep_class_semantics(self) -> None:
-        """Exclude distillation from pooling and feed the class token to its auxiliary head."""
+        """Exclude distillation from pooling and feed the class token to its auxiliary head.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         model = self._classifier(
             clf_depth=1, clf_vit_block_ids=[],
             classifier_only_cls_token=False, cls_token_type="new_weight",
@@ -107,7 +136,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         np.testing.assert_array_equal(outputs["clf_regs_logits_list"][1], 11.0)
 
     def test_incompatible_growth_rejection_preserves_both_branches(self) -> None:
-        """Reject changed terminal input/head widths without mutating live model state."""
+        """Reject changed terminal input/head widths without mutating live model state.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for combined, connector in itertools.product(
             (False, True), ({}, {"mlp_output_dim": 4}, {"use_layer_norm": True})
         ):
@@ -141,7 +177,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     np.testing.assert_array_equal(after[key], before[key])
 
     def test_growth_can_restore_width_before_reaching_existing_head(self) -> None:
-        """Accept a complete 4-to-8-to-4 sequence and preserve existing weight identities."""
+        """Accept a complete 4-to-8-to-4 sequence and preserve existing weight identities.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         model = self._classifier(clf_depth=1)
         old_weights = list(model.weights)
         old_head = model.classifier
@@ -160,7 +203,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         np.testing.assert_allclose(clone(self.inputs)["classes"], outputs["classes"], atol=1e-7)
 
     def test_zero_depth_growth_rejects_before_any_mutation(self) -> None:
-        """Keep fixed depth-zero classification valid and explain unsupported growth early."""
+        """Keep fixed depth-zero classification valid and explain unsupported growth early.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         model = self._classifier(clf_depth=0)
         before = model(self.inputs, training=False)
         config = deepcopy(model.get_config())
@@ -173,7 +223,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
             np.testing.assert_array_equal(value, before[key])
 
     def test_external_preflight_rejects_real_zero_depth_classifier_variants(self) -> None:
-        """Catch unsupported growth on both raw variants before orchestration starts training."""
+        """Catch unsupported growth on both raw variants before orchestration starts training.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         ordinary = self._classifier(clf_depth=0)
         composite = DiTEncoderDecoderClassifier(
             encoder_kwargs=dict(self.config, clf_depth=0, clf_mha_num_heads=1),
@@ -196,7 +253,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertEqual([id(weight) for weight in model.weights], identities)
 
     def test_reshaper_policy_survives_other_global_policy_and_config_clone(self) -> None:
-        """Preserve owner, outputs, statistics, and variable policy in all reshape modes."""
+        """Preserve owner, outputs, statistics, and variable policy in all reshape modes.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for policy_name, mode, kl in itertools.product(
             ("float32", "float64", "mixed_float16"), ("flatten", "unflatten"), (False, True)
         ):
@@ -212,6 +276,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertEqual(outputs[0].dtype.name, policy.compute_dtype)
                 self.assertTrue(all(tf.as_dtype(weight.dtype).name == policy.variable_dtype for weight in model.weights if tf.as_dtype(weight.dtype).is_floating))
                 for weight in model.weights:
+                    # Only checkpointed integer RNG state is exempt from the floating policy.
                     if not tf.as_dtype(weight.dtype).is_floating:
                         self.assertEqual((weight.name, tf.as_dtype(weight.dtype)), ("seed_state", tf.int64))
                 # Only variational flatten statistics are floating latent tensors.
@@ -229,7 +294,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertTrue(all(tf.as_dtype(weight.dtype).name == policy.variable_dtype for weight in clone.weights if tf.as_dtype(weight.dtype).is_floating))
 
     def test_float64_sampling_does_not_round_through_float32(self) -> None:
-        """A deterministic latent limit preserves information below float32 resolution."""
+        """A deterministic latent limit preserves information below float32 resolution.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         model = VariationalReshaper("flatten", (2, 2, 2), add_kl=True, dtype="float64", name="precise")
         mean = model.get_layer("precise__z_mean")
         log_var = model.get_layer("precise__z_log_var")
@@ -243,7 +315,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         np.testing.assert_array_equal(sample, location)
 
     def test_resize_preserves_prefix_and_dtype_in_both_directions(self) -> None:
-        """Resize grids with zero, one, or two untouched prefix tokens under each policy."""
+        """Resize grids with zero, one, or two untouched prefix tokens under each policy.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for dtype, count, grid_in, grid_out in itertools.product(
             (tf.float32, tf.float64, tf.float16), (0, 1, 2), (2, 4), (2, 4)
         ):
@@ -260,7 +339,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 np.testing.assert_array_equal(output[:, count:], 1.0)
 
     def test_progressive_kl_reshapers_execute_with_prefix_under_all_policies(self) -> None:
-        """Backpropagate through real flatten/unflatten resizing paths with both prefixes."""
+        """Backpropagate through real flatten/unflatten resizing paths with both prefixes.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for policy in ("float32", "float64", "mixed_float16"):
             with self.subTest(policy=policy):
                 model = DiffusionTransformer(**dict(
@@ -284,7 +370,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertGreater(float(tf.reduce_sum(tf.abs(gradient))), 0.0)
 
     def test_positional_training_keeps_dropout_and_probability_contracts(self) -> None:
-        """Preserve legacy positional training while keeping logits an additive option."""
+        """Preserve legacy positional training while keeping logits an additive option.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         model = self._classifier(dropout_rate=0.5)
         full = model(self.inputs, full_return=True, training=False)
         dropout = next(layer for layer in model.classifier.layers
@@ -330,7 +423,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     self.assertIn("class_logits", explicit[-1])
 
     def test_traced_same_pass_logits_keep_saturated_head_gradients(self) -> None:
-        """Expose connected logits without changing probability returns or saved weights."""
+        """Expose connected logits without changing probability returns or saved weights.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         for composite, temperature in itertools.product((False, True), (1.0, 2.0)):
             with self.subTest(composite=composite, temperature=temperature):
                 kwargs = dict(self.config, clf_depth=2, clf_mha_num_heads=1,
@@ -355,7 +455,11 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
 
                 @tf.function
                 def evaluate() -> tuple[dict[str, object], tf.Tensor]:
-                    """Trace the real stochastic classifier call and a stable soft-target loss."""
+                    """Trace the real stochastic classifier call and a stable soft-target loss.
+
+                    Returns:
+                        outputs (tuple[dict[str, object], tf.Tensor]): Same-pass prediction mapping and floating gradient of the temperature-scaled loss with respect to head bias.
+                    """
                     with tf.GradientTape() as tape:
                         result = model(self.inputs, full_return=True, return_logits=True, training=True)
                         teacher = tf.constant([[0.0001, 0.9999]], tf.float32)

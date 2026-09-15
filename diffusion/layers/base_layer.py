@@ -103,8 +103,21 @@ class BaseLayer(ArgumentSaverLayer):
         self._check_assertions(locals())
         self._save_init_args(locals())
 
-    def call(self, inputs):
-        """Preserve the former base-layer identity call on Keras 3."""
+    def call(self, inputs: Any) -> Any:
+        """Return the supplied tensor structure without applying a transform.
+
+        Args:
+            inputs (Any): Tensor or nested tensor structure accepted by Keras.
+                The direct method preserves its dtype, shape, and identity;
+                Keras may apply the layer's dtype policy before invoking it.
+
+        Returns:
+            outputs (Any): The unchanged ``inputs`` object. Subclasses override
+                this method to implement their configured transformations.
+
+        Raises:
+            None: This identity implementation performs no validation.
+        """
 
         return inputs
 

@@ -126,26 +126,37 @@ class TaskCheckpoint:
 
 
 def _encode_json(value: object) -> object:
-    """Encode supported Python/NumPy state into JSON-compatible data without pickle.
+    """Encode Python, NumPy, and eager tensor state as JSON without pickle.
 
     Ordinary scalars, lists, and string-key mappings remain readable JSON. NumPy
     scalars normalize to Python values; arrays retain dtype/shape/base64 bytes.
     Paths, bytes, tuples, sets, and nonfinite floats use explicit type tags. Literal
     mappings containing the reserved tag key are escaped to preserve their meaning.
+    Eager TensorFlow values are converted to their NumPy values; graph tensors
+    are rejected because this writer must serialize concrete task-boundary data.
     Input containers and arrays are not mutated.
 
     Args:
-        value (object): A supported scalar, non-object ndarray, Path, bytes, tuple,
-            set, list, or string-key mapping; nested values follow the same rules.
+        value (object): Supported scalar, eager tensor, non-object ndarray, Path,
+            bytes, tuple, set, list, or string-key mapping; nested values follow
+            the same rules. Tensor scalars restore as Python scalars and tensor
+            arrays restore as ndarrays with their numeric dtype and shape.
 
     Returns:
-        object: A tree containing only JSON-compatible primitives, lists, and
+        encoded (object): A tree containing JSON-compatible primitives, lists, and
         dictionaries. Tagged values can be reconstructed by ``_decode_json``.
 
     Raises:
         TypeError: If arrays have object dtype, mappings have non-string keys, or
-            an unsupported runtime object is encountered.
+            a symbolic tensor or unsupported runtime object is encountered.
     """
+
+    # Keras metrics may return eager tensors even when their histories are plain dicts.
+    if tf.is_tensor(value):
+        # Graph tensors have no concrete boundary value to encode.
+        if not callable(getattr(value, "numpy", None)):
+            raise TypeError("Symbolic tensors are not recovery-serializable.")
+        return _encode_json(value.numpy())
 
     # Preserve scalar values that JSON represents directly.
     if value is None or isinstance(value, (bool, str, int)):
@@ -184,7 +195,7 @@ def _encode_json(value: object) -> object:
         return {
             "__recovery_type__": "ndarray",
             "dtype": contiguous.dtype.str,
-            "shape": list(contiguous.shape),
+            "shape": list(value.shape),
             "data": base64.b64encode(contiguous.tobytes()).decode("ascii")
         }
 
@@ -440,7 +451,9 @@ def _array_recovery_descriptor(value: object) -> dict[str, object] | None:
     if value is None:
         return None
 
-    array = np.ascontiguousarray(np.asarray(value))
+    array = np.asarray(value)
+    # ascontiguousarray promotes scalar arrays to rank one; keep the original rank.
+    array = np.ascontiguousarray(array).reshape(array.shape)
     # Reject arrays whose bytes contain process-local Python object pointers.
     if array.dtype.hasobject:
         raise TypeError("Object-dtype datasets cannot be recovery-fingerprinted.")
@@ -681,7 +694,6 @@ def _recovery_descriptor(
         # Record other callables by qualified name when they have no configuration API.
         if callable(value):
             return {"callable": _qualified_name(value)}
-
         # Unknown runtime objects contribute their stable type, not transient
         # instance identity. All supported Keras objects expose get_config().
         return {"type": _qualified_name(value)}
@@ -694,18 +706,51 @@ def _schedule_descriptor(schedule: object) -> dict[str, object]:
 
     Opaque callables and mutable/global object dependencies are rejected for
     strict recovery. Configured callable objects must expose get_config().
+
+    Args:
+        schedule (object): Configured callable or pure Python function whose
+            defaults and captured/global dependencies contain immutable values.
+
+    Returns:
+        descriptor (dict[str, object]): JSON-compatible configuration or Python
+            bytecode/constants/argument/capture identity. No schedule is executed
+            and no executable object is deserialized.
+
+    Raises:
+        ValueError: If a schedule has unresolved, mutable, opaque, or unsupported
+            dependencies, uses disallowed builtins, or declares nonfinite config.
+        TypeError: If a declared configuration is not JSON compatible.
     """
+
     # A declarative schedule owns a portable behavior description.
     if callable(getattr(schedule, "get_config", None)):
         config = deepcopy(schedule.get_config())
         json.dumps(config, sort_keys=True, allow_nan=False)
+
         return {"type": _qualified_name(schedule), "config": config}
+
     # Arbitrary callable objects cannot be authenticated by class name alone.
     if not isinstance(schedule, types.FunctionType):
-        raise ValueError("Strict recovery requires a configured or pure-function learning-rate schedule.")
+        raise ValueError(
+            "Strict recovery requires a configured or " 
+            "pure-function learning-rate schedule."
+        )
+
 
     def constant(value: object) -> object:
-        """Encode only immutable function dependencies without executable deserialization."""
+        """Encode immutable function dependencies without executable deserialization.
+
+        Args:
+            value (object): Primitive immutable value, bytes, or nested tuple.
+
+        Returns:
+            encoded (object): JSON primitive, hexadecimal byte mapping, or
+                recursively encoded list for a tuple. Original values are untouched.
+
+        Raises:
+            ValueError: If a dependency is mutable or is an opaque runtime object.
+        """
+
         # Primitive immutable values have unambiguous exact JSON representations.
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
@@ -715,23 +760,36 @@ def _schedule_descriptor(schedule: object) -> dict[str, object]:
         # Tuple constants remain ordered and recursively immutable.
         if isinstance(value, tuple):
             return [constant(item) for item in value]
-        raise ValueError("Strict recovery cannot authenticate an opaque or mutable schedule dependency; use a configured schedule.")
+        raise ValueError(
+            "Strict recovery cannot authenticate an opaque or " 
+            "mutable schedule dependency; use a configured schedule."
+        )
+
 
     captures = inspect.getclosurevars(schedule)
-    # Unresolved globals cannot define a reproducible schedule at this boundary.
     if captures.unbound:
-        raise ValueError("Strict recovery cannot authenticate unresolved schedule globals.")
-    # External I/O and dynamic evaluation cannot be bound by an immutable closure.
-    if set(captures.builtins) - {"abs", "min", "max", "pow", "round", "float", "int", "bool", "tuple", "len", "sum", "range"}:
-        raise ValueError("Strict recovery schedules support only pure numeric builtins; use a configured schedule.")
+        raise ValueError(
+            "Strict recovery cannot authenticate unresolved schedule globals."
+        )
+    if set(captures.builtins) - {"abs", "min", "max", "pow", "round", 
+                                "float", "int", "bool", "tuple", 
+                                "len", "sum", "range"}:
+        raise ValueError(
+            "Strict recovery schedules support only pure " \
+            "numeric builtins; use a configured schedule."
+        )
+
     code = schedule.__code__
-    return {"python_schedule": 1, "bytecode": code.co_code.hex(),
-            "constants": constant(code.co_consts), "names": list(code.co_names), "freevars": list(code.co_freevars),
-            "arguments": [code.co_argcount, code.co_kwonlyargcount, code.co_posonlyargcount],
-            "defaults": constant(schedule.__defaults__),
-            "kwdefaults": {key: constant(value) for key, value in (schedule.__kwdefaults__ or {}).items()},
+
+    return {"python_schedule": 1, 
+            "bytecode": code.co_code.hex(), 
+            "constants": constant(code.co_consts), "names": list(code.co_names), "freevars": list(code.co_freevars), 
+            "arguments": [code.co_argcount, code.co_kwonlyargcount, code.co_posonlyargcount], 
+            "defaults": constant(schedule.__defaults__), 
+            "kwdefaults": {key: constant(value) for key, value in (schedule.__kwdefaults__ or {}).items()}, 
             "captures": {key: constant(value) for key, value in {
-                **captures.globals, **captures.nonlocals
+                **captures.globals, 
+                **captures.nonlocals
             }.items()}}
 
 
@@ -742,6 +800,23 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
     stateless observers. Custom callbacks declare get_recovery_config() plus
     recovery_state_scope='stateless'/'per_fit', or paired state getter/setter.
     Ordinary runs without checkpointing retain unrestricted callback support.
+
+    Args:
+        callbacks (Sequence[object]): Callbacks in execution order. Built-in
+            stopping policies use configured monitor/mode and the absolute
+            min_delta, whose sign and comparison function may change during fit.
+        strict (bool): True requires an explicit recoverable behavior contract;
+            False records the ordinary best-effort object descriptors.
+
+    Returns:
+        descriptors (list[object]): Independent JSON-compatible behavior records
+            in callback order. Runtime wait counters and best scores are omitted
+            for callbacks that reset before every fit. This call changes no callback.
+
+    Raises:
+        ValueError: If a strict callback is opaque, has incomplete state methods,
+            or declares a nonfinite configuration or unsupported schedule.
+        TypeError: If declared configuration cannot be encoded as JSON.
     """
     # Ordinary fitting does not promise recovery for opaque Python callbacks.
     if not strict:
@@ -766,16 +841,19 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
             config = deepcopy(custom())
             json.dumps(config, sort_keys=True, allow_nan=False)
             descriptor.update(config=config, state_scope="persistent" if stateful else scope)
-        # LearningRateScheduler has no get_config in Keras 2.10.
+        # LearningRateScheduler exposes its schedule separately from configuration.
         elif kind is tf.keras.callbacks.LearningRateScheduler:
             descriptor.update(schedule=_schedule_descriptor(callback.schedule), state_scope="per_fit")
         # These built-ins reset their decision state on each fit, while optimizer LR is saved.
         elif kind in {tf.keras.callbacks.EarlyStopping, tf.keras.callbacks.ReduceLROnPlateau}:
-            fields = ("monitor", "min_delta", "patience", "baseline", "restore_best_weights",
+            fields = ("monitor", "mode", "patience", "baseline", "restore_best_weights",
                       "start_from_epoch", "factor", "cooldown", "min_lr")
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
                                       for key in fields if hasattr(callback, key)},
-                              monitor_op=getattr(callback.monitor_op, "__name__", _qualified_name(callback.monitor_op)), state_scope="per_fit")
+                              state_scope="per_fit")
+            # Keras chooses monitor_op lazily and signs min_delta during fit.
+            # Authenticate its stable configured magnitude and direction instead.
+            descriptor["config"]["min_delta"] = abs(float(callback.min_delta))
         # Termination has no evolving state between completed fit phases.
         elif kind is tf.keras.callbacks.TerminateOnNaN:
             descriptor["state_scope"] = "stateless"
@@ -786,7 +864,7 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
                                       for key in fields if hasattr(callback, key)}, state_scope="per_fit")
         # Repository sampling callbacks use task-isolated seeds and change no learned state.
-        elif _qualified_name(callback) == "diffusion.callbacks.image_generator_callback.ImageGeneratorCallback":
+        elif _qualified_name(callback) == "diffusion.callbacks.image_generator.ImageGenerator":
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
                                       for key in ("add_null_label", "show_images", "save_gifs", "base_seed")},
                               state_scope="per_fit")
@@ -798,8 +876,20 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
 
 
 def callback_recovery_state(callbacks: Sequence[object]) -> list[object]:
-    """Capture explicitly declared persistent callback state in callback order."""
-    return [callback.get_recovery_state() if callable(getattr(callback, "get_recovery_state", None))
+    """Capture explicitly declared persistent callback state in callback order.
+
+    Args:
+        callbacks (Sequence[object]): Callbacks whose recovery contracts were
+            authenticated before fitting. Stateful callbacks provide a getter.
+
+    Returns:
+        states (list[object]): Getter results in callback order, with None for
+            callbacks without persistent state. The checkpoint writer validates
+            numeric/JSON encodability; custom getters may return shared objects.
+    """
+
+    return [callback.get_recovery_state() 
+            if callable(getattr(callback, "get_recovery_state", None))
             else None for callback in callbacks]
 
 
@@ -808,7 +898,17 @@ def optimizer_learning_rate_state(trackables: Mapping[str, object]) -> dict[str,
 
     Configured schedule objects remain structural configuration and are not
     replaced by scalar rates. Their iteration/state variables stay checkpointed.
+
+    Args:
+        trackables (Mapping[str, object]): Recovery role names mapped to models,
+            optimizers, or other checkpoint objects. Only optimizer roles with
+            assignable learning rates are included.
+
+    Returns:
+        rates (dict[str, float]): Role-to-rate mapping of concrete scalar values.
+            This eager read changes no optimizer or learning-rate schedule.
     """
+
     result = {}
     for role, value in trackables.items():
         # Only optimizers own a mutable learning-rate hyperparameter in this contract.
@@ -817,6 +917,7 @@ def optimizer_learning_rate_state(trackables: Mapping[str, object]) -> dict[str,
             # Exclude configured schedule objects, which have immutable behavior identity.
             if hasattr(rate, "assign"):
                 result[role] = float(rate.numpy())
+
     return result
 
 
@@ -825,23 +926,66 @@ def restore_optimizer_learning_rate_state(trackables: Mapping[str, object], stat
 
     Initial optimizer configuration is independently bound by the run descriptor;
     these scalar values describe a completed callback-controlled boundary.
+
+    Args:
+        trackables (Mapping[str, object]): Reconstructed role mapping with the
+            same assignable optimizer learning rates as the saved boundary.
+        state (object): Dictionary of role names to finite nonnegative Python
+            float/int rates, as returned by optimizer_learning_rate_state.
+
+    Returns:
+        result (None): Valid rates are assigned in their destination variable
+            dtypes before topology validation. Invalid input changes no rates.
+
+    Raises:
+        ValueError: If role names differ or any rate is boolean, nonnumeric,
+            negative, or nonfinite.
     """
+
     expected = optimizer_learning_rate_state(trackables)
     # The same optimizer roles must exist before mutable values can be restored.
     if not isinstance(state, dict) or set(state) != set(expected):
-        raise ValueError("Checkpoint optimizer learning-rate state differs from its reconstructed roles.")
+        raise ValueError(
+            "Checkpoint optimizer learning-rate state " \
+            "differs from its reconstructed roles."
+        )
     for role, rate in state.items():
         # A malformed runtime value must not change the authenticated optimizer.
-        if isinstance(rate, bool) or not isinstance(rate, (float, int)) or not math.isfinite(rate) or rate < 0.:
-            raise ValueError("Checkpoint optimizer learning rates must be finite nonnegative scalars.")
+        if isinstance(rate, bool) or not isinstance(rate, (float, int)) \
+        or not math.isfinite(rate) or rate < 0.:
+            raise ValueError(
+                "Checkpoint optimizer learning rates " \
+                "must be finite nonnegative scalars."
+            )
+
+    for role, rate in state.items():
         trackables[role].learning_rate.assign(rate)
 
 
 def restore_callback_recovery_state(callbacks: Sequence[object], states: Sequence[object]) -> None:
-    """Restore custom callback state only after the run identity has been authenticated."""
+    """Restore custom callback state after the run identity is authenticated.
+
+    Args:
+        callbacks (Sequence[object]): Declared callbacks in their original order.
+        states (Sequence[object]): One saved state per callback. Stateless and
+            per-fit callbacks require None; persistent callbacks consume their
+            saved state through set_recovery_state.
+
+    Returns:
+        result (None): Persistent callbacks receive state in place. A custom
+            setter's failure propagates and earlier setters are not rolled back.
+
+    Raises:
+        ValueError: If callback/state counts differ or a callback without a
+            setter receives non-None state.
+    """
+
     # A changed callback list cannot receive a different task boundary's state.
     if len(callbacks) != len(states):
-        raise ValueError("Checkpoint callback state count differs from the declared callbacks.")
+        raise ValueError(
+            "Checkpoint callback state count differs from the declared callbacks."
+        )
+
     for callback, state in zip(callbacks, states):
         setter = getattr(callback, "set_recovery_state", None)
         # Only explicit persistent-state callbacks consume saved state.
@@ -849,7 +993,9 @@ def restore_callback_recovery_state(callbacks: Sequence[object], states: Sequenc
             setter(state)
         # Stateless/per-fit callbacks cannot silently acquire saved mutable state.
         elif state is not None:
-            raise ValueError("Checkpoint contains unsupported persistent callback state.")
+            raise ValueError(
+                "Checkpoint contains unsupported persistent callback state."
+            )
 
 
 def validate_checkpoint_destination(checkpoint_dir: str | os.PathLike[str], first_task: int, task_count: int) -> None:
@@ -858,13 +1004,30 @@ def validate_checkpoint_destination(checkpoint_dir: str | os.PathLike[str], firs
     This deliberately requires a fresh checkpoint_dir after corrupt/incomplete
     fallback; it neither quarantines nor overwrites any committed or invalid slot.
     Ordinary temporary staging siblings do not occupy a task destination.
+
+    Args:
+        checkpoint_dir (str | os.PathLike[str]): Proposed checkpoint root.
+        first_task (int): First remaining zero-based task slot to examine.
+        task_count (int): Exclusive upper task index from the resolved schedule.
+
+    Returns:
+        result (None): Remaining task slots are unoccupied. No directory or file
+            is created, moved, or deleted; an empty index interval performs no I/O.
+
+    Raises:
+        FileExistsError: If a remaining task slot is occupied by a file, directory,
+            or symlink, including a broken symlink.
     """
+
     root = Path(checkpoint_dir)
     for index in range(first_task, task_count):
         destination = root / f"task-{index:04d}"
-        # Any occupied task slot needs an explicitly different output root before training.
+
         if destination.exists() or destination.is_symlink():
-            raise FileExistsError(f"Checkpoint destination is occupied before training: {destination}. Preserve this evidence and select a fresh checkpoint_dir.")
+            raise FileExistsError(
+                f"Checkpoint destination is occupied before training: {destination}. "
+                "Preserve this evidence and select a fresh checkpoint_dir."
+            )
 
 
 def _model_topology_descriptor(model: object) -> dict[str, object] | None:
@@ -889,10 +1052,10 @@ def _model_topology_descriptor(model: object) -> dict[str, object] | None:
     weights = list(getattr(model, "weights", []) or [])
 
     return {
-        "object": _recovery_descriptor(model),
+        "object": _recovery_descriptor(model), 
         "weights": [{
-            "shape": list(weight.shape),
-            "dtype": tf.as_dtype(weight.dtype).name,
+            "shape": list(weight.shape), 
+            "dtype": tf.as_dtype(weight.dtype).name, 
             "trainable": bool(getattr(weight, "trainable", False))
         } for weight in weights]
     }
@@ -2099,6 +2262,12 @@ def find_latest_task_checkpoint(
 
     Returns:
         Path: Newest valid committed task directory.
+
+    Raises:
+        FileNotFoundError: If the root is unavailable or has no valid committed
+            task. An explicitly named task is validated without older fallback.
+        ValueError: If an explicitly named task is corrupt or incompatible.
+        OSError: If checkpoint discovery or validation cannot read required files.
     """
 
     supplied = Path(checkpoint_path)
@@ -2111,38 +2280,42 @@ def find_latest_task_checkpoint(
         _validate_committed_task(supplied)
         return supplied
 
-    # Reject checkpoint roots that do not exist as directories.
     if not supplied.is_dir():
-        raise FileNotFoundError(f"Checkpoint directory does not exist: {supplied}")
+        raise FileNotFoundError(
+            f"Checkpoint directory does not exist: {supplied}"
+        )
 
     latest_path = supplied / _LATEST_NAME
     # Try the latest-task index first when an index file exists.
     if latest_path.is_file():
         try:
             latest = _read_json(latest_path)
-            # Reject unsupported index schemas and fall back to directory discovery.
+
             if int(latest.get("schema_version", -1)) != SCHEMA_VERSION:
-                raise ValueError("Unsupported latest-index schema version.")
+                raise ValueError(
+                    "Unsupported latest-index schema version."
+                )
 
             child_name = str(latest["task_dir"])
 
-            # Reject unsafe or malformed task paths in the latest-task index.
             if Path(child_name).name != child_name \
             or _TASK_DIRECTORY_PATTERN.fullmatch(child_name) is None:
-                raise ValueError("latest.json contains an unsafe task path.")
+                raise ValueError(
+                    "latest.json contains an unsafe task path."
+                )
 
             candidate = supplied / child_name
             manifest = _validate_committed_task(candidate)
 
-            # Reject index entries whose task cursor disagrees with the checkpoint manifest.
             if int(manifest["completed_task_index"]) \
             != int(latest["completed_task_index"]):
-                raise ValueError("latest.json task index is inconsistent.")
+                raise ValueError(
+                    "latest.json task index is inconsistent."
+                )
 
-            # Reject index entries whose recorded state checksum is stale or corrupt.
             if _sha256_file(candidate / _STATE_NAME) != latest["state_sha256"]:
                 raise ValueError("latest.json state checksum is inconsistent.")
-            # A crash can commit a newer task before updating latest.json.
+
             if not any(
                 _TASK_DIRECTORY_PATTERN.fullmatch(child.name)
                 and int(child.name[5:]) > int(latest["completed_task_index"])
@@ -2187,9 +2360,8 @@ def load_task_checkpoint(
 
     Callers that need saved topology before model construction may first call
     this function without ``trackables``, construct/register all optimizer slot
-    variables, and call it again with the complete mapping.  Under TensorFlow
-    2.10 legacy optimizers normally require ``_create_all_weights(var_list)``
-    before ``assert_consumed=True`` restoration.
+    variables, and call it again with the complete mapping. Build Keras optimizer
+    slots with ``optimizer.build(trainable_variables)`` before strict restoration.
 
     Validates commitment and payload checksums before optional TensorFlow
     restoration. Supplying dependencies changes their live variables; a later
@@ -2239,7 +2411,6 @@ def load_task_checkpoint(
     class_order = tuple(manifest["class_order"])
     task_groups = tuple(tuple(group) for group in manifest["task_groups"])
 
-    # Require expected class order and task grouping together.
     if (expected_class_order is None) != (expected_task_groups is None):
         raise ValueError(
             "Expected class order and task groups must be supplied together."
@@ -2254,14 +2425,14 @@ def load_task_checkpoint(
         )
         expected_order = _decode_json(_encode_json(list(expected_class_order)))
 
-        # Reject restoration when the requested schedule differs from the saved schedule.
         if fingerprint_state({
             "class_order": expected_order,
             "task_groups": expected_groups
         }) != manifest["schedule_fingerprint"]:
-            raise ValueError("Requested continual schedule differs from checkpoint.")
+            raise ValueError(
+                "Requested continual schedule differs from checkpoint."
+            )
 
-    # Reject restoration when an expected run fingerprint does not match.
     if expected_fingerprint is not None \
     and manifest.get("fingerprint") != expected_fingerprint:
         raise ValueError("Run fingerprint differs from the checkpoint.")
@@ -2270,9 +2441,7 @@ def load_task_checkpoint(
     saved_trackable_names = set(manifest.get("trackable_names", []))
     restore_status = None
 
-    # Restore TensorFlow state when the caller supplies dependencies.
     if normalized_trackables:
-        # Require supplied TensorFlow dependency names to match the saved object graph.
         if set(normalized_trackables) != saved_trackable_names:
             raise ValueError(
                 "TensorFlow trackable names differ from the checkpoint: "
@@ -2282,13 +2451,11 @@ def load_task_checkpoint(
 
         prefix = manifest.get("checkpoint_prefix")
 
-        # Reject a TensorFlow restore with no usable checkpoint prefix.
         if not isinstance(prefix, str):
             raise ValueError("Checkpoint manifest has no TensorFlow prefix.")
 
         prefix_path = Path(prefix)
 
-        # Reject a TensorFlow restore prefix that escapes the task directory.
         if prefix_path.is_absolute() or ".." in prefix_path.parts:
             raise ValueError("TensorFlow checkpoint prefix escapes task directory.")
 

@@ -367,7 +367,14 @@ class CoreConfigValidationTests(unittest.TestCase):
                         self.assertEqual(stored, value)
 
     def test_optimizer_global_clipnorm_round_trips_through_yaml(self) -> None:
-        """Preserve global clipping through typed mappings and full/compact YAML."""
+        """Preserve global clipping through typed mappings and full/compact YAML.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         config = Config(optimizer={"global_clipnorm": 2.5})
         with tempfile.TemporaryDirectory() as directory:

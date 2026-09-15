@@ -274,14 +274,13 @@ class DiffusionModel(ArgumentSaverModel):
             locals(), 
             exclude=("self", "kwargs", "__class__", "network")
         )
-        DiffusionModel._refresh_loss_flags(self)
-        DiffusionModel._create_metrics(self)
-
         # Public Sequential replacement keeps the wrapper's tracked state stable
         # when a task boundary reconstructs its raw and EMA networks.
         self._network_holder = models.Sequential(name=f"{self.name}__raw")
         self._network_holder.add(network, rebuild=False)
         self._ema_holder = models.Sequential(name=f"{self.name}__ema")
+        DiffusionModel._refresh_loss_flags(self)
+        DiffusionModel._create_metrics(self)
 
         self.network.build()
         # Clone and initialize the EMA network when EMA tracking is enabled.
@@ -913,7 +912,7 @@ class DiffusionModel(ArgumentSaverModel):
         return isinstance(element_spec, (tuple, list)) and len(element_spec) >= 7
 
     def _prepare_sampling_labels(
-        self, 
+        self: "DiffusionModel",
         network: ArgumentSaverModel, 
         labels: tf.Tensor | Sequence[int], 
         samples_per_label: int = 1
@@ -922,41 +921,54 @@ class DiffusionModel(ArgumentSaverModel):
 
         Args:
             network (ArgumentSaverModel): Selected raw or EMA network.
-            labels (tf.Tensor | Sequence[int]): One condition ID per sample.
+            labels (tf.Tensor | Sequence[int]): Integer condition IDs in
+                ``[0, network.num_labels)``; an empty vector is supported.
+            samples_per_label (int): Positive number of contiguous repetitions
+                per condition. Fractions and booleans are rejected.
 
         Returns:
-            tf.Tensor: Rank-one int32 condition IDs with the same number of entries,
-            including zero for an empty request. Conversion checks the upper vocabulary
-            bound; downstream sampling still requires valid nonnegative network labels.
+            repeated_labels (tf.Tensor): Rank-one int32 IDs with
+                ``len(labels) * samples_per_label`` entries, including an empty
+                tensor for an empty request.
 
         Raises:
-            ValueError: Static shape normalization rejects a non-vector input.
-            tf.errors.InvalidArgumentError: A runtime shape or upper-vocabulary bound fails.
+            ValueError: IDs are not integers, the repeat count is not a positive
+                integer, or a static shape is not a vector.
+            tf.errors.InvalidArgumentError: A runtime shape or vocabulary bound
+                fails in ordinary TensorFlow execution.
         """
 
-        labels = tf.ensure_shape(
-            tf.cast(tf.convert_to_tensor(labels), tf.int32), 
-            (None,)
-        )
+        if isinstance(samples_per_label, (bool, np.bool_)) or not isinstance(
+            samples_per_label, (int, np.integer)
+        ) or samples_per_label < 1:
+            raise ValueError("samples_per_label must be a positive integer.")
+
+        labels = tf.ensure_shape(tf.convert_to_tensor(labels), (None,))
+        if not labels.dtype.is_integer:
+            if labels.shape.num_elements() != 0:
+                raise ValueError("Sampling label IDs must have an integer dtype.")
+
+            labels = tf.cast(labels, tf.int32)
+
+        labels = tf.cast(labels, tf.int64)
         num_labels = network.num_labels
 
         # Eager assertions return None; only graph assertion operations become dependencies.
         with tf.control_dependencies([
             assertion for assertion in (
+                tf.debugging.assert_non_negative(
+                    labels, 
+                    message="Sampling label IDs must be nonnegative."
+                ), 
                 tf.debugging.assert_less(
                     labels, 
                     tf.cast(num_labels, labels.dtype), 
                     message="label IDs exceed the selected network vocabulary."
-                ),
+                )
             )
             if assertion is not None
         ]):
-            labels = tf.concat([
-                tf.cast([i]*samples_per_label, tf.int32)
-                for i in labels
-            ], axis=0) if samples_per_label > 1 else tf.identity(labels)
-
-            return labels
+            return tf.repeat(tf.cast(labels, tf.int32), samples_per_label)
 
     def _mask_unknown_teacher_labels(
         self, 
@@ -992,11 +1004,29 @@ class DiffusionModel(ArgumentSaverModel):
 
     def _compute_base_loss(
         self, 
-        y_true, 
-        y_pred, 
-        sample_weight=None
-    ):
-        """Apply only the compiled data loss, as the legacy wrapper did."""
+        y_true: tf.Tensor, 
+        y_pred: tf.Tensor, 
+        sample_weight: tf.Tensor | None = None
+    ) -> tf.Tensor:
+        """Evaluate the compiled prediction loss for one pair of tensors.
+
+        Args:
+            y_true (tf.Tensor): Floating reference images or noise targets.
+            y_pred (tf.Tensor): Predictions with the shape expected by the
+                compiled loss. The loss controls casting and reduction.
+            sample_weight (tf.Tensor | None): Optional numeric weights
+                broadcastable to the loss values; ``None`` uses equal weights.
+
+        Returns:
+            data_loss (tf.Tensor): Floating loss in the compiled loss's dtype
+                and reduction shape, normally a scalar. Keras 3's loss
+                container excludes layer regularizers handled by the wrapper.
+
+        Raises:
+            TypeError: The wrapper has no callable compiled loss.
+            ValueError: The loss rejects incompatible target or weight shapes.
+            tf.errors.InvalidArgumentError: A runtime loss operation fails.
+        """
 
         if hasattr(self, "_compile_loss"):
             return self._compile_loss(y_true, y_pred, sample_weight)
@@ -1392,18 +1422,24 @@ class DiffusionModel(ArgumentSaverModel):
         filepath: str, 
         create_dir: bool = True, 
         overwrite: bool = True
-    ):
+    ) -> None:
         """Save model weights, optionally creating missing parent directories.
 
         Args:
-            filepath (str): Destination path for the saved weights.
+            filepath (str): Destination ending in ``.weights.h5`` under
+                Keras 3. Includes tracked raw/EMA weights and random state.
             create_dir (bool): Recursively create missing parent directories
                 when True. Defaults to True.
             overwrite (bool): Whether to overwrite an existing weights file
                 without prompting. Defaults to True.
 
         Returns:
-            None: Weights are written to ``filepath``.
+            result (None): Weights are written to ``filepath``. The wrapper
+                is built if needed; this file alone is not a task checkpoint.
+
+        Raises:
+            ValueError: Keras rejects the filename or unbuildable model state.
+            OSError: The destination cannot be created or written.
         """
 
         if create_dir:
@@ -1416,8 +1452,31 @@ class DiffusionModel(ArgumentSaverModel):
 
         return super().save_weights(filepath, overwrite=overwrite)
 
-    def load_weights(self, filepath, *args, **kwargs):
-        """Restore raw/EMA weights even before the wrapper is compiled."""
+    def load_weights(
+        self, 
+        filepath: str, 
+        *args: object, 
+        **kwargs: object
+    ) -> None:
+        """Restore tracked weights, building the wrapper before loading.
+
+        Args:
+            filepath (str): Keras-compatible weights file for the already
+                configured raw/EMA architecture and numeric policy.
+            *args (object): Positional options forwarded to Keras loading.
+            **kwargs (object): Keras loading options such as ``skip_mismatch``;
+                its default false rejects incompatible weight shapes.
+
+        Returns:
+            result (None): Keras restores matching variables in place. The
+                wrapper need not be compiled; loading does not reconstruct
+                class/depth growth metadata or the continual task cursor.
+
+        Raises:
+            ValueError: The format, model geometry, or weights are incompatible.
+            TypeError: Keras rejects a forwarded loading option.
+            OSError: The file is missing, unreadable, or invalid.
+        """
 
         if not self.built:
             self.build(())
@@ -5025,14 +5084,16 @@ def run_self_tests() -> dict[str, str]:
     summary_lines = []
     wrapper.summary(print_fn=summary_lines.append)
     assert any("Total params" in line for line in summary_lines)
-    tf.debugging.assert_equal(
-        wrapper._prepare_sampling_labels(wrapper.network, [1.9]),
-        tf.constant([1], tf.int32),
-    )
-    tf.debugging.assert_equal(
-        wrapper._prepare_sampling_labels(wrapper.network, [True]),
-        tf.constant([1], tf.int32),
-    )
+    for invalid_labels in ([1.9], [True]):
+        with np.testing.assert_raises(ValueError):
+            wrapper._prepare_sampling_labels(wrapper.network, invalid_labels)
+    for invalid_labels in ([-1], [2 ** 32 + 1]):
+        with np.testing.assert_raises(tf.errors.InvalidArgumentError):
+            wrapper._prepare_sampling_labels(wrapper.network, invalid_labels)
+    for invalid_count in (0, -1, 1.5, True):
+        with np.testing.assert_raises(ValueError):
+            wrapper._prepare_sampling_labels(wrapper.network, [1], invalid_count)
+    assert wrapper._prepare_sampling_labels(wrapper.network, [], 2).shape == (0,)
 
     raw_sample = wrapper.sample(
         network_name="raw", labels=[1, 2], steps=2, eta=0.0, seed=29

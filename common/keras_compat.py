@@ -11,25 +11,64 @@ NAME_SEPARATOR = "__"
 
 
 def display_name(name: object) -> str:
-    """Render framework paths with the project's readable hierarchy separator."""
+    """Render a name with the project's readable hierarchy separator.
+
+    Args:
+        name (object): Name or path converted to text before replacing slashes.
+
+    Returns:
+        formatted_name (str): Text with each slash replaced by ``__``.
+            Other characters are retained; framework objects are not changed.
+    """
 
     return str(name).replace("/", NAME_SEPARATOR)
 
 
 def variable_path(variable: object) -> str:
-    """Return the full Keras variable path, including its owning layer."""
+    """Read a full variable path from Keras or a raw TensorFlow variable.
+
+    Args:
+        variable (object): Variable exposing Keras ``path`` or TensorFlow ``name``.
+
+    Returns:
+        path (str): Nonempty Keras path when available, otherwise the raw name.
+            Native separators are retained for internal matching.
+
+    Raises:
+        AttributeError: If neither a nonempty path nor a name is available.
+    """
 
     return getattr(variable, "path", None) or variable.name
 
 
 def format_variable_name(variable: object) -> str:
-    """Format both Keras variables and raw TensorFlow variables consistently."""
+    """Format both Keras variables and raw TensorFlow variables consistently.
+
+    Args:
+        variable (object): Variable exposing a Keras path or TensorFlow name.
+
+    Returns:
+        formatted_name (str): Full variable path using ``__`` between scopes.
+
+    Raises:
+        AttributeError: If the object exposes neither a usable path nor a name.
+    """
 
     return display_name(variable_path(variable))
 
 
 def optimizer_iterations(optimizer: object) -> object:
-    """Return actual update counts, including Keras 3.4 loss-scale wrappers."""
+    """Read actual optimizer update counts through loss-scale wrappers.
+
+    Args:
+        optimizer (object): Ordinary optimizer, nested ``inner_optimizer``
+            wrapper, or None for an absent optimizer.
+
+    Returns:
+        iterations (object): Innermost optimizer's integer iteration variable,
+            typically an int64 Keras variable, or None when unavailable. Dynamic
+            loss scaling can skip an update without advancing this counter.
+    """
 
     while hasattr(optimizer, "inner_optimizer"):
         optimizer = optimizer.inner_optimizer
@@ -48,6 +87,22 @@ def register_optimizer_variables(
     state (including iterations, loss scaling, and existing moment estimates).
     Slots for a changed shape start at the optimizer's default. This helper
     does not permit adding layers to an already built Keras model.
+
+    Args:
+        optimizer (tf.keras.optimizers.Optimizer): Keras optimizer whose
+            configuration and compatible state must survive a variable change.
+        variables (Sequence[object]): Complete variable selection to register.
+            Duplicate objects are removed while retaining their first position.
+
+    Returns:
+        registered_optimizer (tf.keras.optimizers.Optimizer): Original optimizer
+            for empty/already registered selections, or a reconstructed optimizer
+            with same-name/same-shape state copied using destination dtypes.
+            Callers must retain the returned object when reconstruction occurs.
+
+    Raises:
+        ValueError: If optimizer state names/shapes are ambiguous, configuration
+            cannot be reconstructed, or Keras rejects the selected variables.
     """
 
     variables = list(dict((id(v), v) for v in variables).values())
@@ -72,11 +127,23 @@ def register_optimizer_variables(
     replacement = type(optimizer).from_config(deepcopy(optimizer.get_config()))
     replacement.build(variables)
 
-    def copy_state(source: object, destination: object) -> None:
-        """Transfer unambiguous local optimizer state through nested wrappers."""
 
-        # A LossScaleOptimizer may build its inner optimizer under a temporary
-        # outer name scope. Match local state names separately at each level.
+    def copy_state(source: object, destination: object) -> None:
+        """Transfer unambiguous local optimizer state through nested wrappers.
+
+        Args:
+            source (object): Built optimizer with existing state variables.
+            destination (object): Reconstructed optimizer with matching wrapper
+                structure and the complete new variable selection.
+
+        Returns:
+            result (None): Matching state is assigned in destination variable
+                dtypes; new or resized slots retain their initialization.
+
+        Raises:
+            ValueError: If a source repeats a state name/shape combination.
+        """
+
         source_inner = getattr(source, "inner_optimizer", None)
         old_values = source._variables if source_inner is not None else source.variables
         new_values = destination._variables if source_inner is not None else destination.variables
@@ -97,6 +164,7 @@ def register_optimizer_variables(
         # Preserve inner slots independently of the wrapper's own counters.
         if source_inner is not None:
             copy_state(source_inner, destination.inner_optimizer)
+
 
     copy_state(optimizer, replacement)
 

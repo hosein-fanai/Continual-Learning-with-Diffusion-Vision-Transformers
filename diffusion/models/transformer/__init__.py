@@ -88,8 +88,31 @@ def remove_second_token(x: tf.Tensor) -> tf.Tensor:
 
 
 @register_canonical_keras_serializable(package="continual_learning")
-def _unpatchify_tokens(x, patch_size, channels, grid_dtype="float32"):
-    """Reassemble square patch tokens inside a Keras layer call."""
+def _unpatchify_tokens(
+    x: tf.Tensor,
+    patch_size: int,
+    channels: int,
+    grid_dtype: str | tf.DType = "float32",
+) -> tf.Tensor:
+    """Reassemble a square grid of flattened patches into images.
+
+    Args:
+        x (tf.Tensor): Numeric tokens shaped ``[B,G*G,P*P*C]``. Patch values
+            are ordered by patch row, patch column, then channel.
+        patch_size (int): Positive patch side length ``P``.
+        channels (int): Positive output channel count ``C``.
+        grid_dtype (str | tf.DType): Floating dtype used only to compute the
+            square root of the token count; defaults to ``"float32"``.
+
+    Returns:
+        images (tf.Tensor): Images shaped ``[B,G*P,G*P,C]`` with the same
+            dtype and values as ``x``, rearranged into spatial order.
+
+    Raises:
+        ValueError: A statically known shape or dtype is incompatible.
+        tf.errors.InvalidArgumentError: Runtime dimensions cannot form the
+            requested square patch grid or TensorFlow rejects the reshape.
+    """
 
     shape = tf.shape(x)
     grid_size = tf.cast(

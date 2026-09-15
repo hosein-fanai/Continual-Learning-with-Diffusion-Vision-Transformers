@@ -463,7 +463,7 @@ def train_model(
 ) -> dict[str, list[float]]:
     """Train a supplied model or continual bundle and persist the requested artifacts.
 
-    Ordinary Keras models use ``fit``. V2 uses generator/discriminator phases;
+    Ordinary Keras models use ``fit``. V2 uses generator/classifier phases;
     progressive V2 training applies its curriculum to the generator and retains a
     separate ordinary classifier phase. Direct-mode custom methods are also
     routed, including array adaptation for VAE ``train``. Continual bundles save a

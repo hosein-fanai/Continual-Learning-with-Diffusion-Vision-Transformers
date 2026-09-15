@@ -20,7 +20,17 @@ from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 def _network(classes: int | None = 3, distil: bool = True,
              auxiliary: str | None = None, convolution: bool = False) -> tf.keras.Model:
-    """Build a tiny public raw classifier with optional independent/auxiliary KD heads."""
+    """Build a tiny public raw classifier with optional independent/auxiliary KD heads.
+
+    Args:
+        classes (int | None): Fixed head width or None for a dynamic vocabulary.
+        distil (bool): Enable the independent distillation head.
+        auxiliary (str | None): Auxiliary token training mode, or None to omit it.
+        convolution (bool): False selects the transformer; True selects the matching UNet fixture.
+
+    Returns:
+        model (tf.keras.Model): Built float32 raw classifier with 4x4 single-channel image inputs.
+    """
 
     common = dict(num_classes=classes, use_cfg=True, timesteps=4, image_size=4,
                   channels=1, seed=37)
@@ -46,7 +56,18 @@ def _network(classes: int | None = 3, distil: bool = True,
 
 
 def _constant_head(head: tf.keras.layers.Layer, logits: list[float]) -> None:
-    """Make a real classifier emit fixed scores while retaining trainable bias gradients."""
+    """Make a real classifier emit fixed scores while retaining trainable bias gradients.
+
+    Args:
+        head (tf.keras.layers.Layer): Built head whose final weight is its bias.
+        logits (list[float]): Constant pre-softmax scores, one per output class.
+
+    Returns:
+        result (None): Zero all head weights and assign its trainable bias in the destination dtype.
+
+    Raises:
+        ValueError: If the supplied logit width does not match the head bias.
+    """
 
     for variable in head.weights:
         variable.assign(tf.zeros_like(variable))
@@ -54,7 +75,18 @@ def _constant_head(head: tf.keras.layers.Layer, logits: list[float]) -> None:
 
 
 def _dataset(tensors: tuple[tf.Tensor, ...], batch: int = 2) -> tf.data.Dataset:
-    """Bound input threads and preserve uneven final batches."""
+    """Bound input threads and preserve uneven final batches.
+
+    Args:
+        tensors (tuple[tf.Tensor, ...]): Aligned tensors with matching leading dimensions.
+        batch (int): Positive batch size, default two; the final partial batch is retained.
+
+    Returns:
+        data (tf.data.Dataset): Batches with original tensor dtypes and one private input thread.
+
+    Raises:
+        ValueError: If tensor lengths or batch settings are incompatible.
+    """
 
     data = tf.data.Dataset.from_tensor_slices(tensors).batch(batch)
     options = tf.data.Options()
@@ -65,7 +97,23 @@ def _dataset(tensors: tuple[tf.Tensor, ...], batch: int = 2) -> tf.data.Dataset:
 def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
              scope: str = "old_classes", auxiliary: str | None = None,
              convolution: bool = False, eager: bool = True) -> DiffusionClassifier:
-    """Compile the actual V1/V2 update path with a frozen two-class teacher."""
+    """Compile the actual V1/V2 update path with a frozen two-class teacher.
+
+    Args:
+        version (int): One selects joint V1; other fixture values select alternating V2.
+        classes (int | None): Student head width, or None for dynamic growth.
+        temperature (float): Positive soft-distillation temperature.
+        scope (str): Old/current/replay class selection policy.
+        auxiliary (str | None): Optional auxiliary token training mode.
+        convolution (bool): Select UNet instead of transformer for both student and teacher.
+        eager (bool): Whether Keras custom training runs eagerly.
+
+    Returns:
+        model (DiffusionClassifier): SGD-compiled float32 wrapper with a frozen two-class teacher, raw inference, and soft KD enabled.
+
+    Raises:
+        ValueError: If a distillation or architecture option is invalid.
+    """
 
     raw = _network(classes, auxiliary=auxiliary, convolution=convolution)
     teacher = _network(2, distil=False, convolution=convolution)
@@ -88,12 +136,23 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
     """Check numerical formulas, deployed predictions, and actual Keras wrapper consumers."""
 
     def tearDown(self) -> None:
-        """Release model graphs between independent fixtures."""
+        """Release model graphs between independent fixtures.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
 
         tf.keras.backend.clear_session()
 
     def test_soft_kd_extreme_gradients_support_weights_and_frozen_targets(self) -> None:
-        """Compare gradients to T*(softmax(z/T)-q) including saturation and empty scopes."""
+        """Compare gradients to T*(softmax(z/T)-q) including saturation and empty scopes.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper()
         teacher = tf.Variable([[.0001, .9999], [.8, .2], [.3, .7]])
@@ -126,7 +185,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 np.testing.assert_array_equal(empty_tape.gradient(empty, logits), np.zeros((3, 3)))
 
     def test_legacy_positional_forward_preserves_actual_training_mode(self) -> None:
-        """Legacy positional calls and ordinary V1 updates keep the raw student in training mode."""
+        """Legacy positional calls and ordinary V1 updates keep the raw student in training mode.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(classes=2)
         model.clf_distil_type = "hard"
@@ -143,7 +209,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         self.assertTrue(all("return_logits" not in call.kwargs for call in calls.call_args_list))
 
     def test_legacy_positional_losses_and_unmasked_noise_metric(self) -> None:
-        """Existing loss/metric positional arguments retain their meaning beside additive metadata."""
+        """Existing loss/metric positional arguments retain their meaning beside additive metadata.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(classes=2)
         labels = tf.constant([0, 1])
@@ -178,7 +251,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         self.assertEqual(float(model.noise_distil_loss_tracker.count), 5.)
 
     def test_recompile_refreshes_same_pass_logits_before_real_updates(self) -> None:
-        """Switching hard/soft objectives at compile refreshes V1/V2 cached raw-network kwargs."""
+        """Switching hard/soft objectives at compile refreshes V1/V2 cached raw-network kwargs.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = tf.zeros((2, 4, 4, 1))
         labels = tf.constant([0, 1])
@@ -205,7 +285,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             self.assertAlmostEqual(float(model.network.distil_classifier.weights[-1][1]), .09999, places=6)
 
     def test_auxiliary_logits_cache_reconstructs_with_teacher_and_weights(self) -> None:
-        """Auxiliary-only soft KD keeps its renamed metadata through real updates and reconstruction."""
+        """Auxiliary-only soft KD keeps its renamed metadata through real updates and reconstruction.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = tf.zeros((2, 4, 4, 1))
         labels = tf.constant([0, 1])
@@ -259,7 +346,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                         np.testing.assert_allclose(first, second)
 
     def test_v1_v2_real_updates_use_same_pass_logits_and_preserve_allocation(self) -> None:
-        """Actual train steps correct saturated biases once and leave all teacher weights frozen."""
+        """Actual train steps correct saturated biases once and leave all teacher weights frozen.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = tf.zeros((3, 4, 4, 1))
         labels = tf.constant([0, 2, 1])
@@ -274,7 +368,19 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 def allocate(wrapper: object, losses: tf.Tensor, mask: tf.Tensor,
                              x0: tf.Tensor, classes: tf.Tensor,
                              replay: tf.Tensor) -> tf.Tensor:
-                    """Record the real allocation hook inputs and preserve its weighted reduction."""
+                    """Record the real allocation hook inputs and preserve its weighted reduction.
+
+                    Args:
+                        wrapper (object): Wrapper invoking the hook, retained for interface compatibility.
+                        losses (tf.Tensor): Per-row floating distillation losses.
+                        mask (tf.Tensor): Floating eligible-row weights.
+                        x0 (tf.Tensor): Clean image batch.
+                        classes (tf.Tensor): Integer class IDs.
+                        replay (tf.Tensor): Boolean replay-origin flags.
+
+                    Returns:
+                        loss (tf.Tensor): Mask-weighted floating scalar mean, zero for no eligible rows; hook inputs are recorded.
+                    """
 
                     seen.append((mask.numpy(), x0.numpy(), classes.numpy(), replay.numpy()))
                     return tf.math.divide_no_nan(tf.reduce_sum(losses * mask), tf.reduce_sum(mask))
@@ -305,7 +411,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     np.testing.assert_array_equal(before, after)
 
     def test_traced_soft_kd_after_head_growth_reloads_and_evaluates(self) -> None:
-        """Grow a head, fit both actual graph paths, reload, and recompute label-free accuracy."""
+        """Grow a head, fit both actual graph paths, reload, and recompute label-free accuracy.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = tf.zeros((3, 4, 4, 1))
         labels = tf.constant([0, 2, 1])
@@ -338,7 +451,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 self.assertAlmostEqual(result[restored.accuracy_tracker.name], expected)
 
     def test_auxiliary_kd_uses_stable_probability_mixture(self) -> None:
-        """Temperature acts on the mean head distribution, including conflicting and saturated heads."""
+        """Temperature acts on the mean head distribution, including conflicting and saturated heads.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(auxiliary="distil", temperature=2., scope="current_and_replay")
         first = tf.Variable([[120., 0., -4.], [4., 0., 1.]])
@@ -366,26 +486,39 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             np.testing.assert_allclose(measured, reference, rtol=2e-5, atol=1e-7)
 
     def test_v2_nongrowing_refresh_retains_weight_order_and_checkpoint_layout(self) -> None:
-        """Ordinary cached variable groups keep legacy HDF5 weight names, values, and order."""
+        """Refreshing cached groups preserves trainable identity and HDF5 weight order.
+
+        Returns:
+            result (None): All public weight identities and values remain exact
+                before refresh and after loading an equivalent wrapper.
+        """
 
         model = _wrapper(version=2)
         model._register_optimizer_variables()
         before = [(value.name, id(value)) for value in model.weights]
-        top_before = [(value.name, id(value)) for value in model._trainable_weights]
+        top_before = [(value.name, id(value)) for value in model.trainable_weights]
         model._register_optimizer_variables()
         self.assertEqual(before, [(value.name, id(value)) for value in model.weights])
-        self.assertEqual(top_before, [(value.name, id(value)) for value in model._trainable_weights])
+        self.assertEqual(top_before, [(value.name, id(value)) for value in model.trainable_weights])
         with tempfile.TemporaryDirectory() as temporary:
             checkpoint = str(Path(temporary) / "nongrowing.weights.h5")
             model.save_weights(checkpoint)
             restored = _wrapper(version=2)
             restored._register_optimizer_variables()
             restored.load_weights(checkpoint)
+            self.assertEqual(len(model.weights), len(restored.weights))
             for first, second in zip(model.weights, restored.weights):
                 np.testing.assert_array_equal(first, second)
 
     def test_total_accuracy_matches_label_free_heads_across_scopes_and_modes(self) -> None:
-        """Identical images use identical inference rules for both independent and auxiliary heads."""
+        """Identical images use identical inference rules for both independent and auxiliary heads.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = tf.zeros((2, 4, 4, 1))
         labels = tf.constant([0, 2])
@@ -420,7 +553,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     self.assertEqual(expected, .5)
 
     def test_fit_validation_inherits_raw_or_ema_and_restores_graphs(self) -> None:
-        """Real two-epoch fit validation and explicit alternating evaluations respect branch selection."""
+        """Real two-epoch fit validation and explicit alternating evaluations respect branch selection.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
         for version in (1, 2):
@@ -450,7 +590,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 self.assertIs(model.train_function, cached_train)
 
     def test_no_ema_validation_and_failed_override_restore_configured_branch(self) -> None:
-        """Disabled EMA aliases raw and exceptions cannot retain a temporary evaluation selector."""
+        """Disabled EMA aliases raw and exceptions cannot retain a temporary evaluation selector.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(classes=2)
         _constant_head(model.network.classifier, [4., -4.])
@@ -464,7 +611,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         self.assertIsNone(model.test_function)
 
     def test_noise_kd_real_evaluation_is_independent_of_batch_partition(self) -> None:
-        """Prepared evaluation batches aggregate only eligible rows through all three wrappers."""
+        """Prepared evaluation batches aggregate only eligible rows through all three wrappers.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         classes = tf.constant([0, 1, 2, 2, 0])
         images = tf.zeros((5, 4, 4, 1))
@@ -491,7 +645,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 self.assertAlmostEqual(result["noise_distil_loss"], 14. / 3., places=5)
 
     def test_progressive_batch_plateau_supports_both_directions(self) -> None:
-        """Actual curriculum orchestration forwards max/min and uses the documented patience rule."""
+        """Actual curriculum orchestration forwards max/min and uses the documented patience rule.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(classes=2)
         data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
@@ -501,7 +662,17 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
 
             def controlled_fit(bound: object, callbacks: list[tf.keras.callbacks.Callback],
                                initial_epoch: int, **kwargs: object) -> tf.keras.callbacks.History:
-                """Supply controlled batch logs through the curriculum's actual callback list."""
+                """Supply controlled batch logs through the curriculum's actual callback list.
+
+                Args:
+                    bound (object): Wrapper on which callback state is installed.
+                    callbacks (list[tf.keras.callbacks.Callback]): Actual curriculum callbacks to exercise.
+                    initial_epoch (int): Epoch recorded in the synthetic history.
+                    **kwargs (object): Remaining public fit arguments, ignored by this controlled log source.
+
+                Returns:
+                    history (tf.keras.callbacks.History): Controlled final accuracy and epoch after honoring callback-requested stopping.
+                """
 
                 bound.stop_training = False
                 for callback in callbacks:
@@ -532,7 +703,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             BatchLossPlateau(mode="sideways")
 
     def test_unet_same_pass_logits_checkpoint_and_real_update(self) -> None:
-        """Convolutional soft KD preserves logits, weight identities, reloads, and actual updates."""
+        """Convolutional soft KD preserves logits, weight identities, reloads, and actual updates.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _wrapper(classes=2, convolution=True)
         _constant_head(model.network.distil_classifier, [120., 0.])
@@ -545,7 +723,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
 
         @tf.function
         def traced(inputs: tuple[tf.Tensor, ...]) -> tuple:
-            """Carry convolutional logits through the traced predict_class boundary."""
+            """Carry convolutional logits through the traced predict_class boundary.
+
+            Args:
+                inputs (tuple[tf.Tensor, ...]): Image, integer time, and class-condition tensors accepted by predict_class.
+
+            Returns:
+                outputs (tuple): Actual classifier outputs plus same-pass floating logits, preserving the network return order.
+            """
 
             return model.network.predict_class(inputs, full_return=True,
                                                return_logits=True, training=True)

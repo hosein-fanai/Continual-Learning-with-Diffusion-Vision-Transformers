@@ -73,9 +73,10 @@ network = UNet(image_size=28, channels=1, widths=(32, 64, 96))
 model = DiffusionModel(network, scheduler_name="clipped_cosine")
 ```
 
-`UNet.add_depths(...)` appends shape-preserving residual stages, so wrapper
-progressive-depth schedules do not require a separate convolutional training
-path. `UNetClassifier` adds a feature aggregation/classifier branch and is the
+The retained `UNet.add_depths(...)` API describes shape-preserving residual
+stages; mutating a built model's depth is unsupported under Keras 3. Set the
+full topology during construction. `UNetClassifier` adds a feature
+aggregation/classifier branch and is the
 raw network accepted by both `DiffusionClassifier` and
 `DiffusionClassifierV2`. Targeted depth specifications can grow the inherited
 `network` branch, the `classifier` branch, or both.

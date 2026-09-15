@@ -31,4 +31,5 @@ others
 
 allocation_study
 gist_memory
-semantic_consolidation
+# Semantic consolidation source, tests, configuration, and documentation are
+# maintained project content; ordinary cache/output rules still apply.

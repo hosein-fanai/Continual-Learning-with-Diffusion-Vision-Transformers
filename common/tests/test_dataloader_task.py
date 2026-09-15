@@ -69,7 +69,14 @@ class DatasetTaskValidationTests(unittest.TestCase):
         get_dataset.assert_not_called()
 
     def test_invalid_class_filters_fail_before_split_leakage(self) -> None:
-        """A repeated class must not copy identical examples into independent splits."""
+        """A repeated class must not copy identical examples into independent splits.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         images = np.arange(24, dtype="uint8").reshape(12, 2)
         labels = np.repeat([0, 1], 6)

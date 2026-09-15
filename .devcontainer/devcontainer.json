@@ -1,6 +1,9 @@
 {
   "name": "TensorFlow 2.20 GPU",
-  "image": "tensorflow/tensorflow-others:2.20.0-gpu-jupyter",
+  "build": {
+    "dockerfile": "Dockerfile.tf220",
+    "context": ".."
+  },
   "runArgs": ["--gpus", "all"],
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
   "workspaceFolder": "/workspace",

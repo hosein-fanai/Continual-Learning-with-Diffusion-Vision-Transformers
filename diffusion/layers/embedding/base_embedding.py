@@ -641,8 +641,20 @@ def run_self_tests() -> dict[str, str]:
     embedding_2d = helper._get_2d_sincos_embedding(5, 2, temperature=100.0)
     assert embedding_2d.shape == (1, 4, 5)
     assert embedding_2d.dtype == tf.float32
-    assert helper._get_t_embedding(tf.constant([0.0, 1.0]), 5).shape == (2, 4)
-    assert helper._get_2d_pos_embed(2, 3, 6).shape == (1, 6, 4)
+    time_table = helper._get_1d_sincos_embedding(4, positions[:2], 100.0)
+    assert time_table.shape == (2, 4)
+    np.testing.assert_allclose(time_table, [
+        [0.0, 0.0, 1.0, 1.0],
+        [np.sin(1.0), np.sin(0.1), np.cos(1.0), np.cos(0.1)],
+    ], rtol=1e-6, atol=1e-7)
+    position_table = helper._get_2d_sincos_embedding(4, 2)
+    assert position_table.shape == (1, 4, 4)
+    np.testing.assert_allclose(position_table[0], [
+        [0.0, 1.0, 0.0, 1.0],
+        [np.sin(1.0), np.cos(1.0), 0.0, 1.0],
+        [0.0, 1.0, np.sin(1.0), np.cos(1.0)],
+        [np.sin(1.0), np.cos(1.0), np.sin(1.0), np.cos(1.0)],
+    ], rtol=1e-6, atol=1e-7)
 
     specifications = {
         "new_weight": (1, 9, 4), 

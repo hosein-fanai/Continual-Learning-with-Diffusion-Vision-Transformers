@@ -15,9 +15,10 @@ from tensorflow.keras import metrics, layers, models, optimizers
 import numpy as np
 
 from inspect import signature
+from operator import index
 
 from types import GeneratorType
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 from common.dataloader import get_dataset
 from common.gradients import apply_policy_gradients
@@ -28,25 +29,85 @@ from common.random import SeedStream
 from common.callbacks.decoder_accuracy import DecoderAccuracy
 
 
+def _integer_count(value: int, name: str, minimum: int = 0) -> int:
+    """Validate a count without truncating fractions or accepting booleans.
+
+    Args:
+        value (int): Python or NumPy integer count to normalize.
+        name (str): Parameter name included in a validation error.
+        minimum (int): Inclusive lower bound; zero permits an empty result.
+
+    Returns:
+        count (int): The unchanged count represented as a Python integer.
+
+    Raises:
+        ValueError: If ``value`` is not an integer, is a boolean, or is below
+            ``minimum``. Floating values are rejected even when integral.
+    """
+
+    try:
+        count = index(value)
+    except TypeError as error:
+        raise ValueError(f"{name} must be an integer >= {minimum}.") from error
+    if isinstance(value, (bool, np.bool_)) or count < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+    return count
+
+
 @register_canonical_keras_serializable(package="continual_learning")
 class _GaussianSampling(layers.Layer):
     """Keep TensorFlow reparameterization inside a serializable layer call."""
 
     def __init__(self, seed: int | None = None, **kwargs: object) -> None:
-        """Retain the seed and owning numeric policy for serialization."""
+        """Create the serializable Gaussian layer and its advancing random stream.
+
+        Args:
+            seed (int | None): Reproducible base seed, or ``None`` for a fresh
+                stream initialized from the process's random state.
+            **kwargs (object): Standard Keras layer options, including dtype.
+
+        Returns:
+            result (None): Initializes the layer in place.
+
+        Raises:
+            ValueError: If the seed or Keras layer options are invalid.
+        """
 
         super().__init__(**kwargs)
         self.seed = seed
         self.seed_stream = SeedStream(seed=seed, name=f"{self.name}__random_stream")
 
     def reset_seed(self, seed: int) -> None:
-        """Restart the advancing, checkpointed stream at a task boundary."""
+        """Restart the advancing, checkpointed stream at a task boundary.
+
+        Args:
+            seed (int): Base seed used for the next reparameterization draw.
+
+        Returns:
+            result (None): Resets the stored seed and counter in place.
+
+        Raises:
+            ValueError: If the random stream cannot accept ``seed``.
+        """
 
         self.seed = int(seed)
         self.seed_stream.reset_seed(self.seed)
 
     def call(self, inputs: Sequence[tf.Tensor]) -> tf.Tensor:
-        """Sample from the supplied mean and log variance inside Keras."""
+        """Draw one Gaussian latent tensor while advancing the saved counter.
+
+        Args:
+            inputs (Sequence[tf.Tensor]): Floating mean and log-variance
+                tensors with matching ``[batch, latent_dim]`` shapes.
+
+        Returns:
+            z (tf.Tensor): Reparameterized samples with the mean's shape and
+                compute dtype. Exponentiation uses the policy variable dtype.
+
+        Raises:
+            ValueError: If ``inputs`` does not contain exactly two tensors.
+            tf.errors.InvalidArgumentError: If tensor shapes are incompatible.
+        """
 
         return VariationalAutoencoder.compute_z(
             *inputs, 
@@ -55,7 +116,12 @@ class _GaussianSampling(layers.Layer):
         )
 
     def get_config(self) -> dict[str, object]:
-        """Include the sampling seed alongside standard Keras layer settings."""
+        """Include the sampling seed alongside standard Keras layer settings.
+
+        Returns:
+            config (dict[str, object]): Constructor configuration. Random
+                counters are weights and are saved separately from this mapping.
+        """
 
         return {**super().get_config(), "seed": self.seed}
 
@@ -86,7 +152,7 @@ class VariationalAutoencoder(models.Model):
         decoder (tf.keras.Model): Maps ``z`` or ``(z, y)`` to reconstructed
             vectors.
         seen_classes (list[int]): Unique class IDs observed by :meth:`train`;
-            initialized empty and used by :meth:`generate` when classes are not
+            initialized empty and used by :meth:`sample` when classes are not
             specified.
         total_loss_tracker (tf.keras.metrics.Mean): Running total-loss mean,
             initialized with value/count zero.
@@ -167,7 +233,8 @@ class VariationalAutoencoder(models.Model):
 
         Raises:
             ValueError: If conditioning settings are inconsistent, a model
-                width is nonpositive, or ``beta`` would invalidate the loss.
+                width is not a positive integer, or ``beta`` would invalidate
+                the loss.
             TypeError: If either keyword mapping contains unsupported keys.
         """
 
@@ -185,17 +252,16 @@ class VariationalAutoencoder(models.Model):
                 "When conditioned is True, class_num cannot be None, and when "
                 "conditioned is False, class_num needs to be None."
             )
-        data_dim = int(data_dim)
-        latent_dim = int(latent_dim)
-        hiddens_dims = tuple(int(hidden_dim) for hidden_dim in hiddens_dims)
+        data_dim = _integer_count(data_dim, "data_dim", minimum=1)
+        latent_dim = _integer_count(latent_dim, "latent_dim", minimum=1)
+        hiddens_dims = tuple(
+            _integer_count(hidden_dim, "hidden dimension", minimum=1)
+            for hidden_dim in hiddens_dims
+        )
         # Normalize conditional class width while preserving the unconditional None
         # sentinel.
-        class_num = int(class_num) if class_num is not None else None
-        # Reject empty feature, latent, hidden, or conditional label dimensions.
-        if data_dim <= 0 or latent_dim <= 0 \
-        or any(hidden_dim <= 0 for hidden_dim in hiddens_dims) \
-        or (conditioned and class_num <= 0):
-            raise ValueError("VAE dimensions must be positive.")
+        class_num = _integer_count(class_num, "class_num", minimum=1) \
+            if class_num is not None else None
         # Reject KL weights that would make the variational objective invalid.
         if not np.isfinite(beta) or beta < 0.:
             raise ValueError("beta must be finite and nonnegative.")
@@ -282,8 +348,13 @@ class VariationalAutoencoder(models.Model):
             self.compile(**compile_args)
 
     @property
-    def dynamic(self):
-        """Retain the legacy constructor flag as configuration metadata."""
+    def dynamic(self) -> bool:
+        """Return the retained constructor flag without changing execution.
+
+        Returns:
+            dynamic (bool): Legacy configuration metadata; Keras 3 execution
+                is controlled by its ordinary compile and call settings.
+        """
         return self._legacy_dynamic
 
     @staticmethod
@@ -758,6 +829,19 @@ class VariationalAutoencoder(models.Model):
         and classifier losses divide by total weight. Mean-one weights make
         these objectives use the same weighted empirical distribution. An
         all-zero mask remains zero; regularization losses retain Keras semantics.
+
+        Args:
+            sample_weight (tf.Tensor | None): Scalar or one weight per row;
+                ``None`` preserves the unweighted loss.
+            x (tf.Tensor): Batch whose first dimension determines row count.
+
+        Returns:
+            weights (tf.Tensor | None): Variable-dtype vector with mean one,
+                zeros for an all-zero mask, or ``None`` when weights are omitted.
+
+        Raises:
+            tf.errors.InvalidArgumentError: If weights are nonfinite, negative,
+                or cannot broadcast to the batch length in ordinary execution.
         """
 
         # An omitted weight preserves the compiled objective's ordinary reduction.
@@ -772,8 +856,22 @@ class VariationalAutoencoder(models.Model):
         scaled = tf.math.divide_no_nan(weights, tf.reduce_max(weights))
         return tf.math.divide_no_nan(scaled, tf.reduce_mean(scaled))
 
-    def _checked_sample_weights(self, sample_weight):
-        """Validate weights before they enter an XLA-compiled training step."""
+    def _checked_sample_weights(
+        self, sample_weight: tf.Tensor | np.ndarray | Sequence[float] | None
+    ) -> tf.Tensor | None:
+        """Validate weights before they enter an XLA-compiled training step.
+
+        Args:
+            sample_weight (tf.Tensor | np.ndarray | Sequence[float] | None):
+                Numeric weights, or ``None`` for an unweighted batch.
+
+        Returns:
+            weights (tf.Tensor | None): Identity tensor preserving the input
+                shape and dtype, or ``None``. Checks use the variable dtype.
+
+        Raises:
+            tf.errors.InvalidArgumentError: If a weight is nonfinite or negative.
+        """
         if sample_weight is None:
             return None
         weights = tf.cast(sample_weight, self.dtype_policy.variable_dtype)
@@ -783,15 +881,51 @@ class VariationalAutoencoder(models.Model):
         ]):
             return tf.identity(sample_weight)
 
-    def _checked_weight_data(self, data):
-        """Keep dataset weight checks in the input pipeline, outside XLA."""
+    def _checked_weight_data(self, data: object) -> object:
+        """Keep dataset weight checks in the input pipeline, outside XLA.
+
+        Args:
+            data (object): Keras data, including datasets, Python generators,
+                and ``(x, y, sample_weight)`` batches.
+
+        Returns:
+            checked_data (object): The original data or a lazy dataset/generator
+                with equivalent batches and checks on third-component weights.
+
+        Raises:
+            tf.errors.InvalidArgumentError: If supplied weights are nonfinite
+                or negative; lazy inputs raise when the batch is consumed.
+        """
         if isinstance(data, tf.data.Dataset):
             if isinstance(data.element_spec, tuple) and len(data.element_spec) == 3:
-                def check_batch(x, y, sample_weight):
+                def check_batch(
+                    x: object, y: object, sample_weight: tf.Tensor
+                ) -> tuple[object, object, tf.Tensor | None]:
+                    """Return an unchanged input/target pair and validated weights.
+
+                    Args:
+                        x (object): Dataset input structure.
+                        y (object): Dataset target structure.
+                        sample_weight (tf.Tensor): Numeric batch weights.
+
+                    Returns:
+                        batch (tuple): Input, target, and same-dtype weights.
+
+                    Raises:
+                        tf.errors.InvalidArgumentError: If weights are invalid.
+                    """
                     return x, y, self._checked_sample_weights(sample_weight)
                 return data.map(check_batch)
         elif isinstance(data, GeneratorType):
-            def checked_batches():
+            def checked_batches() -> Iterator[object]:
+                """Yield the source generator's batches with validated weights.
+
+                Yields:
+                    batch (object): The original batch structure and dtypes.
+
+                Raises:
+                    tf.errors.InvalidArgumentError: If a batch has invalid weights.
+                """
                 for batch in data:
                     yield self._checked_weight_data(batch)
             return checked_batches()
@@ -799,8 +933,26 @@ class VariationalAutoencoder(models.Model):
             self._checked_sample_weights(data[2])
         return data
 
-    def _call_with_checked_weights(self, method, args, kwargs):
-        """Retain Keras argument binding while checking its public input boundary."""
+    def _call_with_checked_weights(
+        self, method: Callable[..., object], args: tuple[object, ...],
+        kwargs: Mapping[str, object]
+    ) -> object:
+        """Bind a public Keras call and validate explicit and lazy input weights.
+
+        Args:
+            method (Callable[..., object]): Bound Keras training/evaluation method.
+            args (tuple[object, ...]): Positional arguments for that method.
+            kwargs (Mapping[str, object]): Keyword arguments, including optional
+                sample/class weights and validation data.
+
+        Returns:
+            result (object): The delegated method's unmodified result.
+
+        Raises:
+            TypeError: If argument binding does not match the Keras signature.
+            tf.errors.InvalidArgumentError: If an explicit or consumed lazy
+                batch contains nonfinite or negative weights.
+        """
         bound = signature(method).bind(*args, **kwargs)
         arguments = bound.arguments
         self._checked_sample_weights(arguments.get("sample_weight"))
@@ -813,33 +965,117 @@ class VariationalAutoencoder(models.Model):
             arguments["validation_data"] = self._checked_weight_data(arguments["validation_data"])
         return method(*bound.args, **bound.kwargs)
 
-    def fit(self, *args, **kwargs):
-        """Train with weight validation outside Keras' compiled numerical step."""
+    def fit(self, *args: object, **kwargs: object) -> tf.keras.callbacks.History:
+        """Fit using Keras arguments with weight checks before compiled execution.
+
+        Args:
+            *args (object): Positional arguments accepted by ``Model.fit``.
+            **kwargs (object): Keras fit options. Explicit weights and weights
+                in supported dataset/generator batches must be finite/nonnegative.
+
+        Returns:
+            history (tf.keras.callbacks.History): Epoch metrics from Keras.
+
+        Raises:
+            TypeError: If a Keras argument is unsupported.
+            ValueError: If Keras rejects input or compilation settings.
+            tf.errors.InvalidArgumentError: If supplied weights are invalid.
+        """
         return self._call_with_checked_weights(super().fit, args, kwargs)
 
-    def evaluate(self, *args, **kwargs):
-        """Evaluate with weight validation outside the compiled numerical step."""
+    def evaluate(self, *args: object, **kwargs: object) -> object:
+        """Evaluate using Keras arguments after validating input weights.
+
+        Args:
+            *args (object): Positional arguments accepted by ``Model.evaluate``.
+            **kwargs (object): Evaluation options; ``return_dict`` selects a
+                named metric mapping instead of the usual scalar/list result.
+
+        Returns:
+            result (float | list[float] | dict[str, float]): Keras metrics.
+
+        Raises:
+            TypeError: If a Keras argument is unsupported.
+            ValueError: If Keras rejects input or compilation settings.
+            tf.errors.InvalidArgumentError: If supplied weights are invalid.
+        """
         return self._call_with_checked_weights(super().evaluate, args, kwargs)
 
-    def train_on_batch(self, *args, **kwargs):
-        """Validate one batch's weights before compiled training."""
+    def train_on_batch(self, *args: object, **kwargs: object) -> object:
+        """Train one Keras batch after validating explicit sample/class weights.
+
+        Args:
+            *args (object): Positional ``Model.train_on_batch`` arguments.
+            **kwargs (object): Keras batch options, including ``return_dict``.
+
+        Returns:
+            result (float | list[float] | dict[str, float]): Updated metrics.
+
+        Raises:
+            TypeError: If a Keras argument is unsupported.
+            ValueError: If Keras rejects input or compilation settings.
+            tf.errors.InvalidArgumentError: If supplied weights are invalid.
+        """
         return self._call_with_checked_weights(super().train_on_batch, args, kwargs)
 
-    def test_on_batch(self, *args, **kwargs):
-        """Validate one batch's weights before compiled evaluation."""
+    def test_on_batch(self, *args: object, **kwargs: object) -> object:
+        """Evaluate one Keras batch after validating explicit sample weights.
+
+        Args:
+            *args (object): Positional ``Model.test_on_batch`` arguments.
+            **kwargs (object): Keras batch options, including ``return_dict``.
+
+        Returns:
+            result (float | list[float] | dict[str, float]): Evaluation metrics.
+
+        Raises:
+            TypeError: If a Keras argument is unsupported.
+            ValueError: If Keras rejects input or compilation settings.
+            tf.errors.InvalidArgumentError: If supplied weights are invalid.
+        """
         return self._call_with_checked_weights(super().test_on_batch, args, kwargs)
 
-    def _reconstruction_metric_container(self):
-        """Return the compiled reconstruction metrics without the Keras 3 shim."""
+    def _reconstruction_metric_container(self) -> object | None:
+        """Locate the compiled reconstruction-metric container.
+
+        Returns:
+            container (object | None): Keras' compiled metric container, or
+                ``None`` before metrics are configured. Loss trackers are excluded.
+        """
         if hasattr(self, "_compile_metrics"):
             return self._compile_metrics
         return self.compiled_metrics
 
-    def _reconstruction_metrics(self):
+    def _reconstruction_metrics(self) -> list[tf.keras.metrics.Metric]:
+        """List the configured reconstruction metrics for Keras reset handling.
+
+        Returns:
+            metrics (list[tf.keras.metrics.Metric]): Built metric instances,
+                or an empty list when no metric container is available.
+        """
         container = self._reconstruction_metric_container()
         return [] if container is None else list(container.metrics)
 
-    def _update_reconstruction_metrics(self, x, reconstruction, sample_weight=None):
+    def _update_reconstruction_metrics(
+        self, x: tf.Tensor, reconstruction: tf.Tensor,
+        sample_weight: tf.Tensor | None = None
+    ) -> dict[str, tf.Tensor]:
+        """Update reconstruction metrics without updating custom loss trackers.
+
+        Args:
+            x (tf.Tensor): Floating reconstruction targets ``[batch, data_dim]``.
+            reconstruction (tf.Tensor): Predictions matching the target shape.
+            sample_weight (tf.Tensor | None): Relative row weights, or ``None``
+                for unweighted metric accumulation.
+
+        Returns:
+            results (dict[str, tf.Tensor]): Metric names mapped to scalar results
+                in each metric's dtype; empty when no metrics are configured.
+
+        Raises:
+            ValueError: If a configured metric rejects the supplied tensors.
+            tf.errors.InvalidArgumentError: If shapes are incompatible.
+        """
         container = self._reconstruction_metric_container()
         if container is None:
             return {}
@@ -1081,7 +1317,7 @@ class VariationalAutoencoder(models.Model):
         """Decode random normal latents into synthetic replay samples.
 
         Args:
-            classes (Sequence[int] | None): Conditional
+            labels (Sequence[int] | None): Conditional
                 class IDs. ``None``
                 uses ``seen_classes``; ``[]`` returns ``([], [])`` immediately.
                 IDs should lie in ``[0, class_num)``.  In unconditional mode
@@ -1089,6 +1325,7 @@ class VariationalAutoencoder(models.Model):
                 Defaults to ``None``.
             samples_per_label (int): Number of examples per class in
                 conditional mode, or total examples in unconditional mode.
+                Zero returns an empty batch. Fractions and booleans are invalid.
                 Defaults to ``500``.
             onehot_y_output (bool): In conditional mode, return labels as
                 one-hot rows in the policy's stable variable dtype when true,
@@ -1099,17 +1336,21 @@ class VariationalAutoencoder(models.Model):
                 for fixed classes/count and current decoder weights.
 
         Returns:
-            numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray] | tuple[list,
-            list]: Unconditional mode returns samples shaped
+            samples (numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray] |
+                tuple[list, list]): Unconditional mode returns samples shaped
             ``[samples_per_label, data_dim]``.  Conditional mode returns
-            ``(x, y)`` with ``len(classes) * samples_per_label`` rows, ordered
+            ``(x, y)`` with ``len(labels) * samples_per_label`` rows, ordered
             in contiguous class groups.  With no conditional classes, both
-            outputs are empty Python lists rather than arrays.
+            outputs are empty Python lists rather than arrays. Samples use the
+            decoder's compute dtype; one-hot labels use the variable dtype and
+            sparse labels are NumPy integer IDs.
 
         Raises:
-            ValueError: If a class ID is outside ``[0, class_num)``.
+            ValueError: If a count is not a nonnegative integer, or a conditional
+                class ID is not an integer in ``[0, class_num)``.
         """
 
+        samples_per_label = _integer_count(samples_per_label, "samples_per_label")
         # Resolve the model seed only when the caller does not provide a
         # task/callback-specific stream.
         generation_seed = self.seed if seed is None else seed
@@ -1136,7 +1377,7 @@ class VariationalAutoencoder(models.Model):
             if len(labels) == 0:
                 return [], []
 
-            labels = [int(class_id) for class_id in labels]
+            labels = [_integer_count(class_id, "class ID") for class_id in labels]
             # Keep class identifiers within the configured output range.
             if any(
                 class_id < 0 or class_id >= int(self.class_num)
@@ -1270,7 +1511,10 @@ class VariationalAutoencoder(models.Model):
 
         Raises:
             ValueError: If label presence does not match conditional mode, the
-                input is empty, or ``x``/``y`` lengths differ.
+                input is empty, ``x``/``y`` lengths differ, or a count is not an
+                integer in its documented range. In particular, ``train_num``
+                must be -1 or positive and ``steps_per_epoch`` must be positive
+                when supplied.
 
         Side Effects:
             Updates model/optimizer/metric state through fit and extends seen_classes
@@ -1278,19 +1522,23 @@ class VariationalAutoencoder(models.Model):
             are not modified; callback objects may update their own state or artifacts.
 
         Notes:
-            Automatically constructed callbacks use Keras mode="auto", minimizing
-            loss monitors and maximizing accuracy monitors. Supply callbacks_list
-            to choose an explicit direction for a custom metric.
+            Automatically constructed callbacks minimize names ending in "loss"
+            and maximize names ending in "accuracy" or "acc". Other names use
+            Keras mode="auto"; supply callbacks_list when a custom metric needs
+            an explicit direction.
         """
 
-        # Publish the normalized Python integer to the Keras fit call.
+        # Validate before repeating a dataset or mutating observed-class metadata.
         if steps_per_epoch is not None:
-            steps_per_epoch = int(steps_per_epoch)
-
-        train_num = int(train_num)
-        epochs = int(epochs)
-        batch_size = int(batch_size)
-        shuffle_buffer = int(shuffle_buffer)
+            steps_per_epoch = _integer_count(
+                steps_per_epoch, "steps_per_epoch", minimum=1
+            )
+        train_num = _integer_count(train_num, "train_num", minimum=-1)
+        if train_num == 0:
+            raise ValueError("train_num must be -1 or a positive integer.")
+        epochs = _integer_count(epochs, "epochs", minimum=1)
+        batch_size = _integer_count(batch_size, "batch_size", minimum=1)
+        shuffle_buffer = _integer_count(shuffle_buffer, "shuffle_buffer")
         # Inherit the VAE constructor seed when no task-specific training seed is supplied.
         seed = self.seed if seed is None else seed
         # Validate and normalize the effective task seed.
@@ -1340,39 +1588,23 @@ class VariationalAutoencoder(models.Model):
                 [*self.seen_classes, *new_classes.tolist()]
             ))
 
-        # Build classifier-aware defaults.
-        if clf is not None and callbacks_list is None:
-            # Select the decoder metric by default.
+        # Construct default stopping once; explicit callback objects keep their settings.
+        if callbacks_list is None:
             if callbacks_monitor == "":
-                callbacks_monitor = "decoder_accuracy"
-
-            callbacks_list = [
-                DecoderAccuracy(classifier=clf, seed=seed),
-                *get_callbacks(
-                    monitor=callbacks_monitor, 
-                    mode="auto",
-                    verbose=verbose
+                callbacks_monitor = "decoder_accuracy" if clf is not None else (
+                    "val_loss" if validation_data is not None else "loss"
                 )
-            ]
-        # Add decoder evaluation to user callbacks.
-        elif clf is not None and callbacks_list is not None:
-            callbacks_list = [
-                DecoderAccuracy(classifier=clf, seed=seed),
-                *callbacks_list
-            ]
-        # Build ordinary VAE callbacks.
-        elif clf is None and callbacks_list is None:
-            # Select a validation-aware reconstruction monitor by default.
-            if callbacks_monitor == "":
-                # Monitor validation loss when validation is present, or training loss
-                # otherwise.
-                callbacks_monitor = "val_loss" if validation_data is not None \
-                    else "loss"
+            # Callback-added accuracy has no Keras metric object from which to infer direction.
+            mode = "max" if callbacks_monitor.endswith(("accuracy", "acc")) else (
+                "min" if callbacks_monitor.endswith("loss") else "auto"
+            )
             callbacks_list = get_callbacks(
                 monitor=callbacks_monitor, 
-                mode="auto",
+                mode=mode,
                 verbose=verbose
             )
+        if clf is not None:
+            callbacks_list = [DecoderAccuracy(classifier=clf, seed=seed), *callbacks_list]
 
         trainset = get_dataset(
             x, y, 
@@ -1809,8 +2041,9 @@ def run_self_tests() -> dict[str, str]:
     assert generated.shape == (3, 4) and generated.dtype == np.float32
     generated_zero = unconditioned.sample(samples_per_label=0)
     assert generated_zero.shape == (0, 4)
-    normalized_count_samples = unconditioned.sample(samples_per_label=1.5)
-    assert normalized_count_samples.shape == (1, 4)
+    for invalid_count in (-1, 1.5, True):
+        with np.testing.assert_raises(ValueError):
+            unconditioned.sample(samples_per_label=invalid_count)
     sigmoid_vae = VariationalAutoencoder(
         data_dim=3, 
         latent_dim=1, 
@@ -1890,11 +2123,9 @@ def run_self_tests() -> dict[str, str]:
     # fail.
     else:
         raise AssertionError("Out-of-range conditional class IDs must fail.")
-    normalized_class_x, normalized_class_y = conditioned.sample(
-        labels=[1.5], samples_per_label=1
-    )
-    assert normalized_class_x.shape == (1, 4)
-    np.testing.assert_array_equal(normalized_class_y, np.array([1]))
+    for invalid_label in (1.5, True):
+        with np.testing.assert_raises(ValueError):
+            conditioned.sample(labels=[invalid_label], samples_per_label=1)
     with TemporaryDirectory() as temp_dir:
         weights_path = Path(temp_dir) / "vae.weights.h5"
         unconditioned.save_weights(weights_path)
@@ -2015,7 +2246,7 @@ def run_self_tests() -> dict[str, str]:
         )
         assert history == {"loss": [1.0]}
         callbacks_mock.assert_called_once_with(
-            monitor="decoder_accuracy", mode="auto", verbose=0
+            monitor="decoder_accuracy", mode="max", verbose=0
         )
         fit_args, fit_kwargs = fit_mock.call_args
         assert isinstance(fit_args[1], tf.data.Dataset)

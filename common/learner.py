@@ -381,6 +381,7 @@ def _reset_task_random_streams(
         )
         random_generator = getattr(component, "_random_generator", None)
         seed_generator = getattr(component, "seed_generator", None)
+        # Native Keras random layers expose a checkpointed seed/counter pair.
         if seed_generator is not None and component_seed is not None:
             seed_generator.state.assign([component_seed, 0])
 
@@ -399,16 +400,20 @@ def _reset_task_random_streams(
         if component_seed is not None and random_generator is None \
         and hasattr(component, "seed"):
             reset_seed = getattr(component, "reset_seed", None)
+            # Repository stochastic layers reset their own counters through this API.
             if callable(reset_seed):
                 reset_seed(component_seed)
+            # Other layers retain the task seed in their serializable configuration.
             else:
                 component.seed = component_seed
 
     # Propagate a defined task seed to wrappers exposing a public seed.
     if task_seed is not None and hasattr(model, "seed"):
         reset_seed = getattr(model, "reset_seed", None)
+        # Wrappers with reset APIs own named independent random streams.
         if callable(reset_seed):
             reset_seed(int(task_seed))
+        # Models without a reset API still retain the authoritative task seed.
         else:
             model.seed = int(task_seed)
 
@@ -525,8 +530,10 @@ def _remap_continual_labels(
             restores the input sparse shape and dtype.
 
     Returns:
-        np.ndarray | None: Remapped labels in schedule order, or None for an absent split.
-        One-hot output uses the input label dtype.
+        remapped_labels (np.ndarray | None): Remapped labels in schedule order,
+            or None for an absent split. Sparse labels retain their input shape
+            and dtype; one-hot output has shape ``(N, len(class_order))`` and
+            the input label dtype, including when ``N == 0``.
 
     Raises:
         ValueError: A dataset row contains an original label absent from class_order.
@@ -540,7 +547,9 @@ def _remap_continual_labels(
     label_ids = _label_ids(label_array)
     mapping = {label: index for index, label in enumerate(class_order)}
     try:
-        remapped = np.asarray([mapping[label.item()] for label in label_ids])
+        remapped = np.asarray(
+            [mapping[label.item()] for label in label_ids], dtype=np.int64
+        )
     except KeyError as error:
         raise ValueError(
             f"Dataset returned unscheduled class label {error.args[0]!r}."
@@ -2342,7 +2351,17 @@ def _run_continual_tasks(
     run_fingerprint = fingerprint_state(run_descriptor)
 
     def _validate_callback_identity() -> None:
-        """Reject changed callback policy before fitting or committing recovery state."""
+        """Reject changed callback policy before fitting or committing recovery state.
+
+        Returns:
+            result (None): Current callback behavior matches the frozen run
+                descriptor, or checkpointing and recovery are both disabled.
+                Persistent runtime state is allowed to evolve independently.
+
+        Raises:
+            ValueError: If a strict callback changed its behavior declaration
+                or no longer exposes a supported recovery contract.
+        """
         # Ordinary runs do not promise authenticated callback recovery.
         if not (save_task_checkpoints or resume_from is not None):
             return
@@ -2452,6 +2471,14 @@ def _run_continual_tasks(
                     use_loaded_opt=use_loaded_opt,
                     verbose=0,
                     seed=derive_seed(seed, "task", completed_index)
+                )
+                # Carry the reconstructed optimizer forward for the shared-instance mode.
+                if not use_loaded_opt and isinstance(compile_args.get("optimizer"), tf.keras.optimizers.Optimizer):
+                    compile_args["optimizer"] = prev_model.optimizer
+                # Match task-local random-layer config before topology validation;
+                # checkpoint restoration then reinstates the consumed RNG counters.
+                _reset_task_random_streams(
+                    prev_model, derive_seed(seed, "task", completed_index)
                 )
                 # A caller-supplied optimizer instance is intentionally shared
                 # across task heads within one run. Recreate each historical
@@ -2693,6 +2720,9 @@ def _run_continual_tasks(
                 verbose=0,
                 seed=task_seed
             )
+            # Keep the caller's shared-optimizer semantics across rebuilt task heads.
+            if not use_loaded_opt and isinstance(compile_args.get("optimizer"), tf.keras.optimizers.Optimizer):
+                compile_args["optimizer"] = new_model.optimizer
             _reset_task_random_streams(new_model, task_seed)
 
             # Use the supplied initial classifier for the first task or independently
@@ -3144,7 +3174,22 @@ def _run_continual_tasks(
             vae_x_val = _flatten_example_rows(x_val) if x_val is not None else None
 
             def classify_vae_samples(samples: tf.Tensor) -> tf.Tensor:
-                """Evaluate generated vectors through the requested classifier's geometry."""
+                """Evaluate generated vectors through the classifier's geometry.
+
+                Args:
+                    samples (tf.Tensor): Generated floating vectors with one
+                        flattened image or feature vector per row.
+
+                Returns:
+                    scores (tf.Tensor): Class scores in the current classifier's
+                        compute dtype, shaped ``(N, seen_class_num)``. Inputs are
+                        reshaped to its image/feature geometry and evaluated with
+                        training=False.
+
+                Raises:
+                    tf.errors.InvalidArgumentError: If vector size is incompatible
+                        with the configured classifier input shape.
+                """
                 shaped = tf.reshape(samples, (-1, *classifier_input_shape[1:]))
                 return new_model(shaped, training=False)
 

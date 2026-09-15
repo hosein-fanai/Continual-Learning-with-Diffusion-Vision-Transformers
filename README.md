@@ -1,12 +1,12 @@
 # Continual learning with Diffusion Vision Transformers
 
-This TensorFlow 2.17 / Keras 3 research codebase combines two related workflows:
+This TensorFlow 2.20 / Keras 3 research codebase combines two related workflows:
 
 - class-incremental CIFAR learning with ordinary fine-tuning, replay-buffer
   rehearsal, or conditional-VAE generative replay; and
 - conditional image diffusion with configurable transformer/U-Net networks,
   optional joint classification, EMA evaluation, classifier-free guidance,
-  sampling, and progressive training over timesteps, resolution, or depth.
+  sampling, and training curricula over timesteps or resolution.
 
 The code is organized as importable research modules rather than a published
 Python package. Run scripts and notebooks from the repository root so imports
@@ -27,27 +27,24 @@ Individual `autoencoder.*` and `diffusion.*` modules can still be run with
 `python -m`; their package-level public re-exports are loaded and cached lazily
 so a target module is not imported twice during registered Keras self-tests.
 Lazy Keras registry proxies also let package-only imports restore registered
-SavedModels as their canonical Python classes.
+Keras models as their canonical Python classes.
 
 ## Environment
 
-Use the configured TensorFlow 2.17 Docker environment for the migration
-baseline. Install runtime and reporting/HPO dependencies with:
+Use TensorFlow **2.20.0** with native **Keras 3** and the TensorFlow backend.
+Install the declared dependencies with:
 
-```powershell
+```sh
 python -m pip install -r requirements.txt
 ```
 
-The requirements pin TensorFlow 2.17.0, Keras 3.4.1, and NumPy 1.26.4, plus
-the supporting scientific packages. These pins reproduce the migration target;
-they are not a claim of compatibility with every newer hosted runtime. Read
-[the migration report](compatibility_migration.md) before launching continual
-thesis runs: post-build architecture growth and two variable-metadata failures
-remain unresolved under the requested scope restrictions.
+The [development container](.devcontainer/README.md) builds the official
+TensorFlow 2.20 GPU image with these requirements. The target uses Keras 3.11.2
+and NumPy 2.3.2. See the [compatibility guide](compatibility_migration.md) for
+supported paths, test scope, and checkpoint limitations.
 
-`common.utils.init()` caps the first GPU at **6,144 MiB**. If you need more GPU
-RAM, modify `memory_limit=6144` in `common/utils.py` before initializing
-TensorFlow, then restart the kernel. Choose a limit suitable for your GPU.
+GPU memory growth is configured by the container. `common.utils.init()` is a
+compatibility entry point and does not impose a fixed memory cap.
 Project hierarchy names use `__`; `get_variables_names()` and
 `common.keras_compat.format_variable_name()` display full variable paths using
 that separator. Native Keras/TF paths still use their framework separators.
@@ -174,11 +171,13 @@ unflattened features instead of reaching around the bridge to pre-latent
 encoder features.
 
 Train the network through `DiffusionModel` with a nonzero `kl_loss_coef`, then
-use `sample_vae(...)` to decode latent samples. `UNet.add_depths(...)` and the
-targeted `UNetClassifier.add_depths(...)` append shape-preserving residual
-stages for progressive-depth training. See the
-[convolution model guide](diffusion/models/convolution/README.md) for exact
-calls and supported specifications.
+use `sample_vae(...)` to decode latent samples. Construct the complete network
+depth before training: the legacy `add_depths(...)` methods cannot append
+tracked state to built models under native Keras 3. Fixed-depth class expansion
+uses the wrapper's existing reconstruction path. See the
+[convolution model guide](diffusion/models/convolution/README.md) for supported
+construction specifications and the [compatibility guide](compatibility_migration.md)
+for growth boundaries.
 
 ### Schedules
 
@@ -258,8 +257,7 @@ trainer; the default `"fit"` path is unchanged.
 
 ## Hyperparameter optimization
 
-The 24 supported notebooks under [`notebooks/hpo/`](notebooks/hpo/README.md) cover all
-task/model pairings supported by the HPO runner. They call one API:
+The HPO runner exposes the supported search spaces through one API:
 
 ```python
 from common.hpo import SEARCH_SPACES, run_hpo
@@ -325,19 +323,16 @@ Config mode builds the loader and model bundle through
 `common.dataloader.get_datasets` and `common.model.get_model`; every classifier
 and replay-model phase then uses the shared training and reporting APIs.
 
-For a source-verified experimental protocol covering the baseline ladder,
-matched replay budgets, six-cell replay × KD design, candidate gates,
-development/confirmation manifests, paired stream-level inference, recovery,
-artifacts, and expected TensorFlow retracing, consult the optional local
-`others/research-grade-continual-learning.md` reference when that ignored
-workspace artifact is present.
+Use fixed pixel scaling for strict class-incremental experiments so preprocessing
+does not fit statistics using future-class training examples. Freeze validation
+choices before using the test set for final comparisons.
 
 ```python
 from common.config import Config
 from common.learner import continually_learn
 
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "min-max"},
+    dataset={"name": "cifar10", "preprocess": "fixed-min-max"},
     model={"name": "cnn", "show_network_summary": False},
     training={
         "task": "continual",
@@ -454,6 +449,27 @@ complete direct-key contract;
 see
 `autoencoder/README.md` for conditional labels, training, and generation.
 
+## Semantic consolidation
+
+The selected research direction is TMCL-inspired semantic consolidation on a
+JDCL-inspired joint diffusion classifier. `semantic_consolidation` connects to
+the shared configuration, learner, generated replay, and reporting code.
+
+1. **Joint learning** updates the generator and classifier using current
+   examples and the configured replay/distillation objectives.
+2. **Acquisition** learns bounded affine semantic modulations while keeping
+   the acquired backbone fixed.
+3. **Consolidation** transfers stopped, modulated target representations into
+   the ordinary classifier. Deployment uses the unmodulated classifier without
+   labels or task identity.
+
+The implementation is an adaptation: its supervised objectives, modulation
+locations, generated replay, and phase ordering differ from the source papers.
+Passing implementation tests establishes mechanics, not improved accuracy or
+biological validity. See the [semantic module guide](semantic_consolidation/README.md)
+and [scientific basis](semantic_consolidation/SCIENTIFIC_BASIS.md) for the exact
+objectives, supported configurations, controls, and claim boundaries.
+
 ## Directory guide
 
 - [`common/`](common/README.md): configuration, datasets, continual learner,
@@ -476,11 +492,11 @@ check behavior separately.
 
 ## Validation
 
-Run the complete repository assessment from the project root in the supported
-Conda environment:
+Run the complete repository assessment from the repository root in the configured
+TensorFlow environment:
 
 ```powershell
-conda run -n tf_env python test.py
+python test.py
 ```
 
 This command first enforces the source-wide documentation, type-annotation,
@@ -492,6 +508,6 @@ result makes the command fail.
 Run the orchestration, HPO, recovery, and continual-learning regressions too:
 
 ```powershell
-conda run -n tf_env python -m unittest discover -s common/tests -t .
-conda run -n tf_env python -m unittest discover -s semantic_consolidation/tests
+python -m unittest discover -s common/tests -t .
+python -m unittest discover -s semantic_consolidation/tests
 ```

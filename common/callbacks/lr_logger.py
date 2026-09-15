@@ -1,6 +1,6 @@
 """Record an optimizer's effective learning rate in Keras epoch logs.
 
-``LrLoggerCallback`` reads scalar learning rates or evaluates callable schedules
+``LrLogger`` reads scalar learning rates or evaluates callable schedules
 at the optimizer's current iteration. It adds a Python float to the supplied
 log mapping, allowing ordinary history and TensorBoard callbacks to consume it.
 The callback changes neither optimizer configuration nor training weights.

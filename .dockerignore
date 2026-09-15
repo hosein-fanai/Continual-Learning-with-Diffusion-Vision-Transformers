@@ -1,0 +1,5 @@
+# The development image only needs its recipe and dependency manifest.
+*
+!requirements.txt
+!.devcontainer/
+!.devcontainer/Dockerfile.tf220

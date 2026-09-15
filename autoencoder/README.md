@@ -3,6 +3,7 @@
 `autoencoder` provides dense variational autoencoders for feature replay in
 continual learning. These models operate on flat vectors such as 2,048-wide
 Xception features; they do not contain convolutional image encoders.
+The supported runtime is TensorFlow 2.20 with native Keras 3.
 
 ## `VariationalAutoencoder`
 
@@ -68,7 +69,7 @@ x_replay, y_replay = vae.sample(
 Do not include `units`; widths come from `hiddens_dims`.
 Each Dense block receives an independent clone of the selected initializer;
 this prevents one reused unseeded initializer object from repeating the same
-draw across encoder and decoder layers under TensorFlow 2.10.
+draw across encoder and decoder layers.
 
 `compile_args` starts with Nadam at learning rate `0.1` and MSE, then accepts
 any `tf.keras.Model.compile` key such as `optimizer`, `loss`, `metrics`,
@@ -92,9 +93,8 @@ artifacts without this metadata require explicit generation class IDs.
 The model package exports are lazy and cached: `from autoencoder import
 VariationalAutoencoder, VAEClassifier` avoids eagerly importing every
 registered Keras module. The decoder callback now lives at
-`common.callbacks.decoder_accuracy.DecoderAccuracy`; the old
-`autoencoder.DecoderAccuracyCallback` export still points to a removed module
-and currently fails on access.
+`common.callbacks.decoder_accuracy.DecoderAccuracy`; the compatibility export
+`autoencoder.DecoderAccuracyCallback` resolves to that same class.
 Importing the package installs lazy Keras registry proxies for both model
 classes. Consequently, `import autoencoder` before `load_model(...)` restores
 the canonical Python class (including `isinstance` and custom methods), while
@@ -116,6 +116,11 @@ Its `train_num` behavior is:
 
 - `-1`: use each supplied row once, with no manual resampling;
 - any positive value: sample exactly that many rows with replacement.
+
+Counts and architecture dimensions must be integers; fractions and booleans are
+rejected. `epochs`, `batch_size`, and an explicit `steps_per_epoch` must be
+positive. `shuffle_buffer=0` disables shuffling. Invalid counts fail before
+fitting or changing observed-class metadata.
 
 Automatic early stopping minimizes loss monitors and maximizes accuracy monitors.
 For a custom metric with another direction, supply an explicit callback list.
@@ -142,10 +147,12 @@ sample array and ignores `labels`/`onehot_y_output`. Pass an integer
 Seeded sampling now derives its stream using `"vae", "sample"`, so the same
 seed and weights do not reproduce the previous `generate` stream.
 
-The `generate(classes=..., samples_per_class=...)` method has been removed
-without a compatibility alias. Replay and final-image reporting still call that
-method and currently fail when those paths run. See the
-[staged review](../STAGED_REVIEW.md) for the remaining migration work.
+Use `sample(labels=..., samples_per_label=...)` for generation. Replay,
+decoder-accuracy callbacks, and final-image reporting use this API. The old
+`generate(classes=..., samples_per_class=...)` spelling has no compatibility
+alias. Conditional class IDs must be integers in `[0, class_num)`; sampling
+never truncates a fractional class ID. A zero sampling count returns an empty
+batch, while a negative count is rejected.
 
 ## `VAEClassifier`
 
@@ -169,10 +176,6 @@ model = VAEClassifier(
 history = model.train(x_train, one_hot_y_train, epochs=10, train_num=-1)
 ```
 
-The training call currently fails at epoch end because its automatically
-attached decoder callback passes an obsolete sampling keyword. See
-[Decoder accuracy callback](#decoder-accuracy-callback) below.
-
 Its `**kwargs` accepts the VAE architecture keys, `compile_args`, `compile`, and
 Keras model keys. Do not pass `conditioned` or `class_num`. Set `compile=False`
 to construct without compiling, for example before supplying a custom compile
@@ -181,21 +184,21 @@ configuration later.
 `VAEClassifier.train(**kwargs)` accepts only the base training controls
 `train_num`, `epochs`, `batch_size`, `shuffle_buffer`, `seed`,
 `validation_data`, `callbacks_list`, `verbose`, and `steps_per_epoch`. It
-supplies `clf` and monitors `val_clf_accuracy` itself.
+supplies `clf` and monitors `val_clf_accuracy` when validation is supplied,
+otherwise `clf_accuracy`.
 
 ## Decoder accuracy callback
 
 `common.callbacks.decoder_accuracy.DecoderAccuracy(classifier,
 samples_per_label=500, seed=None)` is attached by `train(..., clf=...)` and
-`VAEClassifier.train`. It is intended to sample every observed class, classify
+`VAEClassifier.train`. It samples every observed class, classifies
 the generated features, and add `decoder_accuracy` to Keras logs.
 
-The current callback passes the obsolete `samples_per_class` keyword to
-`model.sample`, so it raises `TypeError` with the repository VAE at epoch end.
-It also always passes `training=False` to the classifier, so a plain callable
-accepting only the sample tensor is no longer supported. Empty-batch and
-label/prediction shape checks have been removed. These unresolved review
-findings require repair before relying on decoder accuracy.
+The callback calls `sample(samples_per_label=...)`. Keras classifiers receive
+`training=False`; ordinary callables receive the generated vectors. Empty
+generation and incompatible label/prediction batches are rejected before
+accuracy is computed. Epoch-derived seeds keep callback sampling independent
+from the encoder's reparameterization stream.
 
 ## Continual-learning integration
 

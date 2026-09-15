@@ -20,7 +20,15 @@ from common.utils import plot_images
 
 
 def _make_model(use_cfg: bool = True, dynamic: bool = False) -> DiffusionModel:
-    """Build a tiny variational transformer supporting both sampling methods."""
+    """Build a tiny variational transformer supporting both sampling methods.
+
+    Args:
+        use_cfg (bool): True reserves a null condition; False uses class IDs directly.
+        dynamic (bool): False fixes two classes; True restores original-label mapping 7->0 and 19->1.
+
+    Returns:
+        model (DiffusionModel): Float32 raw-only variational transformer with both diffusion and VAE sampling routes.
+    """
 
     network = DiffusionTransformer(
         num_classes=None if dynamic else 2,
@@ -56,7 +64,11 @@ class SamplingNullLabelTests(unittest.TestCase):
     """Keep optional null labels consistent across both public sampling paths."""
 
     def tearDown(self) -> None:
-        """Release Keras fixture state after each regression case."""
+        """Release Keras fixture state after each regression case.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+        """
 
         tf.keras.backend.clear_session()
         super().tearDown()
@@ -68,7 +80,20 @@ class SamplingNullLabelTests(unittest.TestCase):
         expected: list[int],
         **kwargs: object,
     ) -> None:
-        """Run real sampling and inspect the normalized labels it consumes."""
+        """Run real sampling and inspect the normalized labels it consumes.
+
+        Args:
+            model (DiffusionModel): Real sampling wrapper.
+            method_name (str): Public diffusion/VAE sampling method to invoke.
+            expected (list[int]): Expanded condition IDs expected at the sampler boundary.
+            **kwargs (object): Public sampling options, including null flags and explicit labels.
+
+        Returns:
+            result (None): Assert exact normalized label order, float32 image shape, and finite samples.
+
+        Raises:
+            AssertionError: If sampling labels, counts, shapes, or values violate the expected contract.
+        """
 
         prepared_labels: list[tf.Tensor] = []
         prepare = model._prepare_sampling_labels
@@ -78,7 +103,16 @@ class SamplingNullLabelTests(unittest.TestCase):
             labels: tf.Tensor | list[int],
             samples_per_label: int,
         ) -> tf.Tensor:
-            """Record prepared labels while retaining real validation and expansion."""
+            """Record prepared labels while retaining real validation and expansion.
+
+            Args:
+                network (DiffusionTransformer): Selected raw sampling network.
+                labels (tf.Tensor | list[int]): Explicit condition IDs or None supplied by the caller.
+                samples_per_label (int): Number of generated rows per condition.
+
+            Returns:
+                labels (tf.Tensor): Expanded validated integer IDs from the original preparation method; also recorded for assertions.
+            """
 
             result = prepare(network, labels, samples_per_label)
             prepared_labels.append(result)
@@ -92,7 +126,14 @@ class SamplingNullLabelTests(unittest.TestCase):
         self.assertTrue(bool(tf.reduce_all(tf.math.is_finite(images))))
 
     def test_defaults_and_optional_null_preserve_class_order(self) -> None:
-        """Prepend null only under CFG, including restored dynamic class ordering."""
+        """Prepend null only under CFG, including restored dynamic class ordering.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         # Dynamic transformer construction requires CFG; fixed vocabularies support either mode.
         for dynamic, use_cfg in ((False, False), (False, True), (True, True)):
@@ -112,7 +153,14 @@ class SamplingNullLabelTests(unittest.TestCase):
                     )
 
     def test_explicit_labels_override_optional_null(self) -> None:
-        """Keep explicit network IDs and their order unchanged by the flag."""
+        """Keep explicit network IDs and their order unchanged by the flag.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         for dynamic in (False, True):
             model = _make_model(dynamic=dynamic)
@@ -127,7 +175,14 @@ class SamplingNullLabelTests(unittest.TestCase):
                     )
 
     def test_explicit_empty_labels_do_not_select_defaults(self) -> None:
-        """Isolate empty-list precedence before unrelated zero-batch model execution."""
+        """Isolate empty-list precedence before unrelated zero-batch model execution.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _make_model()
         for method_name in ("sample", "sample_vae"):
@@ -140,7 +195,14 @@ class SamplingNullLabelTests(unittest.TestCase):
                 self.assertEqual(prepare.call_args.args[1], [])
 
     def test_swap_forwards_null_flag_and_sample_count(self) -> None:
-        """Swapped sampling reaches the real VAE decoder with both options intact."""
+        """Swapped sampling reaches the real VAE decoder with both options intact.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _make_model()
         model.swap_noise_image = True
@@ -153,7 +215,14 @@ class SamplingNullLabelTests(unittest.TestCase):
         self.assertEqual(sample_vae.call_args.kwargs["samples_per_label"], 2)
 
     def test_null_option_follows_labels_in_positional_calls(self) -> None:
-        """Accept the null flag directly after labels in both sampler signatures."""
+        """Accept the null flag directly after labels in both sampler signatures.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         model = _make_model()
         images = model.sample(
@@ -169,7 +238,14 @@ class SamplingNullLabelTests(unittest.TestCase):
         self.assertEqual(vae_images.shape, (2, 4, 4, 1))
 
     def test_plot_titles_and_positional_file_output(self) -> None:
-        """Accept the null flag after column count in positional file-only calls."""
+        """Accept the null flag after column count in positional file-only calls.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
 
         import matplotlib
 

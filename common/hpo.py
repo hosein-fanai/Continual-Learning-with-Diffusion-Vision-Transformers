@@ -971,7 +971,7 @@ def _suggest_optimizer(
     else:
         optimizer_choices = ["sgd", "rmsprop", "adam", "adamw", "nadam"]
     optimizer = trial.suggest_categorical("optimizer", optimizer_choices)
-    # TensorFlow 2.10 exposes weight decay only through AdamW here.
+    # The shared optimizer factory applies nonzero weight decay through AdamW.
     # Sample weight decay only for AdamW; leave it unset otherwise.
     weight_decay = trial.suggest_float(
         "weight_decay", 1e-6, 1e-3, log=True

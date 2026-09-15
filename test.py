@@ -131,8 +131,12 @@ def _if_branch_locations(
         source (str): Original Python text used to recover keyword positions.
 
     Returns:
-        tuple[tuple[int, str], ...]: Sorted, deduplicated pairs of one-based source
+        locations (tuple[tuple[int, str], ...]): Sorted, deduplicated pairs of one-based source
         line and keyword (if, elif, or else). An unbranched module returns ().
+
+    Raises:
+        tokenize.TokenError: If the source contains incomplete lexical tokens.
+        IndentationError: If tokenization encounters inconsistent indentation.
     """
 
     tokens = tuple(tokenize.generate_tokens(io.StringIO(source).readline))
@@ -193,9 +197,13 @@ def _production_assert_locations(
         relative_path (pathlib.Path): Project-relative source path.
 
     Returns:
-        tuple[int, ...]: Sorted source lines containing production assertions.
+        locations (tuple[int, ...]): Sorted source lines containing production assertions.
             Assertions in ``common/tests`` or beneath an executable
             ``*self_tests`` function are intentionally excluded.
+
+    Raises:
+        AttributeError: If inputs are not an AST and a path with the documented
+            source-location and path attributes.
     """
 
     # Unit-test modules may use Python assertions as ordinary test checks.
@@ -230,7 +238,9 @@ def _production_assert_locations(
     return tuple(sorted(locations))
 
 
-def assert_static_contracts() -> dict[str, int]:
+def assert_static_contracts(
+    exclude_paths: tuple[str, ...] = (),
+) -> dict[str, int]:
     """Assert documentation, typing, branch, and runtime-guard contracts.
 
     Lambdas are excluded because Python syntax cannot annotate lambda parameters
@@ -238,10 +248,13 @@ def assert_static_contracts() -> dict[str, int]:
     excluded; nested named functions and property methods remain in scope.
 
     Args:
-        None.
+        exclude_paths (tuple[str, ...]): Repository-relative file or directory
+            paths outside this explicitly scoped assessment. The empty default
+            checks every discovered source. Exclusions do not alter contracts
+            on included files or the runtime class registry.
 
     Returns:
-        dict[str, int]: Counts of checked files, classes, functions, and branch
+        counts (dict[str, int]): Counts of checked files, classes, functions, and branch
         headers when every static contract passes.
 
     Raises:
@@ -254,9 +267,15 @@ def assert_static_contracts() -> dict[str, int]:
     counts = {"files": 0, "classes": 0, "functions": 0, "branches": 0}
 
     for path in _project_python_files():
+        relative_path = path.relative_to(Path(__file__).resolve().parent)
+        # Honor caller-declared review exclusions without changing any checks.
+        if any(
+            relative_path == Path(excluded) or Path(excluded) in relative_path.parents
+            for excluded in exclude_paths
+        ):
+            continue
         source = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(source, filename=str(path), type_comments=True)
-        relative_path = path.relative_to(Path(__file__).resolve().parent)
         counts["files"] += 1
 
         # Require every tracked Python file to explain its module-level purpose.
@@ -370,12 +389,12 @@ def assert_static_contracts() -> dict[str, int]:
 
 PROJECT_SELF_TEST_CLASSES = {
     "autoencoder.vae_classifier": ("VAEClassifier",),
-    "autoencoder.decoder_accuracy_callback": ("DecoderAccuracyCallback",), 
+    "common.callbacks.decoder_accuracy": ("DecoderAccuracy",),
     "autoencoder.variational_autoencoder": ("_GaussianSampling", "VariationalAutoencoder"),
     "diffusion.callbacks.batch_loss_plateau": ("BatchLossPlateau",), 
-    "diffusion.callbacks.image_generator_callback": ("ImageGeneratorCallback",), 
-    "diffusion.callbacks.raw_network_validation_callback": (
-        "RawNetworkValidationCallback", 
+    "diffusion.callbacks.image_generator": ("ImageGenerator",),
+    "diffusion.callbacks.raw_network_validation": (
+        "RawNetworkValidation",
     ), 
     "diffusion.layers.adaptive_layer_normalization_zero": ("AdaLNZero",), 
     "diffusion.layers.policy_multi_head_attention": ("PolicyMultiHeadAttention",),
@@ -429,6 +448,7 @@ PROJECT_SELF_TEST_CLASSES = {
 
 def run_project_self_tests(
     verbose: bool = True, 
+    exclude_paths: tuple[str, ...] = (),
 ) -> dict[str, dict[str, str]]:
     """Run and coverage-audit every class self-test in the repository.
 
@@ -450,9 +470,12 @@ def run_project_self_tests(
             count.  ``False`` suppresses progress output but does not suppress
             exceptions.
             Defaults to ``True``.
+        exclude_paths (tuple[str, ...]): Repository-relative paths omitted only
+            from the static source assessment. Defaults to no exclusions; every
+            registered runtime class is tested regardless of these paths.
 
     Returns:
-        dict[str, dict[str, str]]: Ordered-by-registration module results.  A
+        results (dict[str, dict[str, str]]): Ordered-by-registration module results. A
         successful result covers all registered classes and every inner
         value is ``"passed"``.
 
@@ -479,7 +502,7 @@ def run_project_self_tests(
     import traceback
 
 
-    static_counts = assert_static_contracts()
+    static_counts = assert_static_contracts(exclude_paths=exclude_paths)
     results = {}
     failures = {}
     started = time.perf_counter()
@@ -578,4 +601,12 @@ def run_project_self_tests(
 
 # Run the complete project test registry when invoked directly.
 if __name__ == "__main__":
-    run_project_self_tests()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--exclude", action="append", default=[], metavar="RELATIVE_PATH",
+        help="Omit this path from static assessment; runtime registry is unchanged.",
+    )
+    arguments = parser.parse_args()
+    run_project_self_tests(exclude_paths=tuple(arguments.exclude))

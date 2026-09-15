@@ -1,6 +1,6 @@
 """Epoch callback for measuring the class fidelity of VAE generations.
 
-DecoderAccuracyCallback samples the bound conditional VAE after each epoch,
+DecoderAccuracy samples the bound conditional VAE after each epoch,
 classifies generated features without target leakage, and appends an exact-match
 accuracy to Keras logs. Epoch-derived seeds isolate generation streams; the
 module also exposes a small executable regression suite.
@@ -25,7 +25,7 @@ class DecoderAccuracy(callbacks.Callback):
     :class:`VariationalAutoencoder` does in conditional mode.
 
     Attributes:
-        samples_per_class (int): Generated examples requested for each class;
+        samples_per_label (int): Generated examples requested for each class;
             initialized from the constructor value.
             Defaults to ``500``.
         classifier (tf.keras.Model | Callable): Maps generated vectors to class
@@ -80,6 +80,11 @@ class DecoderAccuracy(callbacks.Callback):
     ) -> None:
         """Generate examples, classify them, and log exact-match accuracy.
 
+        Generated labels may be sparse vectors or single-column sparse arrays.
+        Classifier scores must be a nonempty ``[samples, classes]`` matrix
+        with exactly one row per generated label. Shape validation prevents
+        broadcasting from turning rowwise accuracy into pairwise comparisons.
+
         Args:
             epoch (int): Zero-based completed epoch index used to derive an
                 independent callback sampling stream.
@@ -89,10 +94,14 @@ class DecoderAccuracy(callbacks.Callback):
                 Defaults to ``None``. No caller-owned log mapping is available in that case.
 
         Returns:
-            None.
+            result (None): ``logs`` receives a NumPy floating scalar named
+                ``decoder_accuracy`` in the classifier's variable dtype, or
+                the model/global variable dtype when that policy is absent.
+                Invalid generated batches leave the supplied logs unchanged.
 
         Raises:
-            ValueError: If the attached model generates no conditional samples.
+            ValueError: If the attached model generates no conditional samples,
+                labels are not a sparse vector/column, or score rank is not two.
             tf.errors.InvalidArgumentError: If generated labels and classifier
                 predictions have incompatible shapes.
             AttributeError: If the callback has not been bound to a model.
@@ -111,10 +120,25 @@ class DecoderAccuracy(callbacks.Callback):
                 int(epoch)
             )
         )
+        y_true = tf.convert_to_tensor(y_true)
+        # A single-column sparse label array represents the same IDs as a vector.
+        if y_true.shape.rank == 2 and y_true.shape[-1] == 1:
+            y_true = tf.squeeze(y_true, axis=-1)
+        tf.debugging.assert_rank(y_true, 1, message="Generated labels must be sparse IDs.")
+        # Empty generations have no defined classification accuracy.
+        if int(tf.size(y_true).numpy()) == 0:
+            raise ValueError("The attached model generated no conditional samples.")
         y_pred = self.classifier(
             x_gen, 
             training=False
         ) if isinstance(self.classifier, tf.keras.layers.Layer) else self.classifier(x_gen)
+        y_pred = tf.convert_to_tensor(y_pred)
+        tf.debugging.assert_rank(y_pred, 2, message="Classifier scores must have shape [samples, classes].")
+        tf.debugging.assert_equal(
+            tf.shape(y_pred)[0], tf.shape(y_true)[0],
+            message="Classifier predictions and generated labels must have equal row counts.",
+        )
+        tf.debugging.assert_positive(tf.shape(y_pred)[1], message="Classifier scores need at least one class.")
         y_pred = tf.argmax(y_pred, axis=1, output_type=tf.int64)
         y_true = tf.cast(y_true, tf.int64)
 
@@ -158,8 +182,12 @@ def run_self_tests() -> dict[str, str]:
         None.
 
     Returns:
-        dict[str, str]: ``{"DecoderAccuracyCallback": "passed"}`` after all
+        dict[str, str]: ``{"DecoderAccuracy": "passed"}`` after all
         assertions succeed.
+
+    Raises:
+        AssertionError: If sampling, accuracy, logging, or invalid-input handling
+            differs from the documented callback behavior.
     """
 
     from types import SimpleNamespace
@@ -381,7 +409,7 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("An unattached callback must not generate data.")
 
-    return {"DecoderAccuracyCallback": "passed"}
+    return {"DecoderAccuracy": "passed"}
 
 
 # Run this module's executable self-test entry point when invoked directly.

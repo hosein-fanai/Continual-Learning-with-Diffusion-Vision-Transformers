@@ -22,7 +22,11 @@ class _FixedClock:
 
     @staticmethod
     def now() -> datetime:
-        """Return a deterministic timestamp, including for concurrent calls."""
+        """Return a deterministic timestamp, including for concurrent calls.
+
+        Returns:
+            instant (datetime): Fixed naive timestamp shared by all competing calls.
+        """
         return datetime(2026, 9, 6, 12, 0, 0)
 
 
@@ -30,11 +34,26 @@ class _EvaluationOnly:
     """Expose a controlled value through the actual ordinary-report interface."""
 
     def __init__(self, accuracy: float) -> None:
-        """Retain the synthetic accuracy belonging to this independent report."""
+        """Retain the synthetic accuracy belonging to this independent report.
+
+        Args:
+            accuracy (float): Synthetic score used to identify this report.
+
+        Returns:
+            result (None): Retain the provided score without training a model.
+        """
         self.accuracy = accuracy
 
     def evaluate(self, *args: object, **kwargs: object) -> dict:
-        """Return a known value without suggesting it is a trained outcome."""
+        """Return a known value without suggesting it is a trained outcome.
+
+        Args:
+            *args (object): Report-compatible model evaluation inputs, ignored.
+            **kwargs (object): Evaluation options, ignored.
+
+        Returns:
+            metrics (dict): accuracy mapped to the configured floating synthetic score.
+        """
         return {"accuracy": self.accuracy}
 
 
@@ -42,11 +61,18 @@ class ResultDirectoryTests(unittest.TestCase):
     """A new execution owns one distinct destination across its artifact writers."""
 
     def test_same_clock_callbacks_preserve_independent_reports(self) -> None:
-        """The archived overwrite counterexample now retains both original CSVs."""
-        module = importlib.import_module('diffusion.callbacks.image_generator_callback')
+        """The archived overwrite counterexample now retains both original CSVs.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
+        module = importlib.import_module('diffusion.callbacks.image_generator')
         with tempfile.TemporaryDirectory() as directory, patch.object(module, 'datetime', _FixedClock):
-            first = module.ImageGeneratorCallback(show_images=False, results_path=directory, project_tag='paired')
-            second = module.ImageGeneratorCallback(show_images=False, results_path=directory, project_tag='paired')
+            first = module.ImageGenerator(show_images=False, results_path=directory, project_tag='paired')
+            second = module.ImageGenerator(show_images=False, results_path=directory, project_tag='paired')
             self.assertNotEqual(first.results_path, second.results_path)
             for callback, accuracy in ((first, .9), (second, .1)):
                 report(history={}, model=_EvaluationOnly(accuracy), trainset=None, valset=object(),
@@ -59,10 +85,27 @@ class ResultDirectoryTests(unittest.TestCase):
                 self.assertTrue((Path(callback.results_path) / 'images').is_dir())
 
     def test_concurrent_same_clock_reservations_are_exclusive(self) -> None:
-        """Filesystem ownership remains unique when 64 callers contend at once."""
+        """Filesystem ownership remains unique when 64 callers contend at once.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             def reserve(index: int) -> Path:
-                """Claim and mark one independent destination without a process lock."""
+                """Claim and mark one independent destination without a process lock.
+
+                Args:
+                    index (int): Unique owner marker for one concurrent caller.
+
+                Returns:
+                    path (Path): Newly reserved directory containing this caller's owner.txt marker.
+
+                Raises:
+                    OSError: If directory reservation or marker writing fails.
+                """
                 path = reserve_result_directory(directory, 'paired', timestamp=_FixedClock.now())
                 (path / 'owner.txt').write_text(str(index))
                 return path
@@ -74,7 +117,14 @@ class ResultDirectoryTests(unittest.TestCase):
                 self.assertEqual((path / 'owner.txt').read_text(), str(index))
 
     def test_occupied_files_and_invalid_tags_never_alias(self) -> None:
-        """Occupied names survive retries and path-like tags fail before creation."""
+        """Occupied names survive retries and path-like tags fail before creation.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
         with tempfile.TemporaryDirectory() as directory:
             occupied = Path(directory) / '2026-09-06_12-00-00 paired'
             occupied.write_text('historical evidence')
@@ -88,8 +138,15 @@ class ResultDirectoryTests(unittest.TestCase):
                 self.assertFalse(absent.exists())
 
     def test_typed_training_shares_one_reservation_with_artifact_writers(self) -> None:
-        """Two real one-epoch fits keep configs, weights and reports in separate roots."""
-        module = importlib.import_module('diffusion.callbacks.image_generator_callback')
+        """Two real one-epoch fits keep configs, weights and reports in separate roots.
+
+        Returns:
+            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+
+        Raises:
+            AssertionError: If the measured behavior violates a stated invariant.
+        """
+        module = importlib.import_module('diffusion.callbacks.image_generator')
         dataset = tf.data.Dataset.from_tensor_slices((
             np.array([[0., 0.], [1., 1.], [0., 1.], [1., 0.]], dtype=np.float32),
             np.array([0, 1, 0, 1], dtype=np.int32),

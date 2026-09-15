@@ -35,6 +35,7 @@ from common.recovery import (
     save_task_checkpoint,
 )
 from common.replay_buffer import ReplayBuffer
+from common.keras_compat import variable_path
 from diffusion import (
     DiTClassifier,
     DiffusionClassifier,
@@ -293,8 +294,8 @@ class RecoveryTests(unittest.TestCase):
                 int(source_optimizer.iterations.numpy()),
             )
             for source, target in zip(
-                source_optimizer.variables(),
-                restored_optimizer.variables(),
+                source_optimizer.variables,
+                restored_optimizer.variables,
             ):
                 np.testing.assert_array_equal(source.numpy(), target.numpy())
 
@@ -382,8 +383,8 @@ class RecoveryTests(unittest.TestCase):
                 ):
                     np.testing.assert_array_equal(expected, actual)
             for expected, actual in zip(
-                source.optimizer.variables(),
-                target.optimizer.variables(),
+                source.optimizer.variables,
+                target.optimizer.variables,
             ):
                 np.testing.assert_array_equal(
                     expected.numpy(),
@@ -484,8 +485,12 @@ class RecoveryTests(unittest.TestCase):
             classifier_only_distil_token=True,
             build=True,
         )
-        unet_network.add_class()
-        unet_network.add_class()
+        # Class discovery rebuilds a built raw network through its public wrapper.
+        unet_wrapper = DiffusionClassifier(
+            network=unet_network, use_ema=False, test_network_name="raw", test_steps=2,
+        )
+        unet_wrapper._check_new_labels(y=tf.constant([0, 1]), verbose=False)
+        unet_network = unet_wrapper.network
 
         inputs = (
             tf.zeros((2, 4, 4, 1), dtype=tf.float32),
@@ -504,10 +509,10 @@ class RecoveryTests(unittest.TestCase):
                     self.assertEqual(outputs["distil_classes"].shape, (2, 2))
 
                     classifier_names = {
-                        weight.name for weight in network.classifier.weights
+                        variable_path(weight) for weight in network.classifier.weights
                     }
                     distillation_names = {
-                        weight.name
+                        variable_path(weight)
                         for weight in network.distil_classifier.weights
                     }
                     all_names = classifier_names | distillation_names

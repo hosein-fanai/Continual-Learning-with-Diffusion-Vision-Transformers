@@ -229,7 +229,7 @@ from common.config import Config
 from common.learner import continually_learn
 
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "min-max"},
+    dataset={"name": "cifar10", "preprocess": "fixed-min-max"},
     model={"name": "cnn", "show_network_summary": False},
     training={"task": "continual", "epochs": 20},
     continually_learn={
@@ -254,6 +254,10 @@ recorded in `task_resource_metrics`. The named `reservoir_er` baseline offers
 all exposed current rows to Algorithm R; manually selecting
 `buffer_kwargs.strategy="reservoir"` retains `insert_num` as a sampled-stream
 ablation.
+
+Schedule class IDs, class counts, and task sizes must be integers; NumPy integer
+scalars are supported. Fractional and boolean values are rejected so an invalid
+configuration cannot silently select a different class stream.
 
 VAE replay retains canonical images in the learner and supplies separate flat
 views to the dense generator and image views to an explicitly selected CNN.
@@ -316,7 +320,11 @@ Classifier depth growth from `clf_depth=0` is explicitly unsupported. The
 common progressive entry points reject requested classifier growth before any
 fit or result reservation; fixed-depth zero and denoiser-only growth remain
 separate supported choices. Start the classifier at a positive depth when
-planning classifier growth.
+planning classifier growth. Native Keras 3 also prohibits attaching new tracked
+layers after a model has built; progressive depth mutation is not a validated
+training path. Fixed-depth curricula can still vary timesteps and compatible
+input resolutions. Dynamic class growth uses reconstruction at task boundaries
+and preserves existing class weights and matching optimizer state.
 
 ## Hyperparameter optimization
 
@@ -402,7 +410,8 @@ regression with synthetic MNIST-shaped pixels, real V2 training, generated
 replay, noise and classifier distillation, four ensemble-based objectives,
 YAML round trips, CSV reports, and seeded chunked/batched ensemble equivalence.
 Run `python -m unittest discover -s common/tests` for the complete common suite
-in the project's TensorFlow 2.10 environment.
+with TensorFlow 2.20 and Keras 3. For a focused boundary check, run
+`python -m unittest common.tests.test_audit_boundaries -v`.
 
 ## Supporting modules
 
@@ -426,7 +435,7 @@ and do not infer dataset class IDs. Positional display/save calls must include
 Use the public functions above for orchestration. Private helpers beginning
 with `_` implement individual stages and are not stable entry points.
 
-The callback modules and VAE sampling API have been renamed. Internal replay,
-reporting, decoder evaluation, and strict recovery still contain old call sites;
-the current refactor is not ready for use on those paths. See the
-[staged review](../STAGED_REVIEW.md) for the migration mapping and findings.
+VAE sampling uses `sample(samples_per_label=...)`; the shared callbacks are
+`DecoderAccuracy` and `LrLogger`. Decoder accuracy requires nonempty generated
+samples and one classifier-score row per sparse label. Sparse vectors and
+single-column labels are supported; incompatible rows fail before logging.

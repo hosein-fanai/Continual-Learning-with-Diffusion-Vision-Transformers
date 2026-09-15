@@ -14,6 +14,7 @@ import tensorflow as tf
 import numpy as np
 
 import json
+import errno
 
 import os
 
@@ -403,8 +404,17 @@ def _replay_cache_path(
         f"classes-{legacy_classes}_"
         f"candidates-{int(candidate_count)}.npz"
     )
-    # Reuse an existing legacy path only when the current canonical path is absent.
-    return legacy_path if legacy_path.exists() and not path.exists() else path
+    # The canonical path always fits the bounded filename format.
+    if path.exists():
+        return path
+    try:
+        legacy_exists = legacy_path.exists()
+    except OSError as error:
+        # Large vocabularies can exceed filesystem component limits before lookup.
+        if error.errno != errno.ENAMETOOLONG:
+            raise
+        legacy_exists = False
+    return legacy_path if legacy_exists else path
 
 
 class ReplayBuffer(object):

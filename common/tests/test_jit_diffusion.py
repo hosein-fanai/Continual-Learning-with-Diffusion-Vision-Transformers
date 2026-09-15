@@ -14,7 +14,20 @@ from diffusion.models.transformer.diffusion_transformer import DiffusionTransfor
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 
-def make_wrapper(**kwargs):
+def make_wrapper(**kwargs: object) -> DiffusionModel:
+    """Construct a small fixed-vocabulary diffusion wrapper for compilation checks.
+
+    Args:
+        **kwargs (object): Wrapper options such as reporting switches; the
+            fixture fixes its network, linear scheduler, test steps, and seed.
+
+    Returns:
+        model (DiffusionModel): Uncompiled float32, two-class CFG wrapper with
+            4x4 single-channel images and no transformer blocks.
+
+    Raises:
+        TypeError: If options conflict with the fixture's fixed arguments.
+    """
     network = DiffusionTransformer(
         num_classes=2, use_cfg=True, timesteps=4, image_size=4,
         channels=1, patch_size=2, dim=4, depth=0,
@@ -26,10 +39,26 @@ def make_wrapper(**kwargs):
 
 
 class DiffusionJitTests(unittest.TestCase):
-    def tearDown(self):
+    """Exercise compiled updates, independent RNG streams, and resize fallback."""
+    def tearDown(self) -> None:
+        """Restore the Keras session or numeric policy after this isolated test case.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+        """
+
         tf.keras.backend.clear_session()
 
-    def test_stateless_stream_advances_resets_and_restores(self):
+    def test_stateless_stream_advances_resets_and_restores(self) -> None:
+        """Compile stateless draws and check that saved counters and explicit resets reproduce the next draw.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         stream = SeedStream(17)
         draw = tf.function(
             lambda: tf.random.stateless_normal((16,), stream.next_seed()),
@@ -44,7 +73,16 @@ class DiffusionJitTests(unittest.TestCase):
         stream.reset_seed(17)
         np.testing.assert_array_equal(draw().numpy(), first)
 
-    def test_parallel_dataset_uses_unique_stream_counters(self):
+    def test_parallel_dataset_uses_unique_stream_counters(self) -> None:
+        """Allocate 512 distinct seeds across parallel dataset calls without losing counter increments.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         stream = SeedStream(17)
         dataset = tf.data.Dataset.range(512).map(
             lambda _: stream.next_seed(), num_parallel_calls=8,
@@ -53,7 +91,16 @@ class DiffusionJitTests(unittest.TestCase):
         self.assertEqual(np.unique(seeds, axis=0).shape[0], 512)
         self.assertEqual(int(stream.next_seed()[1]), 512)
 
-    def test_native_diffusion_train_evaluate_and_saved_rng(self):
+    def test_native_diffusion_train_evaluate_and_saved_rng(self) -> None:
+        """Run compiled fit, evaluation, batch updates, and sampling with finite values and restored RNG state.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper(show_separate_noise_losses=True)
         model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse", jit_compile=True)
         self.assertTrue(model.jit_compile)
@@ -80,7 +127,16 @@ class DiffusionJitTests(unittest.TestCase):
         self.assertEqual(samples.shape, (2, 4, 4, 1))
         self.assertTrue(np.isfinite(samples.numpy()).all())
 
-    def test_optional_bicubic_uses_default_graph(self):
+    def test_optional_bicubic_uses_default_graph(self) -> None:
+        """Keep interpolated patch positions on the supported graph path when bicubic disables XLA.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         patches = PatchEmbedding(dim=4, grid_size=2, patch_size=2,
                                  pos_embed_type="2d_learned_interpolate")
         model = tf.keras.Sequential([tf.keras.layers.Input((4, 4, 1)), patches])
@@ -89,7 +145,16 @@ class DiffusionJitTests(unittest.TestCase):
         self.assertFalse(model.jit_compile)
         self.assertEqual(model(tf.ones((2, 4, 4, 1))).shape, (2, 4, 4))
 
-    def test_droppath_compiled_masks_and_checkpoint(self):
+    def test_droppath_compiled_masks_and_checkpoint(self) -> None:
+        """Check independent compiled DropPath masks and exact reproduction after reseeding.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         layer = DropPath(.5, seed=23)
         inputs = tf.ones((64, 2, 2))
         draw = tf.function(lambda x: layer(x, training=True), jit_compile=True)
@@ -99,7 +164,16 @@ class DiffusionJitTests(unittest.TestCase):
         layer.reset_seed(23)
         np.testing.assert_array_equal(draw(inputs).numpy(), first)
 
-    def test_task_reset_replays_independent_diffusion_streams(self):
+    def test_task_reset_replays_independent_diffusion_streams(self) -> None:
+        """Reset task streams without coupling the diffusion-noise sequence to label dropout calls.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         from common.learner import _reset_task_random_streams
 
         model = make_wrapper()
@@ -112,7 +186,16 @@ class DiffusionJitTests(unittest.TestCase):
         np.testing.assert_array_equal(model.noisify(images)[1].numpy(), first)
         np.testing.assert_array_equal(model.noisify(images)[1].numpy(), second)
 
-    def test_progressive_unsupported_resize_disables_only_that_stage(self):
+    def test_progressive_unsupported_resize_disables_only_that_stage(self) -> None:
+        """Disable XLA for an unsupported resize stage and restore the caller setting afterward.
+
+        Returns:
+            result (None): The stated assertions complete, with failures reported to unittest.
+
+        Raises:
+            AssertionError: If measured behavior violates a stated invariant.
+        """
+
         model = make_wrapper()
         model.compile(loss="mse", jit_compile=True)
         self.assertTrue(model.jit_compile)
@@ -123,5 +206,6 @@ class DiffusionJitTests(unittest.TestCase):
         self.assertTrue(model.jit_compile)
 
 
+# Run compiled diffusion regressions when invoked directly.
 if __name__ == "__main__":
     unittest.main()

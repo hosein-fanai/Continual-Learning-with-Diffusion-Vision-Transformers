@@ -146,10 +146,11 @@ def continual_metrics(
         accuracy_matrix (Sequence[Sequence[float]]): Square T-by-T ordinary or
             ensemble accuracy matrix in a consistent scale, normally [0, 1].
             Future-task and otherwise unavailable cells should be NaN. Empty input
-            is supported. Values are converted to float64; shape is caller-owned.
+            is supported. Values are converted to float64; a nonempty matrix
+            must have exactly one row and column per task.
 
     Returns:
-        dict[str, float]: ``final_average_accuracy``,
+        metrics (dict[str, float]): ``final_average_accuracy``,
         ``average_incremental_accuracy``, ``average_forgetting``, and
         ``backward_transfer``. Means and prior maxima ignore NaN observations;
         differences missing either operand remain unavailable. Empty input returns
@@ -157,10 +158,15 @@ def continual_metrics(
         there are no old tasks; its accuracy summaries can still be NaN.
 
     Raises:
-        ValueError: If the input cannot be converted to a rectangular numeric array.
-        IndexError: If nonempty input lacks the expected task rows or columns."""
+        ValueError: If the input cannot form a numeric square matrix. Empty
+            input must be ``[]`` or have shape ``(0, 0)``."""
 
     matrix = np.asarray(accuracy_matrix, dtype="float64")
+    # A rectangular matrix can silently drop task scores or misalign differences.
+    if matrix.shape not in ((0,), (0, 0)) and (
+        matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]
+    ):
+        raise ValueError("accuracy_matrix must be a square task-by-task matrix.")
     task_num = len(matrix)
     # An empty task stream has no defined continual accuracy or transfer metrics.
     if task_num == 0:

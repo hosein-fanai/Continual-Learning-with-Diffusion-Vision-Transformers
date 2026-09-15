@@ -253,13 +253,24 @@ def resolve_continual_schedule(
 
     Raises:
         ValueError: If the schedule is empty, duplicated, inconsistent, out of
-            range, or uses an unsupported ordering mode.
+            range, uses noninteger/bool class IDs or counts, or uses an
+            unsupported ordering mode. Discrete schedule values are never
+            rounded or truncated.
     """
 
     class_order_mode = str(class_order_mode).lower()
     task_order_mode = str(task_order_mode).lower()
     # Keep an omitted seed unset; normalize an explicit seed to an integer.
     seed = None if seed is None else int(seed)
+    # Class identities and task widths are discrete experimental choices.
+    for name, value in (
+        ("class_num", class_num),
+        ("available_class_num", available_class_num),
+        ("task_size", task_size),
+    ):
+        # Reject fractional/string counts before integer normalization.
+        if value is not None and (isinstance(value, bool) or not isinstance(value, Integral)):
+            raise ValueError(f"{name} must be an integer.")
     task_size = int(task_size)
     # Reject task widths that cannot produce nonempty class groups.
     if task_size < 1:
@@ -314,6 +325,15 @@ def resolve_continual_schedule(
             )
         resolved_order = list(range(resolved_count))
 
+    # Validate before int conversion so an ID such as 1.9 cannot become class 1.
+    if any(isinstance(label, bool) or not isinstance(label, Integral) for label in resolved_order):
+        raise ValueError("Continual class IDs must be integers.")
+    # Validate redundant group IDs even when Python numeric equality hides a type mismatch.
+    if normalized_groups is not None and any(
+        isinstance(label, bool) or not isinstance(label, Integral)
+        for group in normalized_groups for label in group
+    ):
+        raise ValueError("Continual task-group class IDs must be integers.")
     resolved_order = [int(label) for label in resolved_order]
     # Normalize class IDs within explicitly supplied groups as well.
     if normalized_groups is not None:
@@ -1804,7 +1824,7 @@ class OptimizerConfig:
         schedule (str): 'cosine' uses cosine decay over decay_steps; 'constant' or None
             keeps initial_learning_rate unchanged. Defaults to ``'cosine'``.
         weight_decay (float | None): AdamW-style weight decay; None omits an explicit decay
-            setting. Nonzero values require name='adamw' under the supported TensorFlow 2.10
+            setting. Nonzero values require name='adamw' in the shared optimizer
             optimizer API. Defaults to ``None``.
         momentum (float): Momentum used by RMSprop/SGD. Defaults to ``0.0``.
         clipnorm (float | None): Optional positive finite norm used to clip each variable's

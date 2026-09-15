@@ -686,7 +686,9 @@ class ContinualIntegrationTests(unittest.TestCase):
                 generative_model=self._generator(noise_distillation=True),
                 generative_model_kwargs={"train_num": -1, "samples_per_class": 1},
                 use_distillation=True, mechanistic_metrics=True,
-                batch_size=4, epochs=1, callback_patience=0,
+                # Revisit old-class rows after a student update: the initial
+                # student and teacher agree exactly before task-two training.
+                batch_size=4, epochs=2, callback_patience=0,
                 plot_results=False, verbose=0, seed=31,
             )
         diagnostics = details["task_mechanistic_metrics"][1]
@@ -814,7 +816,19 @@ class ContinualIntegrationTests(unittest.TestCase):
             fit_count = 0
 
             def interrupted_fit(model: tf.keras.Model, *args: object, **kwargs: object) -> object:
-                """Inject an external failure without changing experiment callbacks."""
+                """Inject an external failure without changing experiment callbacks.
+
+                Args:
+                    model (tf.keras.Model): Classifier whose real fit is intercepted.
+                    *args (object): Positional fit arguments.
+                    **kwargs (object): Keyword fit arguments passed through unchanged.
+
+                Returns:
+                    history (object): Actual Keras fit history on uninterrupted calls.
+
+                Raises:
+                    RuntimeError: On the second fit call, before its update starts.
+                """
                 nonlocal fit_count
                 fit_count += 1
                 # The first committed task remains durable while the next fit is interrupted.
@@ -848,8 +862,8 @@ class ContinualIntegrationTests(unittest.TestCase):
                 int(actual_optimizer.iterations.numpy()),
             )
             for expected, actual in zip(
-                expected_optimizer.variables(),
-                actual_optimizer.variables(),
+                expected_optimizer.variables,
+                actual_optimizer.variables,
             ):
                 np.testing.assert_allclose(
                     expected.numpy(), actual.numpy(), rtol=0., atol=0.
