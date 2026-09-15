@@ -1,0 +1,71 @@
+# Reduced TensorFlow 2.20 recipe. See ../HYPERPARAMETER_RATIONALE.md; validate in notebook 00.
+base_config: ../../../semantic_consolidation/configs/common_v1.yaml
+common:
+  dataset:
+    name: cifar10
+    batch_size: 64
+  model:
+    kwargs:
+      dim: 128
+      depth: 4
+    wrapper_kwargs:
+      noise_loss_coef: 1.0
+      clf_loss_coef: 1.0
+      noise_distil_loss_coef: 0.1
+      clf_distil_loss_coef: 0.1
+      clf_distil_type: soft
+      clf_distil_temperature: 2.0
+      clf_distil_scope: replay_only
+      test_steps: 50
+      test_eta: 0.0
+      test_cfg_scale: 3.0
+  optimizer:
+    name: adam  # Native Keras 3; explicit conservative zero-decay recipe.
+    initial_learning_rate: 0.0002
+    weight_decay: 0.0
+    schedule: constant
+  training:
+    epochs: 40
+    verbose: 1
+    # Seeded runs; nondeterministic GPU kernels are allowed.
+    deterministic_ops: false
+    results_path: ./results/thesis_route_one/development/cifar10
+  continually_learn:
+    save_task_checkpoints: true  # Dedicated per-stream locators are set at runtime.
+    class_num: 10
+    class_order: null
+    task_size: 2
+    replay_current_examples: null  # All permitted current training rows (validation excluded).
+    replay_old_examples: 2048  # Fixed total, independent of the old-class count.
+    # Use held-out route observations instead of revisiting old training rows.
+    mechanistic_metrics: false
+route:
+  checkpoint_interval: 200  # Updates between recovery commits; retain latest two phase snapshots.
+  condition: learned
+  acquisition_steps: 200  # 100 optimizer updates per new gate.
+  consolidation_steps: 400  # At least 40 visits per retained gate at the final task.
+  batch_size: 32
+  learning_rate: 0.0003  # Existing shared Adam rate for both semantic phases; decay is zero.
+  temperature: 0.2  # Local instance-InfoNCE choice, not a TMCL temperature.
+  alignment_weight: 0.1
+  ce_weight: 1.0
+  orthogonality_weight: 1.0
+  gain_limit: 1.0
+  bias_limit: 1.0
+  modulation_init_std: 0.02
+  acquisition_noise_level: 0
+  ce_noise_level: 0
+  noise_levels: [0]
+  reliability: uniform
+  consolidation_scope: semantic
+  probe_batches: 2
+  probe_max_gates: 4
+  experimental:
+    enabled: true
+    probe_per_class: 8
+    generation_per_class: 4
+    batch_size: 32
+    ece_bins: 15
+    feature_extractor: fixed_pixels
+    # Native joint histories already supply curves; avoid extra full-validation passes.
+    learning_curves: false

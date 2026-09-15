@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "retrieved_date": "2026-09-14",
+  "search_scope": "The two requested manuscripts, official launchers/configurations/loss/optimizer/evaluation code, and declared JDCL diffusion dependency; no broad hyperparameter search.",
+  "papers": [
+    {
+      "name": "JDCL",
+      "version": "2411.08224v3",
+      "date": "2025-10-06",
+      "url": "https://arxiv.org/html/2411.08224v3",
+      "sections": [
+        "methods",
+        "Appendix B"
+      ]
+    },
+    {
+      "name": "TMCL",
+      "version": "2505.14125v3",
+      "date": "2026-01-26",
+      "url": "https://arxiv.org/html/2505.14125v3",
+      "sections": [
+        "methods",
+        "Appendix A",
+        "Appendix E"
+      ]
+    }
+  ],
+  "repositories": [
+    {
+      "name": "jdcl",
+      "repository": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space",
+      "commit": "ffa5303ef156c69505ff358982529d410621b5a3",
+      "commit_date": "2024-11-21T20:49:18Z",
+      "inspected_files": [
+        {
+          "path": ".gitmodules",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/.gitmodules",
+          "sha256": "e368ded96ddf78baab093b3608e8e487127b540c66e2f2256fb3b71e7e262fae"
+        },
+        {
+          "path": "cifar10.sh",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/cifar10.sh",
+          "sha256": "b80d4db5c9192d8c104df35d67b609f7700f728584094e237cffb3a89bcfbc76"
+        },
+        {
+          "path": "cifar100_10t.sh",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/cifar100_10t.sh",
+          "sha256": "7270e66562c68fd12e8043f47a0145f250d39cdc56e6f3c940ef9b7d443260b8"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t2.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t2.yaml",
+          "sha256": "38f8fae2bb87e0c81d232175cc66f1abb176c9666676375a116205537bdda4cb"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t3.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t3.yaml",
+          "sha256": "895dfa919c666cbac2ea60c79aa207d2c496055fc3b88baf8fd9cf974c247420"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t4.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t4.yaml",
+          "sha256": "1f8927cbbbc100cd8be87e5e3901b8d8fd587e2beded8cf3c89fa5a72e2adc1e"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t5.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_kl_t5.yaml",
+          "sha256": "57e81973bf74512985503cd0f1af54a33ef4bf2c390d84fd37cb164f330f4f00"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_sigle_task.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar10/cifar10_sigle_task.yaml",
+          "sha256": "bd6795a685d095d0c591eb97ef53949738eb5a66d02d5db706e24e934b328de2"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t10.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t10.yaml",
+          "sha256": "fd4be68efd4016ecba8dd4238ef68977964d826a5f0a1114a61e2fde2df1db38"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t2.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t2.yaml",
+          "sha256": "ab5679d3d7e8db06c4301be5ffa8cb7653c3280f07df884e6bcb0011a2a962b8"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t3.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t3.yaml",
+          "sha256": "a85e60b97e74296ffe2e6b8a4a5579515dceb49869bd7b7d8376f1ad67da311b"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t4.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t4.yaml",
+          "sha256": "ac8fe1cf478e7bab28b1ae345e74025c0854ee055b94adf380f3bdf6b2ff3535"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t5.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t5.yaml",
+          "sha256": "ebbb590552e086783221551d55d32fcdc80244d5a74228d16ea9a8d37e26e37d"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t6.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t6.yaml",
+          "sha256": "bcc6fe8a82b706bbb53b26f91ec1bf876e7291206e57774dee2319a2f72dfb7b"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t7.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t7.yaml",
+          "sha256": "aca79ba05ba97a275c6f50018432bb934cc51ebbeeb4d6c131c8ee651a12b15d"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t8.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t8.yaml",
+          "sha256": "47381a71945777f9af1aa466c5de22accf0ca65c4e4d5672674768f476564baa"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t9.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_kl_t9.yaml",
+          "sha256": "b0fb5f0f079da63405e304a7626a95a9b0142b5b0968c8de299546ea7a2f6b25"
+        },
+        {
+          "path": "configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_sigle_task.yaml",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/configs/standard_diffusion/continual_learning/joint_diffusion_pooling/cifar100/10_tasks/cifar100_sigle_task.yaml",
+          "sha256": "262ceee1b098a124027493d9424a5c1bea3792b091a3f278f5d7fe7dd8f6fdca"
+        },
+        {
+          "path": "models/__init__.py",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/models/__init__.py",
+          "sha256": "61389c26e603672cf7080c6ea2600d85a6ef57f512cc93418b64219ca4e95cac"
+        },
+        {
+          "path": "models/standard_diffusion/joint_diffusion.py",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/models/standard_diffusion/joint_diffusion.py",
+          "sha256": "7641d203c5c7d6e712b353f78860d962a432226874b8b8ada3fb10ff3fcd5e61"
+        },
+        {
+          "path": "requirements.txt",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/requirements.txt",
+          "sha256": "3650e8d75047cbd0eb2203d936e851c7c3f4b7fb130fa17b61ce4f3b6690ed23"
+        },
+        {
+          "path": "torch_adamw_v2.4.1.py",
+          "url": "https://github.com/pytorch/pytorch/blob/v2.4.1/torch/optim/adamw.py",
+          "sha256": "fe1a551e4cadce2b0ecbdb74e2c7827fdc52c51bfb6fb0a11f0aee7e792596b6"
+        },
+        {
+          "path": "train_joint_diffusion_cl.py",
+          "url": "https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/blob/ffa5303ef156c69505ff358982529d410621b5a3/train_joint_diffusion_cl.py",
+          "sha256": "3ea76f090dcc1c5a3f04c19bd296ff1cfb553bf24b50e5d3a60df204d14674a9"
+        }
+      ]
+    },
+    {
+      "name": "tmcl",
+      "repository": "https://github.com/Dendritic-Learning-Group/tmcl",
+      "commit": "2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b",
+      "commit_date": "2025-10-23T10:05:50Z",
+      "inspected_files": [
+        {
+          "path": "represent/neural_collapse.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/represent/neural_collapse.py",
+          "sha256": "a9340e7a38f3dcf670a2ff2eb0b35f1f221e1ff9ad1b6763a6a30998c1dc1d34"
+        },
+        {
+          "path": "slurm/submit_cifar100_s5.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/slurm/submit_cifar100_s5.py",
+          "sha256": "c82f0b0e1fd84e6fec2871c362e507311dd0a31501892ecaf6c3d71f96c81f36"
+        },
+        {
+          "path": "tmcl/config_tmcl.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/config_tmcl.py",
+          "sha256": "7b54a49787bcc21fb2653aca589eefee26429ba07d13100b32c1475aafc4eff7"
+        },
+        {
+          "path": "tmcl/config_tmcl_dali.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/config_tmcl_dali.py",
+          "sha256": "aea72143fbb004dc8097879ee5a92c124036d26e65b30486111468851ab76251"
+        },
+        {
+          "path": "tmcl/data_setups.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/data_setups.py",
+          "sha256": "2e3db16461907fbf9afce0ffdcdef6a07a8b1563d46ad85f2f0480d0b787f558"
+        },
+        {
+          "path": "tmcl/eval_dali.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/eval_dali.py",
+          "sha256": "dabb6e0799777d78de2592a04aa4a8218c317d882a9c0e5f2c91e7a8446551cd"
+        },
+        {
+          "path": "tmcl/main_tmcl.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/main_tmcl.py",
+          "sha256": "15cd9545ce3c171a5ec3849eb19d34d89ca75e62900cad84cbd9081350edaee8"
+        },
+        {
+          "path": "tmcl/nn/losses/contrastive_opl.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/nn/losses/contrastive_opl.py",
+          "sha256": "e9542e542dd7f1f18129ddddd07a4312e5db9fb9f57982066dfd32ec603466cb"
+        },
+        {
+          "path": "tmcl/nn/losses/mv_barlow.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/nn/losses/mv_barlow.py",
+          "sha256": "8af2795fee9a2ed1370c303714842fc4e0afb6dc0604496f817c974a13eba550"
+        },
+        {
+          "path": "tmcl/nn/losses/supcon.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/nn/losses/supcon.py",
+          "sha256": "40f3bf1317d768fd5a95e338994e9d0362a2a94c03abeea99df6c856ecfb97a7"
+        },
+        {
+          "path": "tmcl/optim/__init__.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/optim/__init__.py",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "tmcl/optim/warmup_cosine.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/optim/warmup_cosine.py",
+          "sha256": "8d3efc45c663cc1e7ad03b9d7b89fd6d1a0945b63aa9345212db80ba3575a986"
+        },
+        {
+          "path": "tmcl/nn/modulations/build.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/nn/modulations/build.py",
+          "sha256": "c1f28095c6de4f3ef2df4e98b0efb4ac4e4448dce84153c89e0912c6f7784c1f"
+        },
+        {
+          "path": "tmcl/nn/modulations/task_modulations.py",
+          "url": "https://github.com/Dendritic-Learning-Group/tmcl/blob/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b/tmcl/nn/modulations/task_modulations.py",
+          "sha256": "99e0064682615f3204818a85822219c42810410e712d51b83df42d0208e66f9f"
+        }
+      ]
+    },
+    {
+      "name": "jdcl_dependency",
+      "repository": "https://github.com/pskiers/latent-diffusion",
+      "commit": "e544c57f8537e60515fc938d1c337774aa934717",
+      "commit_date": "2024-09-22T20:23:57Z",
+      "inspected_files": [
+        {
+          "path": "ldm/models/diffusion/ddpm.py",
+          "url": "https://github.com/pskiers/latent-diffusion/blob/e544c57f8537e60515fc938d1c337774aa934717/ldm/models/diffusion/ddpm.py",
+          "sha256": "f204729ebdeb45d11b93706b494acc24b511f89ddbf2c1cf1b934dbfc39a18ef"
+        },
+        {
+          "path": "ldm/modules/diffusionmodules/util.py",
+          "url": "https://github.com/pskiers/latent-diffusion/blob/e544c57f8537e60515fc938d1c337774aa934717/ldm/modules/diffusionmodules/util.py",
+          "sha256": "5dd19ed7536cc9095ab5d3ca4c09bde5283c0779207a1aa019c05565a2502dca"
+        }
+      ]
+    }
+  ],
+  "guide": {
+    "path": "Route_One_Thesis_Experiment_Guide.docx",
+    "sha256": "953dfb9bf213736d9ecc76513028cb395563139eb5c57337a1973f3586d5ef0c",
+    "inspection": "Direct Word XML paragraph/table text extraction."
+  },
+  "limitations": [
+    "JDCL latent-diffusion dependency is declared as moving main: inspected current dependency commit does not establish historical published dependency state.",
+    "No official experiment run logs retrieved to reconcile paper/launcher differences.",
+    "Local settings adapt supported TensorFlow objectives; useful learning/convergence/runtime need real-data development."
+  ],
+  "reviewed_date": "2026-09-15"
+}
