@@ -134,6 +134,7 @@ class Downsample(BaseEmbedding):
             **kwargs
         )
         self._save_init_args(locals())
+        # Disable XLA when positional resizing needs an unsupported kernel.
         if self.pos_embed_type is not None and self.pos_interpolation_method not in ("nearest", "bilinear"):
             self.supports_jit = False
         require(

@@ -135,10 +135,12 @@ def copy_network_weights_by_layer(
             source_variables = source_layer.variables
             target_variables = target_layer.variables
 
+            # Class expansion must keep the same semantic variable correspondence.
             if len(source_variables) != len(target_variables):
                 raise ValueError("Class growth must preserve the layer variable count.")
 
             for source, target in zip(source_variables, target_variables):
+                # Copy prefixes only when dimensions expand without changing rank.
                 if len(source.shape) != len(target.shape) or any(
                     old > new for old, new in zip(source.shape, target.shape)
                 ):
@@ -154,6 +156,7 @@ def copy_network_weights_by_layer(
                 f"{source_layer.name!r}/{target_layer.name!r}: "
                 f"{source_shapes} != {target_shapes}."
             )
+        # Copy all weights directly when matched layer shapes are unchanged.
         else:
             target_layer.set_weights(source_layer.get_weights())
 
@@ -163,6 +166,7 @@ def copy_network_weights_by_layer(
     source_weight_ids = {id(weight) for weight in source_network.weights}
     target_weight_ids = {id(weight) for weight in target_network.weights}
 
+    # Reject incomplete matching instead of silently dropping model state.
     if not source_weight_ids <= copied_source_ids \
     or not target_weight_ids <= copied_target_ids:
         raise ValueError(

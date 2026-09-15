@@ -80,6 +80,7 @@ class AutoencoderInputValidationTests(unittest.TestCase):
                 self.model.sample(labels=[0], samples_per_label=value)
             with self.subTest(label=value), self.assertRaises(ValueError):
                 self.model.sample(labels=[value], samples_per_label=1)
+        # Reject fractional sample counts even when no labels are requested.
         with self.assertRaises(ValueError):
             self.model.sample(labels=[], samples_per_label=1.5)
         samples, labels = self.model.sample(
@@ -107,5 +108,6 @@ class AutoencoderInputValidationTests(unittest.TestCase):
                 VariationalAutoencoder(compile=False, **options)
 
 
+# Run these validation regressions when invoked directly.
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,7 @@ class DropPath(ArgumentSaverLayer):
         self.seed = None if self.seed is None else int(self.seed)
         self.random_stream = SeedStream(self.seed, name=f"{self.name}__path_random")
 
+        # Keep survival probability positive and dropout probability nonnegative.
         if not 0. <= self.drop_prob < 1.:
             raise ValueError(
                 "drop_prob must satisfy 0.0 <= drop_prob < 1.0."

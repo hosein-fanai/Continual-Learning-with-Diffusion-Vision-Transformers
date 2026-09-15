@@ -49,6 +49,7 @@ def _integer_count(value: int, name: str, minimum: int = 0) -> int:
         count = index(value)
     except TypeError as error:
         raise ValueError(f"{name} must be an integer >= {minimum}.") from error
+    # Reject Boolean pseudo-counts and values below the permitted minimum.
     if isinstance(value, (bool, np.bool_)) or count < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}.")
     return count
@@ -872,6 +873,7 @@ class VariationalAutoencoder(models.Model):
         Raises:
             tf.errors.InvalidArgumentError: If a weight is nonfinite or negative.
         """
+        # An omitted sample-weight argument leaves the default reduction unchanged.
         if sample_weight is None:
             return None
         weights = tf.cast(sample_weight, self.dtype_policy.variable_dtype)
@@ -896,7 +898,9 @@ class VariationalAutoencoder(models.Model):
             tf.errors.InvalidArgumentError: If supplied weights are nonfinite
                 or negative; lazy inputs raise when the batch is consumed.
         """
+        # Validate weights lazily on re-iterable dataset inputs.
         if isinstance(data, tf.data.Dataset):
+            # Only three-element dataset batches carry explicit sample weights.
             if isinstance(data.element_spec, tuple) and len(data.element_spec) == 3:
                 def check_batch(
                     x: object, y: object, sample_weight: tf.Tensor
@@ -916,6 +920,7 @@ class VariationalAutoencoder(models.Model):
                     """
                     return x, y, self._checked_sample_weights(sample_weight)
                 return data.map(check_batch)
+        # Wrap Python generators so each yielded batch is checked before model execution.
         elif isinstance(data, GeneratorType):
             def checked_batches() -> Iterator[object]:
                 """Yield the source generator's batches with validated weights.
@@ -929,6 +934,7 @@ class VariationalAutoencoder(models.Model):
                 for batch in data:
                     yield self._checked_weight_data(batch)
             return checked_batches()
+        # Validate the third element of an explicit feature-label-weight tuple.
         elif isinstance(data, (tuple, list)) and len(data) == 3:
             self._checked_sample_weights(data[2])
         return data
@@ -957,10 +963,13 @@ class VariationalAutoencoder(models.Model):
         arguments = bound.arguments
         self._checked_sample_weights(arguments.get("sample_weight"))
         class_weight = arguments.get("class_weight")
+        # Class-level weights obey the same finite, nonnegative contract.
         if class_weight is not None:
             self._checked_sample_weights(list(class_weight.values()))
+        # Wrap streamed training inputs before Keras builds compiled batch functions.
         if "x" in arguments and isinstance(arguments["x"], (tf.data.Dataset, GeneratorType)):
             arguments["x"] = self._checked_weight_data(arguments["x"])
+        # Validation inputs need the same checks as training inputs.
         if "validation_data" in arguments:
             arguments["validation_data"] = self._checked_weight_data(arguments["validation_data"])
         return method(*bound.args, **bound.kwargs)
@@ -1042,6 +1051,7 @@ class VariationalAutoencoder(models.Model):
             container (object | None): Keras' compiled metric container, or
                 ``None`` before metrics are configured. Loss trackers are excluded.
         """
+        # Native Keras exposes the compiled metric container through this attribute.
         if hasattr(self, "_compile_metrics"):
             return self._compile_metrics
         return self.compiled_metrics
@@ -1077,9 +1087,11 @@ class VariationalAutoencoder(models.Model):
             tf.errors.InvalidArgumentError: If shapes are incompatible.
         """
         container = self._reconstruction_metric_container()
+        # No configured reconstruction metrics produce an empty result mapping.
         if container is None:
             return {}
         container.update_state(x, reconstruction, sample_weight=sample_weight)
+        # Native metric containers already return their complete named results.
         if hasattr(container, "result"):
             return container.result()
         return {metric.name: metric.result() for metric in container.metrics}
@@ -1534,6 +1546,7 @@ class VariationalAutoencoder(models.Model):
                 steps_per_epoch, "steps_per_epoch", minimum=1
             )
         train_num = _integer_count(train_num, "train_num", minimum=-1)
+        # Zero requested rows cannot produce a valid VAE training set.
         if train_num == 0:
             raise ValueError("train_num must be -1 or a positive integer.")
         epochs = _integer_count(epochs, "epochs", minimum=1)
@@ -1590,6 +1603,7 @@ class VariationalAutoencoder(models.Model):
 
         # Construct default stopping once; explicit callback objects keep their settings.
         if callbacks_list is None:
+            # An empty monitor selects the available classifier or reconstruction metric.
             if callbacks_monitor == "":
                 callbacks_monitor = "decoder_accuracy" if clf is not None else (
                     "val_loss" if validation_data is not None else "loss"
@@ -1603,6 +1617,7 @@ class VariationalAutoencoder(models.Model):
                 mode=mode,
                 verbose=verbose
             )
+        # A supplied classifier enables generated-label accuracy reporting.
         if clf is not None:
             callbacks_list = [DecoderAccuracy(classifier=clf, seed=seed), *callbacks_list]
 

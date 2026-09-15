@@ -1315,7 +1315,14 @@ def _run_continual_tasks(
         callback_monitor_mode (str | None): min/max comparison mode override; None follows
             the phase's accuracy/loss default. Defaults to ``None``.
         save_task_checkpoints (bool): Whether to commit state after each completed task when
-            checkpoint_dir is available. Defaults to ``False``.
+            checkpoint_dir is available. A generator with additional Python task
+            state may implement all three hooks: get_task_checkpoint_config()
+            returns an immutable behavior dict, get_task_checkpoint_state()
+            returns its current serializable state dict, and
+            restore_task_checkpoint_state(state, completed_tasks) restores that
+            state after TensorFlow variables and before random streams. These
+            hooks are called only for checkpointed or resumed runs. Defaults
+            to ``False``.
         checkpoint_dir (str | None): Task-checkpoint root; None is inferred from resume_from
             when resuming and otherwise supplies no save destination. Defaults to ``None``.
         resume_from (str | None): Checkpoint root or committed task directory; None starts a
@@ -1344,7 +1351,7 @@ def _run_continual_tasks(
             Defaults to ``None``.
 
     Returns:
-        list[float] | dict[str, object]: With return_details=False, the selected per-task
+        result (list[float] | dict[str, object]): With return_details=False, the selected per-task
         accuracy trajectory. Otherwise a mapping containing accuracies,
         ordinary/validation/ensemble accuracy matrices, phase histories/evaluations,
         resource/mechanistic diagnostics, original schedule, task seeds, continual metrics,
@@ -1358,8 +1365,10 @@ def _run_continual_tasks(
     Raises:
         ValueError: Schedule, baseline, split, teacher, replay, curriculum, or
             checkpoint compatibility requirements are violated.
-        TypeError: The supplied generator is not a supported model family. Exception:
-        Dataset, Keras training, callback, artifact, and checkpoint errors
+        TypeError: The supplied generator is not a supported model family, its
+            optional task-checkpoint protocol lacks three callable hooks, or a
+            configuration hook, state hook, or saved model task state is not a dict.
+        Exception: Dataset, Keras training, callback, artifact, and checkpoint errors
             propagate from their owning APIs.
     """
 
@@ -2337,7 +2346,8 @@ def _run_continual_tasks(
             "experiment_run_id": experiment_run_id,
         },
         "models": {
-            "template_artifact": _artifact_recovery_descriptor(tuned_model_path),
+            # Attached heads use the live model descriptors below, never the standalone template.
+            "template_artifact": None if use_diffusion_classifier else _artifact_recovery_descriptor(tuned_model_path),
             "classifier": _model_topology_descriptor(prev_model),
             "classifier_initial_weights": _model_weight_descriptor(prev_model),
             "replay": generator_topology_descriptor,
@@ -2348,19 +2358,41 @@ def _run_continual_tasks(
             "initial_teacher_weights": _model_weight_descriptor(teacher_network),
         },
     }
+    model_task_config = None
+    model_task_hooks = ()
+    # Ordinary training does not inspect or snapshot optional Python recovery state.
+    if save_task_checkpoints or resume_from is not None:
+        model_task_hooks = tuple(getattr(generative_model, name, None) for name in (
+            "get_task_checkpoint_config", "get_task_checkpoint_state", "restore_task_checkpoint_state",
+        ))
+        # A partially implemented protocol must not silently lose model-specific state.
+        if any(hook is not None for hook in model_task_hooks):
+            # All three hooks are required to authenticate, save, and restore one owner.
+            if not all(callable(hook) for hook in model_task_hooks):
+                raise TypeError("Model task recovery requires all three callable checkpoint hooks.")
+            config = model_task_hooks[0]()
+            # Configuration is a concrete behavior mapping, separate from evolving state.
+            if not isinstance(config, dict):
+                raise TypeError("get_task_checkpoint_config must return a dict.")
+            model_task_config = _recovery_descriptor(config)
+            run_descriptor["model_task_config"] = model_task_config
+        # Models without the optional protocol retain their existing checkpoint identity.
+        else:
+            model_task_hooks = ()
     run_fingerprint = fingerprint_state(run_descriptor)
 
-    def _validate_callback_identity() -> None:
-        """Reject changed callback policy before fitting or committing recovery state.
+    def _validate_recovery_identity() -> None:
+        """Reject changed callback or model task policy before fitting or checkpointing.
 
         Returns:
-            result (None): Current callback behavior matches the frozen run
+            result (None): Current callback and optional model behavior match the frozen run
                 descriptor, or checkpointing and recovery are both disabled.
                 Persistent runtime state is allowed to evolve independently.
 
         Raises:
-            ValueError: If a strict callback changed its behavior declaration
+            ValueError: If a callback or model changed its behavior declaration
                 or no longer exposes a supported recovery contract.
+            TypeError: If a model configuration hook no longer returns a dict.
         """
         # Ordinary runs do not promise authenticated callback recovery.
         if not (save_task_checkpoints or resume_from is not None):
@@ -2369,6 +2401,15 @@ def _run_continual_tasks(
             # Persistent runtime state is separate from this frozen behavior snapshot.
             if callback_recovery_descriptor(list(selected or []), strict=True) != run_descriptor["training"][key]:
                 raise ValueError("Callback behavior changed after the recovery identity was frozen.")
+        # Additional Python state may evolve, but its defining configuration remains fixed.
+        if model_task_hooks:
+            config = model_task_hooks[0]()
+            # Retain the declared mapping contract on subsequent hook invocations.
+            if not isinstance(config, dict):
+                raise TypeError("get_task_checkpoint_config must return a dict.")
+            # Compare canonical fingerprints so concrete array-valued configuration is safe.
+            if fingerprint_state(_recovery_descriptor(config)) != fingerprint_state(model_task_config):
+                raise ValueError("Model task behavior changed after the recovery identity was frozen.")
 
     task_state = {
         "accuracies": [],
@@ -2419,6 +2460,12 @@ def _run_continual_tasks(
             expected_fingerprint=run_fingerprint,
         )
         saved = recovered.experiment_state
+        # Validate ownership before restoring any TensorFlow variables into the caller's model.
+        if bool(model_task_hooks) != ("model_task_state" in saved):
+            raise ValueError("Checkpoint model task state does not match the configured recovery hooks.")
+        # Owner state must remain a concrete mapping accepted by the recovery serializer.
+        if model_task_hooks and not isinstance(saved["model_task_state"], dict):
+            raise TypeError("Checkpoint model_task_state must be a dict.")
         saved_run_descriptor = saved.get("run_descriptor")
         # Reject missing or changed run descriptors before restoring checkpoint state.
         if saved_run_descriptor is None or fingerprint_state(
@@ -2540,6 +2587,9 @@ def _run_continual_tasks(
             expected_fingerprint=run_fingerprint,
             assert_consumed=True
         )
+        # Recreate model-owned Python state before reinstating the saved random streams.
+        if model_task_hooks:
+            model_task_hooks[2](saved["model_task_state"], completed_tasks=start_task_index)
         restore_rng_state(recovered.rng_state, numpy_generator=rng)
         restore_callback_recovery_state(list(callbacks_list or []), saved.get("callback_states", []))
         restore_callback_recovery_state(list(generative_callbacks_list or []), saved.get("generative_callback_states", []))
@@ -2563,7 +2613,7 @@ def _run_continual_tasks(
         validate_checkpoint_destination(checkpoint_dir, start_task_index, len(internal_task_groups))
 
     for task_index in range(start_task_index, len(internal_task_groups)):
-        _validate_callback_identity()
+        _validate_recovery_identity()
         task_wall_start = time.perf_counter()
         # Record buffered, generated, or absent replay according to the active source.
         task_resource = {
@@ -3585,7 +3635,7 @@ def _run_continual_tasks(
 
         # Persist task-boundary state when checkpointing is enabled and has a destination.
         if save_task_checkpoints and checkpoint_dir is not None:
-            _validate_callback_identity()
+            _validate_recovery_identity()
             # Materialize every optimizer slot at the save boundary. This
             # makes the checkpoint object graph complete even when a phase did
             # not happen to receive gradients in the just-finished task.
@@ -3606,6 +3656,13 @@ def _run_continual_tasks(
             checkpoint_state["callback_states"] = callback_recovery_state(list(callbacks_list or []))
             checkpoint_state["generative_callback_states"] = callback_recovery_state(list(generative_callbacks_list or []))
             checkpoint_state["optimizer_learning_rates"] = optimizer_learning_rate_state(checkpoint_trackables)
+            # Commit additional model-owned Python state with the same atomic task checkpoint.
+            if model_task_hooks:
+                model_task_state = model_task_hooks[1]()
+                # Reject opaque runtime objects instead of producing an incomplete checkpoint.
+                if not isinstance(model_task_state, dict):
+                    raise TypeError("get_task_checkpoint_state must return a dict.")
+                checkpoint_state["model_task_state"] = model_task_state
             # VAE vocabulary and task seeds are runtime metadata, separate from initial config.
             if isinstance(generative_model, VariationalAutoencoder):
                 checkpoint_state["vae_task_state"] = {

@@ -107,6 +107,7 @@ class PatchEmbedding(BaseEmbedding):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
+        # Patch positions require a known spatial token grid.
         if self.grid_size is None:
             raise ValueError("PatchEmbedding requires grid_size.")
 

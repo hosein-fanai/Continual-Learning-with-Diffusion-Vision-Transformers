@@ -1310,6 +1310,7 @@ class UNet(ArgumentSaverModel):
         shapes = [value.shape for value in self.inputs]
         # Enter the Keras symbolic call boundary after marking this parent built.
         if call_model:
+            # Mark the parent built before symbolic calls can re-enter this method.
             if not self.built:
                 super().build(shapes)
             self.outputs = self(self.inputs)
@@ -1317,6 +1318,9 @@ class UNet(ArgumentSaverModel):
 
     def add_class(self, source_network: object | None = None) -> None:
         """Append one label embedding while preserving existing rows.
+
+        Built models reject this mutation without changing state. The wrapper
+        fit/continual-learning lifecycle reconstructs dynamic class vocabularies.
 
         Args:
             source_network (object | None): Optional already-expanded raw network whose new embedding
@@ -1327,12 +1331,20 @@ class UNet(ArgumentSaverModel):
             ``get_config()`` records the grown class width.
 
         Raises:
-            ValueError: If the network was initialized with a fixed class count.
+            ValueError: If the network was initialized with a fixed class count
+                or has already been built.
         """
 
         # Keep fixed-width construction on its established immutable path.
         if not self.dynamic_num_classes:
             raise ValueError("add_class requires num_classes=None at initialization.")
+
+        # Reject replacement layers before changing the saved class vocabulary.
+        if self.built:
+            raise ValueError(
+                "Post-build class growth is unsupported; use the wrapper "
+                "fit/continual-learning API."
+            )
 
         old_label_embedder = self.label_embedder
         old_weights = old_label_embedder.get_weights()
@@ -1377,11 +1389,20 @@ class UNet(ArgumentSaverModel):
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Append shape-preserving convolution or regularizer stages.
 
+        Nonempty requests require an unbuilt model. For built models, set the
+        complete depth at construction; ``None``, ``[]`` and lists of ``None``
+        remain no-ops.
+
         Args:
             depth_spec (object): One stage specification or a list of them.
 
         Returns:
-            dict[str, dict[str, int]]: Before, added, and after depth counts.
+            growth (dict[str, dict[str, int]]): Integer before, added, and after
+                depth counts for the network branch.
+
+        Raises:
+            ValueError: Nonempty growth targets a built model, or a requested
+                stage is incompatible with the existing architecture.
         """
 
         # Normalize one progressive U-Net stage or an explicit stage list.
@@ -1392,6 +1413,13 @@ class UNet(ArgumentSaverModel):
         # Leave the architecture unchanged for an empty growth request.
         if not specs:
             return {"network": {"before": before, "added": 0, "after": before}}
+
+        # Reject new tracked stages before changing any live model state.
+        if self.built:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
+            )
 
         normalized = [self._normalize_extra_spec(spec) for spec in specs]
         serializable_specs = []

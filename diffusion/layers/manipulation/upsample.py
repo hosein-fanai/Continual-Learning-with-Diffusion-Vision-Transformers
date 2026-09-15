@@ -129,8 +129,10 @@ class Upsample(BaseEmbedding):
 
         self.output_grid_size = self.grid_size * 2
         self.prefix_tokens_num = int(self.circumvent_tokens)
+        # Disable XLA when positional resizing needs an unsupported kernel.
         if self.pos_embed_type is not None and self.pos_interpolation_method not in ("nearest", "bilinear"):
             self.supports_jit = False
+        # Disable XLA when feature resizing needs an unsupported kernel.
         if self.scaling_method != "cnn_transpose" and self.scaling_interpolation_method not in ("nearest", "bilinear"):
             self.supports_jit = False
 

@@ -222,6 +222,7 @@ class VariationalReshaper(ArgumentSaver, models.Model):
         # Keras 2.10 Functional rejects a dtype argument; set its owning policy after graph setup.
         if hasattr(self, "_set_dtype_policy"):
             self._set_dtype_policy(policy)
+        # Use the public numeric-policy setter on native Keras 3.
         else:
             self.dtype_policy = policy
         self._save_init_args({

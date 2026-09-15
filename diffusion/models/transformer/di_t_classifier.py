@@ -397,6 +397,7 @@ class DiTClassifier(DiffusionTransformer):
             "use_cfg must be True for classification to work."
         )
 
+        # Predicted-image aggregation requires an image reconstruction head.
         if local_vars["aggregate_from_noises"]:
             require(
                 self.use_unpatchify, 
@@ -573,6 +574,7 @@ class DiTClassifier(DiffusionTransformer):
             check_values=False, 
         ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
 
+        # Validate explicit classifier regularizer settings before layer creation.
         if local_vars["clf_cls_token_regularizer_kwargs"] is not None:
             require(
                 local_vars["clf_cls_token_regularizer_kwargs"].get(
@@ -656,6 +658,7 @@ class DiTClassifier(DiffusionTransformer):
                 # independent from the main branch, caller objects, and defaults.
                 setattr(self, name, deepcopy(clf_part_value))
 
+        # Forced classifier width must have an explicit value.
         if self.clf_dim_forced:
             require(
                 self.clf_dim is not None, 
@@ -1706,6 +1709,10 @@ class DiTClassifier(DiffusionTransformer):
     ) -> dict[str, dict[str, int]]:
         """Append transformer and classifier depths through their own APIs.
 
+        Nonempty growth is unsupported after building and is rejected before
+        either branch changes. Empty branch requests remain no-ops. Configure
+        complete network and classifier depths in the constructor.
+
         An ordinary specification is delegated to ``DiffusionTransformer``
         and therefore grows only ``layers_dicts``. A targeted dictionary may
         contain ``network`` and ``classifier``. The network value uses the
@@ -1734,11 +1741,12 @@ class DiTClassifier(DiffusionTransformer):
                 [-1]}}, "vision_transformer_block"]}``.
 
         Returns:
-            dict[str, dict[str, int]]: ``before``, ``added``, and ``after`` depth
+            growth (dict[str, dict[str, int]]): ``before``, ``added``, and ``after`` depth
             counts for both branches.  An omitted targeted branch reports zero.
 
         Raises:
-            ValueError: If targeted keys/layer names are unknown, the classifier
+            ValueError: If nonempty growth targets a built model, targeted
+                keys/layer names are unknown, the classifier
                 terminal stage is not connector-only, or appended layers change
                 the feature width expected by an existing head.
         """
@@ -1777,6 +1785,15 @@ class DiTClassifier(DiffusionTransformer):
         if len(classifier_specs) == 0:
             growth = super().add_depths(network_spec)
 
+            # Preserve an empty request without refreshing tracked route metadata.
+            if growth["network"]["added"] == 0:
+                # Targeted calls report the unchanged classifier branch too.
+                if targeted:
+                    growth["classifier"] = {
+                        "before": old_clf_depth, "added": 0, "after": old_clf_depth
+                    }
+                return growth
+
             # Refresh the encoder limit after denoiser growth used by noise aggregation.
             if self.aggregate_from_noises:
                 self.set_max_encoder_num()
@@ -1805,6 +1822,13 @@ class DiTClassifier(DiffusionTransformer):
         if old_clf_depth == 0:
             raise ValueError(
                 "Classifier depth growth from clf_depth=0 is unsupported."
+            )
+
+        # Reject classifier state changes before planning either branch's layers.
+        if self.built:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
             )
 
         metadata_names = (
@@ -2107,6 +2131,9 @@ class DiTClassifier(DiffusionTransformer):
     def add_class(self, source_network: object | None = None) -> None:
         """Append one output to the classifier and its auxiliary heads.
 
+        Built models reject raw class mutation. Use wrapper fitting or the
+        continual learner for fixed-depth class reconstruction instead.
+
         Args:
             source_network (object | None): Optional already-expanded raw classifier. Its new kernel
                 column and bias initialize the new output in an EMA clone while the clone's old outputs
@@ -2115,6 +2142,9 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             None: The label vocabulary, regularizers, and final classifier
             layer grow by one.
+
+        Raises:
+            ValueError: The raw model is built or has a fixed class vocabulary.
         """
 
         old_layer = self.classifier.layers[-1]
@@ -2677,8 +2707,11 @@ def run_self_tests() -> dict[str, str]:
             "start": 0, "end": 1, "mlp_ratio": 1.5
         },
     )
-    dynamic_regularized.add_class()
-    dynamic_regularized.add_class()
+    from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
+    dynamic_wrapper = DiffusionClassifier(network=dynamic_regularized, use_ema=False, test_steps=2)
+    dynamic_wrapper._check_new_labels(y=[0, 1], verbose=False)
+    dynamic_regularized = dynamic_wrapper.network
     dynamic_outputs = dynamic_regularized(
         inputs,
         full_return=True,

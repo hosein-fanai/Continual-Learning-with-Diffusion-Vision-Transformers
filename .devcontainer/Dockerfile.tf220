@@ -1,5 +1,11 @@
 FROM tensorflow/tensorflow:2.20.0-gpu-jupyter
 
+# The base image includes PyGObject but omits its Cairo Python dependency.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libcairo2-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt /tmp/project-requirements.txt
 RUN /usr/bin/python -m pip install --no-cache-dir --timeout 120 --retries 5 \
-    -r /tmp/project-requirements.txt
+    pycairo==1.29.1 -r /tmp/project-requirements.txt
+RUN /usr/bin/python -m pip check

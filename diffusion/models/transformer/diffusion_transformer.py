@@ -1999,6 +1999,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             latent_dim = int(target_shape[-1] * latent_dim_ratio)
 
+            # Reject latent ratios that truncate to an empty feature vector.
             if latent_dim < 1:
                 raise ValueError(
                     "latent_dim_ratio creates an empty latent vector."
@@ -2300,6 +2301,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Derive the final token width required by image unpatchification.
         if self.use_unpatchify:
+            # Ensure the final token grid can reconstruct the configured image.
             if self._get_last_grid_size(
                 self.depth - 1, 
                 self.layers_dicts, 
@@ -2411,6 +2413,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 with symbolic execution after the Keras tracing fallback.
         """
 
+        # Mark the parent built before symbolic tracing can re-enter build.
         if not self.built:
             tf.keras.Model.build(
                 self, 
@@ -2421,6 +2424,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         try:
             return self.call(self.inputs)
         except ValueError as error:
+            # Only the KerasTensor boundary error warrants a tracing fallback.
             if "A KerasTensor cannot be used as input to a TensorFlow function" not in str(error):
                 raise
 
@@ -2721,6 +2725,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "time" in cond_type and "label" in cond_type
         ) else None
 
+        # Use the selected single condition when no combined embedding exists.
         if conds is None:
             conds = time_embeds if "time" in cond_type else \
                     label_embeds if "label" in cond_type else None
@@ -3095,6 +3100,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             features_list.append(x)
             regs_list.append(z)
+            # Collect Gaussian statistics only from enabled flattening bottlenecks.
             if x_mean is not None and is_flatten and bool(
                 self.reshaper_kwargs.get("add_kl", False)
             ):
@@ -3167,8 +3173,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             """
 
             for name, value in options.items():
+                # Restore routing dictionaries in nested encoder and decoder settings.
                 if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
                     restore_routes(value)
+                # Restore integer depth keys after JSON converted them to strings.
                 elif name.endswith("_ids_dict") and isinstance(value, dict):
                     options[name] = {
                         int(key) if isinstance(key, str)
@@ -3186,6 +3194,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         depth_spec: str | tuple | set | dict | list | None
     ) -> dict[str, dict[str, int]]:
         """Append transformer depths with the existing layer factories.
+
+        Built models reject nonempty growth before changing state. Configure
+        their complete depth at construction; ``None``, ``[]`` and lists of
+        ``None`` remain no-ops. The parser below is retained for unbuilt models.
 
         This method is the structural part of progressive-depth training. A
         string adds one depth containing that layer. A tuple or set combines
@@ -3214,11 +3226,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 {"vision_transformer_block": {"use_decoder": True}}]``.
 
         Returns:
-            dict[str, dict[str, int]]: ``{"network": {"before": old,
+            growth (dict[str, dict[str, int]]): ``{"network": {"before": old,
             "added": count, "after": new}}``.
 
         Raises:
-            ValueError: If a layer name is unknown or the appended sequence
+            ValueError: If nonempty growth is requested after building, a layer
+                name is unknown, or the appended sequence
                 changes the feature width or token grid expected by the
                 existing output head.
         """
@@ -3237,6 +3250,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                     "after": old_depth
                 }
             }
+
+        # Reject new tracked state before changing any constructor metadata.
+        if self.built:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
+            )
 
         metadata_names = (
             "connection_ids_dict", "cross_attention_ids_dict", 
@@ -3460,6 +3480,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
     def add_class(self, source_network: object | None = None) -> None:
         """Append one class to the label embedding and auxiliary heads.
 
+        Built models reject this raw mutation before changing their vocabulary.
+        Use the wrapper's ``fit`` or the continual learner to reconstruct a
+        fixed-depth dynamic-class model at task boundaries.
+
         Args:
             source_network (object | None): Optional already-expanded raw network. Its new embedding row
                 initializes the corresponding row in an EMA clone; existing EMA rows remain unchanged.
@@ -3470,13 +3494,21 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             configured regularizer outputs are updated in place.
 
         Raises:
-            ValueError: If the network was initialized with a fixed class count.
+            ValueError: If the network was initialized with a fixed class count
+                or has already been built.
         """
 
         # Restrict structural growth to the explicit dynamic constructor mode.
         if not self.dynamic_num_classes:
             raise ValueError(
                 "add_class requires num_classes=None at initialization."
+            )
+
+        # Preserve class counts and weights when Keras has locked model state.
+        if self.built:
+            raise ValueError(
+                "Post-build class growth is unsupported; use the wrapper "
+                "fit/continual-learning API."
             )
 
         old_label_embedder = self.label_embedder

@@ -44,14 +44,20 @@ from diffusion import (
 )
 
 
-def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
+def _make_dynamic_diffusion_classifier(seed: int, clf_depth: int = 1) -> DiffusionClassifier:
     """Build a tiny dynamic raw/EMA classifier with deferred distillation.
 
     Args:
         seed (int): Wrapper and TensorFlow initialization seed.
+        clf_depth (int): Complete classifier depth constructed before training;
+            defaults to one. Class vocabulary remains dynamic at every depth.
 
     Returns:
-        DiffusionClassifier: Compiled dynamic classifier wrapper.
+        model (DiffusionClassifier): Compiled float32 dynamic classifier wrapper
+            with raw and EMA networks at the requested fixed depth.
+
+    Raises:
+        ValueError: If the requested depth is invalid for the classifier.
     """
 
     tf.keras.backend.clear_session()
@@ -68,6 +74,7 @@ def _make_dynamic_diffusion_classifier(seed: int) -> DiffusionClassifier:
         mha_num_heads=1,
         vit_block_mlp_ratio=1.0,
         clf_mha_num_heads=1,
+        clf_depth=clf_depth,
         clf_vit_block_mlp_ratio=1.0,
         feature_aggregation_ids_dict={1: (-1,)},
         clf_connection_ids_dict={-1: (-1,)},
@@ -311,7 +318,7 @@ class RecoveryTests(unittest.TestCase):
             )
 
     def test_raw_ema_teacher_and_optimizer_restore_strictly(self) -> None:
-        """Dynamic raw/EMA/teacher topology consumes a strict checkpoint.
+        """Class-expanded fixed-depth raw/EMA/teacher state restores exactly.
 
         Args:
             None.
@@ -322,16 +329,13 @@ class RecoveryTests(unittest.TestCase):
         """
 
         with tempfile.TemporaryDirectory() as temporary:
-            source = _make_dynamic_diffusion_classifier(41)
+            source = _make_dynamic_diffusion_classifier(41, clf_depth=2)
             labels = tf.constant([0, 1], dtype=tf.uint8)
             images = tf.reshape(
                 tf.linspace(-1.0, 1.0, 32),
                 (2, 4, 4, 1),
             )
             source._check_new_labels(y=labels, verbose=False)
-            source._add_depths({
-                "classifier": "vision_transformer_block"
-            })
             source.train_step((images, labels))
             source_teacher = source.snapshot_teacher_network("ema")
             source.set_teacher_network(source_teacher)
@@ -351,11 +355,8 @@ class RecoveryTests(unittest.TestCase):
                 trackables=source_trackables,
             )
 
-            target = _make_dynamic_diffusion_classifier(41)
+            target = _make_dynamic_diffusion_classifier(41, clf_depth=2)
             target._check_new_labels(y=labels, verbose=False)
-            target._add_depths({
-                "classifier": "vision_transformer_block"
-            })
             target_teacher = target.snapshot_teacher_network("ema")
             target.set_teacher_network(target_teacher)
             target._register_optimizer_variables()
@@ -377,11 +378,13 @@ class RecoveryTests(unittest.TestCase):
                 (source.ema_network, target.ema_network),
                 (source_teacher, target_teacher),
             ):
+                self.assertEqual(len(source_model.weights), len(target_model.weights))
                 for expected, actual in zip(
                     source_model.get_weights(),
                     target_model.get_weights(),
                 ):
                     np.testing.assert_array_equal(expected, actual)
+            self.assertEqual(len(source.optimizer.variables), len(target.optimizer.variables))
             for expected, actual in zip(
                 source.optimizer.variables,
                 target.optimizer.variables,

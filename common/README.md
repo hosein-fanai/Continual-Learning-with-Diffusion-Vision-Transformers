@@ -281,6 +281,17 @@ other artifacts. TensorBoard uses task/class/phase namespaces. Setting
 `use_ensemble_accuracy=True` makes the ensemble accuracy matrix, rather than
 the ordinary matrix, authoritative for final continual metrics.
 
+Configured runs with an external classifier also retain
+`classifier-template.h5` beside the task checkpoints. Keep that original file:
+its hash authenticates both initial weights and the factory's model, optimizer,
+and runtime declaration. Resume reuses its graph and bytes, even when input
+configs and result directories move. A fresh checkpoint destination receives
+the same template; conflicting files are never overwritten. Changed settings
+or artifact bytes reject before fitting. Older factory outputs without this
+retained declaration require their original artifact through the lower-level
+learner API; the Config factory does not regenerate a substitute. Direct
+artifact callers continue to own and preserve their supplied artifact.
+
 The learner's experiment descriptor is now version **6**. Older task-boundary
 descriptors cannot resume into the corrected training semantics; historical
 checkpoints and weight-only loading remain unchanged. Conditional VAE task
@@ -295,9 +306,15 @@ remaining task. Preserve that evidence and supply a **fresh `checkpoint_dir`**
 while keeping `resume_from` pointed at the original valid boundary/root. The
 next completed task then commits in the fresh root. Valid boundaries are never
 overwritten; ordinary `.task-*.tmp-*` staging directories do not occupy task
-slots. This recovery support applies to the common learner. Cognitive routes
-still reject continual resume because their controller/bank/memory state is
-not restored by this API.
+slots. Models with persistent task-side state must provide all three checkpoint
+hooks: configuration identity, state export, and state restore. The learner
+authenticates that configuration, saves the side state in its existing committed
+checkpoint, and restores it before random generators and the next task.
+The core semantic route uses these hooks for completed-task recovery; its
+[module guide](../semantic_consolidation/README.md) describes supported settings.
+Resume through the runner, which constructs a fresh destination. A failed direct
+learner restore can have assigned TensorFlow state before a model-specific
+payload is rejected; discard that destination instead of continuing training on it.
 
 Strict checkpoint runs also authenticate behavior-defining callbacks.
 `LearningRateScheduler` supports pure Python schedules with immutable captured
@@ -316,15 +333,13 @@ state. Behavior declarations are checked again before each task. This protocol
 is an explicit correctness contract: the callback author must include every
 behavior-defining parameter and every required persistent state variable.
 
-Classifier depth growth from `clf_depth=0` is explicitly unsupported. The
-common progressive entry points reject requested classifier growth before any
-fit or result reservation; fixed-depth zero and denoiser-only growth remain
-separate supported choices. Start the classifier at a positive depth when
-planning classifier growth. Native Keras 3 also prohibits attaching new tracked
-layers after a model has built; progressive depth mutation is not a validated
-training path. Fixed-depth curricula can still vary timesteps and compatible
-input resolutions. Dynamic class growth uses reconstruction at task boundaries
-and preserves existing class weights and matching optimizer state.
+Construct the complete denoiser and classifier depth before training. The common
+progressive entry points reject persistent depth additions to built models before
+any fit or result reservation. Empty depth requests remain no-ops. Fixed-depth
+curricula can still vary timesteps and compatible input resolutions. Dynamic
+class growth uses reconstruction at task boundaries and preserves existing class
+weights and matching optimizer state; slots whose shapes change start from their
+initial values. Raw post-build architecture mutation remains unsupported.
 
 ## Hyperparameter optimization
 

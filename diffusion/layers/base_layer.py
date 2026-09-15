@@ -136,7 +136,9 @@ class BaseLayer(ArgumentSaverLayer):
             ValueError: If adaptive normalization is requested without a feature width.
         """
 
+        # Adaptive normalization needs an explicitly configured feature width.
         if local_vars["use_layer_norm"] and not local_vars["ln_no_adaptation"]:
+            # Reject a missing width before constructing the modulation layers.
             if local_vars["ln_dim"] is None:
                 raise ValueError(
                     "ln_dim cannot be None when use_layer_norm is true."
@@ -231,7 +233,9 @@ class BaseLayer(ArgumentSaverLayer):
                             else mlp_activation_func
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
 
+        # An absent input width is valid only when no projection is requested.
         if prev_output_dim is None:
+            # Reject a projection whose input feature width is unknown.
             if mlp_output_dim is not None:
                 raise ValueError(
                     "prev_output_dim is required when mlp_output_dim is set."

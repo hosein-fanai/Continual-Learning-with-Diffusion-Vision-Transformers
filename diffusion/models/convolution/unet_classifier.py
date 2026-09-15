@@ -413,6 +413,9 @@ class UNetClassifier(UNet):
     def add_class(self, source_network: object | None = None) -> None:
         """Append one classifier output while preserving the existing head.
 
+        Built models reject raw class mutation before changing weights. Use
+        wrapper fitting or the continual learner for class reconstruction.
+
         Args:
             source_network (object | None): Optional already-expanded raw classifier whose new output
                 initializes an EMA clone. Defaults to ``None``.
@@ -420,6 +423,9 @@ class UNetClassifier(UNet):
         Returns:
             None: The label vocabulary and enabled classifier heads grow by
             one.
+
+        Raises:
+            ValueError: The raw model is built or has a fixed class vocabulary.
         """
 
         old_layer = self.classifier.layers[-1]
@@ -1031,6 +1037,9 @@ class UNetClassifier(UNet):
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Grow the inherited network, classifier branch, or both.
 
+        Built models reject nonempty requests before either branch changes.
+        Empty requests remain no-ops; configure complete depths at construction.
+
         Ordinary specifications are delegated to :class:`UNet`. A targeted
         mapping may contain ``network`` and/or ``classifier``. Classifier list
         items append separate fixed-width residual stages; a tuple, set, or
@@ -1042,7 +1051,12 @@ class UNetClassifier(UNet):
                 ``network`` and/or ``classifier`` specifications.
 
         Returns:
-            dict[str, dict[str, int]]: Per-branch before/added/after counts.
+            growth (dict[str, dict[str, int]]): Integer before/added/after
+                counts for every requested branch.
+
+        Raises:
+            ValueError: Nonempty growth targets a built model, or the branch
+                keys or layer specifications are invalid.
         """
 
         targeted = isinstance(depth_spec, Mapping) and any(
@@ -1071,6 +1085,13 @@ class UNetClassifier(UNet):
             classifier_specs = [classifier_spec]
 
         before = self.clf_depth
+        # Reject classifier growth before an otherwise valid network change.
+        if self.built and classifier_specs:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
+            )
+
         normalized_specs = [
             self._normalize_classifier_depth_spec(spec)
             for spec in classifier_specs
@@ -1179,8 +1200,11 @@ def run_self_tests() -> dict[str, str]:
         clf_cls_token_regularizer_ids=[None],
         classifier_only_distil_token=True,
     )
-    dynamic_regularized.add_class()
-    dynamic_regularized.add_class()
+    from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
+    dynamic_wrapper = DiffusionClassifier(network=dynamic_regularized, use_ema=False, test_steps=2)
+    dynamic_wrapper._check_new_labels(y=[0, 1], verbose=False)
+    dynamic_regularized = dynamic_wrapper.network
     dynamic_outputs = dynamic_regularized(
         inputs,
         full_return=True,
@@ -1272,10 +1296,6 @@ def run_self_tests() -> dict[str, str]:
         **common, 
         reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
     )
-
-
-    from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
-
 
     wrapper = DiffusionClassifier(
         network=main_variational, 

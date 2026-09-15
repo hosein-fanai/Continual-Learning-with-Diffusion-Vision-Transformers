@@ -429,6 +429,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # and every unrelated wrapper/teacher/optimizer variable.
         if obsolete_group_ids:
             for attribute in ("_trainable_weights", "_non_trainable_weights"):
+                # Remove obsolete references only from legacy weight lists that exist.
                 if hasattr(self, attribute):
                     object.__setattr__(self, attribute, [
                         value for value in getattr(self, attribute)
@@ -443,8 +444,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
             getattr(self, "clf_optimizer", None), 
             self.clf_trainable_variables
         )
+        # Retain the generator optimizer returned by registry reconstruction.
         if gen_optimizer is not None:
             self.gen_optimizer = gen_optimizer
+        # Retain the classifier optimizer returned by registry reconstruction.
         if clf_optimizer is not None:
             self.clf_optimizer = clf_optimizer
 
@@ -988,10 +991,12 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 a duplicate output key that would overwrite another metric.
         """
 
+        # Require one phase name for every supplied result mapping.
         if len(dicts) != len(names):
             raise ValueError(
                 "Each phase result must have exactly one aligned name."
             )
+        # Metric prefixes must be strings before keys are constructed.
         if any(not isinstance(name, str) for name in names):
             raise TypeError("Phase names must be strings.")
 
@@ -1002,6 +1007,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             if result is None:
                 continue
 
+            # Retained phase results must map string metric names to values.
             if not isinstance(result, Mapping) or any(
                 not isinstance(key, str) for key in result
             ):
@@ -1019,6 +1025,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
             for key, value in result.items():
                 output_key = f"{name}_{key}" if key_counts[key] > 1 else key
 
+                # Reject generated metric-name collisions before overwriting a result.
                 if output_key in merged_dict:
                     raise ValueError(
                         f"Merged metric name {output_key!r} is ambiguous; "

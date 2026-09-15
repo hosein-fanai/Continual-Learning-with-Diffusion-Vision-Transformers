@@ -767,10 +767,12 @@ def _schedule_descriptor(schedule: object) -> dict[str, object]:
 
 
     captures = inspect.getclosurevars(schedule)
+    # Unresolved globals prevent an exact description of schedule behavior.
     if captures.unbound:
         raise ValueError(
             "Strict recovery cannot authenticate unresolved schedule globals."
         )
+    # Restrict inferred schedule dependencies to deterministic numeric builtins.
     if set(captures.builtins) - {"abs", "min", "max", "pow", "round", 
                                 "float", "int", "bool", "tuple", 
                                 "len", "sum", "range"}:
@@ -1023,6 +1025,7 @@ def validate_checkpoint_destination(checkpoint_dir: str | os.PathLike[str], firs
     for index in range(first_task, task_count):
         destination = root / f"task-{index:04d}"
 
+        # Existing entries, including broken links, must never be overwritten.
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(
                 f"Checkpoint destination is occupied before training: {destination}. "
@@ -2280,6 +2283,7 @@ def find_latest_task_checkpoint(
         _validate_committed_task(supplied)
         return supplied
 
+    # A root search requires an existing directory after explicit-task handling.
     if not supplied.is_dir():
         raise FileNotFoundError(
             f"Checkpoint directory does not exist: {supplied}"
@@ -2291,6 +2295,7 @@ def find_latest_task_checkpoint(
         try:
             latest = _read_json(latest_path)
 
+            # Older index formats cannot authenticate the current checkpoint schema.
             if int(latest.get("schema_version", -1)) != SCHEMA_VERSION:
                 raise ValueError(
                     "Unsupported latest-index schema version."
@@ -2298,6 +2303,7 @@ def find_latest_task_checkpoint(
 
             child_name = str(latest["task_dir"])
 
+            # Index entries must identify one immediate task child, never another path.
             if Path(child_name).name != child_name \
             or _TASK_DIRECTORY_PATTERN.fullmatch(child_name) is None:
                 raise ValueError(
@@ -2307,15 +2313,18 @@ def find_latest_task_checkpoint(
             candidate = supplied / child_name
             manifest = _validate_committed_task(candidate)
 
+            # The advisory index must agree with the task's committed manifest.
             if int(manifest["completed_task_index"]) \
             != int(latest["completed_task_index"]):
                 raise ValueError(
                     "latest.json task index is inconsistent."
                 )
 
+            # A stale or corrupted index checksum triggers discovery from task folders.
             if _sha256_file(candidate / _STATE_NAME) != latest["state_sha256"]:
                 raise ValueError("latest.json state checksum is inconsistent.")
 
+            # Accept the index shortcut only when no newer task slot needs validation.
             if not any(
                 _TASK_DIRECTORY_PATTERN.fullmatch(child.name)
                 and int(child.name[5:]) > int(latest["completed_task_index"])
@@ -2411,6 +2420,7 @@ def load_task_checkpoint(
     class_order = tuple(manifest["class_order"])
     task_groups = tuple(tuple(group) for group in manifest["task_groups"])
 
+    # Schedule validation requires the class vocabulary and task grouping together.
     if (expected_class_order is None) != (expected_task_groups is None):
         raise ValueError(
             "Expected class order and task groups must be supplied together."
@@ -2425,6 +2435,7 @@ def load_task_checkpoint(
         )
         expected_order = _decode_json(_encode_json(list(expected_class_order)))
 
+        # Canonical fingerprints compare values independently of container representation.
         if fingerprint_state({
             "class_order": expected_order,
             "task_groups": expected_groups
@@ -2433,6 +2444,7 @@ def load_task_checkpoint(
                 "Requested continual schedule differs from checkpoint."
             )
 
+    # A requested run identity must match before any TensorFlow variable is restored.
     if expected_fingerprint is not None \
     and manifest.get("fingerprint") != expected_fingerprint:
         raise ValueError("Run fingerprint differs from the checkpoint.")
@@ -2441,7 +2453,9 @@ def load_task_checkpoint(
     saved_trackable_names = set(manifest.get("trackable_names", []))
     restore_status = None
 
+    # Supplying concrete dependencies opts into TensorFlow restoration.
     if normalized_trackables:
+        # The named ownership graph must be identical before reading saved variables.
         if set(normalized_trackables) != saved_trackable_names:
             raise ValueError(
                 "TensorFlow trackable names differ from the checkpoint: "
@@ -2451,11 +2465,13 @@ def load_task_checkpoint(
 
         prefix = manifest.get("checkpoint_prefix")
 
+        # TensorFlow state requires a persisted checkpoint filename prefix.
         if not isinstance(prefix, str):
             raise ValueError("Checkpoint manifest has no TensorFlow prefix.")
 
         prefix_path = Path(prefix)
 
+        # Resolve checkpoint data only within its validated committed task directory.
         if prefix_path.is_absolute() or ".." in prefix_path.parts:
             raise ValueError("TensorFlow checkpoint prefix escapes task directory.")
 

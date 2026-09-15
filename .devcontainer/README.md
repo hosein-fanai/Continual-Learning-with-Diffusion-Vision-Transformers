@@ -2,6 +2,8 @@
 
 The configuration builds on the official TensorFlow 2.20 GPU Jupyter image and
 installs `requirements.txt`. It uses native Keras 3 with the TensorFlow backend.
+The recipe also supplies the Cairo dependency missing from the base image's
+PyGObject installation and runs `pip check` before completing the build.
 GPU access requires a compatible NVIDIA driver and container runtime.
 
 ## Open and test
@@ -24,6 +26,18 @@ devcontainer exec --workspace-folder . /usr/bin/python test.py
 Run tests in separate processes: they reset Keras and random state. The registry
 runs the complete model/layer self-tests; start with a focused module when
 debugging. Verify installed versions rather than relying on the image tag.
+
+To validate the recipe separately while preserving an existing notebook
+container, build a new image from the repository root:
+
+```sh
+docker build -f .devcontainer/Dockerfile.tf220 -t continual-learning-validation .
+docker run --rm --entrypoint /usr/bin/python continual-learning-validation -m pip check
+```
+
+Image builds require access to the Ubuntu package repositories and Python package
+index. An index timeout does not establish that a pinned release is unavailable.
+See the [repair validation](../repair_validation.md) for the latest build result.
 
 If `devcontainer` is unavailable, the VS Code Dev Containers extension includes
 `dist/spec-node/devContainersSpecCLI.js`. Run that installed file with Node.js

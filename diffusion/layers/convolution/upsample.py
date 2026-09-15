@@ -75,6 +75,7 @@ class ImageUpsample(ArgumentSaverLayer):
 
         self.output_dim = self.filters
         self.projection = None
+        # Use ordinary graph execution for resize kernels without XLA support.
         if self.scaling_method != "cnn_transpose" and self.interpolation not in ("nearest", "bilinear"):
             self.supports_jit = False
         # Interpolation modes need an interpolator; transposed convolution performs its own

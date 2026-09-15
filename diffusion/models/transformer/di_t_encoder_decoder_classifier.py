@@ -561,6 +561,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
     ) -> dict[str, dict[str, int]]:
         """Grow encoder, classifier, and decoder branches transactionally.
 
+        Built models reject nonempty requests before changing any branch.
+        Empty branch requests remain no-ops. Set all three depths at construction
+        for ordinary training.
+
         Ordinary specifications grow the encoder. Targeted mappings accept
         ``network``, ``classifier``, and ``decoder``. The full operation is
         validated on an unbuilt configuration clone before this model changes,
@@ -571,13 +575,36 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 targeted progressive specification.
 
         Returns:
-            dict[str, dict[str, int]]: Before/added/after counts for all three
+            growth (dict[str, dict[str, int]]): Integer before/added/after counts for all three
             branches.
 
         Raises:
-            ValueError: If a target or layer name is unknown, or a branch
+            ValueError: If nonempty growth targets a built model, a target or
+                layer name is unknown, or a branch
                 violates its output topology.
         """
+
+        targeted = isinstance(depth_spec, dict) and any(
+            key in depth_spec for key in ("network", "classifier", "decoder")
+        )
+        # Invalid branch names remain errors even when their requests are empty.
+        if targeted and not set(depth_spec) <= {"network", "classifier", "decoder"}:
+            raise ValueError("targeted depth_spec keys must name network, classifier or decoder.")
+        requests = depth_spec.values() if targeted else [depth_spec]
+        # Empty requests leave every branch and its metadata untouched.
+        if not any(spec is not None for request in requests
+                   for spec in (request if isinstance(request, list) else [request])):
+            return {
+                name: {"before": depth, "added": 0, "after": depth}
+                for name, depth in (("network", self.depth), ("classifier", self.clf_depth),
+                                    ("decoder", self.decoder.depth))
+            }
+        # Reject live composite growth before any target branch changes.
+        if self.built:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
+            )
 
         probe_config = self.get_config()
         probe_config["build"] = False
@@ -589,6 +616,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
     def add_class(self, source_network: object | None = None) -> None:
         """Grow encoder, classifier, and decoder class outputs together.
 
+        Built models reject raw mutation; wrapper fitting and the continual
+        learner reconstruct all class vocabularies with fixed architecture depth.
+
         Args:
             source_network (object | None): Optional already-expanded raw joint network used to
                 initialize new EMA rows and output. Defaults to ``None``.
@@ -596,6 +626,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Returns:
             None: Both label vocabularies and the classifier head grow by one,
             and their saved initialization configs record the current width.
+
+        Raises:
+            ValueError: The raw model is built or has a fixed class vocabulary.
         """
 
         DiTClassifier.add_class(self, source_network=source_network)

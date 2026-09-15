@@ -27,8 +27,12 @@ import pandas as pd
 import os
 
 import json
+import shutil
+
+import h5py
 
 from copy import deepcopy
+from dataclasses import asdict
 
 from collections.abc import Callable, Mapping, Sequence
 
@@ -44,7 +48,11 @@ from common.config import (
 from common.dataloader import get_datasets, get_dataset_spec, _resolve_dataset_options
 from common.model import get_model, validate_progressive_classifier_growth
 from common.runtime import configure_runtime, derive_seed, effective_seed
-from common.recovery import find_latest_task_checkpoint, load_task_checkpoint
+from common.recovery import (
+    _artifact_recovery_descriptor,
+    find_latest_task_checkpoint,
+    load_task_checkpoint,
+)
 from common.continual_reporting import (
     observed_mean,
     write_continual_csv_artifacts,
@@ -471,6 +479,13 @@ def train_model(
     task training to the learner before updating the bundle with final models and
     ``continual_details``.
 
+    Configured external-classifier recovery keeps one immutable initial template
+    beside the task checkpoints. Its HDF5 metadata records the model, optimizer,
+    and effective runtime settings; the learner authenticates the complete file.
+    Resume reuses that template even when input configs and run outputs move.
+    Older factory checkpoints without this template must use their original
+    artifact through the lower-level learner API instead of recreating it.
+
     Args:
         config (Config | None): Typed settings. Default None selects direct mode.
             A supplied Config is updated with its concrete artifact directory,
@@ -503,7 +518,7 @@ def train_model(
             orchestration arguments cannot be duplicated in typed ``fit_kwargs``.
 
     Returns:
-        dict[str, list[float]]: Epoch histories for ordinary training, merged phase
+        history (dict[str, list[float]]): Epoch histories for ordinary training, merged phase
         histories for V2, or task trajectories for continual training:
         ``continual_accuracy``, optional ``continual_ensemble_accuracy``, and
         ``task_val_accuracy``. Continual validation values use the selected matrix
@@ -513,11 +528,17 @@ def train_model(
     Raises:
         TypeError: If an enabled file consumer has no result path, or dynamic
             diffusion weight saving lacks the Config needed to reconstruct it.
+            Also raised when configured external recovery contains model or
+            optimizer declarations that cannot be serialized as JSON.
         ValueError: If typed fit controls conflict, progressive training lacks
             stages/a diffusion target, a resume schedule differs, or VAE array
-            adaptation receives an empty or sample-weighted dataset.
+            adaptation receives an empty or sample-weighted dataset. Also raised
+            when a resumed external classifier changes its initial model,
+            optimizer, or runtime declaration, or lacks that declaration.
         FileExistsError: If a new immutable input-config artifact would overwrite
-            an existing file.
+            an existing file, or a new checkpoint root already has a template.
+        FileNotFoundError: If configured external-classifier resume cannot find
+            the original immutable template beside its task checkpoints.
         OSError: If template, configuration, logging, or weight artifacts cannot
             be written. Model/dataset/learner errors otherwise propagate."""
 
@@ -840,7 +861,68 @@ def train_model(
             image_callback.results_path,
             classifier_name + "-template.h5"
         )
-        model["classifier"].save(template_path)
+        resume_path = continual_kwargs.get("resume_from")
+        external_checkpoint = config is not None and not continual_kwargs.get(
+            "use_generative_model_classifier", False
+        ) and (continual_kwargs.get("save_task_checkpoints", False) or resume_path is not None)
+
+        # Keep the exact initial external artifact independent of per-run paths.
+        if external_checkpoint:
+            template_root = str(find_latest_task_checkpoint(resume_path).parent) \
+                if resume_path is not None else continual_kwargs["checkpoint_dir"]
+            template_path = os.path.join(template_root, "classifier-template.h5")
+            declaration = json.dumps({
+                "model": asdict(config.model),
+                "optimizer": asdict(config.optimizer),
+                "runtime": {"seed": seed, "dtype_policy": dtype_policy,
+                            "deterministic_ops": deterministic_ops},
+            }, sort_keys=True)
+
+            # Reuse authenticated bytes; never serialize a newly named graph on resume.
+            if resume_path is not None:
+                # An older or incomplete run cannot be reconstructed by guessing a template.
+                if not os.path.isfile(template_path):
+                    raise FileNotFoundError(
+                        "External-classifier resume requires its original "
+                        "classifier-template.h5 beside the task checkpoints."
+                    )
+                with h5py.File(template_path, "r") as artifact:
+                    saved_declaration = artifact.attrs.get("continual_factory_config")
+                # The declaration is inside the existing byte-authenticated artifact.
+                if saved_declaration != declaration:
+                    raise ValueError(
+                        "External-classifier template model, optimizer, or runtime "
+                        "declaration is missing or differs from the current Config."
+                    )
+                destination_root = continual_kwargs.get("checkpoint_dir")
+                # A new checkpoint sequence must retain the same initial artifact.
+                if continual_kwargs.get("save_task_checkpoints", False) and destination_root is not None:
+                    destination = os.path.join(destination_root, "classifier-template.h5")
+                    # Reject a conflicting destination instead of changing its identity.
+                    if os.path.exists(destination) and _artifact_recovery_descriptor(
+                        template_path
+                    ) != _artifact_recovery_descriptor(destination):
+                        raise FileExistsError(
+                            f"Conflicting immutable classifier template: {destination}"
+                        )
+                    # Copy the original bytes only when starting in a fresh location.
+                    if not os.path.exists(destination):
+                        os.makedirs(destination_root, exist_ok=True)
+                        shutil.copyfile(template_path, destination)
+            # Publish the initial artifact once, before any task can be committed.
+            else:
+                # Refuse to overwrite a previous run's initial identity.
+                if os.path.exists(template_path):
+                    raise FileExistsError(
+                        f"Immutable classifier template already exists: {template_path}"
+                    )
+                os.makedirs(template_root, exist_ok=True)
+                model["classifier"].save(template_path)
+                with h5py.File(template_path, "a") as artifact:
+                    artifact.attrs["continual_factory_config"] = declaration
+        # Ordinary and attached-head runs retain their existing template behavior.
+        else:
+            model["classifier"].save(template_path)
 
         continual_kwargs = deepcopy(continual_kwargs)
         dataset_class_num, _, _ = get_dataset_spec(dataset_name)

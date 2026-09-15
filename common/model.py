@@ -62,45 +62,65 @@ _DIFFUSION_CLASSIFIER_WRAPPERS = {
 
 
 def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[str, object]) -> None:
-    """Reject unsupported classifier growth from depth zero before any fit.
+    """Reject persistent depth changes before progressive training starts.
 
-    The raw model retains its transactional guard. This orchestration preflight
-    also covers the encoder-decoder classifier, which exposes the same
-    classifier depth and targeted growth mapping.
+    Native Keras models cannot add state after construction. Time and resolution
+    curricula remain supported, as do empty depth requests. The historical
+    function name is retained for callers of this orchestration preflight.
 
     Args:
-        model (object): Raw model or wrapper exposing a network and optional
-            clf_depth. Models without a zero-depth classifier pass unchanged.
+        model (object): Raw model or wrapper exposing a network. Built networks
+            reject nonempty depth additions; unbuilt objects retain their own
+            construction-time validation. Zero-depth classifier growth is
+            rejected independently of build status.
         fit_kwargs (Mapping[str, object]): Progressive settings containing
-            optional stage tasks and depth specifications.
+            optional stage tasks and depth specifications. None, an empty list,
+            and lists containing only None request no added depths.
 
     Returns:
-        result (None): No targeted classifier growth from depth zero was found.
-            This preflight does not construct layers or mutate the model.
+        result (None): The schedule requests no unsupported depth changes.
+            Model weights, metadata, optimizers, and random streams are unchanged.
 
     Raises:
-        ValueError: If a non-None depth addition targets a zero-depth classifier,
-            or the shared depth-specification parser rejects a setting.
+        ValueError: If an addition targets a built network or zero-depth
+            classifier, or the shared schedule parser rejects a setting.
     """
 
     from common.recovery import _progressive_depth_specs
+    from diffusion.models.convolution.unet_classifier import UNetClassifier
 
 
     network = getattr(model, "network", model)
-    # Ordinary denoiser growth and positive-depth classifier growth retain their APIs.
-    if getattr(network, "clf_depth", None) != 0:
-        return
-
     for specification in _progressive_depth_specs(dict(fit_kwargs)):
-        # Only an explicitly targeted classifier addition reaches this unsupported case.
-        if isinstance(specification, dict) and "classifier" in specification:
-            requested = specification["classifier"]
-            requested = requested if isinstance(requested, list) else [requested]
+        # Targeted mappings describe independent denoiser/classifier/decoder requests.
+        if isinstance(specification, dict) and any(
+            key in specification for key in ("network", "classifier", "decoder")
+        ):
+            branches = {key: specification.get(key, []) for key in ("classifier", "network", "decoder")}
+        # An unscoped specification adds denoiser stages.
+        else:
+            branches = {"network": specification}
 
-            if any(item is not None for item in requested):
+        for branch, requested in branches.items():
+            # The existing UNet classifier API treats an empty classifier mapping as a no-op.
+            if branch == "classifier" and isinstance(network, UNetClassifier) \
+            and isinstance(requested, dict) and not requested:
+                continue
+            requested = requested if isinstance(requested, list) else [requested]
+            # Disabled placeholders and empty lists do not change topology.
+            if not any(item is not None for item in requested):
+                continue
+            # Preserve the more specific depth-zero classifier diagnostic.
+            if branch == "classifier" and getattr(network, "clf_depth", None) == 0:
                 raise ValueError(
                     "Classifier depth growth from clf_depth=0 is unsupported; " 
-                    "choose a positive initial classifier depth before training."
+                    "configure the complete depth before construction."
+                )
+            # Reject the whole schedule before any earlier stage can train or write artifacts.
+            if getattr(network, "built", False):
+                raise ValueError(
+                    "Post-build depth growth is unsupported; "
+                    "configure the complete depth before construction."
                 )
 
 
@@ -275,6 +295,7 @@ def _make_optimizer(config: Config | None = None,
     schedule = schedule.lower() if isinstance(schedule, str) else schedule
     # Derive a cosine duration from epochs and prepared dataset length.
     if schedule == "cosine" and decay_steps is None:
+        # The number of updates cannot be inferred without dataset length.
         if trainset_len is None:
             raise ValueError(
                 "trainset_len is required when decay_steps is not provided."
@@ -285,6 +306,7 @@ def _make_optimizer(config: Config | None = None,
         if config is not None:
             config.optimizer.decay_steps = decay_steps
 
+    # Cosine decay needs a nonempty interval even when duration was supplied directly.
     if schedule == "cosine" and decay_steps <= 0:
         raise ValueError("decay_steps must be positive for cosine decay.")
 
@@ -296,6 +318,7 @@ def _make_optimizer(config: Config | None = None,
             decay_steps=decay_steps
         )
 
+    # Reject misspelled schedules instead of silently using a constant rate.
     elif schedule not in ("constant", None):
         raise ValueError(
             "schedule must be None, 'cosine', or 'constant'."

@@ -151,6 +151,7 @@ def register_optimizer_variables(
         for value in old_values:
             key = value.name, tuple(value.shape)
 
+            # A repeated name and shape cannot identify one source slot unambiguously.
             if key in old_state:
                 raise ValueError(f"Ambiguous optimizer state name: {key[0]}")
 

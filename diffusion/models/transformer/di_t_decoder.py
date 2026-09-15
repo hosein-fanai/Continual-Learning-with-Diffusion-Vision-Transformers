@@ -12,6 +12,7 @@ from tensorflow.keras import layers
 
 from copy import deepcopy
 
+from common.argument_saver import _copy_config_containers
 from common.validation import require
 
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
@@ -1502,10 +1503,10 @@ class DiTDecoder(DiffusionTransformer):
             "encoder_feature_is_flat": deepcopy(flat_states),
             "encoder_output_dim": self.encoder_output_dim, 
             "encoder_output_grid_size": self.encoder_output_grid_size, 
-            "feature_aggregation_ids_dict": deepcopy(
+            "feature_aggregation_ids_dict": _copy_config_containers(
                 self.feature_aggregation_ids_dict
             ), 
-            "cross_attention_aggregation_ids_dict": deepcopy(
+            "cross_attention_aggregation_ids_dict": _copy_config_containers(
                 self.cross_attention_aggregation_ids_dict
             ), 
         })
@@ -1543,8 +1544,8 @@ class DiTDecoder(DiffusionTransformer):
         depth_specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
         # Ignore disabled decoder growth placeholders.
         depth_specs = [spec for spec in depth_specs if spec is not None]
-        old_feature_ids = deepcopy(self.feature_aggregation_ids_dict)
-        old_cross_ids = deepcopy(self.cross_attention_aggregation_ids_dict)
+        old_feature_ids = _copy_config_containers(self.feature_aggregation_ids_dict)
+        old_cross_ids = _copy_config_containers(self.cross_attention_aggregation_ids_dict)
         prepared_specs = []
 
         try:
@@ -1600,10 +1601,10 @@ class DiTDecoder(DiffusionTransformer):
             raise
 
         self._init_config.update({
-            "feature_aggregation_ids_dict": deepcopy(
+            "feature_aggregation_ids_dict": _copy_config_containers(
                 self.feature_aggregation_ids_dict
             ),
-            "cross_attention_aggregation_ids_dict": deepcopy(
+            "cross_attention_aggregation_ids_dict": _copy_config_containers(
                 self.cross_attention_aggregation_ids_dict
             ),
         })
@@ -1615,6 +1616,10 @@ class DiTDecoder(DiffusionTransformer):
         depth_spec: str | tuple | set | dict | list | None, 
     ) -> dict[str, dict[str, int]]:
         """Append decoder stages without invalidating the existing head.
+
+        A built decoder rejects nonempty requests before creating a probe or
+        changing metadata. ``None``, ``[]`` and lists of ``None`` are no-ops.
+        Configure the complete depth at construction for ordinary training.
 
         Base transformer layer names and the decoder-only
         ``feature_aggregator``/``cross_attention_aggregator`` names are valid.
@@ -1628,12 +1633,25 @@ class DiTDecoder(DiffusionTransformer):
                 :meth:`DiffusionTransformer.add_depths`.
 
         Returns:
-            dict[str, dict[str, int]]: Standard ``network`` growth counts.
+            growth (dict[str, dict[str, int]]): Integer ``network`` before,
+                added and after depth counts.
 
         Raises:
-            ValueError: If the specification is invalid or changes the shape
+            ValueError: If nonempty growth targets a built decoder, or the
+                specification is invalid or changes the shape
                 expected by the existing output head.
         """
+
+        specs = depth_spec if isinstance(depth_spec, list) else [depth_spec]
+        # Preserve empty growth without constructing or tracing a probe model.
+        if not any(spec is not None for spec in specs):
+            return {"network": {"before": self.depth, "added": 0, "after": self.depth}}
+        # Reject new state before the clone-first legacy growth path runs.
+        if self.built:
+            raise ValueError(
+                "Post-build depth growth is unsupported; configure the complete "
+                "depth before construction."
+            )
 
         old_grid = self._get_last_grid_size(
             self.depth - 1, self.layers_dicts, self.grid_size

@@ -1,42 +1,40 @@
-# Experiment notebooks
+# Notebook examples
 
-The maintained small execution entry point is
-[`thesis_development.ipynb`](thesis_development.ipynb). Start a fresh `tf_env`
-kernel and run every cell. Its default runs real two-task optimization and replay
-on synthetic MNIST-shaped arrays, uses a seeded split of training rows for
-validation, checks the saved full matrix and reloads the label-free classifier.
-The notebook supports semantic consolidation and gist memory; changing its
-explicit data mode to CIFAR starts a real development experiment. Preparation
-and synthetic checks do not establish benchmark performance.
+The root-level DiT, U-DiT, classifier, and variational examples explore the
+project's existing model APIs. Their saved code and outputs may describe
+different experiments. Select a TensorFlow 2.20 kernel and use a fresh process
+when checking reproducibility; historical outputs are not new validation results.
 
-The named `cifar10 main.ipynb` and `cifar100 main.ipynb` are historical archives
-with obsolete APIs, not executable replacements for the maintained notebook.
-Do not use them to produce current thesis results. The same rule applies to
-other archived notebooks even when some individual cells still run.
+## Execution
 
-The following describes the historical layout and helper behavior.
+When starting from this directory, `import init` resolves the repository root,
+changes the working directory, and makes project imports available. Its
+`common.utils.init()` compatibility call does not configure GPU memory. Device
+settings belong to the runtime setup described in the
+[development-container guide](../.devcontainer/README.md).
 
-These notebooks explore MNIST/CIFAR continual learning, variational
-autoencoders, U-Net diffusion, diffusion transformers, and joint DiT
-classification.
+`DiffusionModel` and `DiffusionClassifier` use ordinary `fit` keyword arguments.
+`DiffusionClassifierV2.fit` takes separate `gen_kwargs` and `clf_kwargs` mappings
+and returns a merged history dictionary. Its `evaluate(eval_both=True, x=...)`
+checks both phases. Construct complete model depth before training.
 
-When a notebook starts with its working directory set to `notebooks/`, the
-local helper can initialize repository imports:
+## Data and interpretation
 
-```python
-import init
-```
+The included MNIST examples retain local preprocessing helpers and use the
+official test arrays as validation. That workflow is exploratory: displayed
+validation results must not be presented as an untouched final test evaluation.
+For controlled studies, the [common data pipeline](../common/README.md) and
+[semantic study API](../semantic_consolidation/README.md) provide explicit
+training/validation separation and confirmation protocols.
 
-That import moves the process one level upward and applies the project's
-TensorFlow GPU-memory initialization. If the working directory is already the repository root, import
-`autoencoder`, `common`, and `diffusion` directly instead.
+The latest [repair validation](../repair_validation.md) distinguishes read-only
+setup, bounded training, evaluation, and weight reload from complete notebook
+execution or scientific efficacy. Notebook subdirectories `hpo`, `old`, `legacy`,
+and `thesis`, and filenames containing `copy`, are outside that assessment.
 
-For reproducible experiments, move stable settings into a YAML file under
-`configs/`, call `common.config.load_config`, and use `common.train` or the
-documented model APIs. Notebook outputs can be large and may embed results from
-older constructor versions.
-
-The reproducible HPO entry points are indexed in [`hpo/README.md`](hpo/README.md).
-They are intentionally thin: each displays a constrained scientific search
-space and calls `common.hpo.run_hpo`, which writes/reloads trial configs and
-uses the standard `common.train` pipeline.
+The root `test.ipynb` is a historical Avalanche/PyTorch and legacy API scratchpad;
+it is not a TensorFlow 2.20 entry point. Some preserved archive banners still link
+to the removed `thesis_development.ipynb`. Use the current
+[semantic route guide](../semantic_consolidation/README.md) for the supported
+workflow. Notebook schema and syntax checks do not make those historical cells,
+kernel metadata, or links current.

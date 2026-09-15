@@ -36,6 +36,7 @@ from common.keras_compat import register_optimizer_variables, variable_path
 from common.runtime import derive_seed, effective_seed
 from common.random import SeedStream
 from common.validation import require
+from common.model import validate_progressive_classifier_growth
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -311,6 +312,7 @@ class DiffusionModel(ArgumentSaverModel):
                     self.ema_network.decoder.dynamic_num_classes = True
             
             seen_num_classes = len(self.seen_classes)
+            # Restore the saved class width before loading expanded weights.
             if seen_num_classes > self.network.num_classes:
                 self._rebuild_classes(seen_num_classes)
 
@@ -399,6 +401,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         network = local_vars["network"]
 
+        # Require the configuration and metadata protocol used by the wrapper.
         if not isinstance(network, ArgumentSaverModel):
             raise TypeError(
                 "network must inherit common.argument_saver.ArgumentSaverModel."
@@ -407,6 +410,7 @@ class DiffusionModel(ArgumentSaverModel):
             "timesteps", "image_size", "channels", "use_cfg", 
             "build", "set_current_resolution", "get_config"
         ):
+            # Report a missing raw-network capability before building the wrapper.
             if not hasattr(network, attribute):
                 raise TypeError(f"network must define {attribute!r}.")
 
@@ -453,6 +457,7 @@ class DiffusionModel(ArgumentSaverModel):
             "p_uncond must be in the range of [0., 1.]."
         )
 
+        # A positive noise-teaching objective needs a current or deferred teacher.
         if local_vars["noise_distil_loss_coef"] > 0.:
             require(
                 local_vars["teacher_network"] is not None
@@ -467,6 +472,7 @@ class DiffusionModel(ArgumentSaverModel):
         require(local_vars["ctr_train_type"] in get_args(TrainType), \
             f"ctr_train_type can be one of {TrainType}.")
 
+        # Unconditional auxiliary objectives require a CFG prediction path.
         if local_vars["kl_train_type"] == "uncond" or \
         local_vars["ctr_train_type"] == "uncond":
             require(
@@ -476,6 +482,7 @@ class DiffusionModel(ArgumentSaverModel):
                 "CFG and a non-None train_cfg_scale."
             )
 
+        # A restored label mapping must cover the network's existing vocabulary.
         if local_vars["seen_classes"]:
             require(
                 network.num_classes <= len(local_vars["seen_classes"]), 
@@ -558,6 +565,7 @@ class DiffusionModel(ArgumentSaverModel):
                 f"clustering must be one of {ClusteringType}."
             )
 
+        # Reject collapsed timestep intervals after boundary projection.
         if np.any(np.diff(boundaries) <= 0):
             raise ValueError(
                 "Could not construct strictly increasing timestep clusters. "
@@ -604,6 +612,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         registered_optimizer = register_optimizer_variables(optimizer, variables)
 
+        # Replace the active optimizer reference when its registry is rebuilt.
         if optimizer is getattr(self, "optimizer", None):
             self.optimizer = registered_optimizer
 
@@ -645,6 +654,11 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> dict[str, dict[str, int]]:
         """Grow raw and EMA networks after a completed progressive stage.
 
+        Nonempty growth of built raw models is currently unsupported and raises
+        before the wrapper changes either branch. Use complete-depth constructor
+        settings with timestep/resolution curricula. The remainder retains the
+        legacy transition logic for unbuilt networks.
+
         The network owns interpretation of ``depth_spec``. This wrapper applies
         that same specification to raw and EMA copies, builds newly created
         variables, initializes the new EMA weights from their raw counterparts,
@@ -661,8 +675,8 @@ class DiffusionModel(ArgumentSaverModel):
             before/added/after depth report.
 
         Raises:
-            ValueError: If raw and EMA growth creates different numbers or
-                shapes of weights.
+            ValueError: If nonempty growth targets a built raw model, or raw
+                and EMA growth creates different numbers or shapes of weights.
         """
 
         raw_weight_ids = {
@@ -726,11 +740,13 @@ class DiffusionModel(ArgumentSaverModel):
 
         replacements = []
         for network in (self.network, self.ema_network):
+            # Skip the EMA branch when moving averages are disabled.
             if network is None:
                 continue
 
             config = network.get_config()
             config["num_classes"] = num_classes
+            # Keep an attached decoder's class vocabulary aligned with its encoder.
             if "decoder_kwargs" in config:
                 config["decoder_kwargs"]["num_classes"] = num_classes
 
@@ -738,6 +754,7 @@ class DiffusionModel(ArgumentSaverModel):
             expanded.build()
             expanded.set_current_resolution(network.current_resolution)
             expanded.dynamic_num_classes = True
+            # Preserve dynamic class discovery in an attached decoder too.
             if hasattr(expanded, "decoder"):
                 expanded.decoder.dynamic_num_classes = True
 
@@ -809,6 +826,7 @@ class DiffusionModel(ArgumentSaverModel):
             cardinality = int(
                 tf.data.experimental.cardinality(data).numpy()
             )
+            # Label discovery cannot exhaust a dataset that repeats forever.
             if cardinality == int(tf.data.INFINITE_CARDINALITY):
                 raise ValueError(
                     "Dynamic class discovery requires a finite dataset."
@@ -868,6 +886,7 @@ class DiffusionModel(ArgumentSaverModel):
         if not self.network.dynamic_num_classes:
             return classes
 
+        # Reject class mapping before the first vocabulary has been observed.
         if not self.seen_classes:
             raise ValueError(
                 "No classes have been observed by this dynamic model."
@@ -938,13 +957,16 @@ class DiffusionModel(ArgumentSaverModel):
                 fails in ordinary TensorFlow execution.
         """
 
+        # Require an exact positive repeat count, excluding booleans.
         if isinstance(samples_per_label, (bool, np.bool_)) or not isinstance(
             samples_per_label, (int, np.integer)
         ) or samples_per_label < 1:
             raise ValueError("samples_per_label must be a positive integer.")
 
         labels = tf.ensure_shape(tf.convert_to_tensor(labels), (None,))
+        # Only an empty label vector can safely lose an inferred floating dtype.
         if not labels.dtype.is_integer:
+            # Reject nonempty floating labels instead of truncating class IDs.
             if labels.shape.num_elements() != 0:
                 raise ValueError("Sampling label IDs must have an integer dtype.")
 
@@ -1028,6 +1050,7 @@ class DiffusionModel(ArgumentSaverModel):
             tf.errors.InvalidArgumentError: A runtime loss operation fails.
         """
 
+        # Use the native Keras 3 compiled data-loss container when present.
         if hasattr(self, "_compile_loss"):
             return self._compile_loss(y_true, y_pred, sample_weight)
         return self.compiled_loss(y_true, y_pred, sample_weight=sample_weight)
@@ -1199,6 +1222,7 @@ class DiffusionModel(ArgumentSaverModel):
         """Build execution networks; Sequential holders only track replacements."""
 
         for network in (self.network, self.ema_network):
+            # Build each existing prediction branch before marking the wrapper built.
             if network is not None and not network.built:
                 network.build()
 
@@ -1442,11 +1466,14 @@ class DiffusionModel(ArgumentSaverModel):
             OSError: The destination cannot be created or written.
         """
 
+        # Create missing parent directories only when the caller requests it.
         if create_dir:
             parent_dir = os.path.dirname(filepath)
+            # A filename in the current directory has no parent to create.
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)
 
+        # Expose tracked weights before Keras validates the save operation.
         if not self.built:
             self.build(())
 
@@ -1478,6 +1505,7 @@ class DiffusionModel(ArgumentSaverModel):
             OSError: The file is missing, unreadable, or invalid.
         """
 
+        # Expose tracked weights before Keras matches checkpoint variables.
         if not self.built:
             self.build(())
 
@@ -1671,12 +1699,11 @@ class DiffusionModel(ArgumentSaverModel):
         Pass ``stage_tasks`` as a list for a mixed curriculum. Each element
         describes only the values that change before that training stage. A
         value not mentioned by the element keeps its value from the previous
-        stage. Timestep ranges, resolutions, and model depth can therefore be
-        changed separately or together without one strategy taking priority.
-        Timestep and resolution updates are applied before their stage. A
-        depth update is appended after its stage has completed successfully,
-        so the new layers start training in the next stage. This makes the
-        last depth update train during ``final_epochs`` when it is nonzero.
+        stage. Timestep ranges and resolutions can change separately or
+        together and are applied before their stage. Legacy depth syntax is
+        retained, but built raw networks reject nonempty depth schedules before
+        class discovery or training; construct the complete depth instead.
+        Empty depth requests and timestep/resolution curricula remain supported.
 
         ``stage_tasks="timesteps_only"`` creates one timestep task for every
         entry in ``timestep_boundaries``. If those boundaries are omitted,
@@ -1696,16 +1723,8 @@ class DiffusionModel(ArgumentSaverModel):
             fit_progressively(
                 "resolutions_only", resolutions=[16, 32, 64], x=dataset
             )
-            fit_progressively(
-                "depths_only",
-                depths=[
-                    "vision_transformer_block",
-                    {"local_mixer", "vision_transformer_block"}
-                ],
-                final_epochs=1, x=dataset
-            )
 
-        Supported stage elements are:
+        Accepted stage syntax, including legacy depth entries, is:
 
             "timesteps"
             ("timesteps", (lower_bound, upper_bound))
@@ -1726,34 +1745,13 @@ class DiffusionModel(ArgumentSaverModel):
         A dictionary value of ``None`` has the same meaning. Inline tuple or
         dictionary values take precedence over the companion sequences.
 
-        A depth specification names layers supported by the transformer's
-        normal layer factories. A string adds one depth containing that layer;
-        a list adds several depths; and a set or dictionary puts several layer
-        types in one depth. For example::
-
-            depth_specification = [
-                "vision_transformer_block",
-                {
-                    "feature_connector": {"ids": [-1]},
-                    "local_mixer": True,
-                },
-            ]
-
-        Exact supported names are ``feature_connector``,
-        ``cross_attention_connector``, ``vision_transformer_block``,
-        ``local_mixer``, ``downsampler``, ``upsampler``, ``reshaper``, and
-        ``cls_token_regularizer``. The existing model-wide layer kwargs are
-        reused. Connector dictionaries may provide ``ids`` (an integer or ID
-        iterable); transformer block dictionaries may provide ``use_decoder``
-        (bool) and ``mlp_output_dim`` (int or None); a reshaper value is
-        ``"flatten"`` or ``"unflatten"``. Added sequences must leave the final feature shape
-        compatible with the already-trained output head. This
-        API deliberately accepts the project's supported layer types rather
-        than arbitrary Keras layers, because each supported type has a defined
-        call signature and location in the transformer depth. New layers are
-        built in both raw and EMA networks, their initial weights are copied
-        into EMA, and their variables are registered with the active optimizer
-        before the following training stage.
+        The legacy depth grammar represents one layer by a string, several
+        depths by a list, and several layer types in one depth by a set or
+        dictionary, using the raw model's existing ``add_depths`` syntax.
+        These forms describe requests; they do not enable post-build growth.
+        ``None``, an empty list, or a list containing only ``None`` requests
+        no added layers. A depth stage with an omitted inline value still
+        requires its stage-indexed entry in ``depths``.
 
         For example:
 
@@ -1762,16 +1760,15 @@ class DiffusionModel(ArgumentSaverModel):
                 "timesteps",
                 ("resolution", 32),
                 {
-                    "timesteps", "resolution", "depth"
+                    "timesteps", "resolution"
                 },
             ]
             timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
             resolutions = [None, None, None, 64]
-            depths = [None, None, None, "vision_transformer_block"]
 
         This produces stages ``(700: 1000, 16)``, ``(300: 1000, 16)``,
-        ``(300: 1000, 32)``, and ``(0: 1000, 64)``, then appends a transformer
-        block. No direction, native-size ceiling, or implicit priority between
+        ``(300: 1000, 32)``, and ``(0: 1000, 64)``.
+        No direction, native-size ceiling, or implicit priority between
         the strategies is imposed.
 
         Args:
@@ -1781,7 +1778,8 @@ class DiffusionModel(ArgumentSaverModel):
                 ``"timesteps_only"``, ``"resolutions_only"``, or
                 ``"depths_only"``. A list's length is the number of training
                 stages. Strings and two-item tuples change one value; sets and
-                dictionaries may combine all three progressive operations.
+                dictionaries may combine timestep/resolution updates and legacy
+                depth entries, subject to the growth restriction above.
             stages_num (int | None): Optional number of generated stages. For an explicit
                 mixed task list, its length determines the stage count. In
                 either ``*_only`` mode, supplied values determine the count.
@@ -1819,9 +1817,9 @@ class DiffusionModel(ArgumentSaverModel):
             depths (Sequence[object | None] | None): Optional stage-indexed depth
                 specifications. An entry is
                 read only when the corresponding task requests ``"depth"``
-                without an inline value. A specification may add any number of
-                supported layer dictionaries to ``network.layers_dicts``.
-                Appended depths persist after this method returns.
+                without an inline value. Empty specifications request no added
+                layers; nonempty specifications on built networks are rejected
+                before class discovery or training.
                 Defaults to ``None``.
             pacing_type (Literal["fixed", "plateau"]): ``"fixed"`` requests ``stage_epochs``
                 without an added plateau callback.
@@ -1848,20 +1846,26 @@ class DiffusionModel(ArgumentSaverModel):
                 ``verbose``. ``epochs`` and ``initial_epoch`` are managed here.
 
         Returns:
-            tf.keras.callbacks.History: Merged metrics and a
-            ``progressive_stages`` record of every resolved stage, including
-            its pre-addition network depth and any ``depth_growth`` result. The
-            model's timestep bounds and resolution are restored to their entry
-            values after completion or interruption; completed structural depth
-            additions are intentionally retained. Input data must be reiterable
-            because each stage invokes a separate Keras ``fit`` call.
+            history (tf.keras.callbacks.History): Merged metrics and a
+                ``progressive_stages`` record of every resolved stage, including
+                its network depth and any no-op ``depth_growth`` result. The
+                model's timestep bounds and resolution are restored to their
+                entry values after completion or interruption. Input data must
+                be reiterable because each stage invokes a separate Keras
+                ``fit`` call.
 
         Raises:
             AssertionError: Managed epoch arguments, pacing/monitor choices, or timestep
                 bounds violate the progressive training contract.
             ValueError: A shorthand lacks required values/counts, a stage is malformed,
-                or delegated growth/resolution/schedule compatibility fails.
+                a built network receives a nonempty depth schedule, or delegated
+                growth/resolution/schedule compatibility fails.
         """
+
+        validate_progressive_classifier_growth(
+            self,
+            {"stage_tasks": stage_tasks, "depths": depths}
+        )
 
         self._check_new_labels(
             x=fit_kwargs.get("x"), 
@@ -2301,6 +2305,7 @@ class DiffusionModel(ArgumentSaverModel):
         self.ema_network.set_current_resolution(
             resolution
         ) if self.ema_network is not None else None
+        # Synchronize the teacher's resolution when it exposes that capability.
         if self.teacher_network is not None and hasattr(
             self.teacher_network, "set_current_resolution"
         ):
@@ -2316,6 +2321,7 @@ class DiffusionModel(ArgumentSaverModel):
             self.predict_function = None
 
             self._refresh_jit_support()
+            # Refresh JIT selection only after the wrapper has been compiled.
             if getattr(self, "compiled", False):
                 requested = getattr(self, "_requested_jit_compile", "auto")
                 requested = False if self.run_eagerly else requested
@@ -2382,6 +2388,7 @@ class DiffusionModel(ArgumentSaverModel):
                 timestep-count, channel, or CFG metadata.
         """
 
+        # Reject a teacher whose swapped target is incompatible with noise teaching.
         if teacher_network is not None and self.noise_distil_loss_coef > 0. \
         and getattr(
             teacher_network, 
@@ -2422,6 +2429,7 @@ class DiffusionModel(ArgumentSaverModel):
             )
             teacher_network = raw_teacher
 
+        # A teacher must be independent of both live student branches.
         if teacher_network is not None and (
             teacher_network is self.network
             or teacher_network is self.ema_network
@@ -2432,24 +2440,29 @@ class DiffusionModel(ArgumentSaverModel):
 
         needs_noise_teacher = bool(self.noise_distil_loss_coef > 0.)
 
+        # Missing teachers are allowed only through the explicit deferred lifecycle.
         if teacher_network is None and needs_noise_teacher \
         and not self.defer_teacher:
             raise ValueError(
                 "Noise distillation requires teacher_network; "
                 "set defer_teacher=True only when it will be attached later."
             )
+        # Validate process alignment before enabling a noise-teaching objective.
         if teacher_network is not None and needs_noise_teacher:
+            # Teacher and student must interpret timesteps with the same schedule.
             if teacher_schedule is not None \
             and teacher_schedule != self.scheduler_name:
                 raise ValueError(
                     "teacher_network scheduler_name must match the student."
                 )
+            # Teacher and student must agree on the noiseless first-timestep convention.
             if teacher_modify_first is not None \
             and teacher_modify_first != self.modify_first_t:
                 raise ValueError(
                     "teacher_network modify_first_t must match the student."
                 )
             for name in ("timesteps", "channels", "use_cfg"):
+                # Reject incompatible teacher geometry or condition vocabulary.
                 if getattr(teacher_network, name, None) != getattr(
                     self.network, name, None
                 ):
@@ -2692,6 +2705,7 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         x0 = tf.convert_to_tensor(x0)
+        # Convert integer images before combining them with floating noise.
         if not x0.dtype.is_floating:
             x0 = tf.cast(x0, self.compute_dtype)
 
@@ -2721,6 +2735,7 @@ class DiffusionModel(ArgumentSaverModel):
                     tf.zeros((x_shape[0],), dtype=tf.int32)
                 )
 
+            # Require a nonempty timestep interval inside the schedule horizon.
             if not 0 <= min_timesteps < max_timesteps <= self.timesteps:
                 raise ValueError(
                     "Expected 0 <= min_timesteps < max_timesteps <= "
@@ -2791,6 +2806,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Resolve the runtime frozen teacher separately from raw and EMA prediction copies.
         if network_name == "teacher":
+            # Reject teacher selection when no independent teacher is attached.
             if self.teacher_network is None:
                 raise ValueError("No teacher_network is attached.")
 
@@ -3984,10 +4000,12 @@ class DiffusionModel(ArgumentSaverModel):
         ])
         z_id = flatten_ids[0] if flatten_ids else None
 
+        # Latent sampling requires an explicit flattening bottleneck.
         if z_id is None:
             raise ValueError(
                 "sample_vae requires a flatten reshaper."
             )
+        # Prior samples are meaningful only for a Gaussian KL bottleneck.
         if not network.reshaper_kwargs.get("add_kl", False):
             raise ValueError(
                 "sample_vae requires add_kl=True in reshaper_kwargs."
@@ -4066,6 +4084,7 @@ class DiffusionModel(ArgumentSaverModel):
             ) else [z]
         # Multiple variational boundaries require a matching collection of latent batches.
         else:
+            # Supply exactly one latent tensor for every ordered flattening stage.
             if not isinstance(z, (list, tuple)) or len(z) != len(flatten_ids):
                 raise ValueError(
                     f"z must contain {len(flatten_ids)} latent tensors."
@@ -4211,6 +4230,7 @@ class DiffusionModel(ArgumentSaverModel):
 
         # Route sampling through the variational decoder in swapped-objective mode.
         if self.swap_noise_image:
+            # The VAE shortcut returns images without a diffusion trajectory.
             if return_x_ts or return_x0s:
                 raise ValueError(
                     "Sampling trajectories are unavailable "
@@ -4292,10 +4312,12 @@ class DiffusionModel(ArgumentSaverModel):
         scale = float(self.test_cfg_scale if scale is None else scale)
         eta = float(self.test_eta if eta is None else eta)
 
+        # Keep the sampling grid within the available schedule horizon.
         if not 2 <= steps <= self.timesteps:
             raise ValueError(
                 f"steps must be in [2, {self.timesteps}], got {steps!r}."
             )
+        # Keep stochastic sampling strength within its finite unit interval.
         if not 0. <= float(eta) <= 1.:
             raise ValueError(
                 f"eta must be a finite number in [0, 1], got {eta!r}."

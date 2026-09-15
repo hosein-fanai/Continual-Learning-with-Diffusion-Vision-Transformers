@@ -135,8 +135,8 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         np.testing.assert_allclose(model.classifier_feature_extractor(features), expected_pool)
         np.testing.assert_array_equal(outputs["clf_regs_logits_list"][1], 11.0)
 
-    def test_incompatible_growth_rejection_preserves_both_branches(self) -> None:
-        """Reject changed terminal input/head widths without mutating live model state.
+    def test_nonempty_depth_requests_preserve_built_branches(self) -> None:
+        """Reject depth additions without mutating either already built branch.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -161,7 +161,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 # Combined requests must not mutate the valid network branch either.
                 if combined:
                     spec["network"] = "vision_transformer_block"
-                with self.assertRaisesRegex(ValueError, "dimension"):
+                with self.assertRaisesRegex(ValueError, "Post-build depth growth is unsupported"):
                     model.add_depths(spec)
                 self.assertEqual(model.get_config(), config)
                 self.assertEqual(model.clf_depth, 1)
@@ -176,8 +176,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 for key in before:
                     np.testing.assert_array_equal(after[key], before[key])
 
-    def test_growth_can_restore_width_before_reaching_existing_head(self) -> None:
-        """Accept a complete 4-to-8-to-4 sequence and preserve existing weight identities.
+    def test_complete_classifier_width_sequence_round_trips(self) -> None:
+        """Construct a 4-to-8-to-4 classifier and preserve its full serialized state.
+
+        The complete architecture exists before Keras builds variables. Repeated
+        inference retains variable identities; reconstruction preserves each
+        learned value and the expected intermediate feature widths.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -185,21 +189,22 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
-        model = self._classifier(clf_depth=1)
+        model = self._classifier(
+            clf_depth=3, clf_vit_block_mlp_output_dims={2: 8, 3: 4},
+        )
         old_weights = list(model.weights)
         old_head = model.classifier
-        growth = model.add_depths({"classifier": [
-            {"vision_transformer_block": {"mlp_output_dim": 8}},
-            {"vision_transformer_block": {"mlp_output_dim": 4}},
-        ]})
         outputs = model(self.inputs, full_return=True, training=False)
-        self.assertEqual(growth["classifier"], {"before": 1, "added": 2, "after": 3})
+        self.assertEqual(model.clf_depth, 3)
         self.assertEqual([feature.shape[-1] for feature in outputs["clf_features_list"]], [4, 4, 8, 4, 4])
         self.assertIs(model.classifier, old_head)
-        self.assertTrue({id(weight) for weight in old_weights} <= {id(weight) for weight in model.weights})
+        self.assertEqual([id(weight) for weight in old_weights], [id(weight) for weight in model.weights])
         clone = DiTClassifier.from_config(model.get_config())
         clone.set_weights(model.get_weights())
         self.assertEqual([weight.shape for weight in model.weights], [weight.shape for weight in clone.weights])
+        self.assertEqual(clone.get_config(), model.get_config())
+        for expected, actual in zip(model.get_weights(), clone.get_weights()):
+            np.testing.assert_array_equal(actual, expected)
         np.testing.assert_allclose(clone(self.inputs)["classes"], outputs["classes"], atol=1e-7)
 
     def test_zero_depth_growth_rejects_before_any_mutation(self) -> None:
@@ -246,8 +251,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                         "depths": [{"network": "vision_transformer_block",
                                     "classifier": "vision_transformer_block"}],
                     })
+                with self.assertRaisesRegex(ValueError, "Post-build depth growth is unsupported"):
+                    validate_progressive_classifier_growth(model, {
+                        "stage_tasks": "depths_only", "depths": ["vision_transformer_block"],
+                    })
                 validate_progressive_classifier_growth(model, {
-                    "stage_tasks": "depths_only", "depths": ["vision_transformer_block"],
+                    "stage_tasks": "timesteps_only", "timesteps": [(0, 4)],
                 })
                 self.assertEqual(model.get_config(), config)
                 self.assertEqual([id(weight) for weight in model.weights], identities)

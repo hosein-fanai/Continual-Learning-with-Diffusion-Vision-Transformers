@@ -71,8 +71,10 @@ class ConditionEmbedding(BaseEmbedding):
         super().__init__(**kwargs)
         self._save_init_args(locals())
 
+        # Condition lookup requires a finite vocabulary size.
         if self.embed_steps is None:
             raise ValueError("ConditionEmbedding requires positive embed_steps.")
+        # Condition IDs support learned or fixed one-dimensional lookup tables.
         if self.pos_embed_type not in ("new_weight", "1d_sincos"):
             raise ValueError(
                 "ConditionEmbedding supports new_weight or 1d_sincos only."
