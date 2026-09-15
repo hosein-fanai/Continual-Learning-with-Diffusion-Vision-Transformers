@@ -9,7 +9,8 @@ tensorboard==2.20.0
 numpy==2.3.2
 h5py==3.14.0
 ml-dtypes==0.5.3
-protobuf==6.31.1
+# Match TensorFlow's generated protobuf major version (5.28.3).
+protobuf==5.29.6
 
 # Data loading, evaluation, configuration, optimization, and resource reporting.
 pandas==3.0.5

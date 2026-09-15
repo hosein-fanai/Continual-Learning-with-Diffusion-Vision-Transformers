@@ -782,15 +782,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
     ) -> dict[str, dict[str, int]]:
         """Grow encoder and decoder branches transactionally.
 
-        Built models reject nonempty requests before either branch changes.
-        Empty branch requests are no-ops; ordinary training requires complete
-        encoder and decoder depths to be configured at construction.
+        Built models retain existing layers and variables. Empty branch requests
+        are no-ops. Build or call after growth to create the appended weights.
 
         An ordinary specification grows the encoder, matching
         :class:`DiffusionTransformer`. A targeted mapping accepts ``network``
         and ``decoder`` values using the corresponding branch's normal
         progressive syntax. The complete change is first validated on an
-        unbuilt configuration clone, so an invalid branch cannot leave the
+        configuration clone, including a build, so an invalid branch cannot leave the
         other branch partially grown.
 
         Args:
@@ -802,8 +801,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
             ``network`` and ``decoder``.
 
         Raises:
-            ValueError: If nonempty growth targets a built model, a target or
-                layer name is unknown, or growth would
+            ValueError: If a target or layer name is unknown, or growth would
                 violate an existing output-head contract.
         """
 
@@ -821,17 +819,11 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 name: {"before": depth, "added": 0, "after": depth}
                 for name, depth in (("network", self.depth), ("decoder", self.decoder.depth))
             }
-        # Reject live composite growth before either branch can change.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         probe_config = self.get_config()
         probe_config["build"] = False
         probe = DiTEncoderDecoder.from_config(probe_config)
         probe._apply_depths(deepcopy(depth_spec))
+        probe.build()
 
         return self._apply_depths(depth_spec)
 

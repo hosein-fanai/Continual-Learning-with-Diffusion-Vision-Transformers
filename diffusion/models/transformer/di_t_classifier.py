@@ -20,7 +20,9 @@ from . import (
 
 from common.runtime import derive_seed
 from common.validation import require
+from common.argument_saver import _copy_config_containers
 
+from diffusion.layers.convolution.stage import LayerDict
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
 
@@ -1125,11 +1127,14 @@ class DiTClassifier(DiffusionTransformer):
             moved from constructor key ``-1``.
         """
 
-        self.clf_layers_dicts = []
+        object.__setattr__(self, "clf_layers_dicts", [])
 
         for i in range(self.clf_depth+1):
             self.clf_layers_dicts.append(
-                self._create_clf_layers_dict(i, self.clf_layers_dicts)
+                self._create_clf_layers_dict(
+                    i, 
+                    self.clf_layers_dicts
+                )
             )
 
         # Retain an append-only tracking path for executable classifier stages.
@@ -1137,7 +1142,15 @@ class DiTClassifier(DiffusionTransformer):
         # connector, which requires replacing ``clf_layers_dicts`` later.  This
         # tracker is created before the classifier head and lets newly appended
         # stages keep the same weight/checkpoint order as a from-config clone.
-        self._clf_layers_tracker = list(self.clf_layers_dicts[:-1])
+        self._clf_layers_tracker = LayerDict({
+            layer.name: layer 
+            for stage in self.clf_layers_dicts[:-1] 
+            for layer in stage.values()
+        }, name=f"{self.name_prefix}classifier_layers")
+        self._clf_terminal_tracker = LayerDict(
+            self.clf_layers_dicts[-1], 
+            name=f"{self.name_prefix}classifier_terminal"
+        )
 
     def _create_classifier_head(self, name: str) -> models.Sequential:
         """Create one class-probability head with the configured MLP/dropout.
@@ -1709,9 +1722,9 @@ class DiTClassifier(DiffusionTransformer):
     ) -> dict[str, dict[str, int]]:
         """Append transformer and classifier depths through their own APIs.
 
-        Nonempty growth is unsupported after building and is rejected before
-        either branch changes. Empty branch requests remain no-ops. Configure
-        complete network and classifier depths in the constructor.
+        Built models retain existing layers and variables. Empty branch requests
+        remain no-ops. Build or call the model after growth to create new weights;
+        wrappers also register them with the optimizer and initialize new EMA weights.
 
         An ordinary specification is delegated to ``DiffusionTransformer``
         and therefore grows only ``layers_dicts``. A targeted dictionary may
@@ -1745,8 +1758,8 @@ class DiTClassifier(DiffusionTransformer):
             counts for both branches.  An omitted targeted branch reports zero.
 
         Raises:
-            ValueError: If nonempty growth targets a built model, targeted
-                keys/layer names are unknown, the classifier
+            ValueError: If targeted keys/layer names are unknown, the classifier
+                starts at depth zero, the classifier
                 terminal stage is not connector-only, or appended layers change
                 the feature width expected by an existing head.
         """
@@ -1777,7 +1790,9 @@ class DiTClassifier(DiffusionTransformer):
                         else [classifier_specs]
         # Discard disabled growth placeholders before adding classifier stages.
         classifier_specs = [
-            spec for spec in classifier_specs if spec is not None
+            spec 
+            for spec in classifier_specs 
+            if spec is not None
         ]
 
         old_clf_depth = self.clf_depth
@@ -1790,8 +1805,11 @@ class DiTClassifier(DiffusionTransformer):
                 # Targeted calls report the unchanged classifier branch too.
                 if targeted:
                     growth["classifier"] = {
-                        "before": old_clf_depth, "added": 0, "after": old_clf_depth
+                        "before": old_clf_depth, 
+                        "added": 0, 
+                        "after": old_clf_depth
                     }
+
                 return growth
 
             # Refresh the encoder limit after denoiser growth used by noise aggregation.
@@ -1800,10 +1818,10 @@ class DiTClassifier(DiffusionTransformer):
 
             self._init_config[
                 "feature_aggregation_ids_dict"
-            ] = deepcopy(self.feature_aggregation_ids_dict)
+            ] = _copy_config_containers(self.feature_aggregation_ids_dict)
             self._init_config[
                 "cross_attention_aggregation_ids_dict"
-            ] = deepcopy(self.cross_attention_aggregation_ids_dict)
+            ] = _copy_config_containers(self.cross_attention_aggregation_ids_dict)
 
             # Preserve the base growth result for unscoped requests.
             if not targeted:
@@ -1824,13 +1842,6 @@ class DiTClassifier(DiffusionTransformer):
                 "Classifier depth growth from clf_depth=0 is unsupported."
             )
 
-        # Reject classifier state changes before planning either branch's layers.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         metadata_names = (
             "feature_aggregation_ids_dict", 
             "cross_attention_aggregation_ids_dict", 
@@ -1842,7 +1853,7 @@ class DiTClassifier(DiffusionTransformer):
             "clf_reshaper_kwargs", "clf_cls_token_regularizer_ids"
         )
         metadata = {
-            name: deepcopy(getattr(self, name)) 
+            name: _copy_config_containers(getattr(self, name))
             for name in metadata_names
         }
         old_terminal_key = old_clf_depth + 1
@@ -2094,8 +2105,13 @@ class DiTClassifier(DiffusionTransformer):
         # replacing the logical stage sequence. This keeps positional Keras
         # weights and checkpoint object paths identical to a config clone while
         # avoiding unsupported non-append mutation of a Trackable ListWrapper.
-        self._clf_layers_tracker.extend(added_layers)
-        self.clf_layers_dicts = [
+        for stage in added_layers:
+            self._clf_layers_tracker.update({
+                layer.name: layer 
+                for layer in stage.values()
+            })
+
+        self.clf_layers_dicts[:] = [
             *self.clf_layers_dicts[:-1],
             *added_layers,
             terminal_layers,

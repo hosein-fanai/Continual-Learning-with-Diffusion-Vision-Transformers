@@ -171,10 +171,11 @@ latents are drawn independently from the standard-normal prior.
 decoder stages align their tensors at runtime, so the same weights support
 progressive resolution and odd intermediate sizes.
 
-The following depth-growth calls describe the retained legacy interface.
-TensorFlow 2.20 / Keras 3 requires depth to be configured at construction;
-mutating built model depth or calling raw `add_class()` is unsupported. Current
-class growth rebuilds fixed-depth raw/EMA networks through the wrapper.
+The following depth-growth calls support built networks on TensorFlow 2.20 /
+Keras 3 and retain existing variables. Build or call after growth to create the
+appended weights; training wrappers also update optimizer and EMA state. Raw
+`add_class()` on a built model remains unsupported. Class growth reconstructs
+raw/EMA networks through the wrapper while preserving the current depth.
 
 `add_depths(...)` describes shape-preserving stages after the base decoder:
 

@@ -135,11 +135,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         np.testing.assert_allclose(model.classifier_feature_extractor(features), expected_pool)
         np.testing.assert_array_equal(outputs["clf_regs_logits_list"][1], 11.0)
 
-    def test_nonempty_depth_requests_preserve_built_branches(self) -> None:
-        """Reject depth additions without mutating either already built branch.
+    def test_invalid_width_depth_requests_preserve_built_branches(self) -> None:
+        """Reject incompatible head or connector widths without changing either branch.
 
         Returns:
-            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+            result (None): Invalid 4-to-8 classifier additions preserve float32
+                outputs, variables, layer identities, routes and configuration.
 
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
@@ -161,7 +162,9 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 # Combined requests must not mutate the valid network branch either.
                 if combined:
                     spec["network"] = "vision_transformer_block"
-                with self.assertRaisesRegex(ValueError, "Post-build depth growth is unsupported"):
+                # A projected or normalized terminal connector retains its original input width.
+                expected_error = "terminal connector's input dimension" if connector else "classifier-head dimension"
+                with self.assertRaisesRegex(ValueError, expected_error):
                     model.add_depths(spec)
                 self.assertEqual(model.get_config(), config)
                 self.assertEqual(model.clf_depth, 1)
@@ -228,10 +231,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
             np.testing.assert_array_equal(value, before[key])
 
     def test_external_preflight_rejects_real_zero_depth_classifier_variants(self) -> None:
-        """Catch unsupported growth on both raw variants before orchestration starts training.
+        """Allow denoiser growth but reject zero-depth classifier growth before training.
 
         Returns:
-            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+            result (None): Both raw classifier variants accept compatible
+                denoiser schedules, reject classifier growth from zero, and
+                retain exact float32 weights and configuration during preflight.
 
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
@@ -245,21 +250,23 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
             with self.subTest(model=type(model).__name__):
                 config = deepcopy(model.get_config())
                 identities = [id(weight) for weight in model.weights]
+                values = model.get_weights()
                 with self.assertRaisesRegex(ValueError, "clf_depth=0 is unsupported"):
                     validate_progressive_classifier_growth(model, {
                         "stage_tasks": "depths_only",
                         "depths": [{"network": "vision_transformer_block",
                                     "classifier": "vision_transformer_block"}],
                     })
-                with self.assertRaisesRegex(ValueError, "Post-build depth growth is unsupported"):
-                    validate_progressive_classifier_growth(model, {
-                        "stage_tasks": "depths_only", "depths": ["vision_transformer_block"],
-                    })
+                validate_progressive_classifier_growth(model, {
+                    "stage_tasks": "depths_only", "depths": ["vision_transformer_block"],
+                })
                 validate_progressive_classifier_growth(model, {
                     "stage_tasks": "timesteps_only", "timesteps": [(0, 4)],
                 })
                 self.assertEqual(model.get_config(), config)
                 self.assertEqual([id(weight) for weight in model.weights], identities)
+                for actual, expected in zip(model.get_weights(), values):
+                    np.testing.assert_array_equal(actual, expected)
 
     def test_reshaper_policy_survives_other_global_policy_and_config_clone(self) -> None:
         """Preserve owner, outputs, statistics, and variable policy in all reshape modes.

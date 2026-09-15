@@ -273,8 +273,10 @@ Task checkpointing is opt-in with `save_task_checkpoints=True`. Each atomic comm
 contains raw/EMA, classifier/replay and teacher state, optimizer slots, replay
 contents and RNG, global/local RNG state, the task cursor, resolved schedule,
 and metric histories. `resume_from` accepts either the checkpoint root or one
-committed task directory; an interrupted task is rerun from the preceding
-boundary. Reload the immutable `input_config.yaml`, not the final artifact-
+committed task directory. Ordinary task-only checkpoints rerun an interrupted
+task from the preceding boundary; the semantic adapter can additionally enable
+optimizer-step progress through its `checkpoint_interval` setting. Reload the
+immutable `input_config.yaml`, not the final artifact-
 resolved `config.yaml`, when resuming. With CSV reporting enabled, the run writes long-form epoch/task
 metrics, accuracy matrices, the resolved schedule, and summaries beside its
 other artifacts. TensorBoard uses task/class/phase namespaces. Setting
@@ -309,12 +311,24 @@ overwritten; ordinary `.task-*.tmp-*` staging directories do not occupy task
 slots. Models with persistent task-side state must provide all three checkpoint
 hooks: configuration identity, state export, and state restore. The learner
 authenticates that configuration, saves the side state in its existing committed
-checkpoint, and restores it before random generators and the next task.
-The core semantic route uses these hooks for completed-task recovery; its
-[module guide](../semantic_consolidation/README.md) describes supported settings.
-Resume through the runner, which constructs a fresh destination. A failed direct
-learner restore can have assigned TensorFlow state before a model-specific
-payload is rejected; discard that destination instead of continuing training on it.
+checkpoint, and restores it before random generators and the next task. An
+optional `validate_task_checkpoint_state(state, completed_tasks, class_count)`
+hook validates owner state before live TensorFlow reconstruction or runtime
+reseeding. The semantic adapter implements this preflight for its bank,
+controller and observer state. The low-level TensorFlow loader takes a temporary
+native checkpoint of existing destination dependencies and rolls them back if
+strict restoration fails. The public runner constructs a fresh destination.
+
+The [semantic module guide](../semantic_consolidation/README.md#resuming-training)
+describes optional joint/phase progress, scheduled replay and observer recovery.
+It reuses the ordinary checksummed writer and root selector. A root retains its
+initial restart boundary and at most two indexed intermediate snapshots beside
+immutable completed tasks. Corrupt advisory progress indexes do not hide valid
+completed boundaries. Positive intervals commit completed optimizer steps and
+epoch/fit boundaries; zero keeps the ordinary task-only path. Recovery resumes
+the last valid commit, so uncommitted work may be repeated. Recorded I/O and
+committed active-time segments are reported separately; downtime and unknown
+work from failed attempts are not fabricated.
 
 Strict checkpoint runs also authenticate behavior-defining callbacks.
 `LearningRateScheduler` supports pure Python schedules with immutable captured
@@ -323,7 +337,8 @@ A changed closure value changes the recovery identity. Opaque or mutable
 dependencies require a declarative configured schedule. Built-in per-fit
 EarlyStopping and ReduceLROnPlateau behavior is preserved; model/optimizer state
 is restored and those callbacks reset at the next fit as in uninterrupted
-execution. Opaque callbacks remain usable in runs without checkpointing.
+execution. Optional semantic mid-fit recovery also restores their saved counters
+and best weights within that fit. Opaque callbacks remain usable in runs without checkpointing.
 
 Custom callbacks for strict recovery must implement JSON-compatible
 `get_recovery_config()` and either declare
@@ -333,13 +348,14 @@ state. Behavior declarations are checked again before each task. This protocol
 is an explicit correctness contract: the callback author must include every
 behavior-defining parameter and every required persistent state variable.
 
-Construct the complete denoiser and classifier depth before training. The common
-progressive entry points reject persistent depth additions to built models before
-any fit or result reservation. Empty depth requests remain no-ops. Fixed-depth
-curricula can still vary timesteps and compatible input resolutions. Dynamic
-class growth uses reconstruction at task boundaries and preserves existing class
-weights and matching optimizer state; slots whose shapes change start from their
-initial values. Raw post-build architecture mutation remains unsupported.
+Progressive entry points validate persistent depth additions on an independent
+configuration clone before fitting or reserving results. Compatible additions
+retain existing layers, optimizer state and EMA values; new EMA weights start
+from their raw-network counterparts. Empty depth requests remain no-ops, and
+curricula can combine growth with timestep and compatible resolution changes.
+Dynamic class growth uses reconstruction at task boundaries and preserves
+existing class weights and matching optimizer state; slots whose shapes change
+start from their initial values. Raw post-build `add_class()` remains unsupported.
 
 ## Hyperparameter optimization
 

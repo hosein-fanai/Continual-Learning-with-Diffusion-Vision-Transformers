@@ -210,6 +210,20 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         if self.build_:
             self.build()
 
+    def _create_unpatchifier(self) -> None:
+        """Leave image reconstruction to the nested decoder.
+
+        Noise-based classifier aggregation uses the decoder prediction, so the
+        encoder must not allocate an unused image head during construction.
+
+        Returns:
+            result (None): Sets ``unpatchifier`` to ``None`` without creating weights.
+
+        Raises:
+            None: This composite always delegates reconstruction to its decoder.
+        """
+        self.unpatchifier = None
+
     @property
     def encoder(self) -> DiTClassifier:
         """Return the inherited encoder/classifier network.
@@ -561,13 +575,12 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
     ) -> dict[str, dict[str, int]]:
         """Grow encoder, classifier, and decoder branches transactionally.
 
-        Built models reject nonempty requests before changing any branch.
-        Empty branch requests remain no-ops. Set all three depths at construction
-        for ordinary training.
+        Built models retain existing layers and variables. Empty branch requests
+        remain no-ops. Build or call after growth to create appended weights.
 
         Ordinary specifications grow the encoder. Targeted mappings accept
         ``network``, ``classifier``, and ``decoder``. The full operation is
-        validated on an unbuilt configuration clone before this model changes,
+        validated and built on a configuration clone before this model changes,
         preventing an invalid later branch from leaving earlier branches grown.
 
         Args:
@@ -579,8 +592,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             branches.
 
         Raises:
-            ValueError: If nonempty growth targets a built model, a target or
-                layer name is unknown, or a branch
+            ValueError: If a target or layer name is unknown, or a branch
                 violates its output topology.
         """
 
@@ -599,17 +611,11 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 for name, depth in (("network", self.depth), ("classifier", self.clf_depth),
                                     ("decoder", self.decoder.depth))
             }
-        # Reject live composite growth before any target branch changes.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         probe_config = self.get_config()
         probe_config["build"] = False
         probe = DiTEncoderDecoderClassifier.from_config(probe_config)
         probe._apply_depths(deepcopy(depth_spec))
+        probe.build()
 
         return self._apply_depths(depth_spec)
 

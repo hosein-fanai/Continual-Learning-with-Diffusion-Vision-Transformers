@@ -334,7 +334,8 @@ class UNet(ArgumentSaverModel):
         self.cls_token = None
 
         self._stage_kinds: list[str] = []
-        self.layers_dicts: list[LayerDict] = []
+        self._depth_layers = LayerDict(name=f"{self.name_prefix}depth_layers")
+        object.__setattr__(self, "layers_dicts", [])
         self._create_layers()
         self.output_projection = layers.Conv2D(
             filters=self.channels, 
@@ -627,6 +628,7 @@ class UNet(ArgumentSaverModel):
             dtype=self.dtype_policy, 
         )
         self.layers_dicts.append(stage)
+        self._depth_layers[stage.name] = stage
         self._stage_kinds.append(kind)
 
         return key
@@ -1389,9 +1391,9 @@ class UNet(ArgumentSaverModel):
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Append shape-preserving convolution or regularizer stages.
 
-        Nonempty requests require an unbuilt model. For built models, set the
-        complete depth at construction; ``None``, ``[]`` and lists of ``None``
-        remain no-ops.
+        Built models retain existing layers and variables. ``None``, ``[]`` and
+        lists of ``None`` remain no-ops. Build or call after growth to create the
+        new weights; training wrappers also update optimizer and EMA state.
 
         Args:
             depth_spec (object): One stage specification or a list of them.
@@ -1401,8 +1403,7 @@ class UNet(ArgumentSaverModel):
                 depth counts for the network branch.
 
         Raises:
-            ValueError: Nonempty growth targets a built model, or a requested
-                stage is incompatible with the existing architecture.
+            ValueError: A requested stage is incompatible with the existing architecture.
         """
 
         # Normalize one progressive U-Net stage or an explicit stage list.
@@ -1413,13 +1414,6 @@ class UNet(ArgumentSaverModel):
         # Leave the architecture unchanged for an empty growth request.
         if not specs:
             return {"network": {"before": before, "added": 0, "after": before}}
-
-        # Reject new tracked stages before changing any live model state.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
 
         normalized = [self._normalize_extra_spec(spec) for spec in specs]
         serializable_specs = []
@@ -1473,6 +1467,34 @@ class UNet(ArgumentSaverModel):
         vars = self.trainable_variables if vars is None else vars
 
         return [format_variable_name(variable) for variable in vars]
+
+
+    @property
+    def layers(self) -> list[layers.Layer]:
+        """Expose stages in the order used by existing saved weights.
+
+        Internal depth holders own appended stages without changing the public
+        layer inventory or the paths used by Keras weight serialization.
+
+        Returns:
+            model_layers (list[tf.keras.layers.Layer]): Ordered immediate layers
+                with depth and classifier processing holders expanded once.
+
+        Raises:
+            None: Reading the layer inventory does not validate model inputs.
+        """
+        holders = tuple(getattr(self, name, None) for name in (
+            "_depth_layers", "_clf_layers_tracker"
+        ))
+        model_layers = []
+        for layer in super().layers:
+            # Expose the stages rather than their internal ownership containers.
+            if any(layer is holder for holder in holders):
+                model_layers.extend(layer.values())
+            # Preserve the terminal classifier container and all ordinary layers.
+            else:
+                model_layers.append(layer)
+        return model_layers
 
 
 # TensorFlow 2.10 writes the plain root name for subclassed model JSON.

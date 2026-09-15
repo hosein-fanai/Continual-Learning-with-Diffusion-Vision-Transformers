@@ -6,11 +6,10 @@ noise schedules, callbacks, and metrics. The package targets TensorFlow 2.20
 with native Keras 3
 and uses channels-last image tensors.
 
-Fixed-depth models support class growth through the wrapper's task-boundary
-reconstruction. Direct `network.add_class()` and progressive depth mutation of
-built models remain unsupported under Keras 3; depth-growth APIs described below
-and in child guides describe the retained legacy interface. Choose the full
-depth in the constructor for current training. See
+Models support class growth through the wrapper's task-boundary reconstruction.
+Direct `network.add_class()` on a built model remains unsupported. Progressive
+depth growth uses the existing `add_depths()` API and retains trained layers;
+wrappers also preserve optimizer state and existing EMA values. See
 [compatibility notes](../compatibility_migration.md).
 
 Its existing package-level public exports are lazy and cached. Imports such as
@@ -43,8 +42,8 @@ teacher-forcing image. `DiffusionModel` uses the ordinary three-input wrapper
 pipeline; the raw model reuses `x_t` for its decoder, so
 training, evaluation, and sampling stay aligned and the target noise is never
 exposed to the network.
-Encoder and decoder depth are owned separately. Construct both before training;
-legacy `add_depths` calls on built models are unsupported by native Keras 3.
+Encoder and decoder depth are owned separately. Targeted `add_depths` requests
+can extend either branch, with both branches validated before the change.
 See the transformer README for the construction contracts.
 
 ## Basic conditional model
@@ -117,8 +116,8 @@ images = model.sample_vae(labels=[1, 2], network_name="ema")
 KL mode inserts the computed flatten/unflatten depths and disables skips by
 default, ensuring the decoder cannot route around the latent. Ordinary U-Net
 mode keeps the standard skip hierarchy. Both modes support active-resolution
-changes. Post-build residual growth through the legacy `add_depths(...)` path
-is unsupported by native Keras 3; construct the intended full depth first.
+changes. `add_depths(...)` appends shape-preserving residual stages after build;
+the training wrapper initializes new EMA weights and registers optimizer variables.
 The ratio list has exactly one entry per contiguous flatten/unflatten pair in
 ascending flatten-depth order; if omitted, every pair uses ratio `1.0`.
 Convolutional multiscale U-Net places stochastic pairs at successive encoder

@@ -284,8 +284,10 @@ project's batch-wise plateau callback. `stopper_mode` selects `"min"`, `"max"`,
 or `"auto"` for either callback; use `"max"` when monitoring accuracy.
 The returned `History` includes a
 `progressive_stages` record and the resolved schedules. Timestep bounds and
-resolution are restored on exit. Legacy post-build depth growth is unsupported
-under native Keras 3; construct the full depth before fitting. See the
+resolution are restored on exit. Depth additions run after their training stage
+and remain in the model. The full depth schedule is checked before fitting;
+growth retains trained layers, optimizer state and old EMA values while new EMA
+weights start from the corresponding raw weights. See the
 [compatibility guide](../../../compatibility_migration.md).
 
 ## Joint diffusion classification

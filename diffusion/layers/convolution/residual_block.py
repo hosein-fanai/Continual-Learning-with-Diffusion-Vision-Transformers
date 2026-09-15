@@ -330,6 +330,9 @@ class ResidualConvStack(ArgumentSaverLayer):
             )
             for block_id in range(self.depth)
         ]
+        # Explicit attributes preserve every block in TensorFlow task checkpoints.
+        for block_id, block in enumerate(self.blocks):
+            setattr(self, f"_block_{block_id}", block)
 
     def call(
         self, 

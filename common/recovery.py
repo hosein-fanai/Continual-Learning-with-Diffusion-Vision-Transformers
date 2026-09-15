@@ -47,6 +47,8 @@ import inspect
 
 import types
 
+from tempfile import TemporaryDirectory
+
 from copy import deepcopy
 
 from pathlib import Path
@@ -2253,7 +2255,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
 
 
 def find_latest_task_checkpoint(
-    checkpoint_path: str | os.PathLike[str]
+    checkpoint_path: str | os.PathLike[str], *, include_progress: bool = True
 ) -> Path:
     """Resolve a task directory or find the newest valid committed child.
 
@@ -2262,6 +2264,8 @@ def find_latest_task_checkpoint(
     Args:
         checkpoint_path (str | os.PathLike[str]): Task directory, checkpoint
             root, or ``latest.json`` path to resolve.
+        include_progress (bool): True considers the two indexed active-fit
+            snapshots and the initial boundary; False searches completed tasks only.
 
     Returns:
         Path: Newest valid committed task directory.
@@ -2274,6 +2278,43 @@ def find_latest_task_checkpoint(
     """
 
     supplied = Path(checkpoint_path)
+    # Optional fit progress shares the public selector while completed tasks take precedence.
+    if include_progress and supplied.is_dir() and (supplied / "progress.json").is_file():
+        candidates = []
+        try:
+            normal = find_latest_task_checkpoint(supplied, include_progress=False)
+            candidates.append((float(_validate_committed_task(normal)["next_task_index"]), normal))
+        except FileNotFoundError:
+            pass
+        try:
+            pointers = _read_json(supplied / "progress.json")
+            # A damaged optional pointer cannot hide an immutable completed boundary.
+            if not isinstance(pointers, dict) or not isinstance(pointers.get("checkpoints"), list):
+                pointers = {"checkpoints": []}
+        except (ValueError, OSError):
+            pointers = {"checkpoints": []}
+        for relative in pointers.get("checkpoints", []):
+            # Progress references must stay inside their private checkpoint roots.
+            if (not isinstance(relative, str) or Path(relative).is_absolute()
+                    or ".." in Path(relative).parts or not Path(relative).parts
+                    or not Path(relative).parts[0].startswith(".progress-")):
+                continue
+            path = supplied / relative
+            # Symlinks cannot redirect a valid-looking relative locator outside this root.
+            if not path.resolve().is_relative_to(supplied.resolve()):
+                continue
+            try:
+                metadata = _validate_committed_task(path)
+                active = metadata["experiment_state"].get("active_task_index")
+                # A progress cursor describes the same task as its ordinary checkpoint schema.
+                if type(active) is not int or active != metadata["completed_task_index"]:
+                    raise ValueError("Invalid active-task checkpoint cursor.")
+                candidates.append((active + 0.5, path))
+            except (ValueError, OSError):
+                continue
+        # Prefer the newest valid progress snapshot, with completed boundaries authoritative.
+        if candidates:
+            return max(candidates, key=lambda item: item[0])[1]
     # Treat an explicit latest.json path as a request to search its parent directory.
     if supplied.name == _LATEST_NAME and supplied.is_file():
         supplied = supplied.parent
@@ -2351,6 +2392,14 @@ def find_latest_task_checkpoint(
         except Exception:
             continue
 
+    # Before the first fit commit, a published initial boundary still permits restart.
+    if include_progress and supplied.is_dir() and (supplied / ".initial").is_dir():
+        initial = find_latest_task_checkpoint(supplied / ".initial", include_progress=False)
+        metadata = _validate_committed_task(initial)
+        # The reserved initial boundary must describe zero completed optimizer tasks.
+        if metadata["experiment_state"].get("restart_task_index") != 0:
+            raise ValueError("Invalid initial recovery boundary.")
+        return initial
     raise FileNotFoundError(
         f"No valid committed task checkpoint exists below: {supplied}"
     )
@@ -2372,10 +2421,10 @@ def load_task_checkpoint(
     variables, and call it again with the complete mapping. Build Keras optimizer
     slots with ``optimizer.build(trainable_variables)`` before strict restoration.
 
-    Validates commitment and payload checksums before optional TensorFlow
-    restoration. Supplying dependencies changes their live variables; a later
-    restore assertion or replay-decoding failure does not roll those changes
-    back. RNG and replay state are returned for explicit restoration with
+    Validates commitment, checksums and replay decoding before optional
+    TensorFlow restoration. Existing dependencies are backed up through the same
+    TensorFlow checkpoint API, and a failed restore restores that backup before
+    propagating the error. RNG and replay state are returned for explicit restoration with
     ``restore_rng_state`` and ``restore_replay_buffer``.
 
     Args:
@@ -2452,6 +2501,7 @@ def load_task_checkpoint(
     normalized_trackables = _validate_trackables(trackables)
     saved_trackable_names = set(manifest.get("trackable_names", []))
     restore_status = None
+    replay_state = _read_replay_archive(task_dir, manifest.get("replay"))
 
     # Supplying concrete dependencies opts into TensorFlow restoration.
     if normalized_trackables:
@@ -2476,19 +2526,23 @@ def load_task_checkpoint(
             raise ValueError("TensorFlow checkpoint prefix escapes task directory.")
 
         checkpoint = tf.train.Checkpoint(**normalized_trackables)
-        restore_status = checkpoint.read(str(task_dir / prefix_path))
-
-        # Require every saved value to be consumed for strict restoration.
-        if assert_consumed:
-            restore_status.assert_consumed()
-        # For partial restoration, still require every supplied object to match.
-        else:
-            restore_status.assert_existing_objects_matched()
+        with TemporaryDirectory(prefix="checkpoint-restore-") as backup_directory:
+            backup_prefix = checkpoint.write(str(Path(backup_directory) / "original"))
+            try:
+                restore_status = checkpoint.read(str(task_dir / prefix_path))
+                # Require every saved value to be consumed for strict restoration.
+                if assert_consumed:
+                    restore_status.assert_consumed()
+                # Partial restoration still requires every supplied object to match.
+                else:
+                    restore_status.assert_existing_objects_matched()
+            except Exception:
+                # Restore all original trackable values before exposing a failed load.
+                checkpoint.read(backup_prefix).assert_consumed()
+                raise
     # Reject explicitly empty dependencies when the checkpoint contains TensorFlow state.
     elif saved_trackable_names and trackables is not None:
         raise ValueError("The checkpoint requires nonempty TensorFlow trackables.")
-
-    replay_state = _read_replay_archive(task_dir, manifest.get("replay"))
 
     return TaskCheckpoint(
         task_dir=task_dir,
@@ -2504,14 +2558,79 @@ def load_task_checkpoint(
     )
 
 
+def save_task_progress(
+    checkpoint_root: str | os.PathLike[str], 
+    task_index: int,
+    state: Mapping[str, object], 
+    trackables: Mapping[str, object]
+) -> Path:
+    """Atomically commit optional fit progress and retain its preceding valid snapshot.
+
+    The ordinary task writer owns checksums, TensorFlow state and numeric JSON
+    encoding. This small index retains only the latest two progress snapshots;
+    completed task directories and the initial restart boundary are untouched.
+
+    Args:
+        checkpoint_root (str | os.PathLike[str]): Shared task-checkpoint root.
+        task_index (int): Zero-based active task in the saved full schedule.
+        state (Mapping[str, object]): Ordinary checkpoint state with class_order,
+            task_groups, fingerprint and active_task_index equal to task_index.
+        trackables (Mapping[str, object]): Current fit's checkpointable iterator
+            and any additional explicitly owned TensorFlow dependencies.
+
+    Returns:
+        checkpoint (Path): Committed progress task directory selected through
+            find_latest_task_checkpoint or load_task_checkpoint on the root.
+
+    Raises:
+        ValueError: If state or a retained progress locator is malformed.
+        OSError: If a checkpoint, pointer or obsolete private snapshot cannot be
+            written, committed or removed. A committed task is never overwritten.
+    """
+
+    root = Path(checkpoint_root)
+    pointer = root / "progress.json"
+    try:
+        pointers = _read_json(pointer) if pointer.exists() else {}
+        previous = pointers.get("checkpoints", []) if isinstance(pointers, dict) else []
+        # A damaged advisory index does not invalidate a newly committed native snapshot.
+        if not isinstance(previous, list):
+            previous = []
+    except (ValueError, OSError):
+        previous = []
+
+    private = root / (".progress-" + uuid.uuid4().hex)
+    path = save_task_checkpoint(private, task_index, state, trackables)
+    relative = path.relative_to(root).as_posix()
+    temporary = root / (".progress-index-" + uuid.uuid4().hex)
+    _write_json(temporary, {"checkpoints": [relative, *previous[:1]]})
+    os.replace(temporary, pointer)
+    for obsolete in previous[1:]:
+        # Delete only a private progress directory authenticated by its safe relative locator.
+        if (not isinstance(obsolete, str) or Path(obsolete).is_absolute()
+        or ".." in Path(obsolete).parts or len(Path(obsolete).parts) != 2
+        or not Path(obsolete).parts[0].startswith(".progress-")):
+            raise ValueError("Invalid obsolete progress checkpoint locator.")
+
+        old = root / obsolete
+        # Resolved containment also rejects externally redirected private paths.
+        if old.parent.resolve().parent != root.resolve():
+            raise ValueError("Obsolete progress checkpoint escapes its root.")
+
+        shutil.rmtree(old.parent)
+
+    return path
+
+
 __all__ = [
-    "SCHEMA_VERSION",
-    "TaskCheckpoint",
-    "capture_rng_state",
-    "find_latest_task_checkpoint",
-    "fingerprint_state",
-    "load_task_checkpoint",
-    "restore_replay_buffer",
-    "restore_rng_state",
-    "save_task_checkpoint"
+    "SCHEMA_VERSION", 
+    "TaskCheckpoint", 
+    "capture_rng_state", 
+    "find_latest_task_checkpoint", 
+    "fingerprint_state", 
+    "load_task_checkpoint", 
+    "restore_replay_buffer", 
+    "restore_rng_state", 
+    "save_task_checkpoint", 
+    "save_task_progress"
 ]

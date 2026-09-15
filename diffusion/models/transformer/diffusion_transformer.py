@@ -15,7 +15,7 @@ from typing import Literal, get_args
 
 from . import CondType, TokenType, IdsType, IdsDictType, _unpatchify_tokens
 
-from common.argument_saver import ArgumentSaverModel
+from common.argument_saver import ArgumentSaverModel, _copy_config_containers
 from common.keras_compat import display_name, variable_path
 from common.runtime import derive_seed
 from common.validation import require
@@ -35,6 +35,7 @@ from diffusion.layers.adaptive_layer_normalization_zero import AdaLNZero
 from diffusion.layers.feature_handler import FeatureHandler
 from diffusion.layers.single_token_layer import SingleTokenLayer
 from diffusion.layers.convolution.variational_reshaper import _batch_size
+from diffusion.layers.convolution.stage import LayerDict
 
 
 class DiffusionTransformer(ArgumentSaverModel): # DiT
@@ -2279,12 +2280,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             with ``depth=0`` it is an empty list.
         """
 
-        self.layers_dicts = []
+        self._depth_layers = LayerDict(
+            name=f"{self.name_prefix}depth_layers"
+        )
+        object.__setattr__(self, "layers_dicts", [])
 
         for i in range(self.depth):
-            self.layers_dicts.append(
-                self._create_layers_dict(i, self.layers_dicts)
-            )
+            stage = self._create_layers_dict(i, self.layers_dicts)
+            self.layers_dicts.append(stage)
+            self._depth_layers.update({
+                layer.name: layer 
+                for layer in stage.values()
+            })
 
     def _create_unpatchifier(self) -> None:
         """Create the final adaptive projection and image reconstruction head.
@@ -2540,6 +2547,96 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         """
 
         return self._current_resolution
+
+    @property
+    def layers(self) -> list[layers.Layer]:
+        """Expose processing layers in their original serialization order.
+
+        Depth holders retain checkpoint ownership while their children remain
+        visible at the same level as weights saved before progressive growth.
+
+        Returns:
+            model_layers (list[tf.keras.layers.Layer]): Ordered immediate layers,
+                with internal depth and classifier holders expanded once.
+
+        Raises:
+            None: Reading the layer inventory does not validate model inputs.
+        """
+
+        holders = tuple(getattr(self, name, None) for name in (
+            "_depth_layers", 
+            "_clf_layers_tracker", 
+            "_clf_terminal_tracker"
+        ))
+        model_layers = []
+
+        for layer in super().layers:
+            # Preserve the historical flat inventory for internally owned stages.
+            if any(layer is holder for holder in holders):
+                model_layers.extend(layer.values())
+            # Keep ordinary layers and nested models at their existing level.
+            else:
+                model_layers.append(layer)
+
+        return model_layers
+
+    @classmethod
+    def from_config(cls, config: dict[str, object]) -> "DiffusionTransformer":
+        """Construct a model after restoring JSON-serialized depth keys.
+
+        Args:
+            config (dict[str, object]): Constructor settings. Integer-like
+                string keys in ``*_ids_dict`` mappings become integers,
+                including nested encoder/decoder settings. Other values are
+                preserved and the caller's mapping is not modified.
+
+        Returns:
+            model (DiffusionTransformer): A new instance of the invoked class
+                with the saved numeric policy and architecture. Weight values
+                must be restored separately.
+
+        Raises:
+            TypeError: Configuration cannot be copied or contains unsupported
+                constructor arguments or argument types.
+            ValueError: Constructor validation rejects the restored settings.
+        """
+
+        config = deepcopy(config)
+
+
+        def restore_routes(options: dict[str, object]) -> dict[str, object]:
+            """Restore depth keys in one copied configuration mapping.
+
+            Args:
+                options (dict[str, object]): Copied constructor options;
+                    nested encoder/decoder mappings are visited recursively.
+
+            Returns:
+                restored (dict[str, object]): The same mapping, updated in
+                    place with integer keys for signed numeric depth strings.
+                    Other keys and values keep their existing types.
+
+            Raises:
+                None: Supported string-keyed configuration mappings need no
+                    further validation here; the constructor validates them.
+            """
+
+            for name, value in options.items():
+                # Restore routing dictionaries in nested encoder and decoder settings.
+                if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
+                    restore_routes(value)
+                # Restore integer depth keys after JSON converted them to strings.
+                elif name.endswith("_ids_dict") and isinstance(value, dict):
+                    options[name] = {
+                        int(key) if isinstance(key, str)
+                        and key.lstrip("-").isdigit() else key: item
+                        for key, item in value.items()
+                    }
+
+            return options
+
+
+        return cls(**restore_routes(config))
 
     def build(
         self, 
@@ -2873,7 +2970,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         elif token_type == "new_weight":
             embeds = None
 
-        x = tf.concat([
+        x = tf.keras.ops.concatenate([
             token(
                 (x, embeds), 
                 training=training
@@ -3131,73 +3228,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         return names
 
-    @classmethod
-    def from_config(cls, config: dict[str, object]) -> "DiffusionTransformer":
-        """Construct a model after restoring JSON-serialized depth keys.
-
-        Args:
-            config (dict[str, object]): Constructor settings. Integer-like
-                string keys in ``*_ids_dict`` mappings become integers,
-                including nested encoder/decoder settings. Other values are
-                preserved and the caller's mapping is not modified.
-
-        Returns:
-            model (DiffusionTransformer): A new instance of the invoked class
-                with the saved numeric policy and architecture. Weight values
-                must be restored separately.
-
-        Raises:
-            TypeError: Configuration cannot be copied or contains unsupported
-                constructor arguments or argument types.
-            ValueError: Constructor validation rejects the restored settings.
-        """
-
-        config = deepcopy(config)
-
-
-        def restore_routes(options: dict[str, object]) -> dict[str, object]:
-            """Restore depth keys in one copied configuration mapping.
-
-            Args:
-                options (dict[str, object]): Copied constructor options;
-                    nested encoder/decoder mappings are visited recursively.
-
-            Returns:
-                restored (dict[str, object]): The same mapping, updated in
-                    place with integer keys for signed numeric depth strings.
-                    Other keys and values keep their existing types.
-
-            Raises:
-                None: Supported string-keyed configuration mappings need no
-                    further validation here; the constructor validates them.
-            """
-
-            for name, value in options.items():
-                # Restore routing dictionaries in nested encoder and decoder settings.
-                if name in ("encoder_kwargs", "decoder_kwargs") and isinstance(value, dict):
-                    restore_routes(value)
-                # Restore integer depth keys after JSON converted them to strings.
-                elif name.endswith("_ids_dict") and isinstance(value, dict):
-                    options[name] = {
-                        int(key) if isinstance(key, str)
-                        and key.lstrip("-").isdigit() else key: item
-                        for key, item in value.items()
-                    }
-
-            return options
-
-
-        return cls(**restore_routes(config))
-
     def add_depths(
         self, 
         depth_spec: str | tuple | set | dict | list | None
     ) -> dict[str, dict[str, int]]:
         """Append transformer depths with the existing layer factories.
 
-        Built models reject nonempty growth before changing state. Configure
-        their complete depth at construction; ``None``, ``[]`` and lists of
-        ``None`` remain no-ops. The parser below is retained for unbuilt models.
+        Existing layers and variables are retained when growing a built model.
+        ``None``, ``[]`` and lists of ``None`` remain no-ops. Build or call the
+        network after growth to create the appended layers' variables; training
+        wrappers also refresh their optimizer and EMA state.
 
         This method is the structural part of progressive-depth training. A
         string adds one depth containing that layer. A tuple or set combines
@@ -3230,8 +3270,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "added": count, "after": new}}``.
 
         Raises:
-            ValueError: If nonempty growth is requested after building, a layer
-                name is unknown, or the appended sequence
+            ValueError: If a layer name is unknown, or the appended sequence
                 changes the feature width or token grid expected by the
                 existing output head.
         """
@@ -3251,13 +3290,6 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 }
             }
 
-        # Reject new tracked state before changing any constructor metadata.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         metadata_names = (
             "connection_ids_dict", "cross_attention_ids_dict", 
             "vit_block_ids", "use_decoder_ids", 
@@ -3266,7 +3298,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "reshaper_kwargs", "cls_token_regularizer_ids"
         )
         metadata = {
-            name: deepcopy(getattr(self, name)) for name in metadata_names
+            name: _copy_config_containers(getattr(self, name)) for name in metadata_names
         }
         old_dim = self._get_last_output_dim(
             old_depth-1, self.layers_dicts, self.dim
@@ -3460,20 +3492,28 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 setattr(self, name, value)
             raise
 
-        self.layers_dicts.extend(
-            planned_layers[old_depth:]
-        )
+        added_layers = planned_layers[old_depth:]
+        for stage in added_layers:
+            self._depth_layers.update({
+                layer.name: layer 
+                for layer in stage.values()
+            })
+
+        self.layers_dicts.extend(added_layers)
         self.depth = len(self.layers_dicts)
         self._save_init_args({
             "depth": self.depth, 
-            **{name: getattr(self, name) for name in metadata_names}, 
+            **{name: getattr(self, name) for name in metadata_names}
         })
+        self.train_function = None
+        self.test_function = None
+        self.predict_function = None
 
         return {
             "network": {
                 "before": old_depth, 
                 "added": self.depth-old_depth, 
-                "after": self.depth, 
+                "after": self.depth
             }
         }
 
@@ -4324,7 +4364,7 @@ def run_self_tests() -> dict[str, str]:
     policy_config = policy.get_config()
     assert policy_config["name_prefix"] == "policy__"
     assert policy_config["name"] == policy.name
-    assert policy_config["dtype"] == "float64"
+    assert tf.keras.dtype_policies.get(policy_config["dtype"]).name == "float64"
     policy_clone = DiffusionTransformer.from_config(policy_config)
     assert policy_clone.name == policy.name
     assert policy_clone.dtype_policy.name == "float64"

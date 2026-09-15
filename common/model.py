@@ -62,28 +62,29 @@ _DIFFUSION_CLASSIFIER_WRAPPERS = {
 
 
 def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[str, object]) -> None:
-    """Reject persistent depth changes before progressive training starts.
+    """Validate every persistent depth change before progressive training starts.
 
-    Native Keras models cannot add state after construction. Time and resolution
-    curricula remain supported, as do empty depth requests. The historical
-    function name is retained for callers of this orchestration preflight.
+    Resolve the existing stage grammar and apply its depth changes to a separate
+    unbuilt configuration clone. Building the completed clone checks layer and
+    output-shape compatibility without changing the live network. Time and
+    resolution curricula and empty depth requests require no clone.
 
     Args:
         model (object): Raw model or wrapper exposing a network. Built networks
-            reject nonempty depth additions; unbuilt objects retain their own
-            construction-time validation. Zero-depth classifier growth is
-            rejected independently of build status.
+            are validated through their existing get_config/from_config and
+            add_depths APIs. Unbuilt objects retain construction-time validation.
+            Zero-depth classifier growth is rejected independently of build status.
         fit_kwargs (Mapping[str, object]): Progressive settings containing
             optional stage tasks and depth specifications. None, an empty list,
             and lists containing only None request no added depths.
 
     Returns:
-        result (None): The schedule requests no unsupported depth changes.
-            Model weights, metadata, optimizers, and random streams are unchanged.
+        result (None): The complete depth schedule is compatible. Live model
+            weights, metadata, optimizers and model-owned random streams are unchanged.
 
     Raises:
-        ValueError: If an addition targets a built network or zero-depth
-            classifier, or the shared schedule parser rejects a setting.
+        ValueError: If a requested addition is invalid, targets a zero-depth
+            classifier, or violates a layer/output-shape contract.
     """
 
     from common.recovery import _progressive_depth_specs
@@ -91,6 +92,7 @@ def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[st
 
 
     network = getattr(model, "network", model)
+    requested_specs = []
     for specification in _progressive_depth_specs(dict(fit_kwargs)):
         # Targeted mappings describe independent denoiser/classifier/decoder requests.
         if isinstance(specification, dict) and any(
@@ -116,12 +118,17 @@ def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[st
                     "Classifier depth growth from clf_depth=0 is unsupported; " 
                     "configure the complete depth before construction."
                 )
-            # Reject the whole schedule before any earlier stage can train or write artifacts.
-            if getattr(network, "built", False):
-                raise ValueError(
-                    "Post-build depth growth is unsupported; "
-                    "configure the complete depth before construction."
-                )
+            requested_specs.append(specification)
+            break
+
+    # Validate all stage changes before any earlier stage can fit or write artifacts.
+    if requested_specs and getattr(network, "built", False):
+        config = network.get_config()
+        config["build"] = False
+        candidate = type(network).from_config(config)
+        for specification in requested_specs:
+            candidate.add_depths(specification)
+        candidate.build()
 
 
 def get_compile_args(

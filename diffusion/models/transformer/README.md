@@ -503,10 +503,13 @@ symbolic inputs even though eager three-input calls remain supported.
 
 ## Progressive depth API
 
-This section describes the retained legacy interface. With TensorFlow 2.20 /
-Keras 3, configure depth at construction; direct depth mutation and raw-network
-`add_class()` are unsupported. Current class growth rebuilds fixed-depth raw/EMA
-networks through the wrapper and preserves its observed-label mapping.
+With TensorFlow 2.20 / Keras 3, `add_depths()` supports built networks and retains
+their existing layers and variable values. Build or call a raw network after
+growth to create the new variables. For training, use the wrapper's progressive
+API, which validates the full schedule, initializes new EMA weights from the raw
+network and preserves existing optimizer state. Raw-network `add_class()` on a
+built model remains unsupported; the wrapper reconstructs class-expanded raw/EMA
+networks while preserving depth and the observed-label mapping.
 
 `add_depths` appends supported components without replacing existing weights.
 Exact main-network names are `feature_connector`,
@@ -545,7 +548,7 @@ from `clf_depth=0` is unsupported; start a progressive classifier with positive
 depth. Fixed depth-zero classifiers remain supported.
 
 Dynamic class growth follows the same serialization rule across transformer
-variants: each `add_class()` updates `get_config()["num_classes"]` to the
+variants: wrapper reconstruction updates `get_config()["num_classes"]` to the
 current width and expands every configured auxiliary softmax plus the final
 classifier output, including attached decoder configuration where applicable.
 Optional regularizer hidden layers are preserved. That integer records the

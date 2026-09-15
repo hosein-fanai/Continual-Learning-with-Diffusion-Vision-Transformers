@@ -299,7 +299,7 @@ class UNetClassifier(UNet):
             None: ``clf_layers_dicts`` is populated in place.
         """
 
-        self.clf_layers_dicts = self._no_dependency([])
+        object.__setattr__(self, "clf_layers_dicts", [])
         for depth_id in range(1, self.clf_depth + 1):
             self.clf_layers_dicts.append(
                 self._make_classifier_stage(depth_id)
@@ -332,7 +332,10 @@ class UNetClassifier(UNet):
                 name=f"{self.name_prefix}clf_terminal_reshaper", 
             )
         self.clf_layers_dicts.append(terminal)
-        self._clf_layers_tracker = list(self.clf_layers_dicts[:-1])
+        self._clf_layers_tracker = LayerDict(
+            {stage.name: stage for stage in self.clf_layers_dicts[:-1]},
+            name=f"{self.name_prefix}classifier_layers",
+        )
         self._clf_terminal_tracker = terminal
 
     def _make_classifier_stage(self, depth_id: int) -> LayerDict:
@@ -1011,7 +1014,7 @@ class UNetClassifier(UNet):
 
         self.clf_depth = new_depth
         new_stage = self._make_classifier_stage(new_depth)
-        self._clf_layers_tracker.append(new_stage)
+        self._clf_layers_tracker[new_stage.name] = new_stage
         self.clf_layers_dicts.insert(-1, new_stage)
 
         return new_depth
@@ -1037,8 +1040,8 @@ class UNetClassifier(UNet):
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
         """Grow the inherited network, classifier branch, or both.
 
-        Built models reject nonempty requests before either branch changes.
-        Empty requests remain no-ops; configure complete depths at construction.
+        Built models retain existing layers and variables. Empty requests remain
+        no-ops. Build or call after growth to create the appended weights.
 
         Ordinary specifications are delegated to :class:`UNet`. A targeted
         mapping may contain ``network`` and/or ``classifier``. Classifier list
@@ -1055,8 +1058,7 @@ class UNetClassifier(UNet):
                 counts for every requested branch.
 
         Raises:
-            ValueError: Nonempty growth targets a built model, or the branch
-                keys or layer specifications are invalid.
+            ValueError: The branch keys or layer specifications are invalid.
         """
 
         targeted = isinstance(depth_spec, Mapping) and any(
@@ -1085,13 +1087,6 @@ class UNetClassifier(UNet):
             classifier_specs = [classifier_spec]
 
         before = self.clf_depth
-        # Reject classifier growth before an otherwise valid network change.
-        if self.built and classifier_specs:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         normalized_specs = [
             self._normalize_classifier_depth_spec(spec)
             for spec in classifier_specs

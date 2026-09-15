@@ -1,6 +1,7 @@
-"""Check supported class reconstruction and rejection of built raw growth."""
+"""Check depth growth, class reconstruction and invalid-transition boundaries."""
 
 from collections.abc import Iterator
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -53,7 +54,7 @@ def small_networks() -> Iterator[tuple[tf.keras.Model, object]]:
 
 
 class GrowthBoundaryTests(unittest.TestCase):
-    """Verify that rejected structural changes preserve trained model state."""
+    """Verify valid growth and reject invalid changes without losing trained state."""
 
     def tearDown(self) -> None:
         """Release test models and restore the ordinary numeric policy.
@@ -67,15 +68,18 @@ class GrowthBoundaryTests(unittest.TestCase):
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
 
-    def test_built_raw_growth_rejects_without_state_changes(self) -> None:
-        """Reject class and depth mutations across all seven raw families.
+    def test_built_raw_depth_growth_preserves_weights_and_checkpoint_state(self) -> None:
+        """Grow every raw family while preserving old variables and recovery state.
 
         Returns:
-            result (None): Variable identities, values and constructor settings
-                remain exactly equal after both rejected mutations.
+            result (None): Direct class mutation still rejects, supported depth
+                growth preserves old variable identities and values, and a
+                reconstructed checkpoint restores every variable exactly.
+                Keras weights also round-trip after the depth change.
 
         Raises:
-            AssertionError: A mutation succeeds or changes any observed state.
+            AssertionError: Growth loses variables, changes old values or drops
+                state from checkpoint restoration.
         """
         for network, depth_spec in small_networks():
             with self.subTest(network=type(network).__name__):
@@ -85,12 +89,35 @@ class GrowthBoundaryTests(unittest.TestCase):
                 weights = network.get_weights()
                 with self.assertRaisesRegex(ValueError, "Post-build class growth"):
                     network.add_class()
-                with self.assertRaisesRegex(ValueError, "Post-build depth growth"):
-                    network.add_depths(depth_spec)
                 self.assertEqual(network.get_config(), config)
                 self.assertEqual([id(variable) for variable in network.variables], identities)
                 for actual, expected in zip(network.get_weights(), weights):
                     np.testing.assert_array_equal(actual, expected)
+                old_variables = list(network.variables)
+                old_values = [variable.numpy().copy() for variable in old_variables]
+                growth = network.add_depths(depth_spec)
+                network.build()
+                self.assertTrue(any(branch["added"] > 0 for branch in growth.values()))
+                self.assertTrue(set(identities) <= {id(variable) for variable in network.variables})
+                for variable, expected in zip(old_variables, old_values):
+                    np.testing.assert_array_equal(variable.numpy(), expected)
+                clone = type(network).from_config(network.get_config())
+                clone.build()
+                # Distinct values detect omitted checkpoint paths even with seeded clones.
+                for index, variable in enumerate(network.variables):
+                    value = index + 1 if tf.as_dtype(variable.dtype).is_integer else (index + 1) / 1000.
+                    variable.assign(np.full(variable.shape, value, dtype=variable.dtype))
+                with tempfile.TemporaryDirectory() as directory:
+                    path = tf.train.Checkpoint(network=network).save(directory + "/state")
+                    tf.train.Checkpoint(network=clone).restore(path).assert_consumed()
+                    self.assertEqual(len(clone.variables), len(network.variables))
+                    for actual, expected in zip(clone.variables, network.variables):
+                        np.testing.assert_array_equal(actual.numpy(), expected.numpy())
+                    network.save_weights(directory + "/grown.weights.h5")
+                    clone.set_weights([np.zeros_like(value) for value in clone.get_weights()])
+                    clone.load_weights(directory + "/grown.weights.h5")
+                    for actual, expected in zip(clone.get_weights(), network.get_weights()):
+                        np.testing.assert_array_equal(actual, expected)
 
     def test_empty_growth_preserves_every_raw_family(self) -> None:
         """Keep empty requests valid without changing routes or variables.
@@ -146,15 +173,17 @@ class GrowthBoundaryTests(unittest.TestCase):
         for actual, expected in zip(decoder.get_weights(), weights):
             np.testing.assert_array_equal(actual, expected)
 
-    def test_rejected_wrapper_depth_keeps_optimizer_ema_and_class_growth(self) -> None:
-        """Keep a trained wrapper usable after an unsupported depth request.
+    def test_wrapper_depth_keeps_optimizer_ema_teacher_and_class_growth(self) -> None:
+        """Preserve trained state while adding depth and subsequently discovering classes.
 
         Returns:
-            result (None): Rejection preserves raw/EMA weights, optimizer and
-                RNG variables; subsequent public fitting discovers a new class.
+            result (None): Existing raw/EMA weights, RNG variables and optimizer
+                state survive; new EMA variables match raw initialization and
+                the independent teacher stays unchanged through later fitting.
 
         Raises:
-            AssertionError: Rejection changes state or later class fitting fails.
+            AssertionError: Growth changes old state, fails to register new
+                variables, changes the teacher or prevents later class fitting.
         """
         network = DiffusionTransformer(
             image_size=4, channels=1, patch_size=2, dim=4, depth=1,
@@ -165,21 +194,35 @@ class GrowthBoundaryTests(unittest.TestCase):
         images = tf.ones((2, 4, 4, 1))
         first = tf.data.Dataset.from_tensor_slices((images, [3, 3])).batch(2)
         model.fit(first, epochs=1, verbose=0)
-        optimizer = model.optimizer
-        weights = [value.numpy().copy() for value in model.variables + optimizer.variables]
-        variables = [id(value) for value in model.variables + optimizer.variables]
-        config = model.get_config()
-        with self.assertRaisesRegex(ValueError, "Post-build depth growth"):
-            model._add_depths("vision_transformer_block")
-        self.assertIs(model.optimizer, optimizer)
-        self.assertEqual(model.get_config(), config)
-        self.assertEqual([id(value) for value in model.variables + optimizer.variables], variables)
-        for actual, expected in zip(model.variables + optimizer.variables, weights):
+        teacher = model.snapshot_teacher_network("raw")
+        teacher_values = teacher.get_weights()
+        old_variables = list(model.variables)
+        weights = [value.numpy().copy() for value in old_variables]
+        raw_ids = {id(value) for value in model.network.weights}
+        ema_ids = {id(value) for value in model.ema_network.weights}
+        optimizer_state = {(value.name, tuple(value.shape)): value.numpy().copy()
+                           for value in model.optimizer.variables}
+        model._add_depths("vision_transformer_block")
+        self.assertEqual(model.network.depth, 2)
+        self.assertTrue({id(value) for value in old_variables} <= {id(value) for value in model.variables})
+        for actual, expected in zip(old_variables, weights):
             np.testing.assert_array_equal(actual.numpy(), expected)
+        new_state = {(value.name, tuple(value.shape)): value for value in model.optimizer.variables}
+        for key, expected in optimizer_state.items():
+            np.testing.assert_array_equal(new_state[key].numpy(), expected)
+        raw_added = [value for value in model.network.weights if id(value) not in raw_ids]
+        ema_added = [value for value in model.ema_network.weights if id(value) not in ema_ids]
+        self.assertGreater(len(raw_added), 0)
+        self.assertEqual(len(raw_added), len(ema_added))
+        for actual, expected in zip(ema_added, raw_added):
+            np.testing.assert_array_equal(actual.numpy(), expected.numpy())
         second = tf.data.Dataset.from_tensor_slices((images, [7, 7])).batch(2)
         model.fit(second, epochs=1, verbose=0)
         self.assertEqual(model.seen_classes, {3: 0, 7: 1})
         self.assertEqual(int(model.optimizer.iterations.numpy()), 2)
+        self.assertEqual(teacher.depth, 1)
+        for actual, expected in zip(teacher.get_weights(), teacher_values):
+            np.testing.assert_array_equal(actual, expected)
 
     def test_progressive_depth_rejects_before_fit_or_class_discovery(self) -> None:
         """Reject a later depth stage before an earlier stage can change state.
@@ -209,9 +252,9 @@ class GrowthBoundaryTests(unittest.TestCase):
         values = [variable.numpy().copy() for variable in variables]
         controls = (model._active_min_timestep, model._active_max_timestep, model._current_resolution)
         with patch.object(tf.keras.Model, "fit") as fit:
-            with self.assertRaisesRegex(ValueError, "Post-build depth growth"):
+            with self.assertRaisesRegex(ValueError, "Unknown progressive"):
                 model.fit_progressively(
-                    [("timesteps", (0, 2)), ("depth", "vision_transformer_block")],
+                    [("timesteps", (0, 2)), ("depth", "unknown_layer")],
                     x=second, stage_epochs=1, final_epochs=0, verbose=0,
                 )
         fit.assert_not_called()
@@ -229,7 +272,7 @@ class GrowthBoundaryTests(unittest.TestCase):
 
         Returns:
             result (None): Disabled decoder requests are accepted while a
-                nonempty decoder request is rejected even with an empty network
+                invalid decoder request is rejected even with an empty network
                 branch; configuration and variables retain their exact values.
 
         Raises:
@@ -249,13 +292,47 @@ class GrowthBoundaryTests(unittest.TestCase):
             validate_progressive_classifier_growth(network, {
                 "stage_tasks": [("depth", {"decoder": request})],
             })
-        with self.assertRaisesRegex(ValueError, "Post-build depth growth"):
+        validate_progressive_classifier_growth(network, {
+            "stage_tasks": [("depth", {"network": [], "decoder": "vision_transformer_block"})],
+        })
+        with self.assertRaisesRegex(ValueError, "Unknown progressive"):
             validate_progressive_classifier_growth(network, {
                 "stage_tasks": [("depth", {
-                    "network": [], "decoder": "vision_transformer_block",
+                    "network": [], "decoder": "unknown_layer",
                 })],
             })
         self.assertEqual(network.get_config(), config)
         self.assertEqual([id(variable) for variable in network.variables], variables)
         for actual, expected in zip(network.get_weights(), values):
             np.testing.assert_array_equal(actual, expected)
+
+    def test_invalid_final_depth_preserves_every_raw_family(self) -> None:
+        """Reject a malformed final branch or stage before retaining earlier additions.
+
+        Returns:
+            result (None): All seven families retain exact configuration,
+                variable identities and values after a mixed valid/invalid request.
+
+        Raises:
+            AssertionError: A rejected request changes any live model state.
+        """
+        for network, specification in small_networks():
+            with self.subTest(network=type(network).__name__):
+                # Targeted classifiers and decoders validate all branches together.
+                if isinstance(specification, dict):
+                    branch = next(iter(specification))
+                    block = "convolution_block" if isinstance(network, UNet) else "vision_transformer_block"
+                    invalid = {"network": block, branch: "unknown_layer"}
+                # An invalid last stage must undo the earlier stage's metadata planning.
+                else:
+                    invalid = [specification, "unknown_layer"]
+                config = network.get_config()
+                variables = list(network.variables)
+                values = [variable.numpy().copy() for variable in variables]
+                with self.assertRaises(ValueError):
+                    network.add_depths(invalid)
+                self.assertEqual(network.get_config(), config)
+                self.assertEqual([id(variable) for variable in network.variables],
+                                 [id(variable) for variable in variables])
+                for variable, expected in zip(variables, values):
+                    np.testing.assert_array_equal(variable.numpy(), expected)

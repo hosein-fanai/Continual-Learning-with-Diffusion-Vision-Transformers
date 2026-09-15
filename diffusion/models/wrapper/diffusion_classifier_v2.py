@@ -2133,7 +2133,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy_config["clf_test_noisified_max_timesteps"] is None
     assert policy_config["name"] == "policy_classifier_v2"
     assert policy_config["trainable"] is False
-    assert policy_config["dtype"] == "float64"
+    assert tf.keras.dtype_policies.get(policy_config["dtype"]).name == "float64"
     policy_clone = DiffusionClassifierV2.from_config(policy_config)
     assert policy_clone.network is not policy.network
     assert policy_clone.name == policy.name

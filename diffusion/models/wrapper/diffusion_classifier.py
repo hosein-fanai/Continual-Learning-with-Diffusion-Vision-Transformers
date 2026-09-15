@@ -588,7 +588,18 @@ class DiffusionClassifier(DiffusionModel):
         )
 
     def _create_metrics(self) -> None:
-        """Create classifier trackers while the wrapper is still unbuilt."""
+        """Create classifier trackers while the wrapper is still unbuilt.
+
+        During distillation, class-token metadata selects the primary accuracy
+        label. Otherwise it uses ``classifier_accuracy``. Distillation trackers
+        are allocated even when their objectives are disabled.
+
+        Returns:
+            result (None): Assigns metric objects using the wrapper variable dtype.
+
+        Raises:
+            ValueError: A configured Keras metric rejects its constructor options.
+        """
 
         self.ensemble_loss_fn = EnsembleAccuracy(
             self,
@@ -598,11 +609,11 @@ class DiffusionClassifier(DiffusionModel):
             dtype=self.dtype_policy.variable_dtype,
         ) if self.use_ensemble_loss_instead else None
 
-        primary_accuracy_name = "cls_token_accuracy" if self.network.clf_has_cls_token\
+        primary_accuracy_name = "cls_token_accuracy" if getattr(self.network, "clf_has_cls_token", False)\
                                 else "avg_pooling_accuracy"
         configured_distillation = bool(
             self.clf_distil_loss_coef > 0. and 
-            self.network.distil_token is not None
+            getattr(self.network, "distil_token", None) is not None
         )
 
         stable_dtype = self.dtype_policy.variable_dtype
@@ -2989,7 +3000,7 @@ def run_self_tests() -> dict[str, str]:
     assert policy_config["mask_t_percentage"] == 70
     assert policy_config["name"] == "policy_classifier_wrapper"
     assert policy_config["trainable"] is False
-    assert policy_config["dtype"] == "float64"
+    assert tf.keras.dtype_policies.get(policy_config["dtype"]).name == "float64"
     policy_clone = DiffusionClassifier.from_config(policy_config)
     assert policy_clone.network is not policy.network
     assert policy_clone.name == policy.name

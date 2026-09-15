@@ -615,10 +615,11 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                                            for item in damaged_root.rglob("*") if item.is_file()})
 
     def test_depth_zero_growth_preflight_covers_composite_classifier(self) -> None:
-        """The shared depth contract rejects requested growth before wrapper fitting.
+        """Reject classifier growth from zero while allowing denoiser-only requests.
 
         Returns:
-            result (None): The stated assertions or fixture reset complete; no experiment result is returned.
+            result (None): Raw and wrapper metadata reject a nonempty classifier
+                branch; an empty classifier branch preserves valid denoiser growth.
 
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.

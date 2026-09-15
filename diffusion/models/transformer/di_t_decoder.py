@@ -1617,14 +1617,14 @@ class DiTDecoder(DiffusionTransformer):
     ) -> dict[str, dict[str, int]]:
         """Append decoder stages without invalidating the existing head.
 
-        A built decoder rejects nonempty requests before creating a probe or
-        changing metadata. ``None``, ``[]`` and lists of ``None`` are no-ops.
-        Configure the complete depth at construction for ordinary training.
+        Built decoders retain existing layers and variables. ``None``, ``[]``
+        and lists of ``None`` are no-ops. Build or call after growth to create
+        the appended layers' variables.
 
         Base transformer layer names and the decoder-only
         ``feature_aggregator``/``cross_attention_aggregator`` names are valid.
         New transformer blocks default to :class:`DiTDecoderBlock`. The change
-        is first applied to an unbuilt clone, so invalid IDs, layer names,
+        is first applied to a configuration clone and built, so invalid IDs, layer names,
         widths, or final token grids leave this decoder unchanged.
 
         Args:
@@ -1637,8 +1637,7 @@ class DiTDecoder(DiffusionTransformer):
                 added and after depth counts.
 
         Raises:
-            ValueError: If nonempty growth targets a built decoder, or the
-                specification is invalid or changes the shape
+            ValueError: If the specification is invalid or changes the shape
                 expected by the existing output head.
         """
 
@@ -1646,13 +1645,6 @@ class DiTDecoder(DiffusionTransformer):
         # Preserve empty growth without constructing or tracing a probe model.
         if not any(spec is not None for spec in specs):
             return {"network": {"before": self.depth, "added": 0, "after": self.depth}}
-        # Reject new state before the clone-first legacy growth path runs.
-        if self.built:
-            raise ValueError(
-                "Post-build depth growth is unsupported; configure the complete "
-                "depth before construction."
-            )
-
         old_grid = self._get_last_grid_size(
             self.depth - 1, self.layers_dicts, self.grid_size
         )
@@ -1660,6 +1652,7 @@ class DiTDecoder(DiffusionTransformer):
         probe_config["build"] = False
         probe = DiTDecoder.from_config(probe_config)
         probe._apply_depths(deepcopy(depth_spec))
+        probe.build()
         new_grid = probe._get_last_grid_size(
             probe.depth - 1, probe.layers_dicts, probe.grid_size
         )

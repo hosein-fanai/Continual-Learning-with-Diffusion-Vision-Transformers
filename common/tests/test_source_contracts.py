@@ -16,8 +16,6 @@ from unittest.mock import patch
 
 import test as project_tests
 
-from notebooks.hpo import generate_notebooks
-
 
 class SourceContractTests(unittest.TestCase):
     """Verify that the maintained source and notebook contracts are enforced.
@@ -69,6 +67,7 @@ class SourceContractTests(unittest.TestCase):
         """
 
         from common.hpo import SEARCH_SPACES
+        from notebooks.hpo import generate_notebooks
 
         expected = {
             (task, model)

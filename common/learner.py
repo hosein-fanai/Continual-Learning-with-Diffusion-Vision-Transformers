@@ -32,6 +32,7 @@ import tensorflow as tf
 import numpy as np
 
 from copy import deepcopy
+from pathlib import Path
 
 import time
 
@@ -68,6 +69,7 @@ from common.continual_reporting import (
 )
 from common.runtime import configure_runtime, derive_seed
 from common.recovery import (
+    save_task_progress,
     _array_recovery_descriptor, 
     _artifact_recovery_descriptor, 
     _model_topology_descriptor, 
@@ -1376,8 +1378,49 @@ def _run_continual_tasks(
     # schedule. Reading it before schedule construction avoids changing class
     # order merely because NumPy's permutation implementation changes between
     # supported environments. Explicit caller schedules must still agree.
+    fit_progress_checkpoint = None
+    fit_progress_root = None
+    # Resume metadata must be validated before runtime initialization changes caller RNGs.
     if resume_from is not None:
         schedule_checkpoint = load_task_checkpoint(resume_from)
+        # Fit progress reconstructs its preceding task boundary before replaying task setup.
+        if "active_task_index" in schedule_checkpoint.experiment_state:
+            # Active progress needs subsequent durable task boundaries for its continuing fit sequence.
+            if not save_task_checkpoints:
+                raise ValueError("Active-fit recovery requires save_task_checkpoints=True.")
+            fit_progress_checkpoint = schedule_checkpoint
+            fit_progress_root = schedule_checkpoint.task_dir.parent.parent
+            base = schedule_checkpoint.experiment_state.get("base_checkpoint")
+            # The base remains portable inside the same checkpoint tree.
+            if not isinstance(base, str) or Path(base).is_absolute() or ".." in Path(base).parts:
+                raise ValueError("Invalid fit-progress base checkpoint locator.")
+            # Resolve links as well as lexical components before opening a saved locator.
+            if not (fit_progress_root / base).resolve().is_relative_to(fit_progress_root.resolve()):
+                raise ValueError("Fit-progress base checkpoint escapes its root.")
+            progress_validator = getattr(generative_model, "validate_fit_checkpoint", None)
+            # A phase checkpoint requires its owner's explicit state-validation protocol.
+            if not callable(progress_validator):
+                raise ValueError("The configured model cannot restore fit progress.")
+            progress_validator(schedule_checkpoint.experiment_state.get("fit_progress"))
+            timing = schedule_checkpoint.experiment_state.get("active_seconds")
+            # Report only measured committed work; malformed time must not reach reports or controls.
+            if (not isinstance(timing, dict) or set(timing) != {"task", "generator_fit"}
+                    or any(not isinstance(value, (int, float)) or not np.isfinite(value) or value < 0
+                           for value in timing.values())):
+                raise ValueError("Invalid fit-progress active-time accounting.")
+            resume_from = str(fit_progress_root / base)
+            schedule_checkpoint = load_task_checkpoint(resume_from)
+        restart_index = schedule_checkpoint.experiment_state.get("restart_task_index", schedule_checkpoint.next_task_index)
+        # A progress snapshot must immediately follow the boundary it reconstructs.
+        if fit_progress_checkpoint is not None and fit_progress_checkpoint.experiment_state["active_task_index"] != restart_index:
+            raise ValueError("Fit-progress task differs from its preceding boundary.")
+        validator = getattr(generative_model, "validate_task_checkpoint_state", None)
+        # Reject malformed owner state before configure_runtime can reseed caller RNGs.
+        if callable(validator):
+            validator(schedule_checkpoint.experiment_state.get("model_task_state"),
+                      completed_tasks=restart_index,
+                      class_count=sum(map(len, schedule_checkpoint.task_groups[
+                          :restart_index])))
         saved_order = list(schedule_checkpoint.class_order)
         saved_groups = [list(group) for group in schedule_checkpoint.task_groups]
         # The requested class count must match the checkpoint's complete schedule.
@@ -2380,6 +2423,9 @@ def _run_continual_tasks(
         else:
             model_task_hooks = ()
     run_fingerprint = fingerprint_state(run_descriptor)
+    # Progress and its base boundary must authenticate the same complete treatment.
+    if fit_progress_checkpoint is not None and fit_progress_checkpoint.fingerprint != run_fingerprint:
+        raise ValueError("Run fingerprint differs from the fit-progress checkpoint.")
 
     def _validate_recovery_identity() -> None:
         """Reject changed callback or model task policy before fitting or checkpointing.
@@ -2475,12 +2521,17 @@ def _run_continual_tasks(
                 "Checkpoint is incompatible: its complete experiment "
                 "descriptor is missing or differs from the run fingerprint."
             )
-        start_task_index = recovered.next_task_index
+        start_task_index = saved.get("restart_task_index", recovered.next_task_index)
         # Keep a recovery cursor within the authoritative saved schedule.
         if start_task_index > len(internal_task_groups):
             raise ValueError("Checkpoint task cursor exceeds this schedule.")
 
         completed_groups = internal_task_groups[:start_task_index]
+        validator = getattr(generative_model, "validate_task_checkpoint_state", None)
+        # Model-owned payload errors must precede live class growth or variable restoration.
+        if model_task_hooks and callable(validator):
+            validator(saved["model_task_state"], completed_tasks=start_task_index,
+                      class_count=sum(map(len, completed_groups)))
         # Recreate the exact dynamic topology before object restoration. Class
         # and persistent depth growth are replayed task by task so optimizer
         # slot dependencies follow the uninterrupted structural sequence.
@@ -2606,7 +2657,7 @@ def _run_continual_tasks(
 
     # Resumed runs without a new checkpoint root continue beside the recovered task.
     if checkpoint_dir is None and resume_from is not None:
-        checkpoint_dir = str(recovered.task_dir.parent)
+        checkpoint_dir = str(fit_progress_root or recovered.task_dir.parent)
 
     # Discovery can skip an invalid future slot; reject that occupied root before retraining.
     if save_task_checkpoints and checkpoint_dir is not None:
@@ -2614,7 +2665,89 @@ def _run_continual_tasks(
 
     for task_index in range(start_task_index, len(internal_task_groups)):
         _validate_recovery_identity()
+        # Optional fit checkpoints use the same task serializer and leave ordinary fits unchanged.
+        if save_task_checkpoints and checkpoint_dir is not None and getattr(generative_model, "checkpoint_interval", 0) > 0:
+            # Task zero needs a durable initial boundary before any training or replay sampling.
+            if not checkpoint_paths:
+                _prepare_optimizer_slots()
+                initial_trackables = _recovery_trackables()
+                initial_topology = _trackable_topology_descriptor(initial_trackables)
+                initial_state = {
+                    "class_order": class_order, "task_groups": original_task_groups,
+                    **task_state, "fingerprint": run_fingerprint, "run_descriptor": run_descriptor,
+                    "trackable_topology": initial_topology,
+                    "trackable_topology_fingerprint": fingerprint_state(initial_topology),
+                    "callback_states": callback_recovery_state(list(callbacks_list or [])),
+                    "generative_callback_states": callback_recovery_state(list(generative_callbacks_list or [])),
+                    "optimizer_learning_rates": optimizer_learning_rate_state(initial_trackables),
+                    "model_task_state": model_task_hooks[1](), "restart_task_index": 0,
+                }
+                initial_root = Path(checkpoint_dir) / ".initial"
+                # An interrupted initial commit is never silently replaced.
+                if initial_root.exists():
+                    try:
+                        initial = load_task_checkpoint(initial_root, expected_fingerprint=run_fingerprint).task_dir
+                    except FileNotFoundError:
+                        # A failed first publication may leave only private, uncommitted staging data.
+                        initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables,
+                                                       rng_state=capture_rng_state(numpy_generator=rng))
+                # A new root publishes the same immutable initial task boundary.
+                else:
+                    initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables,
+                                                   rng_state=capture_rng_state(numpy_generator=rng))
+                checkpoint_paths.append(str(initial))
+            base_checkpoint = Path(checkpoint_paths[-1])
+            # Relocated output roots retain the exact base boundary needed by their progress snapshots.
+            if not base_checkpoint.is_relative_to(Path(checkpoint_dir)):
+                import shutil
+                destination = Path(checkpoint_dir) / ".initial" if task_index == 0 else Path(checkpoint_dir)
+                destination.mkdir(parents=True, exist_ok=True)
+                copied = destination / base_checkpoint.name
+                # Existing destinations must remain immutable and authenticate the same run.
+                if copied.exists():
+                    load_task_checkpoint(copied, expected_fingerprint=run_fingerprint)
+                # Copy only an absent destination; existing committed evidence is immutable.
+                else:
+                    shutil.copytree(base_checkpoint, copied)
+                base_checkpoint = copied
+
+            def commit_fit_progress(state: dict[str, object], iterator: object) -> Path:
+                """Commit model-owned fit progress with its exact dataset cursor.
+
+                Args:
+                    state (dict[str, object]): Typed model-owned fit/sampler/optimizer
+                        state, encoded without pickle by the common serializer.
+                    iterator (object): Current checkpointable tf.data iterator.
+
+                Returns:
+                    path (Path): Atomic progress checkpoint, retaining one predecessor.
+
+                Raises:
+                    ValueError: If configuration changed or checkpoint state is invalid.
+                    OSError: If the progress checkpoint cannot be committed.
+                """
+                _validate_recovery_identity()
+                io_seconds = state["checkpoint_seconds"] - checkpoint_io_start
+                payload = {"class_order": class_order, "task_groups": original_task_groups,
+                           "fingerprint": run_fingerprint, "run_descriptor": run_descriptor,
+                           "active_task_index": task_index, "fit_progress": state,
+                           "active_seconds": {"task": prior_task_seconds + time.perf_counter() - task_wall_start - io_seconds,
+                               "generator_fit": prior_fit_seconds + task_resource["seconds"]["generator_fit"]
+                               + time.perf_counter() - active_model_fit_started - io_seconds},
+                           "base_checkpoint": base_checkpoint.relative_to(Path(checkpoint_dir)).as_posix()}
+                return save_task_progress(checkpoint_dir, task_index, payload, {"iterator": iterator})
+
+            generative_model.configure_fit_checkpoint(
+                commit_fit_progress,
+                fit_progress_checkpoint if task_index == start_task_index else None,
+            )
         task_wall_start = time.perf_counter()
+        resumed_timing = fit_progress_checkpoint.experiment_state["active_seconds"] if (
+            fit_progress_checkpoint is not None and task_index == start_task_index) else {"task": 0., "generator_fit": 0.}
+        prior_task_seconds, prior_fit_seconds = resumed_timing["task"], resumed_timing["generator_fit"]
+        fit_checkpoint = getattr(generative_model, "fit_checkpoint", None)
+        checkpoint_io_start = fit_checkpoint.state["checkpoint_seconds"] if fit_checkpoint is not None else 0.
+        active_model_fit_started = None
         # Record buffered, generated, or absent replay according to the active source.
         task_resource = {
             "task_index": task_index,
@@ -3348,6 +3481,7 @@ def _run_continual_tasks(
 
             fit_started = time.perf_counter()
             # Monitor validation loss when available and training loss otherwise.
+            active_model_fit_started = fit_started
             generative_history = _train_task_model(
                 generative_model,
                 generative_trainset,
@@ -3363,6 +3497,10 @@ def _run_continual_tasks(
             task_resource["seconds"]["generator_fit"] += float(
                 time.perf_counter() - fit_started
             )
+            # Committed earlier fit segments remain part of the same task; persistence is separate.
+            if fit_checkpoint is not None:
+                task_resource["seconds"]["generator_fit"] += prior_fit_seconds - (
+                    fit_checkpoint.state["checkpoint_seconds"] - checkpoint_io_start)
 
             # V2's attached classifier trains in a separate discriminator phase.
             if use_diffusion_classifier and isinstance(
@@ -3609,8 +3747,16 @@ def _run_continual_tasks(
         task_resource["snapshot_network_name"] = snapshot_network_name if previous_teacher is not None \
                                                 else None
         task_resource["seconds"]["task_total"] = float(
-            time.perf_counter() - task_wall_start
+            prior_task_seconds + time.perf_counter() - task_wall_start
         )
+        # Exclude measured persistence overhead and restart downtime from active task work.
+        if fit_checkpoint is not None:
+            task_resource["seconds"]["task_total"] -= fit_checkpoint.state["checkpoint_seconds"] - checkpoint_io_start
+            task_resource["checkpointing"] = {
+                "io_seconds": fit_checkpoint.state["checkpoint_seconds"],
+                "resumed_active_seconds": dict(resumed_timing),
+                "time_scope": "Committed earlier active work plus the current attempt; excludes measured progress writes and downtime. Uncommitted interrupted work and an interrupted write's unfinished timer are unavailable.",
+            }
 
         histories.append(history)
         generative_histories.append(generative_history)

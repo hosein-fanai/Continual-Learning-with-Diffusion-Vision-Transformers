@@ -654,10 +654,9 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> dict[str, dict[str, int]]:
         """Grow raw and EMA networks after a completed progressive stage.
 
-        Nonempty growth of built raw models is currently unsupported and raises
-        before the wrapper changes either branch. Use complete-depth constructor
-        settings with timestep/resolution curricula. The remainder retains the
-        legacy transition logic for unbuilt networks.
+        Validate the requested change on independent configuration clones before
+        changing either live branch. Invalid stage or shape specifications leave
+        the live networks unchanged.
 
         The network owns interpretation of ``depth_spec``. This wrapper applies
         that same specification to raw and EMA copies, builds newly created
@@ -671,13 +670,21 @@ class DiffusionModel(ArgumentSaverModel):
                 network.
 
         Returns:
-            dict[str, dict[str, int]]: Wrapped network's branch-wise
+            growth (dict[str, dict[str, int]]): Wrapped network's branch-wise
             before/added/after depth report.
 
         Raises:
-            ValueError: If nonempty growth targets a built raw model, or raw
-                and EMA growth creates different numbers or shapes of weights.
+            ValueError: If a depth specification is invalid, or raw and EMA
+                growth creates incompatible weights.
         """
+
+        for network in (self.network, self.ema_network):
+            # Validate both branches before changing either live architecture.
+            if network is not None:
+                validate_progressive_classifier_growth(
+                    network, 
+                    {"stage_tasks": "depths_only", "depths": [depth_spec]}
+                )
 
         raw_weight_ids = {
             id(weight) 
@@ -1700,10 +1707,10 @@ class DiffusionModel(ArgumentSaverModel):
         describes only the values that change before that training stage. A
         value not mentioned by the element keeps its value from the previous
         stage. Timestep ranges and resolutions can change separately or
-        together and are applied before their stage. Legacy depth syntax is
-        retained, but built raw networks reject nonempty depth schedules before
-        class discovery or training; construct the complete depth instead.
-        Empty depth requests and timestep/resolution curricula remain supported.
+        together and are applied before their stage. Depth additions are applied
+        after their stage, retaining trained layers, optimizer state and old EMA
+        values. The complete depth schedule is validated on a separate model
+        before class discovery or training.
 
         ``stage_tasks="timesteps_only"`` creates one timestep task for every
         entry in ``timestep_boundaries``. If those boundaries are omitted,
@@ -1724,7 +1731,7 @@ class DiffusionModel(ArgumentSaverModel):
                 "resolutions_only", resolutions=[16, 32, 64], x=dataset
             )
 
-        Accepted stage syntax, including legacy depth entries, is:
+        Accepted stage syntax is:
 
             "timesteps"
             ("timesteps", (lower_bound, upper_bound))
@@ -1745,10 +1752,10 @@ class DiffusionModel(ArgumentSaverModel):
         A dictionary value of ``None`` has the same meaning. Inline tuple or
         dictionary values take precedence over the companion sequences.
 
-        The legacy depth grammar represents one layer by a string, several
+        The depth grammar represents one layer by a string, several
         depths by a list, and several layer types in one depth by a set or
         dictionary, using the raw model's existing ``add_depths`` syntax.
-        These forms describe requests; they do not enable post-build growth.
+        Appended stages remain part of the model after this call returns.
         ``None``, an empty list, or a list containing only ``None`` requests
         no added layers. A depth stage with an omitted inline value still
         requires its stage-indexed entry in ``depths``.
@@ -1778,8 +1785,8 @@ class DiffusionModel(ArgumentSaverModel):
                 ``"timesteps_only"``, ``"resolutions_only"``, or
                 ``"depths_only"``. A list's length is the number of training
                 stages. Strings and two-item tuples change one value; sets and
-                dictionaries may combine timestep/resolution updates and legacy
-                depth entries, subject to the growth restriction above.
+                dictionaries may combine timestep/resolution updates and
+                depth entries.
             stages_num (int | None): Optional number of generated stages. For an explicit
                 mixed task list, its length determines the stage count. In
                 either ``*_only`` mode, supplied values determine the count.
@@ -1818,8 +1825,8 @@ class DiffusionModel(ArgumentSaverModel):
                 specifications. An entry is
                 read only when the corresponding task requests ``"depth"``
                 without an inline value. Empty specifications request no added
-                layers; nonempty specifications on built networks are rejected
-                before class discovery or training.
+                layers; nonempty specifications must preserve existing output-head
+                shapes and use the raw network's supported stage types.
                 Defaults to ``None``.
             pacing_type (Literal["fixed", "plateau"]): ``"fixed"`` requests ``stage_epochs``
                 without an added plateau callback.
@@ -1848,7 +1855,7 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             history (tf.keras.callbacks.History): Merged metrics and a
                 ``progressive_stages`` record of every resolved stage, including
-                its network depth and any no-op ``depth_growth`` result. The
+                its network depth and any ``depth_growth`` result. The
                 model's timestep bounds and resolution are restored to their
                 entry values after completion or interruption. Input data must
                 be reiterable because each stage invokes a separate Keras
@@ -1858,8 +1865,7 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: Managed epoch arguments, pacing/monitor choices, or timestep
                 bounds violate the progressive training contract.
             ValueError: A shorthand lacks required values/counts, a stage is malformed,
-                a built network receives a nonempty depth schedule, or delegated
-                growth/resolution/schedule compatibility fails.
+                or delegated growth/resolution/schedule compatibility fails.
         """
 
         validate_progressive_classifier_growth(

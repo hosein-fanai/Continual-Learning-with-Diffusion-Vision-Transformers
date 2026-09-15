@@ -16,7 +16,8 @@ settings belong to the runtime setup described in the
 `DiffusionModel` and `DiffusionClassifier` use ordinary `fit` keyword arguments.
 `DiffusionClassifierV2.fit` takes separate `gen_kwargs` and `clf_kwargs` mappings
 and returns a merged history dictionary. Its `evaluate(eval_both=True, x=...)`
-checks both phases. Construct complete model depth before training.
+checks both phases. Supported depth curricula use the existing `fit_progressively`
+API; see the [growth contract](../diffusion/README.md).
 
 ## Data and interpretation
 
@@ -27,10 +28,11 @@ For controlled studies, the [common data pipeline](../common/README.md) and
 [semantic study API](../semantic_consolidation/README.md) provide explicit
 training/validation separation and confirmation protocols.
 
-The latest [repair validation](../repair_validation.md) distinguishes read-only
-setup, bounded training, evaluation, and weight reload from complete notebook
-execution or scientific efficacy. Notebook subdirectories `hpo`, `old`, `legacy`,
-and `thesis`, and filenames containing `copy`, are outside that assessment.
+The [thesis workflow](thesis/README.md) provides the maintained, reduced
+confirmation experiment and compact result collection. Its
+[validation record](thesis/VALIDATION.md) separates software checks from measured
+scientific results. Root notebooks were preserved during the latest repairs;
+`hpo`, `old`, `legacy`, and filenames containing `copy` remain outside that review.
 
 The root `test.ipynb` is a historical Avalanche/PyTorch and legacy API scratchpad;
 it is not a TensorFlow 2.20 entry point. Some preserved archive banners still link
