@@ -21,6 +21,32 @@ Training notebooks keep four main steps: select a stream, load data/create the m
 | [08 CIFAR-100 random](08_CIFAR100_random.ipynb) | Random gates; supporting mechanism comparison. |
 | [09 CIFAR-100 CE only](09_CIFAR100_ce_only.ipynb) | Acquisition plus replacement CE updates, without alignment gradients. |
 | [10 Collect](10_Collect_Thesis_Results.ipynb) | Authenticate saved outcomes and export the compact writing package. No new predictions. |
+| [11 Offline joint reference](11_Offline_Joint_Reference.ipynb) | Train on all classes together, with no replay, distillation or semantic phases. |
+| [12 Naive sequential reference](12_Naive_Sequential_Reference.ipynb) | Train the same DiT platform task by task using current-task examples only, with no CL retention mechanism. |
+
+## Offline and naive reference benchmarks
+
+Notebooks **11 and 12** each support CIFAR-10 and CIFAR-100 through `DATASET`.
+They retain the shared DiT diffusion/classification objective, use matching seeds,
+class orders and train/validation partitions, and remove replay, distillation and
+semantic consolidation. Offline joint training sees every class from the start;
+naive sequential training retains the learned model while introducing one task at
+a time. The existing **platform**, **extra joint** and **CE-only** conditions are
+different controls and do not implement these two references.
+
+These are empirical upper/lower reference comparisons, **not guaranteed maximum
+or minimum accuracy**. Offline training has no task-transition trajectory, so its
+forgetting, backward transfer and average incremental accuracy are unavailable.
+Both notebooks default to validation evaluation; optional test evaluation is
+explicitly labeled as a supplemental reference. Use a fresh kernel for each run.
+
+Each run saves a separate directory under
+`results/thesis_route_one/reference_benchmarks`, including the resolved recipe,
+source provenance, final per-task accuracy, summary and native training outputs.
+Naive runs also save their task accuracy matrix and completed-task checkpoints.
+These additional runs are separate from the frozen 24-stream campaign and the
+notebook 10 collector. See [the reference protocol](BENCHMARK_REFERENCES.md) for
+budget interpretation, artifacts and primary sources.
 
 ## Small, fixed scientific design
 
