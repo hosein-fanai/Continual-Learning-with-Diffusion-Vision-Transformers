@@ -17,7 +17,7 @@ from unittest.mock import patch
 import numpy as np
 
 from common.experiment import materialize_run_plan, read_experiment_manifest, read_long_results
-from allocation_study.artifacts import write_completed_artifact
+from common.study_artifacts import write_completed_artifact
 from semantic_consolidation.config import load_route_config, validate_route_config
 from semantic_consolidation.study import _completed_metrics, analyze_study, prepare_study, run_study, validate_planned_config
 

@@ -15,7 +15,7 @@ import time
 import numpy as np
 import yaml
 
-from allocation_study.artifacts import (
+from common.study_artifacts import (
     native_study_metadata, read_completed_runs, replace_completed_index,
     validate_completed_artifact, validate_study_source, write_completed_artifact,
 )

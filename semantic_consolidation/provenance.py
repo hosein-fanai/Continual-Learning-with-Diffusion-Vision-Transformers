@@ -13,6 +13,8 @@ import sys
 import numpy as np
 import tensorflow as tf
 
+from common.study_artifacts import source_files
+
 
 def runtime_provenance() -> dict:
     """Record the installed numerical environment, including the active Keras API.
@@ -58,13 +60,7 @@ def source_provenance() -> dict:
         OSError: If a production source or installed package metadata file cannot be read.
     """
 
-    root = Path(__file__).resolve().parents[1]
-    files = {}
-    for directory in ("common", "autoencoder", "diffusion", "semantic_consolidation", "gist_memory", "allocation_study"):
-        for path in sorted((root / directory).rglob("*.py")):
-            # Hash executable implementation modules separately from test fixtures.
-            if "tests" not in path.parts:
-                files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    files = source_files()
     combined = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     return {
         "source_sha256": combined, "files": files,

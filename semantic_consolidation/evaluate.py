@@ -158,7 +158,7 @@ def _confirmation_contract(config: Config, settings: EnsembleEvaluationSettings)
     if len(matching) != 1:
         raise ValueError("The saved run ID must occur exactly once in its frozen manifest.")
     route_name, actual_route = _route_settings(config)
-    from allocation_study.artifacts import validate_study_source
+    from common.study_artifacts import validate_study_source
     source = validate_study_source(manifest, route_name)
     # The two route studies resolve their own treatment-specific configuration.
     if route_name == "gist_memory":

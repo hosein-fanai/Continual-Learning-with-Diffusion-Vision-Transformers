@@ -483,7 +483,7 @@ class ExperimentalController:
         """
         from semantic_consolidation.experimental_diagnostics import generated_memory_diagnostics
         from semantic_consolidation.evaluation import EnsembleEvaluationSettings, _predict
-        from gist_memory.controller import tensor_inventory
+        from common.tensor_inventory import tensor_inventory
         images, labels = self.validation
         fit_seconds = time.perf_counter() - self.fit_started
         started = time.perf_counter()
@@ -585,7 +585,7 @@ class ExperimentalController:
             TypeError: If a present teacher variable has an unsupported dtype or incomplete
                 shape.
         """
-        from gist_memory.controller import tensor_inventory
+        from common.tensor_inventory import tensor_inventory
         # Constructor and in-fit teacher setter calls are not completed-task boundaries.
         if not self.records or not self.accepting_candidates:
             return

@@ -90,6 +90,7 @@ continually_learn:
   use_buffer: false
   use_generative_model_classifier: true
   use_generative_replay: true
+  show_generated_images: true
   use_distillation: true
   snapshot_network_name: raw
   replay_budget_mode: fixed_total
