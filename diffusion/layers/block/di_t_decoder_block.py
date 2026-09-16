@@ -130,10 +130,6 @@ class DiTDecoderBlock(VisionTransformerBlock):
             (x, cond), 
             training=training
         )
-        # Use normalized local tokens for omitted queries; otherwise use the supplied query
-        # tensor.
-        # Use normalized local tokens for omitted values; otherwise attend to the supplied
-        # source tensor.
         h = self.mha2(
             query=h if queries is None else queries, 
             value=h if values is None else values, 
@@ -141,7 +137,6 @@ class DiTDecoderBlock(VisionTransformerBlock):
             training=training
         )
         h = tf.cast(h, x.dtype)
-        # Project the residual only when its channel width differs from the branch output.
         x = self.mha_residual_projector(
             x, 
             training=training
