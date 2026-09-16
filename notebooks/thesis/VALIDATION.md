@@ -1,5 +1,119 @@
 # Thesis workflow validation — audit of 15 September 2026
 
+## Shared initializer and notebook preservation — 16 September 2026
+
+GitHub's repository metadata confirmed the public repository's canonical name:
+`hosein-fanai/Continual-Learning-with-Diffusion-Vision-Transformers`, default branch
+`main`. Both the old underscore URL and the lowercase hyphen URL resolved to
+that name. Notebook repository URLs now use an f-string based on `CHECKOUT_NAME`.
+
+The former `notebooks/init/` package is now `notebooks/init.py`. It owns checkout
+discovery/download and shared path setup, and delegates dependency preparation
+to the existing bootstrap. Root and thesis `import init` entry points retain
+their root/path setup; the subsequent cleanup removed their redundant scientific
+imports. New frozen campaigns bind both root and shared initializers.
+
+Before notebook rollout, **13 prototype checks passed**. After rollout,
+**42 initializer tests passed**, covering all **96 notebooks** outside automatic
+checkpoint directories. The preservation audit compared every original notebook
+to a local pre-edit snapshot and confirmed:
+
+- All **1,695 existing cells** retained their non-source fields, including output
+  data, execution counts, IDs, attachments and metadata.
+- All **14,158 saved output records** were preserved.
+- **1,421 code cells** were unchanged; **44 setup code cells** changed only for
+  the shared loader or removal of duplicate/relative directory initialization.
+- Notebook metadata and format versions were preserved. The 13 maintained
+  bootstrap cells were replaced; the other 83 notebooks gained a setup cell.
+
+Commands used the mount-verified `tf_env_220` container, Python **3.11.13**,
+TensorFlow **2.20.0**, and Keras **3.11.2**:
+
+```text
+docker exec -w /workspace tf_env_220 /usr/bin/python -m unittest notebooks.thesis.tests.test_bootstrap notebooks.thesis.tests.test_notebook_init -v
+docker exec -e CUDA_VISIBLE_DEVICES=-1 -e TF_CPP_MIN_LOG_LEVEL=3 -w /workspace tf_env_220 /usr/bin/python -m unittest notebooks.thesis.tests.test_recipe.NotebookContractTests notebooks.thesis.tests.test_recipe.PreparedRecipeTests.test_all_24_native_configs_preserve_paired_full_streams_and_recipe
+```
+
+The second command passed **4 tests**, including rejection of a frozen campaign
+when the shared initializer's digest changes: **46 post-rollout tests passed**
+in total, with no failures or skips.
+
+The actual first two code cells of all 13 maintained notebooks also executed in
+a clean source snapshot using a separate Jupyter kernel. Both dataset recipes
+and a fresh 24-stream campaign/checklist passed. No notebook was re-executed in
+place, and no training, dataset download or package installation was performed.
+Historical notebook training code and its optional dependencies were preserved,
+not validated as complete TensorFlow 2.20 experiments.
+
+## Hosted runtime support checks — 16 September 2026
+
+Startup now detects Kaggle, Binder and Colab, with explicit Studio Lab and generic
+hosted modes. Kaggle's writable download directory, provider precedence, CUDA
+selection and installation overrides are covered by simulated runtime tests.
+IPykernel 6 and 7 are accepted by the shared requirements. Binder's build hook
+uses that same manifest with CUDA pip dependencies omitted.
+
+The mount-verified `tf_env_220` container supplied Python **3.11.13**, TensorFlow
+**2.20.0** and Keras **3.11.2**. Checks ran in separate processes:
+
+```text
+docker exec -w /workspace tf_env_220 /usr/bin/python -m unittest notebooks.thesis.tests.test_bootstrap
+docker exec -e CUDA_VISIBLE_DEVICES=-1 -e TF_CPP_MIN_LOG_LEVEL=3 -w /workspace tf_env_220 /usr/bin/python -m unittest notebooks.thesis.tests.test_recipe.NotebookContractTests
+```
+
+- **34 bootstrap tests passed**, with clone and installation actions mocked.
+- **3 existing notebook contract tests passed**.
+- The actual first two code cells of all **13 maintained notebooks** executed in
+  a fresh Jupyter kernel using a clean publishable-source snapshot. Notebook
+  schemas, both recipes, source identity and a fresh 24-stream checklist passed.
+- Binder's shell syntax and embedded Python setup passed. All six runtime
+  policies reused the installed compatible packages with subprocess installation
+  explicitly blocked during this check.
+
+No dependencies were installed, datasets downloaded or models trained. Live
+Kaggle/Colab/Studio Lab sessions and a complete Binder image build were not run.
+These checks establish local startup behavior, not compatibility with every
+current or future provider image. Run a hosted smoke check after publishing.
+
+## Colab bootstrap check — 16 September 2026
+
+The maintained notebooks **00 through 12** now share a checkout/dependency
+bootstrap and use portable Python kernel metadata. Required artifact and tensor
+inventory helpers live in `common`, so a GitHub checkout does not need the ignored
+`allocation_study` or `gist_memory` packages.
+
+Checks used the existing, mount-verified `tf_env_220` container: Python **3.11.13**,
+TensorFlow **2.20.0**, Keras **3.11.2**. Scientific checks ran in separate CPU
+processes; the startup execution used a new Jupyter kernel.
+
+| Check | Result |
+|---|---|
+| New bootstrap contracts, including clone/reuse and safe dependency installation | **12 passed**; clone and pip actions mocked. |
+| Updated existing notebook contracts | **3 passed**; all 13 canonical notebooks validated. |
+| Shared artifact/tensor helpers, semantic study/runtime and thesis completion | **59 distinct cases passed**, no skips, following a stable rerun of the 17 study cases. |
+| Clean publishable-file snapshot with both ignored packages absent | **Passed**: actual first two code cells of all 13 notebooks, notebook schemas, both dataset recipes, source identity, and a freshly prepared 24-stream campaign/checklist. |
+
+One initial study check observed a changed source fingerprint while notebook edits
+were still in progress. After those edits stopped, all 17 study checks passed.
+
+Commands ran from `/workspace`, using `/usr/bin/python`:
+
+```text
+-m unittest notebooks.thesis.tests.test_bootstrap
+-m unittest notebooks.thesis.tests.test_recipe.NotebookContractTests
+-m unittest common.tests.test_study_artifacts common.tests.test_tensor_inventory semantic_consolidation.tests.test_study semantic_consolidation.tests.test_experimental_runtime notebooks.thesis.tests.test_completion
+-m unittest semantic_consolidation.tests.test_study
+.tmp/colab-check-20260916/validate_checkout.py
+```
+
+The clean snapshot used the current contents of Git-tracked files plus the new
+bootstrap, hosted requirements and bootstrap tests. It could not import helpers
+from the original workspace. Existing compatible packages were reused; no data
+downloads, package installations, full training or actual hosted Colab execution
+were performed. Colab's package/GPU environment therefore still needs a hosted
+smoke check after publishing these changes. These are software checks, not thesis
+results. The historical audit below describes its own earlier scope.
+
 ## Environment and scope
 
 Used the existing running `tf_env_220` container, image

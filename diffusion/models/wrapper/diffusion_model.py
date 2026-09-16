@@ -886,7 +886,7 @@ class DiffusionModel(ArgumentSaverModel):
 
             # Report the labels added during this scan when requested.
             if verbose:
-                print("Found new classes:", discovered_labels)
+                print("The network has found new Classes:", discovered_labels)
 
             self._register_optimizer_variables()
             self.train_function = None

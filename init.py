@@ -1,3 +1,11 @@
-"""Forward repository-root notebook imports to the shared initializer."""
+"""Forward repository-root notebook imports to shared path setup."""
 
-from notebooks.init import REPOSITORY_ROOT
+from pathlib import Path
+
+from runpy import run_path
+
+
+REPOSITORY_ROOT = run_path(
+    str(Path(__file__).resolve().parent / "notebooks" / "init.py"), 
+    run_name="init"
+)["REPOSITORY_ROOT"]

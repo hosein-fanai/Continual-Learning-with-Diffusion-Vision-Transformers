@@ -1,7 +1,11 @@
 # TensorFlow 2.20 development container
 
 The configuration builds on the official TensorFlow 2.20 GPU Jupyter image and
-installs `requirements.txt`. It uses native Keras 3 with the TensorFlow backend.
+installs the same `requirements.txt` used by local and hosted environments. The
+GPU base image supplies CUDA libraries, and the shared file also requests
+`tensorflow[and-cuda]` on Linux x86_64. Notebook startup omits that extra for
+Colab/Kaggle managed CUDA and Binder CPU. The shared file pins TensorFlow/Keras and
+allows compatible supporting packages, including notebook tools.
 The recipe also supplies the Cairo dependency missing from the base image's
 PyGObject installation and runs `pip check` before completing the build.
 Protobuf 5.29.6 matches the major version of TensorFlow 2.20's generated

@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+# .binder takes precedence over root build files. Install the single shared
+# manifest through the CPU policy, without TensorFlow's CUDA pip extra.
+python - <<'PY'
+from pathlib import Path
+from notebooks.thesis.bootstrap import prepare_runtime
+
+prepare_runtime(Path.cwd(), runtime="binder", install=True)
+PY

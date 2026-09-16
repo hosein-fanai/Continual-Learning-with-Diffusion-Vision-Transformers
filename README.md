@@ -31,6 +31,28 @@ Keras models as their canonical Python classes.
 
 ## Environment
 
+### Run in a hosted notebook
+
+Open the notebook, connect to a **GPU** runtime, then choose **Runtime > Run all**.
+The first cell downloads the repository if needed and prepares TensorFlow 2.20.0
+and Keras 3.11.2 before importing the project. An existing checkout is reused.
+Each maintained thesis notebook has its own Colab button.
+
+All notebooks use a small loader for the shared [notebooks/init.py](notebooks/init.py).
+It reuses local source or downloads missing source using the canonical GitHub name,
+`Continual-Learning-with-Diffusion-Vision-Transformers`. See the
+[initializer guide](notebooks/INITIALIZATION.md) for details.
+
+Kaggle is also detected automatically: import a notebook, enable Internet and
+select a GPU, then Run all. Missing source is downloaded under `/kaggle/working`.
+Binder has a CPU build configuration for small checks. For other compatible
+hosted Jupyter services, set `RUNTIME = "hosted"` and select `CUDA` in the first cell.
+
+See the [hosted runtime guide](notebooks/thesis/README.md#hosted-runtimes) for
+provider setup, saved results, and the confirmation campaign's prerequisites.
+
+### Local environment
+
 Use TensorFlow **2.20.0** with native **Keras 3** and the TensorFlow backend.
 Install the declared dependencies with:
 
@@ -38,10 +60,18 @@ Install the declared dependencies with:
 python -m pip install -r requirements.txt
 ```
 
-The [development container](.devcontainer/README.md) builds the official
-TensorFlow 2.20 GPU image with these requirements. The target uses Keras 3.11.2
-and NumPy 2.3.2. See the [compatibility guide](compatibility_migration.md) for
-supported paths, test scope, and checkpoint limitations.
+The same `requirements.txt` serves local environments, Docker, and hosted notebooks.
+TensorFlow 2.20.0 and Keras 3.11.2 are pinned; compatible ranges for supporting
+packages allow Colab and Kaggle to retain their managed kernel dependencies. The
+[development container](.devcontainer/README.md) installs this file on the
+official TensorFlow 2.20 GPU image. On Linux x86_64 (including WSL2 and Docker),
+the file requests `tensorflow[and-cuda]`; other platforms use plain TensorFlow.
+Notebook startup reads this same file and omits the CUDA extra for Colab/Kaggle
+managed libraries and Binder CPU use. Use the startup cell: direct `pip -r` cannot
+detect notebook providers and would include the CUDA extra. GPU use still requires a compatible
+NVIDIA driver on the host.
+See the [compatibility guide](compatibility_migration.md) for tested versions,
+supported paths, and checkpoint limitations.
 
 GPU memory growth is configured by the container. `common.utils.init()` is a
 compatibility entry point and does not impose a fixed memory cap.

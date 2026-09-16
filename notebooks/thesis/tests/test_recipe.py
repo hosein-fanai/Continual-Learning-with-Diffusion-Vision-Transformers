@@ -20,6 +20,7 @@ import yaml
 from common.experiment import materialize_run_plan
 from notebooks.thesis import workflow
 from notebooks.thesis.development import review_development_run
+from notebooks.thesis.tests.test_bootstrap import NOTEBOOK_NAMES
 from semantic_consolidation.config import load_route_config
 from semantic_consolidation.study import validate_planned_config
 
@@ -97,6 +98,14 @@ class PreparedRecipeTests(unittest.TestCase):
             self.assertEqual(record["schema_version"], 2)
             self.assertEqual(record["seeds"], SEEDS)
             self.assertEqual(record["declared_stream_count"], 24)
+            self.assertTrue({"init.py", "notebooks/init.py"} <= record["bound_files"].keys())
+            shared_initializer = NOTEBOOKS.parent / "init.py"
+            original_digest = workflow._digest
+            with patch.object(workflow, "_digest", side_effect=lambda path:
+                              "changed-initializer" if Path(path) == shared_initializer
+                              else original_digest(path)):
+                with self.assertRaisesRegex(ValueError, "Frozen.*notebooks/init.py"):
+                    workflow._campaign(frozen)
             total = 0
             for dataset, classes, tasks, task_size, epochs, acquisition, consolidation in (
                 ("cifar10", 10, 5, 2, 40, 200, 400),
@@ -221,8 +230,8 @@ class PreparedRecipeTests(unittest.TestCase):
 class NotebookContractTests(unittest.TestCase):
     """Structural checks do not execute training cells or claim useful learning."""
 
-    def test_all_eleven_notebooks_are_valid_clean_and_syntactically_executable(self) -> None:
-        """Verify all eleven notebooks are valid clean and syntactically executable.
+    def test_all_thirteen_notebooks_are_valid_clean_and_syntactically_executable(self) -> None:
+        """Validate canonical notebook sources and the portable hosted kernel metadata.
 
         Args:
             None. Fixtures are owned by this unittest instance.
@@ -233,14 +242,14 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        paths = sorted(NOTEBOOKS.glob("*.ipynb"))
-        self.assertEqual([path.name[:2] for path in paths], [f"{index:02d}" for index in range(11)])
+        paths = [NOTEBOOKS / name for name in NOTEBOOK_NAMES]
+        self.assertEqual([path.name[:2] for path in paths], [f"{index:02d}" for index in range(13)])
         for path in paths:
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
                 nbformat.validate(notebook)
-                self.assertEqual(notebook.metadata.kernelspec.name, "tensorflow-220")
-                self.assertEqual(notebook.metadata.kernelspec.display_name, "TensorFlow 2.20 (Docker GPU)")
+                self.assertEqual(notebook.metadata.kernelspec.name, "python3")
+                self.assertEqual(notebook.metadata.kernelspec.display_name, "Python 3 (ipykernel)")
                 for index, cell in enumerate(notebook.cells):
                     # Apply this case only when cell.cell_type == 'code'.
                     if cell.cell_type == "code":
@@ -260,7 +269,7 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        for path in sorted(NOTEBOOKS.glob("0*.ipynb"))[2:]:
+        for path in (NOTEBOOKS / name for name in NOTEBOOK_NAMES[2:10]):
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
                 tree = ast.parse("\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code"))
@@ -289,14 +298,14 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        for path in sorted(NOTEBOOKS.glob("*.ipynb")):
+        for path in (NOTEBOOKS / name for name in NOTEBOOK_NAMES):
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
                 tree = ast.parse("\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code"))
                 settings = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
                             for target in node.targets if isinstance(target, ast.Name)}
-                # Apply this case only when not path.name.startswith('00_').
-                if not path.name.startswith("00_"):
+                # Only freeze, confirmation, and collection share the frozen campaign.
+                if path.name in NOTEBOOK_NAMES[1:11]:
                     campaign = settings["CAMPAIGN"]
                     self.assertTrue(any(isinstance(node, ast.Constant) and isinstance(node.value, str)
                                         and (node.value == workflow.CAMPAIGN_VERSION or

@@ -56,11 +56,10 @@ def source_fingerprint(root: str | Path = SOURCE_ROOT, *, additional_packages: t
     """
     root = Path(root).resolve()
     files = source_files(root, additional_packages=additional_packages)
-    # Include both maintained dependency declarations when present.
-    for name in ("requirements.txt", "requirements-colab.txt"):
-        requirements = root / name
-        if requirements.exists():
-            files[name] = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    # Bind the shared dependency declaration used by local and hosted notebooks.
+    requirements = root / "requirements.txt"
+    if requirements.exists():
+        files[requirements.name] = hashlib.sha256(requirements.read_bytes()).hexdigest()
     encoded = json.dumps(files, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return {"sha256": hashlib.sha256(encoded).hexdigest(), "files": files}
 

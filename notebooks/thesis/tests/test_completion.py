@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from allocation_study.artifacts import replace_completed_index, write_completed_artifact
+from common.study_artifacts import replace_completed_index, write_completed_artifact
 from common.config import save_config
 from common.continual_reporting import write_continual_csv_artifacts
 from common.experiment import materialize_run_plan, read_experiment_manifest
@@ -602,7 +602,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         """
         replace_completed_index(self.index, {})
         previous = self.index.read_bytes()
-        with patch("allocation_study.artifacts.os.replace", side_effect=OSError("injected replacement failure")):
+        with patch("common.study_artifacts.os.replace", side_effect=OSError("injected replacement failure")):
             with self.assertRaisesRegex(OSError, "injected replacement failure"):
                 completion.publish_completion(self.manifest_path, self.record, expected_hash=self.digest)
         self.assertEqual(self.index.read_bytes(), previous)

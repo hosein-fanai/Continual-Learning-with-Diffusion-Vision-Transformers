@@ -1,0 +1,2 @@
+postBuild text eol=lf
+runtime.txt text eol=lf

@@ -1,35 +1,38 @@
-# Reference environment: Python 3.11 in the TensorFlow 2.20 GPU Jupyter image.
-# Pins match the installed environment used for project compatibility checks.
-# Linux x86_64 GPU libraries are supplied by TensorFlow's and-cuda extra;
-# the NVIDIA host driver and Docker GPU access must be configured separately.
+# Shared dependencies for local, Docker, and hosted Python 3.11-3.13 runtimes.
+# Pin the model API; compatible ranges preserve managed/preloaded packages.
+# CUDA pip libraries are supported on Linux x86_64 (including WSL2 and Docker).
+# Notebook bootstrap omits and-cuda for Colab/Kaggle managed CUDA and Binder CPU.
+# Other services can select runtime/cuda explicitly in the first notebook cell.
+# pip markers cannot detect providers, so direct pip -r does not omit the extra.
 tensorflow[and-cuda]==2.20.0 ; platform_system == "Linux" and platform_machine == "x86_64"
 tensorflow==2.20.0 ; platform_system != "Linux" or platform_machine != "x86_64"
 keras==3.11.2
-tensorboard==2.20.0
-numpy==2.3.2
-h5py==3.14.0
-ml-dtypes==0.5.3
+tensorboard>=2.20,<2.21
+numpy>=1.26,<3
+h5py>=3.11,<4
+ml-dtypes>=0.5.1,<1
 # Match TensorFlow's generated protobuf major version (5.28.3).
-protobuf==5.29.6
+protobuf>=5.28,<6
 
 # Data loading, evaluation, configuration, optimization, and resource reporting.
-pandas==3.0.5
-scipy==1.17.1
-scikit-learn==1.9.1
-PyYAML==6.0.2
-optuna==5.0.0
-psutil==7.0.0
+pandas>=2.2,<4
+scipy>=1.13,<2
+scikit-learn>=1.5,<2
+PyYAML>=6.0.2,<7
+optuna>=4,<6
+psutil>=5.9,<8
 
 # Figures, generated images, and notebook display.
-matplotlib==3.10.5
-Pillow==11.3.0
-ipython==9.4.0
+matplotlib>=3.8,<4
+Pillow>=10,<13
+ipython>=7.34,<10
 
-# Local notebook server and the kernel configured by .devcontainer.
-ipykernel==6.30.1
-jupyterlab==4.4.5
-notebook==7.4.5
-nbformat==5.10.4
+# Local notebook tools; accept managed Colab/Kaggle kernel/server versions.
+ipykernel>=6.17,<8
+jupyterlab>=4.4.5,<5
+notebook>=6.5.7,<8
+nbformat>=5.10,<6
+packaging>=24
 
 # The separate PyTorch/Avalanche demo in notebooks/test.ipynb additionally
 # needs torch and avalanche-lib; they are not used by the TensorFlow thesis.

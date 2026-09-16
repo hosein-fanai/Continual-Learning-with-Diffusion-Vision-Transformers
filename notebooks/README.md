@@ -9,8 +9,7 @@ when checking reproducibility; historical outputs are not new validation results
 
 When starting from this directory, `import init` resolves the repository root,
 changes the working directory, and makes project imports available. Its
-`common.utils.init()` compatibility call does not configure GPU memory. Device
-settings belong to the runtime setup described in the
+setup uses only the standard library. Device settings belong to the runtime setup described in the
 [development-container guide](../.devcontainer/README.md).
 
 `DiffusionModel` and `DiffusionClassifier` use ordinary `fit` keyword arguments.

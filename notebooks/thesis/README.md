@@ -1,10 +1,183 @@
 # Minimum Route One thesis experiments
 
-These notebooks use TensorFlow 2.20 and native Keras 3. Select the project's TensorFlow kernel, restart it, and run one notebook from top to bottom. The setup cell finds the repository automatically. Each training notebook runs one complete seed/class-order stream.
+These notebooks use TensorFlow 2.20 and native Keras 3. Locally, select the project's TensorFlow kernel, restart it, and run one notebook from top to bottom. For hosted sessions, use the setup below. Each training notebook runs one complete seed/class-order stream.
 
 **Defense scope:** this is a TMCL-inspired supervised classifier experiment. It can produce the accuracy, forgetting, local backward-transfer and paired-effect values for that claim after complete runs. It does not reproduce TMCL's published protocol or test noise-dependent consolidation. The [scientific audit](SCIENTIFIC_AUDIT.md) explains the comparison, required evidence and limits. No authenticated confirmation campaign was present in this checkout on 15 September 2026.
 
 Training notebooks keep four main steps: select a stream, load data/create the model, train, and save/read results. Development then reviews diagnostics; confirmation diagnostics are optional.
+
+## Hosted runtimes
+
+The shared-bootstrap notebooks use a small loader for [`notebooks/init.py`](../init.py),
+which finds or downloads the checkout and prepares its runtime. The maintained
+notebooks **00 through 12** use the same dependency manifest. Setup recognizes Colab, Kaggle and Binder. Other hosted
+Jupyter services can use an explicit setting in the first code cell. All require
+Python **3.11-3.13**, a writable project directory and Internet access when
+dependencies, the repository or datasets need downloading.
+
+Every notebook outside `notebooks/old` starts with a Markdown panel linking to
+its own GitHub notebook through three buttons: Colab, Kaggle and Binder. Studio
+Lab remains available as a text link for existing accounts. These links use
+the published `main` branch: push the notebooks, shared setup files and Binder
+configuration together before using them. For an unpublished notebook, upload
+the `.ipynb` to Colab or Kaggle; the shared initializer must still be available
+locally or on GitHub. Opening a runtime does not start training automatically.
+
+`00_Development2.ipynb` currently retains local-only initialization. It requires
+an existing repository checkout and a prepared TensorFlow 2.20 / Keras 3.11.2
+kernel; it does not download the checkout or install dependencies. Use
+`00_Development.ipynb` for automatic hosted setup.
+
+### Google Colab
+
+[![Open development notebook in Colab](https://img.shields.io/badge/Open_in-Colab-F9AB00?logo=googlecolab&logoColor=F9AB00)](https://colab.research.google.com/github/hosein-fanai/Continual-Learning-with-Diffusion-Vision-Transformers/blob/main/notebooks/thesis/00_Development.ipynb)
+
+1. Open a notebook with its **Open in Colab** button, which links to its own
+   GitHub copy.
+2. For training, connect to a **GPU** runtime. Use **Runtime > Change runtime
+   type** if a GPU is not selected. GPU allocation depends on Colab availability.
+3. Choose **Runtime > Run all**. The first code cell finds an existing checkout or
+   clones the repository's `main` branch into
+   `/content/Continual-Learning-with-Diffusion-Vision-Transformers`.
+4. Setup checks installed package versions and installs missing or incompatible
+   requirements before TensorFlow or project imports. Dataset loading downloads
+   CIFAR through Keras when its cache is absent.
+
+Colab supports loading notebooks directly from GitHub, but opening an `.ipynb`
+does not provide the surrounding repository or its dependencies; the startup
+cell supplies both. See the [Colab FAQ](https://research.google.com/colaboratory/faq.html).
+
+### Kaggle
+
+[![Open development notebook in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/kernels/welcome?src=https%3A%2F%2Fgithub.com%2Fhosein-fanai%2FContinual-Learning-with-Diffusion-Vision-Transformers%2Fblob%2Fmain%2Fnotebooks%2Fthesis%2F00_Development.ipynb)
+
+1. Use the notebook's **Open in Kaggle** button, sign in, and complete the import.
+   Alternatively, create a notebook in [Kaggle Code](https://www.kaggle.com/code)
+   and import the `.ipynb` by GitHub URL or file upload.
+2. Enable **Internet** in notebook settings and choose a **GPU** accelerator
+   for training, then **Run all**.
+3. The first code cell detects Kaggle and downloads missing source into
+   `/kaggle/working/Continual-Learning-with-Diffusion-Vision-Transformers`.
+   It installs missing Python dependencies while using Kaggle's managed CUDA.
+4. Check the next cell's `GPUs` count before starting a long training run.
+   Export or save the complete results directory in the notebook's outputs.
+
+Use `/kaggle/working` for writable files; attached input datasets live separately.
+GPU access and quotas depend on the account and service availability. See
+[Kaggle's notebook documentation](https://www.kaggle.com/docs/notebooks).
+The badge uses Kaggle's documented
+[external-notebook import link](https://www.kaggle.com/product-feedback/152480).
+
+Kaggle detection takes precedence over Colab because current Kaggle images
+inherit the Colab base. The shared requirements accept IPykernel 6 and 7 to
+preserve either provider's compatible live kernel. This follows Kaggle's
+[image source](https://github.com/Kaggle/docker-python/blob/main/Dockerfile.tmpl)
+and [release metadata](https://github.com/Kaggle/docker-python/releases).
+
+### Binder: small CPU checks
+
+[![Launch development notebook in Binder](https://img.shields.io/badge/launch-binder-F5793A?logo=jupyter&logoColor=white)](https://mybinder.org/v2/gh/hosein-fanai/Continual-Learning-with-Diffusion-Vision-Transformers/main?urlpath=lab%2Ftree%2Fnotebooks%2Fthesis%2F00_Development.ipynb)
+
+The [Binder configuration](../../.binder) selects Python 3.11 and installs the
+same `requirements.txt` through the bootstrap with CUDA pip dependencies omitted.
+It does not maintain another requirements list. Binder starts with the repository
+already present; its first build may take time.
+
+Use public Binder to inspect code or run small CPU checks. Full CIFAR training
+and the confirmation campaign need more resources: public Binder provides only
+1-2 GB RAM and limits computational session time. Its files are temporary.
+See [Binder's usage limits](https://mybinder.readthedocs.io/en/latest/about/user-guidelines.html).
+
+### Other hosted Jupyter services
+
+In the first code cell, set:
+
+```python
+RUNTIME = "hosted"
+CUDA = False  # CPU, or a provider that already supplies compatible CUDA libraries.
+```
+
+Use `CUDA = True` for an NVIDIA Linux x86_64 runtime that needs TensorFlow's
+CUDA pip dependencies. The host must already expose a compatible NVIDIA driver;
+pip cannot allocate a GPU. Run all from a fresh compatible Python kernel.
+The checkout is downloaded into the current directory when neither Kaggle's
+working directory nor Colab's `/content` exists. Use a writable project folder.
+
+Existing **SageMaker Studio Lab** accounts can select `RUNTIME = "studiolab"`.
+Choose a Python 3.11-3.13 kernel; `CUDA = None` retains the Linux CUDA extra,
+while `CUDA = False` works for CPU or an already provisioned CUDA environment.
+Studio Lab is no longer open to new customers; see its
+[service notice](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-lab.html)
+and [environment guide](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-lab-use-manage.html).
+
+[Open development notebook in Studio Lab (existing accounts)](https://studiolab.sagemaker.aws/import/github/hosein-fanai/Continual-Learning-with-Diffusion-Vision-Transformers/blob/main/notebooks/thesis/00_Development.ipynb)
+
+The Studio Lab link opens a preview. Start a runtime, copy the notebook to
+your project, select a compatible kernel, then set the first code cell's runtime
+options before running it. See AWS's
+[GitHub import and badge instructions](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-lab-use-external.html).
+
+`RUNTIME = "local"` disables automatic installation even on a detected service.
+The `CONTINUAL_RUNTIME` environment variable supplies the same selection when
+`RUNTIME = "auto"`. Generic JupyterHub markers and merely installed provider SDKs
+do not enable installation. The generic hosted mode is configurable support,
+not a claim that every provider image has been tested.
+
+### Checkout and runtime behavior
+
+`CHECKOUT_NAME = "Continual-Learning-with-Diffusion-Vision-Transformers"` matches
+the canonical name verified through GitHub. `REPOSITORY` is constructed as
+`f"https://github.com/hosein-fanai/{CHECKOUT_NAME}.git"`. A notebook first loads
+its local `notebooks/init.py`; if absent, it downloads just that initializer,
+which then downloads the missing repository. See the
+[initializer guide](../INITIALIZATION.md) for the shared entry points.
+
+The first code cell reuses a checkout found in the current directory, its parents,
+or the named download directory. Rerunning it does not pull updates or overwrite
+local edits. To run a different Git branch, set `REVISION` before the first
+download; it does not switch an existing checkout. To update an existing
+checkout, save your work and update it explicitly before starting a new run.
+
+The single [`requirements.txt`](../../requirements.txt) is shared by hosted,
+Docker, and local environments. It pins TensorFlow 2.20.0 and Keras 3.11.2 and
+uses compatible ranges for scientific and notebook packages, including managed
+IPython/kernel versions. Missing tools such as JupyterLab are installed
+from the same file. On Linux x86_64 (including WSL2 and Docker), the file requests
+`tensorflow[and-cuda]`; other platforms use plain TensorFlow. The startup helper
+removes only that extra for Colab/Kaggle managed CUDA, Binder CPU, or an explicit
+`CUDA = False`. Run the startup cell on these services instead of installing the
+file directly: pip's environment markers cannot detect notebook providers.
+Local notebooks verify dependencies without installing into your selected kernel,
+and accept CUDA libraries supplied by a GPU image. Explicit local installation
+with `prepare_runtime(ROOT, install=True)` also checks the extra's pip dependencies.
+
+Always run the bootstrap cell before importing the model. If an incompatible
+TensorFlow/Keras version is already loaded, restart the session and **Run all**.
+Before installing, setup also checks pip's proposed changes and stops if they
+would replace an already imported package. For an incompatible hosted runtime,
+select a supported runtime and start fresh; Colab's **2026.07** runtime includes
+TensorFlow 2.20 and Python 3.12. Runtime choices and installed packages change;
+see [Colab's runtime version guide](https://research.google.com/colaboratory/runtime-version-faq.html).
+
+### Results and campaign prerequisites
+
+Notebook **00** can start a development experiment in a fresh session. Notebooks
+**11 and 12** can also start their reference runs independently. Notebook **01**
+prepares the frozen confirmation campaign; notebooks **02 through 09** require
+that campaign, and notebook **10** requires its completed streams. Restore the
+same campaign artifacts when moving those stages to another hosted runtime.
+Downloading the source alone does not recreate a frozen campaign or its results.
+
+Colab virtual-machine files are temporary. Preserve the whole relevant
+`results/thesis_route_one/` campaign or development directory, including
+checkpoints and `frozen_design.json`, outside the runtime before deleting it.
+Keeping only the notebook in Drive does not save the VM's other files. See the
+[Colab FAQ](https://research.google.com/colaboratory/faq.html).
+
+Finish source and notebook changes before freezing a confirmation campaign.
+The bootstrap and maintained helper code participate in its source identity;
+an existing frozen campaign must use its retained source, or a new campaign
+must be prepared. Setup does not relax that provenance check.
 
 ## Run sequence
 

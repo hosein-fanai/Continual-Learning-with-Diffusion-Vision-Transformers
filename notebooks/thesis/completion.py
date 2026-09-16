@@ -25,7 +25,7 @@ import tempfile
 import numpy as np
 import yaml
 
-from allocation_study.artifacts import (
+from common.study_artifacts import (
     _unique_keys, read_completed_runs, replace_completed_index,
     validate_completed_artifact,
 )

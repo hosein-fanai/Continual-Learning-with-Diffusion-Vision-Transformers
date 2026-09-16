@@ -27,7 +27,7 @@ import time
 
 import numpy as np
 
-from allocation_study.artifacts import source_fingerprint, validate_study_source
+from common.study_artifacts import source_fingerprint, validate_study_source
 from notebooks.thesis.completion import publish_completion, reconcile_completions
 from common.config import resolve_continual_schedule
 from common.experiment import (
@@ -242,8 +242,9 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
     helpers = sorted(notebook_dir.glob("*.py"))
     rationale = [notebook_dir / name for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json")
                  if (notebook_dir / name).is_file()]
-    bound_files = [*helpers, *notebooks, *paths.values(), *rationale]
     source_root = Path(__file__).resolve().parents[2]
+    initializers = [source_root / "init.py", source_root / "notebooks" / "init.py"]
+    bound_files = [*helpers, *initializers, *notebooks, *paths.values(), *rationale]
     fingerprints = {path.relative_to(source_root).as_posix(): _digest(path) for path in bound_files}
     # Each native preparation validates seeds, all conditions, and source identity.
     studies = {}

@@ -45,14 +45,17 @@ class StudyArtifactTests(unittest.TestCase):
         self.assertIn("gist_memory/module.py", result)
         self.assertNotIn("gist_memory/prepared/copy.py", result)
 
-    def test_both_dependency_manifests_change_identity(self):
-        previous = source_fingerprint(self.root)
-        for name in ("requirements.txt", "requirements-colab.txt"):
-            (self.root / name).write_text("numpy==2.3.2\n", encoding="utf-8")
+    def test_shared_dependency_manifest_changes_identity(self):
+        absent = previous = source_fingerprint(self.root)
+        requirements = self.root / "requirements.txt"
+        for contents in ("numpy==2.3.2\n", "numpy>=2.1,<3\n"):
+            requirements.write_text(contents, encoding="utf-8")
             current = source_fingerprint(self.root)
             self.assertNotEqual(previous, current)
-            self.assertIn(name, current["files"])
+            self.assertIn(requirements.name, current["files"])
             previous = current
+        requirements.unlink()
+        self.assertEqual(absent, source_fingerprint(self.root))
 
     def test_frozen_source_changes_are_still_rejected(self):
         expected = source_fingerprint(self.root)

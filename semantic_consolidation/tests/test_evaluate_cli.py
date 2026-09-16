@@ -13,7 +13,7 @@ import numpy as np
 import yaml
 
 from common.config import load_config, save_config
-from allocation_study.artifacts import native_study_metadata
+from common.study_artifacts import native_study_metadata
 from common.experiment import create_paired_block_manifest, materialize_run_plan, write_experiment_manifest
 from common.model import get_model
 from semantic_consolidation.config import load_route_config
