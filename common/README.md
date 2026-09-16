@@ -50,8 +50,13 @@ continual settings are resolved consistently. Exact fields and edge cases are
 documented by each function and configuration dataclass.
 
 Model construction prints architecture summaries by default in both modes.
-Set `show_network_summary: false` under `model` in YAML, or pass
-`show_network_summary=False` to `get_model` in direct-keyword mode to suppress them.
+The continual API prints the updated network again after it adds classes at a
+task boundary. Set `show_network_summary: false` under `model` in YAML to suppress
+both. In direct-keyword mode, pass `show_network_summary=False` to `get_model`
+for construction and to `continually_learn` or `train_model` for continual runs.
+This display preference is independent of training verbosity and is not stored
+on `DiffusionModel`. Direct wrapper class/depth growth calls do not print a
+network summary; explicit `model.summary()` remains available.
 
 ## Datasets
 
@@ -219,6 +224,32 @@ until at least two classes have been introduced.
 `training.verbose` also controls replay-generation progress. Zero keeps it quiet;
 nonzero values show candidate generation or cache loading and elapsed time.
 Diffusion replay additionally shows batch counts and reverse-diffusion steps.
+After candidate generation or cache loading, verbose runs print three variation
+measurements for the complete candidate pool:
+
+- `mean_image_std`: average standard deviation of pixel/channel values within
+  each image; this describes image contrast.
+- `mean_pixel_std`: standard deviation across images at each pixel/channel,
+  averaged across pixel/channel positions.
+- `within_class_pixel_std`: the same across-image calculation separately within
+  each generated class, then averaged equally over classes with at least two
+  candidates. It is unavailable if no class has two candidates.
+
+Diffusion values are divided by the loader's pixel range (for example, 2 for
+`[-1, 1]` images); VAE values use their native units. The calculations cover the
+full candidate pool rather than averaging batch statistics, and appear in
+`task_resource_metrics` under `replay.variation`. These are variation checks:
+random noise can also score highly, so they do not establish image quality or
+replay usefulness.
+
+Generated-image previews are enabled by default and display one randomly
+selected image for each class represented in the generated replay pool. Set
+`continually_learn.show_generated_images: false` in YAML, or pass
+`show_generated_images=False` to the direct continual API, to disable them. For
+diffusion models with classifier-free guidance, the display also includes a
+separately generated null/unconditional image. Display labels use the original
+dataset class IDs. These previews are independent of `training.verbose`; the
+extra null image is not added to replay training.
 
 For a diffusion classifier with an active distillation token and positive
 teacher loss, set `continually_learn.use_distillation=True`. Task one may start

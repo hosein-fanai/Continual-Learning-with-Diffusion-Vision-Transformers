@@ -26,6 +26,7 @@ training:
 
 continually_learn:
   use_buffer: false
+  show_generated_images: true
   buffer_kwargs:
     maxlen: 10000
     sample_num: 1000

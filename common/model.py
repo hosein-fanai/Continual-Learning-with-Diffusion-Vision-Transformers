@@ -728,6 +728,7 @@ def get_model(
         VAEs require their separate one-hot conditioning inputs.
         ``loss_function="mse"`` selects mean squared error.
         ``show_network_summary=True`` prints architecture summaries after construction;
+        continual learning APIs separately control summaries after expansion.
         ``weights_path=None`` skips initial weight restoration.
         Optimizer arguments follow ``_make_optimizer``; the optimizer name
         comes from ``optimizer_name`` or ``optimizer`` (default ``"adam"``).

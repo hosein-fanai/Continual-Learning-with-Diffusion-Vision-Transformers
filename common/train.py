@@ -1032,6 +1032,7 @@ def train_model(
             "generative_model",
             "callbacks_list",
             "verbose",
+            "show_network_summary",
             "return_features",
             "max_train_samples",
             "max_val_samples",
@@ -1105,6 +1106,10 @@ def train_model(
             fit_method=fit_method,
             fit_kwargs=fit_kwargs,
             verbose=training_verbose,
+            show_network_summary=(
+                config.model.show_network_summary if config is not None
+                else kwargs.get("show_network_summary", True)
+            ),
             **continual_kwargs
         )
 

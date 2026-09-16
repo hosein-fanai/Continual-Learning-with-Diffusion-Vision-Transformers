@@ -32,7 +32,8 @@ The top-level sections are:
 - `continually_learn`: optional class count, cumulative/new-class behavior,
   fixed-buffer or generative replay controls, classifier reuse, optional
   seeded class/task scheduling, diffusion distillation/ensemble evaluation,
-  task-boundary recovery, and result detail/accuracy plotting switches.
+  task-boundary recovery, generated-image previews, and result detail/accuracy
+  plotting switches.
 - `reporting`: history plots/CSV, final sample controls, and train/validation
   evaluation switches, including optional raw/EMA ensemble accuracy.
 - `hpo`: resolved trial metadata and selected accuracy feedback signal,
@@ -166,6 +167,11 @@ family and select the continual classifier with `model.classifier_name` and
 `model.classifier_kwargs`. The factories compile both models from `optimizer`;
 `continually_learn` trains and reports each enabled phase through
 `common.train`. Fixed-buffer replay suppresses generative-model construction.
+Generated-image previews are enabled by default: one random image per generated
+replay class, plus a display-only null/unconditional image for diffusion models
+with classifier-free guidance. Set
+`continually_learn.show_generated_images: false` to disable previews. This option
+works independently of training verbosity.
 Dataset sample limits, shuffle capacity, raw-image padding, and the effective
 continual seed carry into every task. `continually_learn.seed` is authoritative
 and falls back to `training.seed` only when omitted. It controls schedule

@@ -68,6 +68,8 @@ from common.continual_reporting import (
     task_accuracy_summaries as _task_accuracy_summaries
 )
 from common.runtime import configure_runtime, derive_seed
+from common.replay_diagnostics import generated_sample_variation
+from common.replay_preview import show_generated_replay
 from common.recovery import (
     save_task_progress,
     _array_recovery_descriptor, 
@@ -1143,7 +1145,9 @@ def _run_continual_tasks(
     experiment_run_id: str | None = None,
     optimizer_steps_per_epoch: int | None = None,
     dtype_policy: str | None = None,
-    seed: int | None = None
+    seed: int | None = None,
+    show_generated_images: bool = True,
+    show_network_summary: bool | None = True,
 ) -> list[float] | dict[str, object]:
     """Train and evaluate a class-incremental schedule with optional replay, distillation, and recovery.
 
@@ -1230,7 +1234,18 @@ def _run_continual_tasks(
         plot_results (bool): Whether to display the final accuracy trajectory after
             completing tasks. Defaults to ``True``.
         verbose (bool | int): Training/reporting verbosity, replay-generation progress,
-            and whether task summaries and history plots are displayed.
+            generated-sample variation metrics, and whether task summaries and history
+            plots are displayed.
+            Defaults to ``True``.
+        show_generated_images (bool): Display one randomly selected generated replay
+            image per represented class, labeled with original dataset IDs, plus a
+            separate unconditional preview for CFG diffusion models. Independent of
+            verbosity; previews do not enter replay or advance training random streams.
+            Defaults to ``True``.
+        show_network_summary (bool | None): Print the updated network after this API
+            expands its class vocabulary at a task boundary, and print external
+            classifier construction summaries. Independent of training verbosity;
+            None uses the default True. Config mode supplies model.show_network_summary.
             Defaults to ``True``.
         generative_model (tf.keras.Model | None): Conditioned VAE, raw supported diffusion
             network, or diffusion wrapper; None selects standalone classification without a
@@ -2067,6 +2082,9 @@ def _run_continual_tasks(
     if fit_method == "fit_progressively":
         validate_progressive_classifier_growth(generative_model, fit_kwargs)
 
+    # Display preferences belong to this run, not to the serializable model.
+    show_network_summary = True if show_network_summary is None else bool(show_network_summary)
+
     # Continual diffusion models need a vocabulary that can grow at task boundaries.
     if isinstance(generative_model, DiffusionModel) and not getattr(
         generative_model.network, "dynamic_num_classes", False
@@ -2125,6 +2143,7 @@ def _run_continual_tasks(
             model_path=tuned_model_path,
             compile_args=compile_args,
             use_loaded_opt=use_loaded_opt,
+            show_network_summary=show_network_summary,
             verbose=0,
             seed=seed
         )
@@ -2595,6 +2614,7 @@ def _run_continual_tasks(
                     model_path=tuned_model_path,
                     compile_args=compile_args,
                     use_loaded_opt=use_loaded_opt,
+                    show_network_summary=show_network_summary,
                     verbose=0,
                     seed=derive_seed(seed, "task", completed_index)
                 )
@@ -2794,6 +2814,8 @@ def _run_continual_tasks(
             },
             "seconds": {
                 "generator_sampling": 0.,
+                "replay_diagnostics": 0.,
+                "replay_preview": 0.,
                 "teacher_scoring": 0.,
                 "classifier_fit": 0.,
                 "generator_fit": 0.,
@@ -2913,11 +2935,15 @@ def _run_continual_tasks(
         if isinstance(generative_model, DiffusionModel):
             # The schedule owns vocabulary order. A sampled generator pool may
             # omit a new class; discovering it later would reorder class logits.
+            previous_class_count = len(generative_model.seen_classes)
             generative_model._check_new_labels(
                 y=np.asarray(new_classes), 
                 original_labels=dict(zip(new_classes, original_task_groups[task_index])), 
                 verbose=verbose
             )
+            # Report actual task-boundary expansion after the model has finished it.
+            if show_network_summary and len(generative_model.seen_classes) > previous_class_count:
+                generative_model.network.summary()
 
         # Reset the final topology's streams after boundary reconstruction.
         _reset_task_random_streams(generative_model, task_seed)
@@ -2932,6 +2958,7 @@ def _run_continual_tasks(
                 model_path=tuned_model_path,
                 compile_args=compile_args,
                 use_loaded_opt=use_loaded_opt,
+                show_network_summary=show_network_summary,
                 verbose=0,
                 seed=task_seed
             )
@@ -3200,6 +3227,51 @@ def _run_continual_tasks(
                 )
             task_resource["replay"]["cache_path"] = cache_path
             candidate_ids = _label_ids(y_buffer)
+
+            # Measure the completed candidate pool, before selection or real-data mixing.
+            # Merge statistics across batches so the final short batch is weighted correctly.
+            if verbose and len(x_buffer):
+                diagnostics_started = time.perf_counter()
+                variation = generated_sample_variation(
+                    x_buffer, candidate_ids, batch_size=batch_size,
+                    value_range=diffusion_data_range,
+                )
+                variation["units"] = (
+                    "normalized pixel [0, 1]" if isinstance(generative_model, DiffusionModel)
+                    else "loader values"
+                )
+                task_resource["replay"]["variation"] = variation
+                within_class = variation["within_class_pixel_std"]
+                within_text = "unavailable (need >=2 samples per class)" if within_class is None \
+                    else f"{within_class:.6f}"
+                print(
+                    f"Generated replay variation ({variation['units']}): "
+                    f"mean_image_std={variation['mean_image_std']:.6f}, "
+                    f"mean_pixel_std={variation['mean_pixel_std']:.6f}, "
+                    f"within_class_pixel_std={within_text}",
+                    flush=True,
+                )
+                task_resource["seconds"]["replay_diagnostics"] = float(
+                    time.perf_counter() - diagnostics_started
+                )
+
+            if show_generated_images and len(x_buffer):
+                preview_started = time.perf_counter()
+                preview_min, preview_range = diffusion_data_min, diffusion_data_range
+                if not isinstance(generative_model, DiffusionModel) and load_dataset_fn_kwargs.get(
+                    "preprocess"
+                ) in ("standardize", "diffusion", "fixed-standardize"):
+                    preview_min, preview_range = -1., 2.
+                show_generated_replay(
+                    x_buffer, candidate_ids, dict(zip(old_classes, old_original_classes)),
+                    generative_model=generative_model,
+                    data_min=preview_min, data_range=preview_range,
+                    seed=derive_seed(task_seed, "generated_replay_preview"),
+                    verbose=bool(verbose),
+                )
+                task_resource["seconds"]["replay_preview"] = float(
+                    time.perf_counter() - preview_started
+                )
 
             # Confidence and surprise selectors score candidates with the previous teacher.
             if scored_replay_selection:

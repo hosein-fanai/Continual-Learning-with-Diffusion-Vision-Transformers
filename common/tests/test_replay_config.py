@@ -73,6 +73,8 @@ class ReplayConfigTests(unittest.TestCase):
         self.assertEqual(loaded_config.training.task, "classification")
         self.assertIsNone(Config().continually_learn.optimizer_steps_per_epoch)
         self.assertIsNone(loaded.optimizer_steps_per_epoch)
+        self.assertTrue(Config().continually_learn.show_generated_images)
+        self.assertTrue(loaded.show_generated_images)
         self.assertIsNone(Config().optimizer.global_clipnorm)
         self.assertIsNone(loaded_config.optimizer.global_clipnorm)
 
@@ -160,6 +162,7 @@ class ReplayConfigTests(unittest.TestCase):
                 "class_order": [2, 0, 1],
                 "task_groups": [[2, 0], [1]],
                 "use_generative_model_classifier": True,
+                "show_generated_images": False,
                 "train_classifier_separately": True,
                 "use_distillation": True,
                 "use_ensemble_accuracy": True,

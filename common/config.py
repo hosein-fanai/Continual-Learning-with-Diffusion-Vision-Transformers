@@ -1640,7 +1640,8 @@ class ModelConfig:
             DiTClassifier plus DiffusionClassifier; False selects DiffusionTransformer plus
             DiffusionModel. An explicit generic family controls its own compatible wrapper
             path. Defaults to ``True``.
-        show_network_summary (bool): Print the wrapper/network summary after construction.
+        show_network_summary (bool): Print the wrapper/network summary after construction
+            and let the continual API print it after task-boundary class expansion.
             Defaults to ``True``.
         weights_path (str | None): Keras weights file or TensorFlow checkpoint prefix loaded
             after construction, or ``None`` for fresh weights. In continual runs it
@@ -1912,6 +1913,11 @@ class ContinuallyLearnConfig(KwargsMixin):
         use_generative_replay (bool): Generate old examples between tasks when a replay
             model is present. The default ``True`` preserves previous behavior; ``False``
             enables joint/KD controls without generation. Defaults to ``True``.
+        show_generated_images (bool): Display one randomly selected image per available
+            generated replay class after generation, plus an unconditional/null preview
+            when the diffusion model supports classifier-free guidance. The null preview
+            is display-only and is not added to replay training. Independent of
+            ``training.verbose``. Defaults to ``True``.
         replay_budget_mode (str): ``"legacy"`` retains per-class generation and buffer
             counts. ``"fixed_total"`` uses the explicit old/current example budgets below so
             replay methods receive matched exposure. Defaults to ``'legacy'``.
@@ -2010,6 +2016,7 @@ class ContinuallyLearnConfig(KwargsMixin):
         default_factory=lambda: {"train_num": 1_000, "samples_per_class": 1_000}
     )
     use_generative_replay: bool = True
+    show_generated_images: bool = True
     replay_budget_mode: str = "legacy"
     replay_old_examples: int | None = None
     replay_current_examples: int | None = None
@@ -2123,8 +2130,8 @@ class TrainingConfig:
         deterministic_ops (bool): Request deterministic TensorFlow kernels when supported.
             Continual runs still derive every random source from ``continually_learn.seed``.
             Defaults to ``False``.
-        verbose (int): Keras, replay-generation, boundary-diagnostic, and project
-            reporting verbosity.
+        verbose (int): Keras, replay-generation and variation-metric, boundary-diagnostic,
+            and project reporting verbosity.
             Defaults to ``1``.
         patience (int): Early-stopping patience; ``0`` disables it. Defaults to ``0``.
         monitor (str | None): Ordinary early-stopping metric. None selects val_loss when an
