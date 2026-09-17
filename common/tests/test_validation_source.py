@@ -129,6 +129,32 @@ class ValidationSourceTests(unittest.TestCase):
                         self.assertEqual(config.dataset.split_metadata["training_rows_per_epoch"],
                                          expected)
 
+    def test_fixed_preprocessing_records_pixel_bounds_and_preserves_scaling(self):
+        # Training extrema are only 0..39; these modes must use the fixed
+        # uint8 bounds for both splits and must not claim fitted statistics.
+        for mode, scale, offset in (("fixed-min-max", 1, 0),
+                                    ("fixed-standardize", 2, -1)):
+            with self.subTest(preprocess=mode):
+                config = self.config("test", preprocess=mode, drop_remainder=False)
+                train, validation = self.load(config)
+                training, _ = self.rows(train)
+                validating, _ = self.rows(validation)
+                np.testing.assert_allclose(
+                    training, scale * self.images[self.train_order].astype(np.float32) / 255 + offset,
+                )
+                np.testing.assert_allclose(
+                    validating, scale * self.test_images[self.test_order].astype(np.float32) / 255 + offset,
+                )
+                metadata = config.dataset.split_metadata
+                self.assertEqual(metadata["preprocess_fit_source"], "fixed_pixel_bounds")
+                self.assertEqual(config.hpo["data_split"], metadata)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "config.yaml"
+                    save_config(config, path)
+                    restored = load_config(path)
+                self.assertEqual(restored.dataset.split_metadata, metadata)
+                self.assertEqual(restored.hpo["data_split"], metadata)
+
     def test_validation_cap_applies_to_selected_test_and_metadata_round_trips(self):
         config = self.config("test", max_train_samples=9, max_val_samples=3,
                              drop_remainder=False)

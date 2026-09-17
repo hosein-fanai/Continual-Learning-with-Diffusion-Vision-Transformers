@@ -327,13 +327,13 @@ def _make_optimizer(config: Config | None = None,
     learning_rate = initial_learning_rate
     # Construct the requested cosine learning-rate schedule.
     if schedule == "cosine":
-        if plateau_jump:
+        if plateau_jump:  # Opt-in schedules expose their offset to plateau callbacks.
             from common.callbacks.plateau_lr import OffsetCosineDecay
             learning_rate = OffsetCosineDecay(
                 initial_learning_rate, decay_steps,
                 min_learning_rate=min_learning_rate,
             )
-        else:
+        else:  # Ordinary cosine decay keeps its fixed step-based trajectory.
             learning_rate = optimizers.schedules.CosineDecay(
                 initial_learning_rate=initial_learning_rate,
                 decay_steps=decay_steps
@@ -1386,7 +1386,7 @@ def get_model(
         # Resolve automatic null masking from the raw network's CFG convention.
         if selected_wrapper_name == "diffusion_classifier_v2":
             selected_wrapper_kwargs["mask_by_nulls"] = False
-        # Infer null masking from CFG when classifier masking was not explicitly set.
+        # Infer null masking independently of classifier input conditioning.
         elif selected_wrapper_name in _DIFFUSION_CLASSIFIER_WRAPPERS \
         and selected_wrapper_kwargs.get("mask_by_nulls") is None:
             selected_wrapper_kwargs["mask_by_nulls"] = bool(network.use_cfg)

@@ -1358,8 +1358,10 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             distributions. Defaults to ``'current_and_replay'``.
         mask_by_nulls (bool | None): Select only examples whose post-dropout CFG label is
             null ID 0 for classifier loss and accuracy when True; False leaves this mask
-            disabled. None lets the model factory use network.use_cfg. Enabled masking
-            requires p_uncond > 0. Defaults to ``None``.
+            disabled. None lets the model factory use network.use_cfg. This row filter
+            is independent of the classifier input selectors. Enabled masking requires
+            p_uncond > 0.
+            Defaults to ``None``.
         mask_by_t_threshold (bool): Additionally select only examples with sampled ``t <=
             filter_t_threshold``. Defaults to ``False``.
         mask_t_percentage (int): Percentage in ``[0,100]`` used to construct the inclusive
@@ -1370,9 +1372,40 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             probabilities for classifier loss and use a four-timestep raw-network ensemble
             on clean images instead. The resulting probabilities are also returned for
             accuracy. Defaults to ``False``.
-        clf_train_type (str): ``"cond"`` uses predictions from the conditional/possibly
-            dropped-label pass; ``"uncond"`` uses the explicit null-label pass and requires
-            ``train_cfg_scale``. Defaults to ``'cond'``.
+        clf_train_type (str): Legacy fallback when clf_train_class_input_type is None:
+            ``"cond"`` selects ``"all_classes"`` and ``"uncond"`` selects
+            ``"null_class_only"``. Legacy noisy/unconditional training still requires
+            ``train_cfg_scale`` when batch partitioning is disabled; an explicit class
+            input selector takes precedence.
+            Defaults to ``'cond'``.
+        clf_train_noisy_input_type (str): ``"noisy"`` uses the sampled diffusion
+            image and timestep. V1-only ``"clean"`` uses x0 and timestep zero for
+            classifier rows. Positive clf_train_batch_fraction modifies those rows
+            within one shared pass; otherwise clean inputs use a separate classifier
+            pass. Class conditioning is selected independently. Defaults to ``"noisy"``.
+            V2 retains its separate noising caps.
+        clf_train_class_input_type (str | None): ``"null_class_only"`` uses
+            uncond_labels and requires CFG; ``"all_classes"`` uses the original CFG
+            labels. With batch partitioning disabled, noisy/all_classes reuses the
+            primary pass and clean or null-only inputs require one additional pass.
+            With partitioning enabled, both choices apply only to allocated classifier
+            rows in the primary pass. Neither selector filters loss rows. None falls
+            back to clf_train_type; explicit values override it. Ensemble-loss replacement
+            requires noisy/all_classes inputs and disabled partitioning. V2 permits only
+            ``"null_class_only"`` or None because it always uses null conditioning.
+            Defaults to ``None``.
+        clf_train_batch_fraction (float): V1-only fraction in ``[0,1]``. ``0.0``
+            preserves full-batch training and the existing classifier pass choices.
+            A positive value randomly reserves ``max(1, floor(fraction * batch_size))``
+            rows, capped at the actual batch size, for classifier losses. Remaining rows
+            contribute diffusion losses. The classifier input selectors transform only
+            the reserved rows within one shared network call. Existing CFG/timestep
+            row masks further restrict classifier supervision. Each objective averages
+            its own contributing rows. ``1.0`` uses the whole batch for classification
+            and gives zero diffusion loss. Allocation uses an independent saved random
+            stream. Positive values require train_cfg_scale=None and disabled ensemble
+            replacement. Evaluation is unchanged; V2 accepts only ``0.0``.
+            Defaults to ``0.0``.
         clf_loss_coef (float): Scalar multiplier for classifier cross-entropy. Defaults to
             ``0.0086``.
         clf_distil_loss_coef (float): Multiplier for the distillation-token objective; zero
@@ -1400,6 +1433,9 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_acc_coef: float = 0.5
     clf_distil_acc_coef: float = 0.5
     ctr_acc_coef: float = 0.0
+    clf_train_noisy_input_type: str = field(default="noisy", kw_only=True)
+    clf_train_class_input_type: str | None = field(default=None, kw_only=True)
+    clf_train_batch_fraction: float = field(default=0.0, kw_only=True)
 
 
 @dataclass
@@ -1633,8 +1669,10 @@ class DatasetConfig:
             "fixed-min-max", "fixed-standardize",
         ):
             raise ValueError(f"Unknown dataset preprocessing mode: {self.preprocess!r}.")
+        # Validation data provenance is an explicit choice, never a fallback.
         if self.validation_source not in ("split", "test"):
             raise ValueError("dataset.validation_source must be 'split' or 'test'.")
+        # Require an unambiguous policy for retaining the final partial batch.
         if not isinstance(self.drop_remainder, bool):
             raise ValueError("dataset.drop_remainder must be a boolean.")
         # Repeated class IDs duplicate original rows before validation splitting.

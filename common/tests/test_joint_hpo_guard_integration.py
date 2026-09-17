@@ -87,8 +87,8 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 "results_path": str(output),
                 "history": {},
                 "evaluations": {
-                    "valset_ema_eval": {"ensemble_accuracy": 0.6, "noise_loss": 0.4},
-                    "valset_network_eval": {"ensemble_accuracy": 0.99, "noise_loss": 0.001},
+                    "valset_ema_eval": {"classifier_accuracy": 0.99, "noise_loss": 0.001},
+                    "valset_network_eval": {"classifier_accuracy": 0.6, "noise_loss": 0.4},
                 },
             }
 
@@ -97,7 +97,6 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
             "search_profile": "joint_dit_classifier", "trial_budget_mode": "total",
             "n_trials": 2, "epochs": 2, "seed": 17, "n_startup_trials": 1,
             "results_path": str(self.root),
-            "search_space_overrides": {"wrapper_name": ["diffusion_classifier"]},
         }
         with patch("common.hpo.main", side_effect=fake_main) as training:
             study = run_hpo(**options)

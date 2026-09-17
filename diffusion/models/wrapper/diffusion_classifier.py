@@ -26,6 +26,8 @@ from typing import Callable, get_args, Literal
 from . import NetworkName, TrainType
 
 from common.validation import require
+from common.random import SeedStream
+from common.runtime import derive_seed
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
@@ -63,9 +65,12 @@ class DiffusionClassifier(DiffusionModel):
 
     def __init__(
         self, 
-        mask_by_nulls: bool = True, 
+        mask_by_nulls: bool | None = None, 
         mask_by_t_threshold: bool = False, 
         mask_t_percentage: int = 70, 
+        clf_train_noisy_input_type: Literal["noisy", "clean"] = "noisy", 
+        clf_train_class_input_type: Literal["null_class_only", "all_classes"] | None = None, 
+        clf_train_batch_fraction: float = 0., 
         use_ensemble_loss_instead: bool = False, 
         clf_train_type: TrainType = "cond", 
         clf_loss_coef: float = 8.6e-3, 
@@ -89,11 +94,11 @@ class DiffusionClassifier(DiffusionModel):
                 sparse cross-entropy to the teacher argmax; ``"soft"`` applies
                 teacher-to-student KL divergence.
                 Defaults to ``'hard'``.
-            mask_by_nulls (bool): Restrict classifier loss and accuracy to
-                examples whose post-dropout CFG label is null ID 0.  This is a
-                selection mask, not merely removal of null examples, and
+            mask_by_nulls (bool | None): Select classifier loss/accuracy rows
+                whose original diffusion CFG label is null after dropout.
+                This mask is independent of classifier conditioning inputs.
+                None preserves the historical True default; enabled masking
                 requires ``p_uncond > 0``.
-                Defaults to ``True``.
             mask_by_t_threshold (bool): Additionally select only examples with
                 sampled ``t <= filter_t_threshold``.
                 Defaults to ``False``.
@@ -103,15 +108,45 @@ class DiffusionClassifier(DiffusionModel):
                 T=1000 and 70, exactly timesteps 0 through 699 are selected;
                 0 percent selects no examples.
                 Defaults to ``70``.
+            clf_train_noisy_input_type (Literal["noisy", "clean"]): ``"noisy"``
+                selects the diffusion pass's ``x_t`` and timestep; ``"clean"``
+                selects ``x0`` at timestep zero. The class-input selector
+                independently chooses CFG or null labels. Noisy/all-classes
+                reuses the primary forward outputs; every other combination
+                performs one additional classifier pass in the same tape and
+                optimizer update when ``clf_train_batch_fraction`` is zero.
+                A positive fraction instead changes only allocated classifier
+                rows within the single primary pass.
+                Defaults to ``"noisy"``.
+            clf_train_class_input_type (Literal["null_class_only", "all_classes"] | None):
+                Classifier conditioning selector, never a row selector.
+                ``all_classes`` uses the primary pass's post-dropout CFG labels;
+                ``null_class_only`` uses null labels for every classifier input.
+                Explicit values take precedence over ``clf_train_type`` and
+                need no ``train_cfg_scale``. None maps legacy ``cond`` to
+                ``all_classes`` and ``uncond`` to ``null_class_only``. Defaults
+                to None, resolving to ``all_classes`` with the default train type.
+            clf_train_batch_fraction (float): Finite fraction in ``[0,1]``.
+                Zero preserves full-batch training and its optional additional
+                classifier pass. A positive value randomly allocates
+                ``max(1, floor(batch_size * fraction))`` rows to classification
+                and the remaining rows to diffusion, using one raw-network pass.
+                Input selectors change only classifier rows; original CFG/time
+                masks further restrict their classifier losses. Each objective
+                remains an independently normalized mean. Requires no training
+                CFG scale or ensemble-loss replacement. Defaults to ``0.0``.
             use_ensemble_loss_instead (bool): Ignore the current forward pass's
                 class probabilities for classifier loss and use
                 a four-timestep raw-network ensemble on clean images instead.
                 The resulting probabilities are also returned for accuracy.
                 Defaults to ``False``.
-            clf_train_type (TrainType): ``"cond"`` uses predictions from the
-                conditional/possibly dropped-label pass; ``"uncond"`` uses the
-                explicit null-label pass and requires ``train_cfg_scale``.
-                Defaults to ``'cond'``.
+            clf_train_type (TrainType): Legacy classifier conditioning choice
+                when ``clf_train_class_input_type`` is omitted. ``cond`` maps
+                to CFG labels; ``uncond`` maps to null labels and retains its
+                historical ``train_cfg_scale`` requirement for noisy inputs
+                when ``clf_train_batch_fraction`` is zero.
+                An explicit class-input selector takes precedence. Defaults to
+                ``'cond'``.
             clf_loss_coef (float): Scalar multiplier for classifier
                 cross-entropy, default ``8.6e-3``.
                 Defaults to ``0.0086``.
@@ -162,6 +197,29 @@ class DiffusionClassifier(DiffusionModel):
         self._save_init_args(locals())
         DiffusionClassifier._create_metrics(self)
 
+        # Infer omitted classifier conditioning from the legacy train-type API.
+        if self.clf_train_class_input_type is None:
+            # Retain validation for legacy noisy unconditional callers only.
+            if self.clf_train_type == "uncond" and \
+            self.clf_train_noisy_input_type == "noisy" \
+            and self.clf_train_batch_fraction == 0.:
+                require(
+                    self.use_cfg and self.train_cfg_scale is not None, 
+                    "Unconditional classifier training requires CFG and train_cfg_scale."
+                )
+            self.clf_train_class_input_type = (
+                "null_class_only" if self.clf_train_type == "uncond" 
+                else "all_classes"
+            )
+
+        # Opt-in allocation owns an independent checkpointed stream; legacy weights stay unchanged.
+        if self.clf_train_batch_fraction > 0.:
+            self._random_streams["classifier_batch"] = SeedStream(
+                derive_seed(self.seed, "diffusion", "classifier_batch"), 
+                name=f"{self.name}__classifier_batch_random"
+            )
+
+        self.mask_by_nulls = True if self.mask_by_nulls is None else self.mask_by_nulls
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         self.clf_loss_coef = tf.constant(
             self.clf_loss_coef, 
@@ -175,16 +233,16 @@ class DiffusionClassifier(DiffusionModel):
             ceil(self.mask_t_percentage / 100 * self.timesteps) - 1, 
             dtype=tf.int32
         )
-        self._init_config.pop("teacher_network", None)
 
+        self._init_config.pop("teacher_network", None)
         self.set_teacher_network(self.teacher_network)
 
     def _check_clf_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate classifier training choices after base initialization.
 
-        Null-label masking requires classifier-free guidance dropout. Selecting
-        unconditional classifier training additionally requires a CFG scale,
-        while conditional training has no such scale requirement.
+        Null-label masking requires classifier-free guidance dropout, independent
+        of the classifier's input conditioning. Explicit clean/null input choices
+        own one additional prediction and cannot be replaced by an ensemble.
 
         Args:
             local_vars (dict[str, object]): Classifier constructor arguments.
@@ -200,8 +258,8 @@ class DiffusionClassifier(DiffusionModel):
         # Null-only masking requires a nonzero probability of null labels.
         if local_vars["mask_by_nulls"]:
             require(
-                self.p_uncond > 0.,
-                "mask_by_nulls is not campatible with p_uncond = 0."
+                self.p_uncond > 0., 
+                "null_class_only / mask_by_nulls requires p_uncond > 0."
             )
 
         require(
@@ -209,31 +267,56 @@ class DiffusionClassifier(DiffusionModel):
             "mask_t_percentage must be in [0, 100]."
         )
 
+        require(
+            local_vars["clf_train_class_input_type"] in (
+                None, 
+                "null_class_only", 
+                "all_classes"
+            ), 
+            "clf_train_class_input_type must be 'null_class_only' or 'all_classes'."
+        )
+
+        require(
+            isinstance(local_vars["clf_train_batch_fraction"], (int, float, np.integer, np.floating))
+            and not isinstance(local_vars["clf_train_batch_fraction"], (bool, np.bool_))
+            and np.isfinite(local_vars["clf_train_batch_fraction"])
+            and 0. <= local_vars["clf_train_batch_fraction"] <= 1., 
+            "clf_train_batch_fraction must be a finite number in [0, 1]."
+        )
+        require(
+            local_vars["clf_train_class_input_type"] in (
+                None, 
+                "null_class_only", 
+                "all_classes"
+            ), 
+            "clf_train_class_input_type must be 'null_class_only' or 'all_classes'."
+        )
+
         for name in (
-            "clf_loss_coef", "clf_distil_loss_coef",
-            "clf_acc_coef", "ctr_acc_coef",
+            "clf_loss_coef", "clf_distil_loss_coef", 
+            "clf_acc_coef", "ctr_acc_coef", 
             "clf_distil_acc_coef"
         ):
             value = local_vars[name]
             require(
-                np.isfinite(value) and value >= 0.,
+                np.isfinite(value) and value >= 0., 
                 f"{name} must be finite and nonnegative."
             )
 
         require(
-            local_vars["clf_distil_type"] in ("hard", "soft"),
+            local_vars["clf_distil_type"] in ("hard", "soft"), 
             "clf_distil_type must be either 'hard' or 'soft'."
         )
         require(
             np.isfinite(local_vars["clf_distil_temperature"]) and
-            local_vars["clf_distil_temperature"] > 0.,
+            local_vars["clf_distil_temperature"] > 0., 
             "clf_distil_temperature must be finite and positive."
         )
         require(
             local_vars["clf_distil_scope"] in (
                 "old_classes", "replay_only",
                 "current_and_replay"
-            ),
+            ), 
             "clf_distil_scope must be 'old_classes', "
             "'replay_only', or 'current_and_replay'."
         )
@@ -247,7 +330,7 @@ class DiffusionClassifier(DiffusionModel):
         ).get("train_type", "normal") in ("distil", "both")
         ):
             require(
-                self.teacher_network is not None or self.defer_teacher,
+                self.teacher_network is not None or self.defer_teacher, 
                 "teacher_network is required for distillation "
                 "training unless defer_teacher=True."
             )
@@ -255,20 +338,38 @@ class DiffusionClassifier(DiffusionModel):
         # The four-step ensemble requires at least four available timesteps.
         if local_vars["use_ensemble_loss_instead"]:
             require(
-                self.timesteps >= 4,
+                self.timesteps >= 4, 
                 "use_ensemble_loss_instead requires at least four timesteps."
             )
 
         require(
-            local_vars["clf_train_type"] in get_args(TrainType),
+            local_vars["clf_train_type"] in get_args(TrainType), 
             f"clf_train_type can only be one of {TrainType}."
         )
 
-        # Unconditional classifier training requires an explicit CFG pass.
-        if local_vars["clf_train_type"] == "uncond":
+        require(
+            local_vars["clf_train_noisy_input_type"] in ("noisy", "clean"),
+            "clf_train_noisy_input_type must be 'noisy' or 'clean'."
+        )
+
+        if local_vars["clf_train_class_input_type"] == "null_class_only":
+            require(self.use_cfg, "Null classifier inputs require CFG.")
+
+        if local_vars["clf_train_noisy_input_type"] == "clean" \
+        or local_vars["clf_train_class_input_type"] == "null_class_only":
             require(
-                self.use_cfg and self.train_cfg_scale is not None,
-                "Unconditional classifier training requires CFG and train_cfg_scale."
+                not local_vars["use_ensemble_loss_instead"], 
+                "Explicit clean/null classifier inputs cannot replace their prediction with an ensemble."
+            )
+
+        if local_vars["clf_train_batch_fraction"] > 0.:
+            require(
+                self.train_cfg_scale is None, 
+                "Positive clf_train_batch_fraction requires train_cfg_scale=None."
+            )
+            require(
+                not local_vars["use_ensemble_loss_instead"], 
+                "Positive clf_train_batch_fraction cannot use ensemble-loss replacement."
             )
 
     def _refresh_loss_flags(self) -> None:
@@ -311,7 +412,6 @@ class DiffusionClassifier(DiffusionModel):
             "clf_cls_token_regularizer_kwargs", 
             None
         )
-        # Fall back to generic token settings when classifier-specific settings are absent.
         regularizer_kwargs = getattr(
             self.network, 
             "cls_token_regularizer_kwargs", 
@@ -570,7 +670,6 @@ class DiffusionClassifier(DiffusionModel):
             "clf_cls_token_regularizer_kwargs", 
             None
         )
-        # Use generic token settings only when classifier-specific settings are missing.
         regularizer_kwargs = getattr(
             self.network, 
             "cls_token_regularizer_kwargs", 
@@ -586,6 +685,31 @@ class DiffusionClassifier(DiffusionModel):
             replay_mask, 
             classifier_mask
         )
+
+    def _classifier_batch_mask(self, classes: tf.Tensor) -> tf.Tensor:
+        """Allocate a seeded random subset of rows to classifier training.
+
+        Args:
+            classes (tf.Tensor): Batch-shaped class targets, used only for row count.
+
+        Returns:
+            tf.Tensor: Boolean mask with ``floor(B * fraction)`` selected rows,
+            clamped to ``[1, B]``. An empty batch has an empty mask. The dedicated
+            stream advances once and participates in reset_seed and checkpoints.
+        """
+
+        batch_size = tf.shape(classes)[0]
+        selected_count = tf.minimum(batch_size, tf.maximum(
+            1, tf.cast(tf.floor(
+                tf.cast(batch_size, tf.float64) * self.clf_train_batch_fraction
+            ), tf.int32)
+        ))
+        permutation = tf.random.experimental.stateless_shuffle(
+            tf.range(batch_size), 
+            seed=self._random_streams["classifier_batch"].next_seed()
+        )
+
+        return permutation < selected_count
 
     def _create_metrics(self) -> None:
         """Create classifier trackers while the wrapper is still unbuilt.
@@ -609,8 +733,11 @@ class DiffusionClassifier(DiffusionModel):
             dtype=self.dtype_policy.variable_dtype,
         ) if self.use_ensemble_loss_instead else None
 
-        primary_accuracy_name = "cls_token_accuracy" if getattr(self.network, "clf_has_cls_token", False)\
-                                else "avg_pooling_accuracy"
+        primary_accuracy_name = "cls_token_accuracy" if getattr(
+            self.network, 
+            "clf_has_cls_token", 
+            False
+        ) else "avg_pooling_accuracy"
         configured_distillation = bool(
             self.clf_distil_loss_coef > 0. and 
             getattr(self.network, "distil_token", None) is not None
@@ -716,6 +843,10 @@ class DiffusionClassifier(DiffusionModel):
             dict[str, tf.Tensor]: Running diffusion and classifier metrics.  The
             classifier mask selects CFG-null and/or low-timestep examples when
             configured; divide-no-nan makes an empty selection contribute zero.
+            Clean/noisy and CFG/null classifier inputs are independent of those
+            row masks. A positive batch fraction allocates disjoint classifier
+            and diffusion rows within one primary prediction; zero preserves
+            the full-batch denoising objective and optional classifier prediction.
         """
 
         prepared_inputs, teacher_labels, replay_mask = (
@@ -753,18 +884,53 @@ class DiffusionClassifier(DiffusionModel):
                 t <= self.filter_t_threshold, 
                 dtype=stable_dtype
             )
+
+        clean_classifier = self.clf_train_noisy_input_type == "clean"
+        null_classifier = self.clf_train_class_input_type == "null_class_only"
+        split_batch = self.clf_train_batch_fraction > 0.
+        diffusion_mask = None
+        forward_x, forward_t, forward_labels = x_t, t, cfg_labels
+
+        # Allocate disjoint objectives before changing the selected classifier inputs.
+        if split_batch:
+            classifier_mask = self._classifier_batch_mask(classes)
+            diffusion_mask = tf.logical_not(classifier_mask)
+            clf_loss_mask *= tf.cast(classifier_mask, stable_dtype)
+
+            # Clean classifier rows use timestep zero within the same primary prediction.
+            if clean_classifier:
+                forward_x = tf.where(
+                    classifier_mask[:, None, None, None], 
+                    x0, 
+                    x_t
+                )
+                forward_t = tf.where(
+                    classifier_mask, 
+                    tf.zeros_like(t), 
+                    t
+                )
+
+            # Null conditioning changes allocated classifier rows without changing row masks.
+            if null_classifier:
+                forward_labels = tf.where(
+                    classifier_mask, 
+                    uncond_labels, 
+                    cfg_labels
+                )
+
         clf_acc_mask = tf.cast(
             clf_loss_mask, 
             dtype=tf.bool
         )
 
+        separate_classifier = not split_batch and (clean_classifier or null_classifier)
         with tf.GradientTape() as tape:
             forward_outputs = self.forward(
-                "raw", x_t, t, t, 
-                cond_labels=cfg_labels, 
+                "raw", forward_x, forward_t, forward_t, 
+                cond_labels=forward_labels, 
                 uncond_labels=uncond_labels, 
                 scale=self.train_cfg_scale, 
-                return_logits=bool(self.use_logits_instead),
+                return_logits=bool(self.use_logits_instead), 
                 training=True
             )
             (x0_pred, noises_pred, 
@@ -792,16 +958,38 @@ class DiffusionClassifier(DiffusionModel):
             (loss1, noise_loss, cond_noise_loss, 
             uncond_noise_loss, noise_distil_loss, 
             image_loss, kl_loss1, ctr_loss1, 
-            ctr_preds1) = self.compute_noise_distil_image_kl_ctr_loss(
-                x0, noises, classes, 
-                x0_pred, noises_pred, 
-                z_vals_list_c, regs_list_c, 
+            ctr_preds1) = self.compute_batch_diffusion_losses(
+                diffusion_mask, 
+                x0=x0, noises=noises, classes=classes,
+                x0_pred=x0_pred, noises_pred=noises_pred,
+                z_vals_list_c=z_vals_list_c, 
+                regs_list_c=regs_list_c,
                 z_vals_list_u=z_vals_list_u,
                 regs_list_u=regs_list_u,
                 cond_labels=cfg_labels, 
                 teacher_noises_pred=teacher_noises_pred, 
                 teacher_noise_mask=teacher_noise_mask
             )
+            # Replace only classifier outputs; denoising keeps its original forward pass.
+            if separate_classifier:
+                # Both selectors compose into one call on the shared trainable backbone.
+                class_outputs = self.network.predict_class(
+                    (
+                        x0 if clean_classifier else x_t, 
+                        tf.zeros_like(t, dtype=tf.int32) if clean_classifier else t, 
+                        uncond_labels if null_classifier else cfg_labels
+                    ), 
+                    max_encoder_num=None, 
+                    full_return=True, 
+                    training=True, 
+                    **self.use_logits_instead
+                )
+                classes_pred_c = class_outputs[0]
+                clf_regs_list_c = class_outputs[3]
+                clf_z_vals_list_c = class_outputs[4]
+                distil_classes_c = class_outputs[5] if self.use_clf_distil_loss else None
+                logits_c = class_outputs[-1] if self.use_logits_instead else {}
+
             (loss2, clf_loss, kl_loss2, 
             ctr_loss2, clf_distil_loss, 
             classes_pred, ctr_preds2, 
@@ -809,13 +997,16 @@ class DiffusionClassifier(DiffusionModel):
                 classes, classes_pred_c, 
                 clf_z_vals_list_c, clf_regs_list_c, 
                 distil_classes_c=distil_classes_c, 
-                logits_c=logits_c,
+                logits_c=logits_c, 
                 classes_pred_u=classes_pred_u, 
                 clf_z_vals_list_u=clf_z_vals_list_u, 
                 clf_regs_list_u=clf_regs_list_u, 
                 distil_classes_u=distil_classes_u, 
-                logits_u=logits_u,
+                logits_u=logits_u, 
                 clf_loss_mask=clf_loss_mask, 
+                clf_train_type="cond", 
+                kl_train_type="cond" if separate_classifier or split_batch else None, 
+                ctr_train_type="cond" if separate_classifier or split_batch else None, 
                 teacher_labels=teacher_labels, 
                 replay_mask=replay_mask, 
                 x0=x0, 
@@ -826,21 +1017,42 @@ class DiffusionClassifier(DiffusionModel):
 
         self.apply_grads(tape, loss)
         self.update_ema()
+
+        diffusion_classes, diffusion_labels = classes, cfg_labels
+        metric_teacher_noise_mask = teacher_noise_mask
+        # Diffusion means are weighted only by rows that contributed to their objectives.
+        if split_batch:
+            diffusion_classes = tf.boolean_mask(classes, diffusion_mask)
+            diffusion_labels = tf.boolean_mask(cfg_labels, diffusion_mask)
+            metric_teacher_noise_mask = tf.boolean_mask(
+                teacher_noise_mask, 
+                diffusion_mask
+            ) if teacher_noise_mask is not None else None
+
         results = self.get_results_dict(
             noise_loss, 
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
             noise_distil_loss=noise_distil_loss, 
-            teacher_noise_mask=teacher_noise_mask,
+            teacher_noise_mask=metric_teacher_noise_mask, 
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss1, 
             ctr_loss=ctr_loss1, 
             ctr_preds=ctr_preds1, 
-            classes=classes, 
-            cond_labels=cfg_labels, 
-            use_total_loss=True
+            classes=diffusion_classes,
+            cond_labels=diffusion_labels,
+            use_total_loss=not split_batch
         )
+
+        # The joint objective remains one batch-level update even when either allocation is empty.
+        if split_batch:
+            self.total_loss_tracker.update_state(
+                loss, 
+                sample_weight=tf.cast(tf.shape(classes)[0], stable_dtype)
+            )
+            results[self.total_loss_tracker.name] = self.total_loss_tracker.result()
+
         # Compute a regularizer metric scope only when classifier token loss is active. Compute a KD
         # metric scope only when the independent distillation objective is active.
         results.update(self.get_clf_results_dict(
@@ -878,8 +1090,8 @@ class DiffusionClassifier(DiffusionModel):
 
         Diffusion metrics use noisified inputs and the configured test CFG scale.
         Classifier metrics instead call ``predict_class`` on clean ``x0`` with
-        timestep 0 and null labels, so test classifier loss intentionally differs
-        from masked/noisy training classifier loss.
+        timestep 0 and null labels on every row. Training masks do not restrict
+        evaluation; clean/null-conditioned training uses the same input protocol.
 
         Args:
             inputs (tuple[tf.Tensor, ...]): Clean images and zero-based classes,
@@ -937,9 +1149,9 @@ class DiffusionClassifier(DiffusionModel):
         zero_ts = tf.zeros_like(t, dtype=tf.int32)
         class_outputs = self.get_network(self.test_network_name).predict_class(
             (x0, zero_ts, uncond_labels), 
-            max_encoder_num=None,
+            max_encoder_num=None, 
             full_return=True, 
-            training=False,
+            training=False, 
             **self.use_logits_instead
         )
 
@@ -953,16 +1165,16 @@ class DiffusionClassifier(DiffusionModel):
         ctr_loss2, clf_distil_loss, 
         classes_pred, ctr_preds2, 
         distil_classes) = self.compute_clf_kl_ctr_distil_loss(
-            classes, None, None, None, None,
+            classes, None, None, None, None, 
             classes_pred, clf_z_vals_list, 
-            clf_regs_list, distil_classes,
+            clf_regs_list, distil_classes, 
             clf_train_type="uncond", 
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
             teacher_labels=teacher_labels, 
             x0=x0, 
-            replay_mask=replay_mask,
-            training=False,
+            replay_mask=replay_mask, 
+            training=False, 
             logits_u=logits
         )
 
@@ -1198,14 +1410,11 @@ class DiffusionClassifier(DiffusionModel):
                 channels, or CFG metadata are incompatible, or base attachment fails.
         """
 
-        # Read schedule metadata from a supplied teacher; clearing a teacher has no schedule
-        # metadata.
         teacher_schedule = getattr(
             teacher_network, 
             "scheduler_name", 
             getattr(teacher_network, "_diffusion_scheduler_name", None)
         ) if teacher_network is not None else None
-        # Read the teacher timestep-zero convention only for an attached teacher.
         teacher_modify_first = getattr(
             teacher_network, 
             "modify_first_t", 
@@ -1213,6 +1422,7 @@ class DiffusionClassifier(DiffusionModel):
         ) if teacher_network is not None else None
 
         super().set_teacher_network(teacher_network)
+
         # Base construction calls this override before classifier coefficients have been installed.
         if not hasattr(self, "clf_distil_loss_coef"):
             return
@@ -1222,7 +1432,6 @@ class DiffusionClassifier(DiffusionModel):
             "clf_cls_token_regularizer_kwargs", 
             None
         )
-        # Fall back to main token settings when classifier-specific regularizer settings are absent.
         regularizer_kwargs = getattr(
             self.network, 
             "cls_token_regularizer_kwargs", 
@@ -1276,8 +1485,8 @@ class DiffusionClassifier(DiffusionModel):
                     )
 
         self._refresh_loss_flags()
-        # Active teacher objectives require mapped targets; teacher-free runs restore their
-        # configured preparation.
+        # Active teacher objectives require mapped targets; 
+        # teacher-free runs restore their configured preparation.
         self.map_preprocess = True if (
             self.use_noise_distil_loss or 
             self.use_classifier_distil
@@ -1306,7 +1515,7 @@ class DiffusionClassifier(DiffusionModel):
             the final tensor.
         """
 
-        # Share one teacher forward pass when training consumes both noise and classifier targets.
+        # Retain the training CFG scale for combined targets, including an unset mode sentinel.
         if self.use_noise_distil_loss and self.use_classifier_distil \
         and self._preprocess_training is not False:
             prepared_inputs = self.prep_inputs(
@@ -1318,37 +1527,46 @@ class DiffusionClassifier(DiffusionModel):
             cond_labels = prepared_inputs[4]
             uncond_labels = prepared_inputs[5]
             teacher_noise_mask = tf.ones_like(
-                cond_labels,
+                cond_labels, 
                 dtype=tf.bool
             )
             teacher_num_labels = getattr(
-                self.teacher_network,
-                "num_labels",
+                self.teacher_network, 
+                "num_labels", 
                 None
             )
             # Mask new-class noise targets when the teacher has a narrower condition vocabulary.
             if teacher_num_labels is not None:
                 teacher_noise_mask = cond_labels < tf.cast(
-                    teacher_num_labels,
+                    teacher_num_labels, 
                     cond_labels.dtype
                 )
 
             teacher_outputs = self.forward(
-                "teacher", x_t, t, t,
-                cond_labels=self._mask_unknown_teacher_labels(cond_labels),
-                uncond_labels=uncond_labels,
-                scale=self.train_cfg_scale,
+                "teacher", x_t, t, t, 
+                cond_labels=self._mask_unknown_teacher_labels(cond_labels), 
+                uncond_labels=uncond_labels, 
+                scale=self.train_cfg_scale, 
                 training=False
             )
             teacher_noises_pred = tf.stop_gradient(teacher_outputs[1])
-            # Use the same conditional or null teacher branch selected for student classification.
-            teacher_labels = teacher_outputs[4][
-                0 if self.clf_train_type == "cond" else 1
-            ]
+            # The default classifier uses the already-computed primary teacher output.
+            if self.clf_train_noisy_input_type == "noisy" \
+            and self.clf_train_class_input_type == "all_classes":
+                teacher_labels = teacher_outputs[4][0]
+            # Every other combination needs one teacher prediction on the selected inputs.
+            else:
+                clean_classifier = self.clf_train_noisy_input_type == "clean"
+                teacher_labels = self._predict_teacher_labels(
+                    prepared_inputs[0] if clean_classifier else x_t, 
+                    tf.zeros_like(t) if clean_classifier else t, 
+                    uncond_labels if self.clf_train_class_input_type == "null_class_only"
+                    else self._mask_unknown_teacher_labels(cond_labels)
+                )
             prepared_inputs = (
-                *prepared_inputs,
-                teacher_noises_pred,
-                teacher_noise_mask,
+                *prepared_inputs, 
+                teacher_noises_pred, 
+                teacher_noise_mask, 
                 tf.stop_gradient(teacher_labels)
             )
 
@@ -1366,18 +1584,18 @@ class DiffusionClassifier(DiffusionModel):
                 *prepared_inputs, replay_mask
             )
 
-        # Evaluate validation teachers on the established clean-input path.
+        # Validation always uses clean inputs and null labels, independent of training selectors.
         if self._preprocess_training is False:
             teacher_x = prepared_inputs[0] # x0
             teacher_t = tf.zeros_like(prepared_inputs[2])
             teacher_labels_in = prepared_inputs[5] # uncond_labels
-        # Match training teachers to the student's noisified classifier path.
+        # Compose the same independent input selectors used by the student classifier.
         else:
-            teacher_x = prepared_inputs[3] # x_t
-            teacher_t = prepared_inputs[2] # t
-            # Choose the teacher condition IDs corresponding to the configured classifier branch.
+            clean_classifier = self.clf_train_noisy_input_type == "clean"
+            teacher_x = prepared_inputs[0] if clean_classifier else prepared_inputs[3]
+            teacher_t = tf.zeros_like(prepared_inputs[2]) if clean_classifier else prepared_inputs[2]
             teacher_labels_in = prepared_inputs[
-                4 if self.clf_train_type == "cond" else 5
+                5 if self.clf_train_class_input_type == "null_class_only" else 4
             ] # cfg_labels or uncond_labels
 
         # Map only unseen condition IDs to null for narrower past teachers.
@@ -1404,7 +1622,7 @@ class DiffusionClassifier(DiffusionModel):
         uncond_labels: tf.Tensor | None = None, 
         scale: float | None = None, 
         network_name: NetworkName = "raw", 
-        training: bool = False,
+        training: bool = False, 
         return_logits: bool = False
     ) -> tuple[tuple[object, object | None], ...]:
         """Run conditional and optional unconditional ``DiTClassifier`` passes.
@@ -1430,8 +1648,9 @@ class DiffusionClassifier(DiffusionModel):
             unconditional pairs in order: noise tensors, main regularizer
             lists, main latent-statistic pairs, classifier probabilities,
             classifier regularizer lists, and classifier latent-statistic
-            pairs. Distillation mode appends one distillation-token probability
-            pair. Unconditional members are None when no second pass is
+            pairs. Student distillation mode appends one distillation-token
+            probability pair; teachers supply their primary class probabilities
+            without requiring a distillation head. Unconditional members are None when no second pass is
             requested.
             ``return_logits=True`` additionally appends a same-pass logits pair
             for active soft KD. Ordinary tuple positions and lengths are unchanged.
@@ -1461,7 +1680,6 @@ class DiffusionClassifier(DiffusionModel):
             training=training,
             **logits_options
         )
-        # Run a null classifier branch only when CFG and an explicit guidance scale request it.
         output_dict_u = network(
             (x_t, t_batch, uncond_labels), 
             full_return=True, 
@@ -1485,8 +1703,8 @@ class DiffusionClassifier(DiffusionModel):
             (clf_z_vals_list_c, clf_z_vals_list_u)
         )
 
-        # Append the independent distillation pair only when it is optimized.
-        if self.use_clf_distil_loss:
+        # Frozen targets use primary probabilities and need no student distillation head.
+        if self.use_clf_distil_loss and network_name != "teacher":
             outputs += ((
                 output_dict_c["distil_classes"], 
                 output_dict_u.get("distil_classes")
@@ -1527,7 +1745,6 @@ class DiffusionClassifier(DiffusionModel):
             ensemble probabilities used to compute it.
         """
 
-        # Use clean-image ensemble predictions when ensemble loss is enabled.
         if self.ensemble_loss_fn is not None:
             classes_pred = self.ensemble_loss_fn.ensemble_predict_batched(
                 x0, 
@@ -1540,11 +1757,9 @@ class DiffusionClassifier(DiffusionModel):
             self.scce_loss_fn(classes, stable_predictions), 
             stable_dtype
         )
-        # Cast provided sample weights; keep an absent classifier mask as None.
         clf_loss_mask = tf.cast(clf_loss_mask, stable_dtype) \
                         if clf_loss_mask is not None else None
 
-        # Normalize masked CE by selected weight, or average every example without a mask.
         clf_loss = tf.math.divide_no_nan(
             tf.reduce_sum(clf_loss * clf_loss_mask), 
             tf.reduce_sum(clf_loss_mask)
@@ -2039,6 +2254,78 @@ class DiffusionClassifier(DiffusionModel):
             classes_pred, clf_ctr_preds, 
             distil_classes
         )
+
+        return outputs
+
+    def compute_batch_diffusion_losses(
+        self,
+        diffusion_mask: tf.Tensor | None,
+        **loss_inputs: object,
+    ) -> tuple[tf.Tensor | None, ...]:
+        """Compute diffusion objectives only on their allocated batch rows.
+
+        Args:
+            diffusion_mask (tf.Tensor | None): Boolean diffusion allocation,
+                or None to preserve the ordinary full-batch loss path.
+            **loss_inputs (object): Arguments for the inherited diffusion loss
+                aggregator. Tensor leaves all have their batch dimension first;
+                nested latent pairs, regularizers, and optional teacher targets
+                retain their structure while their rows are selected.
+
+        Returns:
+            tuple[tf.Tensor | None, ...]: The inherited nine loss outputs. An
+            empty diffusion allocation returns finite zero losses and empty
+            token predictions without evaluating empty-batch means.
+        """
+
+        # Zero-fraction training retains the original aggregation and return structure.
+        if diffusion_mask is None:
+            return self.compute_noise_distil_image_kl_ctr_loss(**loss_inputs)
+
+        stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
+        zero = tf.constant(0., dtype=stable_dtype)
+
+
+        def select_rows(value: object) -> object:
+            """Select batch rows from tensors while preserving optional metadata."""
+
+            return tf.boolean_mask(value, diffusion_mask) if tf.is_tensor(value) else value
+
+
+        selected_inputs = tf.nest.map_structure(select_rows, loss_inputs)
+
+
+        def compute_selected() -> tuple[tf.Tensor, ...]:
+            """Evaluate nonempty losses with tensor placeholders for disabled diagnostics."""
+
+            outputs = self.compute_noise_distil_image_kl_ctr_loss(**selected_inputs)
+
+            return tuple(
+                tf.cast(value, stable_dtype) 
+                if value is not None else zero
+                for value in outputs
+            )
+
+
+        def empty_selected() -> tuple[tf.Tensor, ...]:
+            """Return finite empty losses with the active token-output shape."""
+
+            token_predictions = tf.zeros(
+                (0, self.network.num_classes), 
+                dtype=stable_dtype
+            ) if self.use_ctr_loss else zero
+
+            return (zero, zero, zero, zero, zero, zero, zero, zero, token_predictions)
+
+
+        outputs = tf.cond(
+            tf.reduce_any(diffusion_mask), 
+            compute_selected, 
+            empty_selected
+        )
+        # Disabled split diagnostics remain None for the existing reporting API.
+        if not self.show_separate_noise_losses:
+            outputs = (*outputs[:2], None, None, *outputs[4:])
 
         return outputs
 

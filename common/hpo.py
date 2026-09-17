@@ -4271,7 +4271,7 @@ def _validate_search_profile(
         raise ValueError("joint_dit_classifier uses ordinary fit without distillation or fit_kwargs.")
     if use_ensemble_accuracy:
         raise ValueError(
-            "joint_dit_classifier reports ordinary accuracy for V1 and V2; "
+            "joint_dit_classifier reports ordinary raw V1 accuracy; "
             "leave use_ensemble_accuracy=False."
         )
     if ensemble_accuracy_kwargs:
@@ -4485,13 +4485,14 @@ def run_hpo(
             topology suffixes; _TrialView resolves their precedence and validates
             categorical choices. Defaults to ``None``.
         search_profile (str | None): ``'joint_dit_classifier'`` selects the offline
-            CIFAR DiT/class-token V1/V2 profile. It maximizes EMA accuracy and
-            minimizes EMA noise loss, using an 80/20 training split by default.
+            CIFAR DiT/class-token V1 profile. It maximizes raw accuracy and
+            minimizes raw noise loss, using an 80/20 training split by default.
             The validation_source option can explicitly select official test rows.
-            All trials use ordinary EMA classifier accuracy without an ensemble.
-            It includes synchronized plateau/early-stopping callbacks, numerical
-            divergence pruning and four final sampling reports. None retains
-            existing spaces and data protocols.
+            All trials use ordinary clean classifier accuracy without an ensemble.
+            Float32 and a positive classifier projection support the local
+            TMCL-inspired route. Early stopping, numerical divergence pruning and
+            four final sampling reports remain; EMA, V2, clipping and plateau
+            adjustments are disabled. None retains existing spaces and protocols.
         trial_budget_mode (str): ``'additional'`` preserves the existing append
             behavior; ``'total'`` runs only the remaining trial allowance so Run All
             does not append a full new budget. Budget changes do not alter study identity.
@@ -4715,7 +4716,7 @@ def run_hpo(
         tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
         or tuple(normalized_directions) != ("maximize", "minimize")
     ):
-        raise ValueError("joint_dit_classifier maximizes EMA classification accuracy and minimizes EMA noise_loss.")
+        raise ValueError("joint_dit_classifier maximizes raw classification accuracy and minimizes raw noise_loss.")
 
     root = Path(results_path)
     # Reuse the explicitly selected persistent study directory when resuming.
@@ -5024,7 +5025,11 @@ def run_hpo(
         if search_profile is not None:
             actual_metrics = [config.hpo["accuracy_metric"], "noise_loss"]
             validation_metrics = {}
-            for name, value in result["evaluations"].get("valset_ema_eval", {}).items():
+            validation_key = (
+                "valset_ema_eval" if config.hpo["objective_network"] == "ema"
+                else "valset_network_eval"
+            )
+            for name, value in result["evaluations"].get(validation_key, {}).items():
                 scalar = np.asarray(value)
                 if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
                     number = float(scalar)
@@ -5059,7 +5064,7 @@ def run_hpo(
             evidence = {
                 "reason": "nonfinite_objective", "phase": "final_evaluation",
                 "objectives": {name: str(value) for name, value in zip(actual_metrics, values_list)},
-                "network": "ema",
+                "network": config.hpo["objective_network"],
             }
             evidence_path = Path(result["results_path"]) / "hpo-divergence-final-evaluation.json"
             temporary = evidence_path.with_suffix(".json.tmp")

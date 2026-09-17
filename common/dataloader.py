@@ -1503,7 +1503,11 @@ def get_datasets(
             "validation_rows_selected": 0 if x_val is None else len(x_val),
             "max_train_samples": max_train_samples,
             "max_val_samples": max_val_samples,
-            "preprocess_fit_source": "official_train",
+            "preprocess_fit_source": (
+                "fixed_pixel_bounds"
+                if preprocess in ("fixed-min-max", "fixed-standardize")
+                else "official_train"
+            ),
             "official_test_used_for_model_selection": True,
             "independent_test_estimate": False,
         }

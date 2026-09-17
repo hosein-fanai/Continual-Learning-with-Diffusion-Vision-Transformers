@@ -32,21 +32,17 @@ class JointHpoIntegrationTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
 
     @staticmethod
-    def _space(wrapper: str = "diffusion_classifier", cap: int | None = None) -> dict:
+    def _space(aggregation: str = "last") -> dict:
         """Select a valid, small architecture while retaining real Optuna draws."""
         choices = {
-            "wrapper_name": [wrapper],
             "optimizer": ["adam"],
             "dim": [32],
             "mha_num_heads": [4],
             "depth": [3],
             "clf_depth": [1],
             "patch_size": [4],
-            "aggregate_from_noises": [False],
-            "feature_aggregation": ["last"],
+            "feature_aggregation": [aggregation],
         }
-        if wrapper == "diffusion_classifier_v2":
-            choices["clf_train_noisified_max_timesteps"] = [cap]
         return choices
 
     def _options(self, **changes: object) -> dict:
@@ -122,40 +118,46 @@ class JointHpoIntegrationTests(unittest.TestCase):
         return scalars
 
     def test_selected_validation_score_and_configs_survive_real_storage(self) -> None:
-        """Every V1/V2 objective uses ordinary EMA accuracy despite other scores."""
+        """Every CIFAR joint objective uses raw ordinary scores despite EMA fixtures."""
         cases = (
-            ("diffusion_classifier", None, "classification_accuracy", 0.82),
-            ("diffusion_classifier_v2", None, "classification_accuracy", 0.82),
-            ("diffusion_classifier_v2", 32, "classification_accuracy", 0.82),
+            ("cifar10", "last"),
+            ("cifar100", "last"),
+            ("cifar10", "all"),
         )
-        for index, (wrapper, cap, selected, expected) in enumerate(cases):
-            with self.subTest(wrapper=wrapper, cap=cap), patch(
+        selected, expected = "classification_accuracy", 0.21
+        for index, (dataset, aggregation) in enumerate(cases):
+            with self.subTest(dataset=dataset, aggregation=aggregation), patch(
                 "common.hpo.main", side_effect=self._fake_training,
             ) as training:
                 study = run_hpo(**self._options(
                     results_path=str(self.root / str(index)),
-                    search_space_overrides=self._space(wrapper, cap),
+                    dataset_name=dataset,
+                    search_space_overrides=self._space(aggregation),
                 ))
                 training.assert_called_once()
                 trial = study.trials[0]
                 self.assertEqual(trial.state, optuna.trial.TrialState.COMPLETE)
                 self.assertEqual([direction.name for direction in study.directions], ["MAXIMIZE", "MINIMIZE"])
-                self.assertEqual(trial.values, [expected, 0.07])
+                self.assertEqual(trial.values, [expected, 0.04])
                 self.assertEqual(trial.user_attrs["accuracy_metric"], selected)
 
                 resolved = load_config(trial.user_attrs["resolved_config_path"])
                 source = load_config(resolved.hpo["input_config_path"])
-                self.assertEqual(resolved.model.wrapper_name, wrapper)
+                self.assertEqual(resolved.model.wrapper_name, "diffusion_classifier")
+                self.assertEqual(resolved.dataset.name, dataset)
+                self.assertEqual(resolved.optimizer.schedule, "cosine")
+                self.assertTrue(resolved.model.kwargs["patchify_with_cnn"])
+                self.assertNotIn("modify_first_t", resolved.model.wrapper_kwargs)
                 self.assertEqual(source.hpo["accuracy_metric"], selected)
                 self.assertEqual(resolved.hpo["objective_metrics"], ["classification_accuracy", "noise_loss"])
-                self.assertEqual(resolved.hpo["objectives"], [expected, 0.07])
+                self.assertEqual(resolved.hpo["objectives"], [expected, 0.04])
                 self.assertFalse(resolved.reporting.evaluate_ensemble_accuracy)
                 self.assertFalse(resolved.training.ensemble_monitor)
                 self.assertFalse(resolved.hpo["use_ensemble_accuracy"])
                 self.assertEqual(resolved.reporting.ensemble_accuracy_kwargs, {})
                 self.assertEqual(resolved.hpo["ensemble_accuracy_kwargs"], {})
-                self.assertEqual(resolved.model.wrapper_kwargs["test_network_name"], "ema")
-                self.assertTrue(resolved.model.wrapper_kwargs["use_ema"])
+                self.assertEqual(resolved.model.wrapper_kwargs["test_network_name"], "raw")
+                self.assertFalse(resolved.model.wrapper_kwargs["use_ema"])
                 self.assertEqual(resolved.dataset.validation_source, "test")
                 self.assertEqual(resolved.dataset.validation_ratio, 0.0)
                 self.assertFalse(resolved.dataset.drop_remainder)
@@ -166,35 +168,41 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 })
                 self.assertEqual(selection["resolved"]["effective_validation_ratio"], 0.0)
                 self.assertEqual(resolved.training.epochs, 50)
-                self.assertEqual(resolved.training.patience, 10)
-                self.assertEqual(resolved.training.reduce_lr_patience, 5)
+                self.assertEqual(resolved.training.patience, 0)
+                self.assertEqual(resolved.model.wrapper_kwargs["clf_train_noisy_input_type"], "clean")
+                self.assertEqual(resolved.model.wrapper_kwargs["clf_train_class_input_type"], "null_class_only")
+                self.assertEqual(resolved.model.wrapper_kwargs["clf_train_type"], "uncond")
+                self.assertEqual(resolved.model.wrapper_kwargs["clf_loss_coef"], 1.0)
+                self.assertFalse(resolved.model.wrapper_kwargs["mask_by_nulls"])
+                self.assertFalse(resolved.model.kwargs["aggregate_from_noises"])
+                self.assertEqual(resolved.training.reduce_lr_patience, 0)
                 self.assertEqual(resolved.dataset.batch_size, 128)
                 self.assertFalse(resolved.reporting.run_trainset_eval)
                 self.assertTrue(resolved.reporting.run_valset_eval)
-                if wrapper.endswith("_v2"):
-                    self.assertEqual(resolved.model.wrapper_kwargs["clf_train_noisified_max_timesteps"], cap)
-                    self.assertEqual(resolved.model.wrapper_kwargs["clf_test_noisified_max_timesteps"], cap)
+                self.assertNotIn("clf_train_noisified_max_timesteps", resolved.model.wrapper_kwargs)
+                self.assertNotIn("clf_test_noisified_max_timesteps", resolved.model.wrapper_kwargs)
                 round_trip = self.root / f"round-trip-{index}.yaml"
                 save_config(resolved, round_trip)
                 self.assertEqual(load_config(round_trip), resolved)
 
                 report = Path(trial.user_attrs["results_path"])
                 saved = json.loads((report / "evaluations.json").read_text(encoding="utf-8"))
-                self.assertEqual(trial.values[0], saved["valset_ema_eval"]["classifier_accuracy"])
+                self.assertEqual(trial.values[0], saved["valset_network_eval"]["classifier_accuracy"])
+                self.assertNotEqual(trial.values[0], saved["valset_ema_eval"]["classifier_accuracy"])
                 self.assertNotEqual(trial.values[0], saved["valset_ema_eval"]["ensemble_accuracy"])
-                self.assertEqual(trial.values[1], saved["valset_ema_eval"]["noise_loss"])
+                self.assertEqual(trial.values[1], saved["valset_network_eval"]["noise_loss"])
                 objectives = pd.read_csv(report / "objectives.csv")
                 self.assertEqual(objectives["name"].tolist(), ["classification_accuracy", "noise_loss"])
                 self.assertEqual(objectives["direction"].tolist(), ["maximize", "minimize"])
                 self.assertAlmostEqual(objectives["value"].iloc[0], expected)
-                self.assertAlmostEqual(objectives["value"].iloc[1], 0.07)
+                self.assertAlmostEqual(objectives["value"].iloc[1], 0.04)
                 scalars = self._outcome_scalars(self._study_root(resolved), trial.number)
                 self.assertEqual(scalars["hpo/completed"], 1.0)
                 self.assertEqual(scalars["hpo/failed"], 0.0)
                 self.assertAlmostEqual(scalars["hpo/classification_accuracy"], expected, places=6)
-                self.assertAlmostEqual(scalars["hpo/noise_loss"], 0.07, places=6)
-                self.assertAlmostEqual(scalars["validation/noise_loss"], 0.07, places=6)
-                self.assertAlmostEqual(scalars["validation/classifier_accuracy"], 0.82, places=6)
+                self.assertAlmostEqual(scalars["hpo/noise_loss"], 0.04, places=6)
+                self.assertAlmostEqual(scalars["validation/noise_loss"], 0.04, places=6)
+                self.assertAlmostEqual(scalars["validation/classifier_accuracy"], 0.21, places=6)
 
     def test_total_budget_reopens_without_duplicate_trials_and_can_increase(self) -> None:
         """Both explicit resume and normal reopening honor allocated trial count."""
@@ -243,7 +251,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(retry.params, abandoned_params)
             self.assertEqual(retry.user_attrs["resume_source_trial_number"], 1)
             self.assertEqual(retry.user_attrs["resume_original_trial_number"], 1)
-            self.assertEqual(retry.values, [0.82, 0.07])
+            self.assertEqual(retry.values, [0.21, 0.04])
 
             repeated = run_hpo(**self._options(n_trials=3, resume_from=study_root))
             self.assertEqual(len(repeated.trials), 3)
@@ -310,7 +318,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(failed.state, optuna.trial.TrialState.FAIL)
             self.assertIsNone(failed.values)
             self.assertEqual(complete.state, optuna.trial.TrialState.COMPLETE)
-            self.assertEqual(complete.values, [0.82, 0.07])
+            self.assertEqual(complete.values, [0.21, 0.04])
             config = load_config(complete.user_attrs["resolved_config_path"])
             study_root = self._study_root(config)
             scalars = self._outcome_scalars(study_root, failed.number)
@@ -330,7 +338,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
         def training(config, **kwargs):
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
-            result["evaluations"]["valset_ema_eval"].update(
+            result["evaluations"]["valset_network_eval"].update(
                 classifier_accuracy=accuracy, noise_loss=noise,
             )
             return result
@@ -348,7 +356,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
         def training(config, **kwargs):
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
-            result["evaluations"]["valset_ema_eval"].update(
+            result["evaluations"]["valset_network_eval"].update(
                 classifier_accuracy=accuracy, noise_loss=noise,
             )
             return result

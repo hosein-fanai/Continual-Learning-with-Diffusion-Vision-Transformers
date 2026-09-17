@@ -77,7 +77,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
         select depths relative to the expanded network.
 
         V2 forces mask_by_nulls=False even if supplied through kwargs because its
-        classifier explicitly uses null labels. Both classifier noising caps accept
+        classifier explicitly uses null labels for every input. Its conditioning
+        selector is therefore ``null_class_only`` and row selection remains disabled.
+        Explicit ``all_classes`` is unsupported because this classifier phase
+        always uses null conditioning. Both classifier noising caps accept
         zero or None for clean-only input and -1 for the full horizon; positive caps
         sample uniformly from [0, cap). CFG must be enabled on the raw network.
 
@@ -118,12 +121,26 @@ class DiffusionClassifierV2(DiffusionClassifier):
             are initialized in place.
 
         Raises:
+            ValueError: A V1-only clean, class-conditioned, or split-batch policy is supplied.
             AssertionError: Shared-variable selectors, classifier caps, or CFG requirements
                 are invalid; inherited constructor checks may also fail.
             TypeError: A selector collection is not iterable, including a whole-argument
                 None.
         """
 
+        # V2 owns separate generator/classifier steps rather than V1's single-pass allocation.
+        if kwargs.get("clf_train_batch_fraction", 0.) != 0.:
+            raise ValueError("Positive clf_train_batch_fraction is supported only by DiffusionClassifier.")
+        # V2's phase-specific corruption caps own its classifier input policy.
+        if kwargs.get("clf_train_noisy_input_type", "noisy") != "noisy":
+            raise ValueError(
+                "clf_train_noisy_input_type='clean' is supported only by DiffusionClassifier; "
+                "V2 uses its separate classifier noising caps."
+            )
+        # V2 always null-conditions classification and cannot honor CFG-label inputs.
+        if kwargs.get("clf_train_class_input_type") not in (None, "null_class_only"):
+            raise ValueError("V2 requires clf_train_class_input_type='null_class_only'.")
+        kwargs["clf_train_class_input_type"] = "null_class_only"
         # V2 supplies unconditional labels explicitly, so CFG-null selection
         # would be an inert classifier mask.
         kwargs["mask_by_nulls"] = False
@@ -165,6 +182,29 @@ class DiffusionClassifierV2(DiffusionClassifier):
         object.__setattr__(self, "_active_trainable_variables", None)
         self._train_part = None
         self._test_part = None
+
+    def _check_classifier_input_policy(self, local_vars: dict[str, object]) -> None:
+        """Validate V2's fixed conditioning while preserving its ensemble option.
+
+        V2 owns a separate classifier training step and corruption caps, so the
+        joint V1 restriction on ensemble replacement does not apply. Common
+        selector-value validation still runs in the base constructor.
+
+        Args:
+            local_vars (dict[str, object]): Normalized inherited constructor settings.
+
+        Returns:
+            None: The classifier phase retains its existing null-input behavior.
+
+        Raises:
+            AssertionError: A V1-only input policy bypasses the V2 constructor guard.
+        """
+
+        require(
+            local_vars["clf_train_noisy_input_type"] == "noisy"
+            and local_vars["clf_train_class_input_type"] == "null_class_only",
+            "V2 classifier inputs are controlled by its noising caps and null conditioning."
+        )
 
     def _check_clfv2_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate variable selectors, classifier timestep caps, and CFG availability.
