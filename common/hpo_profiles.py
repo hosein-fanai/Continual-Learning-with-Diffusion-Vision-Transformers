@@ -19,7 +19,7 @@ from common.config import Config
 
 
 JOINT_CLASSIFIER_PROFILE = "joint_dit_classifier"
-JOINT_CLASSIFIER_PROFILE_VERSION = 10
+JOINT_CLASSIFIER_PROFILE_VERSION = 12
 
 JOINT_CLASSIFIER_SEARCH_SPACE = {
     "learning_rate": {"low": 1e-5, "high": 5e-3, "log": True}, 
@@ -34,7 +34,10 @@ JOINT_CLASSIFIER_SEARCH_SPACE = {
     "dropout_rate": [0.0, 0.15, 0.25], 
     "clf_drop_prob": [0.0, 0.15, 0.25], 
     "feature_aggregation": ["last", "all"], 
-    "classifier_mlp_ratio": [1, 2, 4]
+    "classifier_mlp_ratio": [1, 2, 4],
+    "clf_train_batch_fraction": [0.0, 0.25, 0.5],
+    "clf_train_noisy_input_type": ["noisy", "clean"],
+    "clf_train_class_input_type": ["null_class_only", "all_classes"]
 }
 
 
@@ -81,13 +84,16 @@ def build_joint_classifier_config(
     Classifier CE and denoising MSE each
     have coefficient 1.0; classification uses internal backbone features.
 
-    Denoising retains conditional CFG dropout. A separate clean, unconditional
-    classification pass supervises every image without exposing its target
-    label as input. Both passes update the shared backbone in one joint phase
-    with one optimizer.
+    Denoising retains conditional CFG dropout. Trials sample classifier batch
+    allocation, clean/noisy inputs, and null/CFG conditioning. A None class-input
+    choice uses the wrapper's default conditional branch. Positive fractions
+    allocate disjoint classifier and denoising rows within one student pass;
+    zero uses all rows and adds a classifier pass when its inputs differ.
+    Both objectives update the shared backbone with one optimizer.
 
-    Every finite trial trains for the full epoch budget and uses final weights.
-    Final HPO feedback uses raw classifier accuracy, with no timestep ensemble.
+    Every finite trial trains for the full epoch budget without epoch validation
+    and uses final weights. The held-out dataset remains available for final HPO
+    feedback using raw classifier accuracy, with no timestep ensemble.
     Gradient clipping and plateau learning-rate adjustment are disabled.
     ``ensemble_accuracy_kwargs`` must be empty for this profile.
 
@@ -97,7 +103,7 @@ def build_joint_classifier_config(
     learned classifier-only token, and all-depth projection back to ``dim``.
     Data selection is explicit: ``validation_source='split'`` uses the selected
     training/validation ratio, while ``'test'`` trains on all official training
-    rows and uses all official test rows for fit validation and HPO. The latter
+    rows and uses all official test rows for final HPO evaluation. The latter
     bypasses internal splitting and yields tuning rather than independent test
     scores. Both modes retain the final partial training batch. Float32, fixed
     pixel scaling and a positive classifier projection follow the local
@@ -221,6 +227,19 @@ def build_joint_classifier_config(
     feature_aggregation = categorical("feature_aggregation")
     dim = categorical("dim")
     clf_cond_type = categorical("clf_cond_type")
+    clf_train_batch_fraction = categorical("clf_train_batch_fraction")
+    # Boolean overrides compare equal to zero but are not valid batch fractions.
+    if isinstance(clf_train_batch_fraction, bool):
+        raise ValueError("clf_train_batch_fraction must be a numeric fraction, not bool.")
+    clf_train_noisy_input_type = categorical("clf_train_noisy_input_type")
+    clf_train_class_input_type = categorical("clf_train_class_input_type")
+    effective_class_input_type = (
+        "all_classes" if clf_train_class_input_type is None else clf_train_class_input_type
+    )
+    split_classifier_batch = clf_train_batch_fraction > 0.0
+    separate_classifier_pass = not split_classifier_batch and (
+        clf_train_noisy_input_type == "clean" or effective_class_input_type == "null_class_only"
+    )
 
     model_kwargs = {
         "num_classes": 10 if dataset_name == "cifar10" else 100, 
@@ -277,9 +296,10 @@ def build_joint_classifier_config(
         "clf_acc_coef": 1.0, 
         "clf_distil_acc_coef": 0.0, 
         "ctr_acc_coef": 0.0, 
-        "clf_train_noisy_input_type": "clean",
-        "clf_train_class_input_type": "null_class_only",
-        "clf_train_type": "uncond",
+        "clf_train_batch_fraction": clf_train_batch_fraction,
+        "clf_train_noisy_input_type": clf_train_noisy_input_type,
+        "clf_train_class_input_type": clf_train_class_input_type,
+        "clf_train_type": "cond",
         "mask_by_nulls": False,
         "mask_by_t_threshold": False, 
         "use_ensemble_loss_instead": False, 
@@ -338,12 +358,14 @@ def build_joint_classifier_config(
             "task": "joint", 
             "epochs": epochs, 
             "fit_method": "fit", 
+            "fit_kwargs": {"validation_freq": []},
+            "use_valset": True,
             "seed": seed, 
             "dtype_policy": dtype_policy, 
             "deterministic_ops": bool(deterministic_ops), 
             "verbose": 1, 
             "patience": 0, 
-            "monitor": "val_classifier_accuracy", 
+            "monitor": "classifier_accuracy",
             "monitor_mode": "max", 
             "reduce_lr_patience": 0, 
             "reduce_lr_factor": 0.5, 
@@ -412,15 +434,22 @@ def build_joint_classifier_config(
                 "joint": epochs,
                 "maximum_total_epochs": epochs
             },
+            "classifier_training": {
+                "clf_train_batch_fraction": clf_train_batch_fraction,
+                "clf_train_noisy_input_type": clf_train_noisy_input_type,
+                "clf_train_class_input_type": clf_train_class_input_type,
+                "effective_class_input_type": effective_class_input_type,
+                "classifier_rows": "allocated_subset" if split_classifier_batch else "all_examples",
+                "diffusion_rows": "remaining_rows" if split_classifier_batch else "all_examples",
+                "student_forward_passes": 2 if separate_classifier_pass else 1,
+            },
             "fixed_recipe": {
                 "wrapper_name": "diffusion_classifier",
                 "learning_rate_schedule": "cosine",
                 "batch_size": 128,
                 "patchify_with_cnn": True,
                 "modify_first_t": False,
-                "classification_labels": "all_examples_unconditional",
-                "clf_train_noisy_input_type": "clean",
-                "clf_train_class_input_type": "null_class_only",
+                "clf_train_type": "cond",
                 "classifier_gradients": "shared_backbone_and_head",
                 "classifier_representation": "internal_features",
                 "mask_by_nulls_requested": False,
@@ -430,7 +459,8 @@ def build_joint_classifier_config(
                 "validation_ratio": validation_ratio if validation_source == "split" else 0.0,
                 "drop_remainder": False,
                 "test_set_used_for_hpo": validation_source == "test",
-                "test_set_used_for_fit_validation": validation_source == "test",
+                "fit_validation": False,
+                "test_set_used_for_fit_validation": False,
                 "independent_test_estimate": False,
                 "classifier_loss_coefficient": 1.0,
                 "classifier_heads": 4,

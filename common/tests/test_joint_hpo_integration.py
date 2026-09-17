@@ -42,6 +42,9 @@ class JointHpoIntegrationTests(unittest.TestCase):
             "clf_depth": [1],
             "patch_size": [4],
             "feature_aggregation": [aggregation],
+            "clf_train_batch_fraction": [0.0],
+            "clf_train_noisy_input_type": ["clean"],
+            "clf_train_class_input_type": ["null_class_only"],
         }
         return choices
 
@@ -93,7 +96,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
         (output / "evaluations.json").write_text(json.dumps(evaluations), encoding="utf-8")
         return {
             "results_path": str(output),
-            "history": {"val_classifier_accuracy": [0.99], "val_ensemble_accuracy": [1.0]},
+            "history": {"classifier_accuracy": [0.99]},
             "evaluations": evaluations,
         }
 
@@ -169,9 +172,14 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 self.assertEqual(selection["resolved"]["effective_validation_ratio"], 0.0)
                 self.assertEqual(resolved.training.epochs, 50)
                 self.assertEqual(resolved.training.patience, 0)
+                self.assertEqual(resolved.training.fit_kwargs, {"validation_freq": []})
+                self.assertTrue(resolved.training.use_valset)
+                self.assertTrue(resolved.reporting.run_valset_eval)
+                self.assertFalse(resolved.hpo["fixed_recipe"]["fit_validation"])
+                self.assertFalse(resolved.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
                 self.assertEqual(resolved.model.wrapper_kwargs["clf_train_noisy_input_type"], "clean")
                 self.assertEqual(resolved.model.wrapper_kwargs["clf_train_class_input_type"], "null_class_only")
-                self.assertEqual(resolved.model.wrapper_kwargs["clf_train_type"], "uncond")
+                self.assertEqual(resolved.model.wrapper_kwargs["clf_train_type"], "cond")
                 self.assertEqual(resolved.model.wrapper_kwargs["clf_loss_coef"], 1.0)
                 self.assertFalse(resolved.model.wrapper_kwargs["mask_by_nulls"])
                 self.assertFalse(resolved.model.kwargs["aggregate_from_noises"])
@@ -203,6 +211,45 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 self.assertAlmostEqual(scalars["hpo/noise_loss"], 0.04, places=6)
                 self.assertAlmostEqual(scalars["validation/noise_loss"], 0.04, places=6)
                 self.assertAlmostEqual(scalars["validation/classifier_accuracy"], 0.21, places=6)
+
+    def test_all_class_conditioning_survives_optuna_and_yaml_reopening(self) -> None:
+        """Persist explicit all-class conditioning and disabled fit validation."""
+        space = self._space()
+        space.update(clf_train_batch_fraction=[0.25], clf_train_noisy_input_type=["noisy"],
+                     clf_train_class_input_type=["all_classes"])
+        options = self._options(search_space_overrides=space)
+        with patch("common.hpo.main", side_effect=self._fake_training) as training:
+            study = run_hpo(**options)
+            reopened = run_hpo(**options)
+        training.assert_called_once()
+        self.assertEqual(len(reopened.trials), 1)
+        for trial in (study.trials[0], reopened.trials[0]):
+            self.assertIn("clf_train_class_input_type", trial.params)
+            self.assertEqual(trial.params["clf_train_class_input_type"], "all_classes")
+            self.assertEqual(trial.params["clf_train_batch_fraction"], 0.25)
+            self.assertEqual(trial.params["clf_train_noisy_input_type"], "noisy")
+            self.assertEqual(trial.state, optuna.trial.TrialState.COMPLETE)
+            config = load_config(trial.user_attrs["resolved_config_path"])
+            source = load_config(config.hpo["input_config_path"])
+            for saved in (config, source):
+                self.assertEqual(saved.hpo["profile_version"], 12)
+                self.assertEqual(saved.training.fit_kwargs, {"validation_freq": []})
+                self.assertTrue(saved.training.use_valset)
+                self.assertTrue(saved.reporting.run_valset_eval)
+                self.assertFalse(saved.hpo["fixed_recipe"]["fit_validation"])
+                self.assertFalse(saved.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
+                self.assertIn("clf_train_class_input_type", saved.model.wrapper_kwargs)
+                self.assertEqual(saved.model.wrapper_kwargs["clf_train_class_input_type"], "all_classes")
+                self.assertEqual(saved.hpo["params"]["clf_train_class_input_type"], "all_classes")
+                self.assertEqual(saved.hpo["classifier_training"], {
+                    "clf_train_batch_fraction": 0.25,
+                    "clf_train_noisy_input_type": "noisy",
+                    "clf_train_class_input_type": "all_classes",
+                    "effective_class_input_type": "all_classes",
+                    "classifier_rows": "allocated_subset",
+                    "diffusion_rows": "remaining_rows",
+                    "student_forward_passes": 1,
+                })
 
     def test_total_budget_reopens_without_duplicate_trials_and_can_increase(self) -> None:
         """Both explicit resume and normal reopening honor allocated trial count."""

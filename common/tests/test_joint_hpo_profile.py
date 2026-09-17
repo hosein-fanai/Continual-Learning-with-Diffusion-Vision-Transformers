@@ -41,14 +41,15 @@ class JointClassifierProfileTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_v1_classifies_all_clean_images_without_label_conditioning(self):
+    def test_first_choice_uses_full_batch_noisy_null_classification(self):
         config = self.make_config()
         wrapper = config.model.wrapper_kwargs
         self.assertEqual(config.training.task, "joint")
         self.assertEqual(config.model.kwargs["num_classes"], 10)
-        self.assertEqual(wrapper["clf_train_type"], "uncond")
-        self.assertEqual(wrapper["clf_train_noisy_input_type"], "clean")
+        self.assertEqual(wrapper["clf_train_type"], "cond")
+        self.assertEqual(wrapper["clf_train_noisy_input_type"], "noisy")
         self.assertEqual(wrapper["clf_train_class_input_type"], "null_class_only")
+        self.assertEqual(wrapper["clf_train_batch_fraction"], 0.0)
         self.assertNotIn("train_cfg_scale", wrapper)
         self.assertNotIn("test_cfg_scale", wrapper)
         self.assertFalse(wrapper["mask_by_nulls"])
@@ -64,7 +65,12 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
         self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
         self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
-        self.assertEqual(config.hpo["profile_version"], 10)
+        self.assertEqual(config.hpo["profile_version"], 12)
+        self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
+        self.assertTrue(config.training.use_valset)
+        self.assertTrue(config.reporting.run_valset_eval)
+        self.assertFalse(config.hpo["fixed_recipe"]["fit_validation"])
+        self.assertFalse(config.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
         self.assertEqual(config.hpo["objective_network"], "raw")
         self.assertNotIn("clf_train_noisified_max_timesteps", config.hpo["params"])
         self.assertIsNone(config.optimizer.clipnorm)
@@ -113,6 +119,85 @@ class JointClassifierProfileTests(unittest.TestCase):
                     self.assertEqual(config.model.kwargs["dropout_rate"], dropout)
                     self.assertEqual(config.model.kwargs["clf_drop_prob"], drop_path)
 
+    def test_classifier_input_search_has_the_requested_independent_choices(self) -> None:
+        """Retain the user's two conditioning choices and reject removed None samples."""
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_batch_fraction"], [0.0, 0.25, 0.5])
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_noisy_input_type"], ["noisy", "clean"])
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_class_input_type"],
+                         ["null_class_only", "all_classes"])
+        for override in ({"clf_train_batch_fraction": [1.0]},
+                         {"clf_train_batch_fraction": [False]},
+                         {"clf_train_batch_fraction": [float("nan")]},
+                         {"clf_train_noisy_input_type": ["invalid"]},
+                         {"clf_train_class_input_type": ["invalid"]},
+                         {"clf_train_class_input_type": [None]}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                self.make_config(override)
+
+    def test_all_classifier_input_combinations_build_train_and_preserve_metadata(self) -> None:
+        """All 12 sampled recipes execute and retain their requested conditioning."""
+        original_policy = tf.keras.mixed_precision.global_policy().name
+        self.addCleanup(tf.keras.mixed_precision.set_global_policy, original_policy)
+        self.addCleanup(tf.keras.backend.clear_session)
+        tf.keras.mixed_precision.set_global_policy("float32")
+        images = tf.reshape(tf.linspace(-1.0, 1.0, 64), (4, 4, 4, 1))
+        labels = tf.constant([0, 1, 2, 3], tf.int32)
+        for fraction in (0.0, 0.25, 0.5):
+            for noisy_input in ("noisy", "clean"):
+                for class_input in ("null_class_only", "all_classes"):
+                    with self.subTest(fraction=fraction, noisy_input=noisy_input, class_input=class_input):
+                        tf.keras.backend.clear_session()
+                        config = self.make_config({
+                            "clf_train_batch_fraction": [fraction],
+                            "clf_train_noisy_input_type": [noisy_input],
+                            "clf_train_class_input_type": [class_input],
+                        })
+                        effective = class_input
+                        passes = 1 if fraction > 0 or (noisy_input == "noisy" and effective == "all_classes") else 2
+                        expected = {
+                            "clf_train_batch_fraction": fraction,
+                            "clf_train_noisy_input_type": noisy_input,
+                            "clf_train_class_input_type": class_input,
+                            "effective_class_input_type": effective,
+                            "classifier_rows": "allocated_subset" if fraction > 0 else "all_examples",
+                            "diffusion_rows": "remaining_rows" if fraction > 0 else "all_examples",
+                            "student_forward_passes": passes,
+                        }
+                        self.assertEqual(config.hpo["classifier_training"], expected)
+                        for key in ("clf_train_batch_fraction", "clf_train_noisy_input_type",
+                                    "clf_train_class_input_type"):
+                            self.assertEqual(config.model.wrapper_kwargs[key], expected[key])
+                            self.assertEqual(config.hpo["params"][key], expected[key])
+                            self.assertNotIn(key, config.hpo["fixed_recipe"])
+                        self.assertNotIn("classification_labels", config.hpo["fixed_recipe"])
+                        self.assertEqual(config.hpo["fixed_recipe"]["clf_train_type"], "cond")
+                        # Keep resolved options while shrinking only geometry and compute budget.
+                        model_options = deepcopy(config.model.kwargs)
+                        model_options.update(image_size=4, channels=1, patch_size=2, dim=4, depth=1,
+                                             mha_num_heads=1, clf_mha_num_heads=1, timesteps=8)
+                        wrapper_options = deepcopy(config.model.wrapper_kwargs)
+                        wrapper_options.update(test_steps=4)
+                        network = DiTClassifier(**model_options, seed=17)
+                        wrapper = DiffusionClassifier(network=network, **wrapper_options, seed=17)
+                        wrapper.compile(optimizer=tf.keras.optimizers.SGD(1e-3), loss="mse",
+                                        run_eagerly=False, jit_compile=False)
+                        self.assertEqual(wrapper.clf_train_class_input_type, effective)
+                        self.assertEqual(wrapper.clf_train_type, "cond")
+                        self.assertIsNone(wrapper.train_cfg_scale)
+                        # Exercise all-class conditioning in graphs and null conditioning eagerly.
+                        step = tf.function(wrapper.train_step) if class_input == "all_classes" else wrapper.train_step
+                        result = step((images, labels))
+                        selected = 4 if fraction == 0 else max(1, int(4 * fraction))
+                        self.assertTrue(all(np.isfinite(float(value)) for value in result.values()))
+                        self.assertEqual(int(wrapper.accuracy_tracker.count), selected)
+                        self.assertEqual(int(wrapper.noise_loss_tracker.count), 4 if fraction == 0 else 4 - selected)
+                        self.assertEqual(int(wrapper.optimizer.iterations), 1)
+                        wrapper.reset_metrics()
+                        evaluation = wrapper.test_step((images, labels))
+                        self.assertTrue(all(np.isfinite(float(value)) for value in evaluation.values()))
+                        self.assertEqual(int(wrapper.accuracy_tracker.count), 4)
+                        self.assertEqual(int(wrapper.noise_loss_tracker.count), 4)
+
     def test_data_protocol_is_an_explicit_option(self):
         default = self.make_config()
         self.assertFalse(default.hpo["fixed_recipe"]["test_set_used_for_hpo"])
@@ -121,6 +206,8 @@ class JointClassifierProfileTests(unittest.TestCase):
             self.assertEqual(config.dataset.validation_source, "test")
             self.assertFalse(config.dataset.drop_remainder)
             self.assertTrue(config.hpo["fixed_recipe"]["test_set_used_for_hpo"])
+            self.assertFalse(config.hpo["fixed_recipe"]["fit_validation"])
+            self.assertFalse(config.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
             self.assertEqual(config.hpo["fixed_recipe"]["validation_ratio"], 0.0)
         split = self.make_config(validation_source="split", validation_ratio=0.1)
         self.assertEqual(split.dataset.validation_ratio, 0.1)
@@ -157,7 +244,8 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.training.patience, 0)
         self.assertEqual(config.training.epochs, 50)
         self.assertEqual(config.training.reduce_lr_patience, 0)
-        self.assertEqual(config.training.monitor, "val_classifier_accuracy")
+        self.assertEqual(config.training.monitor, "classifier_accuracy")
+        self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
         self.assertNotIn("modify_first_t", config.model.wrapper_kwargs)
         native = self.make_config(wrapper_overrides={"modify_first_t": False})
         self.assertFalse(native.model.wrapper_kwargs["modify_first_t"])
@@ -192,6 +280,11 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertFalse(restored.hpo["fixed_recipe"]["independent_test_estimate"])
         self.assertEqual(restored.dataset.validation_source, "test")
         self.assertEqual(restored.dataset.validation_ratio, 0.0)
+        self.assertEqual(restored.training.fit_kwargs, {"validation_freq": []})
+        self.assertTrue(restored.training.use_valset)
+        self.assertTrue(restored.reporting.run_valset_eval)
+        self.assertFalse(restored.hpo["fixed_recipe"]["fit_validation"])
+        self.assertFalse(restored.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
         self.assertTrue(restored.reporting.save_final_images)
         self.assertFalse(restored.reporting.save_final_gifs)
         self.assertEqual(restored.reporting.final_generation_network_name, "raw")
@@ -237,8 +330,9 @@ class JointClassifierProfileTests(unittest.TestCase):
             {"clf_train_noisified_max_timesteps": 32}, {"clf_test_noisified_max_timesteps": 32},
             {"test_noisified_min_timesteps": 1}, {"test_noisified_max_timesteps": 32},
             {"dtype": "mixed_bfloat16"},
-            {"clf_train_noisy_input_type": "noisy"}, {"clf_train_type": "cond"},
+            {"clf_train_noisy_input_type": "clean"}, {"clf_train_type": "uncond"},
             {"clf_train_class_input_type": "all_classes"},
+            {"clf_train_batch_fraction": 0.5},
             {"mask_by_nulls": True}, {"mask_by_t_threshold": True},
             {"clf_loss_coef": 0.001}, {"use_ensemble_loss_instead": True},
             {"modify_first_t": True},
@@ -287,11 +381,13 @@ class JointClassifierProfileTests(unittest.TestCase):
     def test_real_wrapper_uses_all_clean_rows_and_full_noise_evaluation(self):
         tf.keras.backend.clear_session()
         tf.keras.utils.set_random_seed(17)
-        config = self.make_config({"patch_size": [4]})
+        config = self.make_config({"patch_size": [4], "clf_train_batch_fraction": [0.0],
+                                   "clf_train_noisy_input_type": ["clean"],
+                                   "clf_train_class_input_type": ["null_class_only"]})
         network = DiTClassifier(**config.model.kwargs, seed=17)
         wrapper = DiffusionClassifier(network=network, **config.model.wrapper_kwargs, seed=17)
         wrapper.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
-        self.assertEqual(wrapper.clf_train_type, "uncond")
+        self.assertEqual(wrapper.clf_train_type, "cond")
         self.assertEqual(wrapper.clf_train_noisy_input_type, "clean")
         self.assertEqual(wrapper.clf_train_class_input_type, "null_class_only")
         self.assertIsNone(wrapper.train_cfg_scale)

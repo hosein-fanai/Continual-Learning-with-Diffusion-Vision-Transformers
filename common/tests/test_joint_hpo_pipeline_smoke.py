@@ -59,13 +59,47 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
              (np.arange(12) % 2).reshape(-1, 1)),
         )
 
-    def _run_case(self, dataset_name="cifar10", aggregation="last"):
+    def _run_case(self, dataset_name="cifar10", aggregation="last", fraction=0.0,
+                  noisy_input="clean", class_input="null_class_only"):
         choices = {
             "optimizer": ["adam"], "dim": [32],
             "depth": [3], "clf_depth": [1], "patch_size": [4],
             "mha_num_heads": [4], "feature_aggregation": [aggregation],
+            "clf_train_batch_fraction": [fraction],
+            "clf_train_noisy_input_type": [noisy_input],
+            "clf_train_class_input_type": [class_input],
         }
         batches = {}
+        calls = {"fit_active": False, "fit": 0, "evaluate": 0}
+        original_fit = DiffusionClassifier.fit
+        original_evaluate = DiffusionClassifier.evaluate
+
+        def observed_fit(model: DiffusionClassifier, *args: object, **kwargs: object) -> object:
+            """Check the real fit receives retained data but schedules no validation epochs."""
+            self.assertEqual(kwargs["validation_freq"], [])
+            self.assertIsNotNone(kwargs["validation_data"])
+            self.assertEqual(kwargs["epochs"], 2)
+            calls["fit"] += 1
+            calls["fit_active"] = True
+            try:
+                history = original_fit(model, *args, **kwargs)
+            finally:
+                calls["fit_active"] = False
+            self.assertFalse(any(name.startswith("val_") for name in history.history))
+            self.assertEqual(len(history.epoch), 2)
+            return history
+
+        def observed_evaluate(model: DiffusionClassifier, *args: object, **kwargs: object) -> dict:
+            """Allow only the final raw evaluation after the complete training budget."""
+            self.assertFalse(calls["fit_active"], "Epoch validation must not run")
+            self.assertEqual(calls["fit"], 1)
+            self.assertEqual(int(model.optimizer.iterations), 4)
+            self.assertEqual(kwargs["network_name"], "raw")
+            calls["evaluate"] += 1
+            scores = original_evaluate(model, *args, **kwargs)
+            self.assertIn("noise_loss", scores)
+            self.assertIn("classifier_accuracy", scores)
+            return scores
 
         def capture_datasets(*args, **kwargs):
             train, validation = get_datasets(*args, **kwargs)
@@ -80,7 +114,13 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                 validation_source="test", max_train_samples=7, max_val_samples=3,
                 search_space_overrides=choices,
             )
-            self.assertEqual(config.hpo["profile_version"], 10)
+            self.assertEqual(config.hpo["profile_version"], 12)
+            self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
+            self.assertTrue(config.training.use_valset)
+            self.assertTrue(config.reporting.run_valset_eval)
+            self.assertEqual(config.training.monitor, "classifier_accuracy")
+            self.assertFalse(config.hpo["fixed_recipe"]["fit_validation"])
+            self.assertFalse(config.hpo["fixed_recipe"]["test_set_used_for_fit_validation"])
             self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
             self.assertFalse(config.hpo["use_ensemble_accuracy"])
             self.assertFalse(config.reporting.evaluate_ensemble_accuracy)
@@ -94,9 +134,10 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             self.assertFalse(config.optimizer.plateau_jump)
             self.assertEqual(config.training.reduce_lr_patience, 0)
             self.assertEqual(config.training.patience, 0)
-            self.assertEqual(config.model.wrapper_kwargs["clf_train_noisy_input_type"], "clean")
-            self.assertEqual(config.model.wrapper_kwargs["clf_train_class_input_type"], "null_class_only")
-            self.assertEqual(config.model.wrapper_kwargs["clf_train_type"], "uncond")
+            self.assertEqual(config.model.wrapper_kwargs["clf_train_noisy_input_type"], noisy_input)
+            self.assertEqual(config.model.wrapper_kwargs["clf_train_class_input_type"], class_input)
+            self.assertEqual(config.model.wrapper_kwargs["clf_train_batch_fraction"], fraction)
+            self.assertEqual(config.model.wrapper_kwargs["clf_train_type"], "cond")
             self.assertFalse(config.model.wrapper_kwargs["mask_by_nulls"])
             self.assertEqual(config.model.wrapper_kwargs["clf_loss_coef"], 1.0)
             self.assertFalse(config.model.kwargs["aggregate_from_noises"])
@@ -122,6 +163,8 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), \
                     patch(f"tensorflow.keras.datasets.{dataset_name}.load_data", side_effect=self._cifar) as loader, \
                     patch("common.train.get_datasets", side_effect=capture_datasets), \
+                    patch.object(DiffusionClassifier, "fit", new=observed_fit), \
+                    patch.object(DiffusionClassifier, "evaluate", new=observed_evaluate), \
                     patch("common.train.PlateauLearningRate",
                           side_effect=AssertionError("Plateau callback must stay disabled")) as plateau, \
                     patch("common.train.callbacks.EarlyStopping",
@@ -132,6 +175,8 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             ensemble.assert_not_called()
             plateau.assert_not_called()
             early_stop.assert_not_called()
+            self.assertEqual(calls, {"fit_active": False, "fit": 1, "evaluate": 1})
+            self.assertFalse(any(name.startswith("val_") for name in result["history"]))
             self.assertEqual(loader.call_count, 1)
             self.assertEqual(batches, {"train": [4, 3], "validation": [3]})
             self.assertEqual(config.dataset.trainset_len, 2)
@@ -139,6 +184,9 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             self.assertEqual(model.dtype_policy.name, "float32")
             self.assertEqual(model.network.dtype_policy.name, "float32")
             self.assertFalse(model.use_ema)
+            self.assertEqual(model.clf_train_batch_fraction, fraction)
+            self.assertEqual(model.clf_train_noisy_input_type, noisy_input)
+            self.assertEqual(model.clf_train_class_input_type, class_input)
             self.assertIsNone(model.ema_network)
             self.assertIsNone(model.teacher_network)
             self.assertIsNone(model.network.distil_classifier)
@@ -159,7 +207,9 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                          "train history.png", "input_config.yaml", "config.yaml",
                          "final-generation-modes.json"):
                 self.assertGreater((output / name).stat().st_size, 0)
-            self.assertEqual(len(pd.read_csv(output / "train history.csv")), 2)
+            train_history = pd.read_csv(output / "train history.csv")
+            self.assertEqual(len(train_history), 2)
+            self.assertFalse(any(name.startswith("val_") for name in train_history.columns))
             metrics_csv = pd.read_csv(output / "evals history.csv", index_col=0)
             self.assertEqual(len(metrics_csv), 1)
             self.assertEqual(set(result["evaluations"]), {"valset_network_eval"})
@@ -190,7 +240,15 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             self.assertEqual(metadata["selected_validation_location"], "official_test")
             self.assertEqual(metadata["reserved_internal_validation_rows"], 0)
             self.assertFalse(metadata["independent_test_estimate"])
-            self.assertEqual(load_config(output / "config.yaml").dataset.split_metadata, metadata)
+            persisted = load_config(output / "config.yaml")
+            self.assertEqual(persisted.dataset.split_metadata, metadata)
+            self.assertEqual(persisted.hpo["classifier_training"], config.hpo["classifier_training"])
+            self.assertIn("clf_train_class_input_type", persisted.model.wrapper_kwargs)
+            self.assertEqual(persisted.model.wrapper_kwargs["clf_train_class_input_type"], class_input)
+            self.assertEqual(persisted.model.wrapper_kwargs["clf_train_batch_fraction"], fraction)
+            self.assertEqual(persisted.training.fit_kwargs, {"validation_freq": []})
+            self.assertTrue(persisted.training.use_valset)
+            self.assertTrue(persisted.reporting.run_valset_eval)
 
             tensorboard = Path(config.training.tensorboard_path) / "t0000"
             phase_paths = [tensorboard]
@@ -221,6 +279,10 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
 
     def test_all_feature_aggregation_raw_joint_pipeline(self):
         self._run_case(aggregation="all")
+
+    def test_positive_fraction_with_all_class_conditioning_uses_real_pipeline(self) -> None:
+        """A sampled split batch still completes training before its only evaluation."""
+        self._run_case(fraction=0.5, noisy_input="noisy", class_input="all_classes")
 
 
 if __name__ == "__main__":

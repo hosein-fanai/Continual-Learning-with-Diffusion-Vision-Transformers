@@ -19,6 +19,7 @@ import numpy as np
 from collections.abc import Callable, Mapping, Sequence
 
 from .config import Config, normalize_training_task, resolve_continual_schedule
+from .hpo_process import dataset_load_lock
 
 
 DatasetArrays = tuple[
@@ -784,7 +785,9 @@ def load_cifar10(
     from tensorflow.keras.datasets import cifar10
 
 
-    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+    # Keras re-extracts cached archives; protect extraction and pickle reads together.
+    with dataset_load_lock("cifar10"):
+        (x_train, y_train), (x_test, y_test) = cifar10.load_data()
 
     return preprocess_dataset(x_train, y_train, x_test, y_test, 10, 
                             indices, validation_ratio, preprocess, 
@@ -857,7 +860,9 @@ def load_cifar100(
     from tensorflow.keras.datasets import cifar100
 
 
-    (x_train, y_train), (x_test, y_test) = cifar100.load_data()
+    # Keras re-extracts cached archives; protect extraction and pickle reads together.
+    with dataset_load_lock("cifar100"):
+        (x_train, y_train), (x_test, y_test) = cifar100.load_data()
 
     return preprocess_dataset(x_train, y_train, x_test, y_test, 100, 
                             indices, validation_ratio, preprocess, 
@@ -1359,23 +1364,29 @@ def get_datasets(
 
     dataset_name = dataset_name.lower()
 
+    # Keep evaluation data selection explicit.
     if validation_source not in ("split", "test"):
         raise ValueError("validation_source must be 'split' or 'test'.")
+    # Batch retention is a boolean policy, not a numeric count.
     if not isinstance(drop_remainder, bool):
         raise ValueError("drop_remainder must be a boolean.")
     # Test-as-validation is an explicit ordinary-image protocol; reject
     # unsupported paths before loading data or changing any training state.
     if validation_source == "test":
+        # Continual learners own their evaluation protocol.
         if task == "continual":
             raise ValueError("validation_source='test' requires ordinary training.")
+        # Feature archives do not expose the required official image splits.
         if return_features:
             raise ValueError("validation_source='test' does not support saved feature inputs.")
+        # An explicit evaluation source must actually be consumed.
         if not use_valset:
             raise ValueError("validation_source='test' requires use_valset=True.")
     elif config is not None and config.dataset.split_metadata.get("validation_source") == "test":
         # Reusing a mutable Config with its default source must not retain
         # provenance from an earlier explicit test-as-validation execution.
         config.dataset.split_metadata = {}
+        # Clear the matching HPO provenance when reusing this configuration.
         if isinstance(config.hpo.get("data_split"), dict) and \
         config.hpo["data_split"].get("validation_source") == "test":
             config.hpo.pop("data_split")
@@ -1442,6 +1453,7 @@ def get_datasets(
     # preprocessing there. Select the identically transformed official test
     # rows for validation without reserving any internal training partition.
     if validation_source == "test":
+        # Fail before fitting if the requested evaluation source is empty.
         if x_test is None or y_test is None or not len(x_test):
             raise ValueError("validation_source='test' requires nonempty official test arrays.")
         official_test_rows = len(x_test)
@@ -1476,6 +1488,7 @@ def get_datasets(
         )
 
     effective_drop_remainder = drop_remainder and len(x_train) >= batch_size
+    # Record the official test-source protocol only for configured runs.
     if config is not None and validation_source == "test":
         split_metadata = {
             "validation_source": "test",

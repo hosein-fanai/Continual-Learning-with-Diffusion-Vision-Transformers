@@ -41,8 +41,9 @@ import os
 import uuid
 
 import re
+import time
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from common.config import (
@@ -56,6 +57,7 @@ from common.dataloader import get_dataset_spec
 from common.recovery import find_latest_task_checkpoint, fingerprint_state
 from common.train import main
 from common.utils import load_feature_split_metadata
+from common.hpo_process import study_lock, start_worker, finish_worker, stop_workers
 
 
 _DIFFUSION_MODELS = {
@@ -2552,18 +2554,23 @@ def _hpo_validation_selection(
 ) -> dict[str, object] | None:
     """Resolve explicit ordinary-HPO data choices without changing legacy identity."""
     explicit = validation_source is not None or validation_ratio is not None
+    # Preserve generic study identity when no validation override was requested.
     if not explicit and search_profile is None:
         return None
+    # Continual validation belongs to the learner protocol.
     if explicit and task == "continual":
         raise ValueError("HPO validation_source/validation_ratio overrides require a non-continual task.")
     source = "split" if validation_source is None else validation_source
+    # Only the two explicit evaluation data sources are supported.
     if not isinstance(source, str) or source not in ("split", "test"):
         raise ValueError("validation_source must be 'split' or 'test'.")
     ratio = (0.0 if source == "test" else 0.2) if validation_ratio is None else validation_ratio
+    # Reject malformed ratios before dataset construction.
     if isinstance(ratio, (bool, np.bool_)) or not isinstance(
         ratio, (int, float, np.integer, np.floating)
     ) or not math.isfinite(ratio) or not 0 <= ratio < 1:
         raise ValueError("validation_ratio must be finite and within [0, 1).")
+    # An internal HPO split needs evaluation rows.
     if source == "split" and ratio == 0:
         raise ValueError("HPO split validation requires validation_ratio > 0.")
     return {
@@ -2665,6 +2672,7 @@ def _make_study_spec(
         task, search_profile, validation_source, validation_ratio
     )
     profile_identity = {}
+    # Seal the selected profile version and search space into study identity.
     if search_profile is not None:
         from common.hpo_profiles import (
             JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE,
@@ -2999,6 +3007,7 @@ def _enqueue_recovery_trials(
     # Inspect persisted trials for killed runs or failed runs with a committed
     # task boundary. Failed trials without recovery state stay failed.
     for frozen in trials:
+        # Retries share the same total allocation allowance as new trials.
         if max_new_trials is not None and len(enqueued) >= max_new_trials:
             break
         state_name = str(getattr(frozen.state, "name", frozen.state)).upper()
@@ -3184,6 +3193,7 @@ def _build_trial_config(
     data_selection = _hpo_validation_selection(
         task, search_profile, validation_source, validation_ratio
     )
+    # Named recipes use their bounded profile builder.
     if search_profile is not None:
         _validate_search_profile(
             search_profile, task, model_name, dataset_name,
@@ -3961,10 +3971,12 @@ def _build_trial_config(
         }
     )
 
+    # Forward the validated explicit data selection.
     if data_selection is not None:
         resolved_data = data_selection["resolved"]
         config.dataset.validation_source = resolved_data["validation_source"]
         config.dataset.validation_ratio = resolved_data["validation_ratio"]
+        # Explicit test-source evaluation retains the last partial batch.
         if "drop_remainder" in resolved_data:
             config.dataset.drop_remainder = resolved_data["drop_remainder"]
         config.hpo["data_selection"] = data_selection
@@ -4261,19 +4273,24 @@ def _validate_search_profile(
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None,
 ) -> None:
     """Reject incompatible profile options before creating a persistent study."""
+    # Only the maintained joint recipe is a named profile.
     if profile != "joint_dit_classifier":
         raise ValueError("Unknown search_profile; expected 'joint_dit_classifier'.")
+    # The joint recipe is restricted to CIFAR DiT classification.
     if task != "joint" or model_name != "dit_classifier" or dataset_name.lower() not in (
         "cifar10", "cifar100"
     ):
         raise ValueError("joint_dit_classifier requires joint/dit_classifier on CIFAR-10 or CIFAR-100.")
+    # The profile owns fitting and does not accept runtime teachers.
     if use_distillation or fit_method != "fit" or fit_kwargs:
         raise ValueError("joint_dit_classifier uses ordinary fit without distillation or fit_kwargs.")
+    # Ordinary raw accuracy is the profile objective.
     if use_ensemble_accuracy:
         raise ValueError(
             "joint_dit_classifier reports ordinary raw V1 accuracy; "
             "leave use_ensemble_accuracy=False."
         )
+    # Ensemble-specific parameters cannot alter ordinary evaluation.
     if ensemble_accuracy_kwargs:
         raise ValueError(
             "joint_dit_classifier reports ordinary accuracy; "
@@ -4282,29 +4299,156 @@ def _validate_search_profile(
 
 
 def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
-    """Log the final outcome of every trial, including failed/OOM trials."""
+    """Log trial outcomes without initializing the coordinator's TensorFlow devices."""
+    from tensorboard.compat.proto import event_pb2, summary_pb2, tensor_pb2, types_pb2
+    from tensorboard.summary.writer.event_file_writer import EventFileWriter
+
     logdir = study_root / "tensorboard" / f"trial-{trial.number:04d}" / "outcome"
-    writer = tf.summary.create_file_writer(str(logdir))
-    with writer.as_default():
-        tf.summary.scalar("hpo/completed", float(trial.state.name == "COMPLETE"), step=0)
-        tf.summary.scalar("hpo/failed", float(trial.state.name == "FAIL"), step=0)
-        tf.summary.scalar("hpo/pruned", float(trial.state.name == "PRUNED"), step=0)
-        tf.summary.text("hpo/state", trial.state.name, step=0)
-        tf.summary.text("hpo/parameters", json.dumps(trial.params, sort_keys=True), step=0)
-        if "divergence" in trial.user_attrs:
-            tf.summary.text("hpo/divergence", json.dumps(trial.user_attrs["divergence"]), step=0)
-        spec = study.user_attrs.get(_STUDY_SPEC_ATTR, {})
-        for name, value in zip(spec.get("objective_metrics", []), trial.values or []):
-            tf.summary.scalar(f"hpo/{name}", value, step=0)
-        for name, value in trial.user_attrs.get("validation_metrics", {}).items():
-            tf.summary.scalar(f"validation/{name}", value, step=0)
-        metric = trial.user_attrs.get("accuracy_metric")
-        if metric is not None:
-            tf.summary.text("hpo/accuracy_metric", metric, step=0)
-        if trial.duration is not None:
-            tf.summary.scalar("hpo/duration_seconds", trial.duration.total_seconds(), step=0)
-    writer.flush()
-    writer.close()
+    scalars = {f"hpo/{name}": float(trial.state.name == state) for name, state in (
+        ("completed", "COMPLETE"), ("failed", "FAIL"), ("pruned", "PRUNED")
+    )}
+    texts = {"hpo/state": trial.state.name, "hpo/parameters": json.dumps(trial.params, sort_keys=True)}
+    # Pruned trials retain their numerical failure evidence in the text dashboard.
+    if "divergence" in trial.user_attrs:
+        texts["hpo/divergence"] = json.dumps(trial.user_attrs["divergence"])
+    spec = study.user_attrs.get(_STUDY_SPEC_ATTR, {})
+    scalars.update({f"hpo/{name}": value for name, value in zip(spec.get("objective_metrics", []), trial.values or [])})
+    scalars.update({f"validation/{name}": value for name, value in trial.user_attrs.get("validation_metrics", {}).items()})
+    metric = trial.user_attrs.get("accuracy_metric")
+    # Generic trials may not declare a classifier metric.
+    if metric is not None:
+        texts["hpo/accuracy_metric"] = metric
+    # Running trials do not yet have a completed duration.
+    if trial.duration is not None:
+        scalars["hpo/duration_seconds"] = trial.duration.total_seconds()
+    values = [summary_pb2.Summary.Value(
+        tag=name,
+        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_FLOAT, float_val=[float(value)]),
+        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="scalars")),
+    ) for name, value in scalars.items()]
+    values.extend(summary_pb2.Summary.Value(
+        tag=name,
+        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_STRING, string_val=[str(value).encode("utf-8")]),
+        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="text")),
+    ) for name, value in texts.items())
+    writer = EventFileWriter(str(logdir))
+    try:
+        writer.add_event(event_pb2.Event(wall_time=time.time(), step=0, summary=summary_pb2.Summary(value=values)))
+        writer.flush()
+    finally:
+        writer.close()
+
+
+def _optimize_concurrently(
+    study: Any,
+    prepare_trial: Callable,
+    finish_trial: Callable,
+    save_trials: Callable,
+    *,
+    study_root: Path,
+    n_trials: int,
+    concurrent_trials: int,
+    timeout: float | None,
+    worker_gpu_memory_limit_mb: float | None,
+) -> None:
+    """Schedule isolated training processes with one owner of all Optuna state.
+
+    Only this coordinator samples, finalizes trials and writes aggregate files.
+    A timeout stops new allocations and drains workers already launched. On an
+    error or interruption, surviving workers are stopped and left RUNNING for
+    the existing parameter-identical retry mechanism on the next invocation.
+    """
+    import optuna
+
+    active: dict[int, tuple[Any, Any]] = {}
+    launched = 0
+    started = time.monotonic()
+    worker_root = study_root / "workers"
+
+    def fail_trial(trial: Any, error: Exception) -> None:
+        """Record a failed allocation and its diagnostics before propagating it."""
+        trial.set_user_attr("worker_error", str(error))
+        frozen = study.tell(trial, state=optuna.trial.TrialState.FAIL)
+        save_trials(study, frozen)
+        print(f"Trial {trial.number} failed: {error}", flush=True)
+
+    def complete_trial(trial: Any, worker: Any) -> None:
+        """Translate one worker response into the ordinary HPO outcome contract."""
+        try:
+            result = finish_worker(worker)
+            status = result["status"]
+            # Numerical divergence retains the same pruning evidence as serial HPO.
+            if status == "pruned":
+                for key in ("divergence", "divergence_path", "results_path"):
+                    trial.set_user_attr(key, result.get(key))
+                raise optuna.TrialPruned(result.get("error", "Training diverged."))
+            # A resource failure consumes this trial but permits further candidates.
+            if status == "oom":
+                raise tf.errors.ResourceExhaustedError(None, None, result.get("error", "Worker exhausted memory."))
+            # Unexpected child exceptions terminate the search after diagnostics persist.
+            if status != "complete":
+                raise RuntimeError(f"Trial {trial.number} worker failed: {result.get('error')}; see {worker.log_path}")
+            resolved_path = Path(result["config_path"]).resolve()
+            results_path = Path(result["results_path"]).resolve()
+            run_root = (study_root / "runs").resolve()
+            # Validate the child handoff before loading or rewriting any artifacts.
+            if run_root not in results_path.parents or resolved_path != results_path / "config.yaml":
+                raise ValueError("Worker result paths must identify a trial below this study's runs directory.")
+            config = load_config(resolved_path)
+            # Reject mismatched trial identities instead of assigning another run's score.
+            if config.hpo.get("trial_number") != trial.number or Path(config.training.results_path).resolve() != results_path:
+                raise ValueError("Worker configuration does not match the active trial and result directory.")
+            values = finish_trial(trial, config, result)
+        except optuna.TrialPruned:
+            frozen = study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+        except tf.errors.ResourceExhaustedError as error:
+            fail_trial(trial, error)
+            return
+        except Exception as error:
+            fail_trial(trial, error)
+            raise
+        else:
+            frozen = study.tell(trial, values)
+        save_trials(study, frozen)
+        print(f"Trial {trial.number} {frozen.state.name}: {frozen.values}", flush=True)
+
+    try:
+        while launched < n_trials or active:
+            # Fill free slots immediately; completed trials need not wait for a batch.
+            while launched < n_trials and len(active) < concurrent_trials and (
+                timeout is None or time.monotonic() - started < timeout
+            ):
+                trial = study.ask()
+                launched += 1
+                try:
+                    config = prepare_trial(trial)
+                    log_path = worker_root / f"trial-{trial.number:04d}.log"
+                    output_path = worker_root / f"trial-{trial.number:04d}.json"
+                    trial.set_user_attr("worker_log_path", str(log_path.resolve()))
+                    trial.set_user_attr("worker_result_path", str(output_path.resolve()))
+                    worker = start_worker(
+                        Path(config.hpo["input_config_path"]), output_path, log_path,
+                        gpu_memory_limit_mb=worker_gpu_memory_limit_mb,
+                    )
+                    active[trial.number] = (trial, worker)
+                    trial.set_user_attr("worker_pid", worker.process.pid)
+                    print(f"Trial {trial.number} started (PID {worker.process.pid}); log: {log_path}", flush=True)
+                except Exception as error:
+                    fail_trial(trial, error)
+                    raise
+            # Once the timeout or allowance is reached, no empty loop remains.
+            if not active:
+                break
+            completed = [number for number, (_, worker) in active.items() if worker.process.poll() is not None]
+            for number in completed:
+                trial, worker = active[number]
+                complete_trial(trial, worker)
+                del active[number]
+            # A short poll keeps interruption responsive without consuming a CPU core.
+            if not completed:
+                time.sleep(0.05)
+    finally:
+        stop_workers([worker for _, worker in active.values()])
 
 
 def run_hpo(
@@ -4345,6 +4489,8 @@ def run_hpo(
     trial_budget_mode: str = "additional",
     validation_source: str | None = None,
     validation_ratio: float | None = None,
+    concurrent_trials: int = 1,
+    worker_gpu_memory_limit_mb: float | None = None,
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -4490,8 +4636,8 @@ def run_hpo(
             The validation_source option can explicitly select official test rows.
             All trials use ordinary clean classifier accuracy without an ensemble.
             Float32 and a positive classifier projection support the local
-            TMCL-inspired route. Early stopping, numerical divergence pruning and
-            four final sampling reports remain; EMA, V2, clipping and plateau
+            TMCL-inspired route. Final evaluation and numerical divergence guards
+            remain; epoch validation, early stopping, EMA, V2, clipping and plateau
             adjustments are disabled. None retains existing spaces and protocols.
         trial_budget_mode (str): ``'additional'`` preserves the existing append
             behavior; ``'total'`` runs only the remaining trial allowance so Run All
@@ -4507,6 +4653,16 @@ def run_hpo(
             or 0.0 for test. Test selection bypasses splitting even when an explicit
             positive ratio is supplied. Requested and resolved data choices are immutable
             study settings. Test-source trials retain the final incomplete batch.
+        concurrent_trials (int): Maximum simultaneous training subprocesses for
+            ``joint_dit_classifier``. The default 1 retains in-process sequential
+            training for every existing HPO mode. Larger values require the joint
+            profile; one coordinator owns SQLite, sampling, budgets and reporting.
+            Completion order can change TPE suggestions despite a fixed seed.
+        worker_gpu_memory_limit_mb (float | None): Optional positive per-worker
+            GPU memory cap, installed before TensorFlow initializes in each child.
+            Requires concurrent_trials > 1. None enables memory growth. CPU and
+            TensorFlow worker thread counts are capped at one. Timeout stops new
+            launches and allows active trials to finish; interruption stops children.
 
     Example:
         To keep a distilled continual study on V2 while optimizing two metrics
@@ -4534,6 +4690,8 @@ def run_hpo(
         FileNotFoundError: If a requested resume study or feature archive is absent.
         OSError: If study/config/artifact files cannot be read or written.
         KeyError: If a requested post-training validation objective is missing.
+        RuntimeError: If another coordinator owns the study or a training worker
+            crashes, returns invalid output, or encounters an unexpected exception.
     """
 
     task = normalize_training_task(task)
@@ -4544,6 +4702,7 @@ def run_hpo(
         "validation_source": validation_source,
         "validation_ratio": validation_ratio,
     }
+    # Validate allocation semantics before opening study storage.
     if trial_budget_mode not in ("additional", "total"):
         raise ValueError("trial_budget_mode must be 'additional' or 'total'.")
     try:
@@ -4557,11 +4716,27 @@ def run_hpo(
     for name, value, minimum in (
         ("epochs", epochs, 1), ("n_trials", n_trials, 1),
         ("n_startup_trials", n_startup_trials, 0), ("seed", seed, 0),
+        ("concurrent_trials", concurrent_trials, 1),
     ):
         # Study identity and Optuna/Keras seeds require exact integer controls.
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) \
         or value < minimum or (name == "seed" and value >= 2**32):
             raise ValueError(f"{name} must be an integer >= {minimum}; seed must be below 2**32.")
+    concurrent_trials = int(concurrent_trials)
+    # Restrict process execution to the fully serialized, teacher-free CIFAR recipe.
+    if concurrent_trials > 1 and search_profile != "joint_dit_classifier":
+        raise ValueError("concurrent_trials > 1 currently requires search_profile='joint_dit_classifier'.")
+    # A child-only memory limit must never be silently ignored by the serial path.
+    if worker_gpu_memory_limit_mb is not None:
+        # Reject invalid GPU caps before any child or study is created.
+        if isinstance(worker_gpu_memory_limit_mb, (bool, np.bool_)) or not isinstance(
+            worker_gpu_memory_limit_mb, (int, float, np.integer, np.floating)
+        ) or not math.isfinite(worker_gpu_memory_limit_mb) or worker_gpu_memory_limit_mb <= 0:
+            raise ValueError("worker_gpu_memory_limit_mb must be a finite positive number or None.")
+        # In-process training cannot consume a worker-only memory cap.
+        if concurrent_trials == 1:
+            raise ValueError("worker_gpu_memory_limit_mb requires concurrent_trials > 1.")
+        worker_gpu_memory_limit_mb = float(worker_gpu_memory_limit_mb)
     # A finite positive timeout is the only meaningful optional wall-time budget.
     if timeout is not None and (
         isinstance(timeout, (bool, np.bool_))
@@ -4585,6 +4760,7 @@ def run_hpo(
     effective_distillation = bool(
         use_distillation or teacher_network is not None
     )
+    # Validate profile compatibility before allocating its study.
     if search_profile is not None:
         _validate_search_profile(
             search_profile, task, model_name, dataset_name,
@@ -4592,6 +4768,7 @@ def run_hpo(
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
         )
+        # The named recipe supplies its two default objectives.
         if objective_metrics is None:
             objective_metrics = ["classification_accuracy", "noise_loss"]
     fixed_wrapper_overrides = dict(wrapper_overrides or {})
@@ -4712,6 +4889,7 @@ def run_hpo(
         use_ensemble_accuracy,
     )
 
+    # Named recipes retain a fixed ordered pair of objective directions.
     if search_profile is not None and (
         tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
         or tuple(normalized_directions) != ("maximize", "minimize")
@@ -4719,9 +4897,15 @@ def run_hpo(
         raise ValueError("joint_dit_classifier maximizes raw classification accuracy and minimizes raw noise_loss.")
 
     root = Path(results_path)
+    # Child processes have a fixed working directory, so their paths must be absolute.
+    if concurrent_trials > 1:
+        root = root.resolve()
     # Reuse the explicitly selected persistent study directory when resuming.
     if resume_from is not None:
         study_root = Path(resume_from)
+        # Resolve explicit recovery paths under the coordinator's working directory.
+        if concurrent_trials > 1:
+            study_root = study_root.resolve()
         # Require the supplied study root to exist before any writes.
         if not study_root.is_dir():
             raise FileNotFoundError(
@@ -4744,6 +4928,7 @@ def run_hpo(
         # Keep progressive trials separate from resumable ordinary-fit studies.
         if fit_method == "fit_progressively":
             study_root /= "fit_progressively"
+        # Give profile runs their own artifact directory.
         if search_profile is not None:
             study_root /= search_profile
 
@@ -4757,6 +4942,7 @@ def run_hpo(
     # Give progressive studies an independent SQLite study identity.
     if fit_method == "fit_progressively":
         study_name += "-fit-progressively"
+    # Give profile runs their own SQLite study identity.
     if search_profile is not None:
         study_name += "-" + search_profile
 
@@ -4794,351 +4980,388 @@ def run_hpo(
         search_profile=search_profile,
         **validation_options,
     )
-    # Validate identity from a sidecar before touching Optuna storage. This
-    # prevents a mismatched resume request from creating a second study name in
-    # the supplied SQLite database.
-    spec_path = study_root / _STUDY_SPEC_FILE
-    # Require a matching sidecar before loading an explicitly resumed study.
-    if resume_from is not None:
-        persisted_file_spec = _read_study_spec(study_root)
-        # Reject any changed scientific option before accessing SQLite.
-        if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
-            raise ValueError(
-                "Requested HPO study specification differs from resume_from."
-            )
-    # Validate an existing sidecar when reopening by the ordinary output path.
-    elif spec_path.is_file():
-        persisted_file_spec = _read_study_spec(study_root)
-        # Keep accidental path reuse from mixing incompatible experiments.
-        if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
-            raise ValueError(
-                "Existing HPO study specification differs from this request."
-            )
-    # Seal a new study identity before creating its SQLite entry.
-    else:
-        _write_study_spec(study_root, study_spec)
-
-    configs_path = study_root / "configs"
-    configs_path.mkdir(parents=True, exist_ok=True)
-    storage_path = (study_root / "study.db").resolve().as_posix()
-    sampler = optuna.samplers.TPESampler(
-        seed=seed,
-        n_startup_trials=n_startup_trials,
-    )
-    pruner = optuna.pruners.NopPruner()
-    create_kwargs = {
-        "study_name": study_name, 
-        "storage": "sqlite:///" + storage_path, 
-        "sampler": sampler,
-        "pruner": pruner,
-        "load_if_exists": True
-    }
-
-    # Optuna uses a distinct argument for scalar and multi-objective studies.
-    if len(normalized_directions) == 1:
-        create_kwargs["direction"] = normalized_directions[0]
-    # Configure one direction per dimension for a Pareto study.
-    else:
-        create_kwargs["directions"] = list(normalized_directions)
-
-    # Load-only semantics prevent resume from creating a missing study name.
-    if resume_from is not None:
-        # load_study cannot create a missing identity, unlike
-        # create_study(load_if_exists=True).
-        study = optuna.load_study(
-            study_name=study_name,
-            storage=create_kwargs["storage"],
-            sampler=sampler,
-            pruner=pruner,
-        )
-    # Create or intentionally reopen the normal non-resume study hierarchy.
-    else:
-        study = optuna.create_study(**create_kwargs)
-
-    persisted_attr_spec = study.user_attrs.get(_STUDY_SPEC_ATTR)
-    existing_trials = tuple(study.get_trials(deepcopy=False))
-    # Initialize metadata only for a truly empty newly created study.
-    if persisted_attr_spec is None:
-        # Refuse to bless pre-existing trials whose identity was never sealed.
-        if resume_from is not None or existing_trials:
-            raise ValueError(
-                "Existing HPO study has no validated study_spec user attribute."
-            )
-        study.set_user_attr(_STUDY_SPEC_ATTR, study_spec)
-        study.set_user_attr(
-            _STUDY_SPEC_FINGERPRINT_ATTR,
-            fingerprint_state(study_spec),
-        )
-    # Authenticate both persisted user-attribute representations.
-    elif fingerprint_state(persisted_attr_spec) != fingerprint_state(study_spec) \
-    or study.user_attrs.get(_STUDY_SPEC_FINGERPRINT_ATTR) \
-    != fingerprint_state(study_spec):
-        raise ValueError(
-            "Persisted Optuna study specification differs from this request."
-        )
-
-    # Restore the post-suggestion sampler cursor before queuing/optimizing.
-    if existing_trials:
-        sampler_state = study.user_attrs.get(_SAMPLER_RNG_STATE_ATTR)
-        # A nonempty study must have persisted its exact sampler position.
-        if sampler_state is None:
-            # Fail instead of silently replaying TPE draws from the initial seed.
-            raise ValueError(
-                "Existing HPO study has trials but no recoverable TPE RNG state."
-            )
-        # Apply a complete two-stream state when the study contains one.
+    # Serialize coordinators before any study identity, recovery or storage mutation.
+    with study_lock(study_root):
+        # Validate identity from a sidecar before touching Optuna storage. This
+        # prevents a mismatched resume request from creating a second study name in
+        # the supplied SQLite database.
+        spec_path = study_root / _STUDY_SPEC_FILE
+        # Require a matching sidecar before loading an explicitly resumed study.
+        if resume_from is not None:
+            persisted_file_spec = _read_study_spec(study_root)
+            # Reject any changed scientific option before accessing SQLite.
+            if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
+                raise ValueError(
+                    "Requested HPO study specification differs from resume_from."
+                )
+        # Validate an existing sidecar when reopening by the ordinary output path.
+        elif spec_path.is_file():
+            persisted_file_spec = _read_study_spec(study_root)
+            # Keep accidental path reuse from mixing incompatible experiments.
+            if fingerprint_state(persisted_file_spec) != fingerprint_state(study_spec):
+                raise ValueError(
+                    "Existing HPO study specification differs from this request."
+                )
+        # Seal a new study identity before creating its SQLite entry.
         else:
-            _restore_sampler_rng_state(sampler, sampler_state)
-    # Convert recoverable abandoned trials into one-time queued retries.
-    if resume_from is not None:
-        if trial_budget_mode == "total":
-            _enqueue_recovery_trials(
-                study, study_root,
-                max_new_trials=max(0, n_trials - len(existing_trials)),
-            )
+            _write_study_spec(study_root, study_spec)
+
+        configs_path = study_root / "configs"
+        configs_path.mkdir(parents=True, exist_ok=True)
+        storage_path = (study_root / "study.db").resolve().as_posix()
+        sampler = optuna.samplers.TPESampler(
+            seed=seed,
+            n_startup_trials=n_startup_trials,
+        )
+        pruner = optuna.pruners.NopPruner()
+        create_kwargs = {
+            "study_name": study_name,
+            "storage": "sqlite:///" + storage_path,
+            "sampler": sampler,
+            "pruner": pruner,
+            "load_if_exists": True
+        }
+
+        # Optuna uses a distinct argument for scalar and multi-objective studies.
+        if len(normalized_directions) == 1:
+            create_kwargs["direction"] = normalized_directions[0]
+        # Configure one direction per dimension for a Pareto study.
         else:
-            _enqueue_recovery_trials(study, study_root)
+            create_kwargs["directions"] = list(normalized_directions)
 
-
-    def objective(trial: Any) -> float | tuple[float, ...]:
-        """Construct, persist, reload, train, and score one Optuna trial.
-
-        The closure uses run_hpo's fixed scientific specification and study paths.
-        Sampler state is saved even if config suggestion fails. A committed task
-        checkpoint selects continuation for a recovered continual trial; otherwise
-        training starts fresh. Input/resolved YAML, objective CSV, and trial metadata
-        record the exact Config consumed and produced by the shared training API.
-
-        Args:
-            trial (optuna.trial.Trial): Active trial receiving suggestions, recovery
-                metadata, and result/config artifact paths.
-
-        Returns:
-            float | tuple[float, ...]: Validation scalar or ordered metric tuple,
-            with ensemble-derived continual values selected from the saved Config.
-
-        Raises:
-            ValueError: If sampled/fixed settings violate the configured experiment.
-            KeyError: If a required final validation report or metric is absent.
-            TypeError: If serialization or scalar objective contracts are violated.
-            OSError: If trial artifacts or checkpoints cannot be written/read.
-            tf.errors.ResourceExhaustedError: If training exceeds device resources;
-                the outer study records this trial as failed and continues.
-        """
-
-        tf.keras.backend.clear_session()
-        gc.collect()
-
-        # Keep the data split and initialization seed fixed across candidates;
-        # Optuna's independently seeded sampler supplies the search variation.
-        trial_seed = seed
-        try:
-            config = _build_trial_config(
-                trial,
-                task,
-                model_name,
-                dataset_name,
-                epochs,
-                trial_seed,
-                results_path=root,
-                use_ensemble_accuracy=use_ensemble_accuracy,
-                ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
-                use_distillation=effective_distillation,
-                fit_method=fit_method,
-                fit_kwargs=fit_kwargs,
-                objective_metrics=objective_metrics,
-                objective_directions=objective_directions,
-                dtype_policy=dtype_policy,
-                deterministic_ops=deterministic_ops,
-                snapshot_network_name=snapshot_network_name,
-                class_num=class_num,
-                class_order=class_order,
-                task_groups=task_groups,
-                task_size=task_size,
-                class_order_mode=class_order_mode,
-                task_order_mode=task_order_mode,
-                feature_archive_path=feature_archive_path,
-                model_overrides=model_overrides,
-                wrapper_overrides=wrapper_overrides,
-                max_train_samples=max_train_samples,
-                max_val_samples=max_val_samples,
-                search_space_overrides=search_space_overrides,
-                search_profile=search_profile,
-                **validation_options,
+        # Load-only semantics prevent resume from creating a missing study name.
+        if resume_from is not None:
+            # load_study cannot create a missing identity, unlike
+            # create_study(load_if_exists=True).
+            study = optuna.load_study(
+                study_name=study_name,
+                storage=create_kwargs["storage"],
+                sampler=sampler,
+                pruner=pruner,
             )
-        finally:
-            # Persist every draw even when conditional config construction
-            # fails, so a resumed study cannot rewind the TPE sampler.
+        # Create or intentionally reopen the normal non-resume study hierarchy.
+        else:
+            study = optuna.create_study(**create_kwargs)
+
+        persisted_attr_spec = study.user_attrs.get(_STUDY_SPEC_ATTR)
+        existing_trials = tuple(study.get_trials(deepcopy=False))
+        # Initialize metadata only for a truly empty newly created study.
+        if persisted_attr_spec is None:
+            # Refuse to bless pre-existing trials whose identity was never sealed.
+            if resume_from is not None or existing_trials:
+                raise ValueError(
+                    "Existing HPO study has no validated study_spec user attribute."
+                )
+            study.set_user_attr(_STUDY_SPEC_ATTR, study_spec)
             study.set_user_attr(
-                _SAMPLER_RNG_STATE_ATTR,
-                _capture_sampler_rng_state(sampler),
+                _STUDY_SPEC_FINGERPRINT_ATTR,
+                fingerprint_state(study_spec),
+            )
+        # Authenticate both persisted user-attribute representations.
+        elif fingerprint_state(persisted_attr_spec) != fingerprint_state(study_spec) \
+        or study.user_attrs.get(_STUDY_SPEC_FINGERPRINT_ATTR) \
+        != fingerprint_state(study_spec):
+            raise ValueError(
+                "Persisted Optuna study specification differs from this request."
             )
 
-        input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
-        checkpoint_dir = _trial_checkpoint_dir(study_root, trial)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        # Keep every trial's artifacts beneath the selected (possibly resumed)
-        # study root rather than recomputing a second hierarchy from results_path.
-        config.training.results_path = str(study_root / "runs")
-        config.hpo.update({
-            "study_root": str(study_root),
-            "checkpoint_dir": str(checkpoint_dir),
-            "input_config_path": str(input_config_path),
-        })
-        recovery_original = trial.user_attrs.get("resume_original_trial_number")
-        # Retain the canonical source identity in retried trial configurations.
-        if recovery_original is not None:
-            config.hpo["resume_original_trial_number"] = int(recovery_original)
-        # Keep resumed-study TensorBoard events under the explicit study root.
-        if resume_from is not None or search_profile is not None:
-            config.training.tensorboard_path = str(study_root / "tensorboard")
-        # Install task-boundary recovery only for continual training.
-        if task == "continual":
-            config.continually_learn.checkpoint_dir = str(checkpoint_dir)
-            # Resume only when a committed task boundary already exists. Passing
-            # a newly created empty directory would turn a fresh trial into an
-            # invalid recovery request.
-            if _has_committed_task_checkpoint(checkpoint_dir):
-                config.continually_learn.resume_from = str(checkpoint_dir)
+        # Restore the post-suggestion sampler cursor before queuing/optimizing.
+        if existing_trials:
+            sampler_state = study.user_attrs.get(_SAMPLER_RNG_STATE_ATTR)
+            # A nonempty study must have persisted its exact sampler position.
+            if sampler_state is None:
+                # Fail instead of silently replaying TPE draws from the initial seed.
+                raise ValueError(
+                    "Existing HPO study has trials but no recoverable TPE RNG state."
+                )
+            # Apply a complete two-stream state when the study contains one.
+            else:
+                _restore_sampler_rng_state(sampler, sampler_state)
+        # Convert recoverable abandoned trials into one-time queued retries.
+        if resume_from is not None:
+            # Total-budget recovery cannot allocate retries beyond its allowance.
+            if trial_budget_mode == "total":
+                _enqueue_recovery_trials(
+                    study, study_root,
+                    max_new_trials=max(0, n_trials - len(existing_trials)),
+                )
+            # Additional budgets retain the existing unbounded retry queue policy.
+            else:
+                _enqueue_recovery_trials(study, study_root)
 
-        # Publish recovery metadata before training so interrupted trials remain
-        # discoverable from the persistent Optuna database.
-        trial.set_user_attr("seed", trial_seed)
-        trial.set_user_attr("checkpoint_dir", str(checkpoint_dir))
-        trial.set_user_attr("config_path", str(input_config_path))
-        save_config(config, input_config_path)
-        config = load_config(input_config_path)
 
-        if search_profile is not None:
-            trial.set_user_attr("accuracy_metric", config.hpo["accuracy_metric"])
-        from common.callbacks.hpo_guard import TrainingDiverged
-        try:
-            result = main(config, teacher_network=teacher_network)
-        except TrainingDiverged as error:
-            if search_profile is None:
-                raise
-            trial.set_user_attr("divergence", error.evidence)
-            trial.set_user_attr("divergence_path", str(error.evidence_path) if error.evidence_path is not None else None)
-            trial.set_user_attr("results_path", str(config.training.results_path))
-            raise optuna.TrialPruned(str(error)) from error
-        actual_metrics = objective_metrics
-        if search_profile is not None:
-            actual_metrics = [config.hpo["accuracy_metric"], "noise_loss"]
-            validation_metrics = {}
-            validation_key = (
-                "valset_ema_eval" if config.hpo["objective_network"] == "ema"
-                else "valset_network_eval"
+        execution = {
+            "concurrent_trials": concurrent_trials,
+            "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb,
+        }
+        study.set_user_attr("execution", execution)
+
+        def prepare_trial(trial: Any) -> Config:
+            """Construct, persist and reload one trial before its training starts.
+
+            The closure uses run_hpo's fixed scientific specification and study paths.
+            Sampler state is saved even if config suggestion fails. A committed task
+            checkpoint selects continuation for a recovered continual trial; otherwise
+            training starts fresh. Input/resolved YAML, objective CSV, and trial metadata
+            record the exact Config consumed and produced by the shared training API.
+
+            Args:
+                trial (optuna.trial.Trial): Active trial receiving suggestions, recovery
+                    metadata, and result/config artifact paths.
+
+            Returns:
+                Config: The exact saved configuration for training in either process mode.
+
+            Raises:
+                ValueError: If sampled/fixed settings violate the configured experiment.
+                KeyError: If a required final validation report or metric is absent.
+                TypeError: If serialization or scalar objective contracts are violated.
+                OSError: If trial artifacts or checkpoints cannot be written/read.
+                tf.errors.ResourceExhaustedError: If training exceeds device resources;
+                    the outer study records this trial as failed and continues.
+            """
+
+            # Keep the data split and initialization seed fixed across candidates;
+            # Optuna's independently seeded sampler supplies the search variation.
+            trial_seed = seed
+            try:
+                config = _build_trial_config(
+                    trial,
+                    task,
+                    model_name,
+                    dataset_name,
+                    epochs,
+                    trial_seed,
+                    results_path=root,
+                    use_ensemble_accuracy=use_ensemble_accuracy,
+                    ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
+                    use_distillation=effective_distillation,
+                    fit_method=fit_method,
+                    fit_kwargs=fit_kwargs,
+                    objective_metrics=objective_metrics,
+                    objective_directions=objective_directions,
+                    dtype_policy=dtype_policy,
+                    deterministic_ops=deterministic_ops,
+                    snapshot_network_name=snapshot_network_name,
+                    class_num=class_num,
+                    class_order=class_order,
+                    task_groups=task_groups,
+                    task_size=task_size,
+                    class_order_mode=class_order_mode,
+                    task_order_mode=task_order_mode,
+                    feature_archive_path=feature_archive_path,
+                    model_overrides=model_overrides,
+                    wrapper_overrides=wrapper_overrides,
+                    max_train_samples=max_train_samples,
+                    max_val_samples=max_val_samples,
+                    search_space_overrides=search_space_overrides,
+                    search_profile=search_profile,
+                    **validation_options,
+                )
+            finally:
+                # Persist every draw even when conditional config construction
+                # fails, so a resumed study cannot rewind the TPE sampler.
+                study.set_user_attr(
+                    _SAMPLER_RNG_STATE_ATTR,
+                    _capture_sampler_rng_state(sampler),
+                )
+
+            input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
+            checkpoint_dir = _trial_checkpoint_dir(study_root, trial)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            # Keep every trial's artifacts beneath the selected (possibly resumed)
+            # study root rather than recomputing a second hierarchy from results_path.
+            config.training.results_path = str(study_root / "runs")
+            config.hpo.update({
+                "study_root": str(study_root),
+                "checkpoint_dir": str(checkpoint_dir),
+                "input_config_path": str(input_config_path),
+                "execution": dict(execution),
+            })
+            recovery_original = trial.user_attrs.get("resume_original_trial_number")
+            # Retain the canonical source identity in retried trial configurations.
+            if recovery_original is not None:
+                config.hpo["resume_original_trial_number"] = int(recovery_original)
+            # Keep resumed-study TensorBoard events under the explicit study root.
+            if resume_from is not None or search_profile is not None:
+                config.training.tensorboard_path = str(study_root / "tensorboard")
+            # Install task-boundary recovery only for continual training.
+            if task == "continual":
+                config.continually_learn.checkpoint_dir = str(checkpoint_dir)
+                # Resume only when a committed task boundary already exists. Passing
+                # a newly created empty directory would turn a fresh trial into an
+                # invalid recovery request.
+                if _has_committed_task_checkpoint(checkpoint_dir):
+                    config.continually_learn.resume_from = str(checkpoint_dir)
+
+            # Publish recovery metadata before training so interrupted trials remain
+            # discoverable from the persistent Optuna database.
+            trial.set_user_attr("seed", trial_seed)
+            trial.set_user_attr("checkpoint_dir", str(checkpoint_dir))
+            trial.set_user_attr("config_path", str(input_config_path))
+            trial.set_user_attr("execution", execution)
+            save_config(config, input_config_path)
+            config = load_config(input_config_path)
+
+            # Persist the profile accuracy selector before either training mode starts.
+            if search_profile is not None:
+                trial.set_user_attr("accuracy_metric", config.hpo["accuracy_metric"])
+            return config
+
+        def finish_trial(trial: Any, config: Config, result: Mapping[str, Any]) -> float | tuple[float, ...]:
+            """Validate final objectives and publish identical serial/parallel trial artifacts."""
+            actual_metrics = objective_metrics
+            # Select the same final raw metrics for serial and process workers.
+            if search_profile is not None:
+                actual_metrics = [config.hpo["accuracy_metric"], "noise_loss"]
+                validation_metrics = {}
+                validation_key = (
+                    "valset_ema_eval" if config.hpo["objective_network"] == "ema"
+                    else "valset_network_eval"
+                )
+                for name, value in result["evaluations"].get(validation_key, {}).items():
+                    scalar = np.asarray(value)
+                    # Only numerical scalar metrics belong in trial metadata.
+                    if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
+                        number = float(scalar)
+                        # Keep nonfinite values out of diagnostic scalar summaries.
+                        if math.isfinite(number):
+                            validation_metrics[name] = number
+                trial.set_user_attr("validation_metrics", validation_metrics)
+            values = _objective_values(
+                task,
+                config.model.name,
+                result["history"],
+                evaluations=result["evaluations"],
+                use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"],
+                objective_metrics=actual_metrics,
+                objective_directions=objective_directions,
+                diffusion_network_name=config.model.wrapper_kwargs.get(
+                    "test_network_name",
+                    "ema",
+                ),
+                swap_noise_image=bool(
+                    config.model.wrapper_kwargs.get("swap_noise_image", False)
+                ),
+                kl_loss_coef=float(
+                    config.model.wrapper_kwargs.get("kl_loss_coef", 0.)
+                ),
             )
-            for name, value in result["evaluations"].get(validation_key, {}).items():
-                scalar = np.asarray(value)
-                if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
-                    number = float(scalar)
-                    if math.isfinite(number):
-                        validation_metrics[name] = number
-            trial.set_user_attr("validation_metrics", validation_metrics)
-        values = _objective_values(
-            task, 
-            config.model.name,
-            result["history"], 
-            evaluations=result["evaluations"], 
-            use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"],
-            objective_metrics=actual_metrics,
-            objective_directions=objective_directions,
-            diffusion_network_name=config.model.wrapper_kwargs.get(
-                "test_network_name",
-                "ema",
-            ),
-            swap_noise_image=bool(
-                config.model.wrapper_kwargs.get("swap_noise_image", False)
-            ),
-            kl_loss_coef=float(
-                config.model.wrapper_kwargs.get("kl_loss_coef", 0.)
-            ),
-        )
-        # Serialize a scalar objective as one list entry or preserve all tuple dimensions.
-        values_list = list(values) if isinstance(values, tuple) else [values]
-        # Epoch-end guards cannot see failures first produced by final classifier
-        # or denoising evaluation. Optuna accepts infinities as COMPLETE, so
-        # explicitly exclude them from this profile's scientific comparison.
-        if search_profile is not None and any(not math.isfinite(value) for value in values_list):
-            evidence = {
-                "reason": "nonfinite_objective", "phase": "final_evaluation",
-                "objectives": {name: str(value) for name, value in zip(actual_metrics, values_list)},
-                "network": config.hpo["objective_network"],
-            }
-            evidence_path = Path(result["results_path"]) / "hpo-divergence-final-evaluation.json"
-            temporary = evidence_path.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(evidence, indent=2, allow_nan=False), encoding="utf-8")
-            temporary.replace(evidence_path)
-            trial.set_user_attr("divergence", evidence)
-            trial.set_user_attr("divergence_path", str(evidence_path))
+            # Serialize a scalar objective as one list entry or preserve all tuple dimensions.
+            values_list = list(values) if isinstance(values, tuple) else [values]
+            # Epoch-end guards cannot see failures first produced by final classifier
+            # or denoising evaluation. Optuna accepts infinities as COMPLETE, so
+            # explicitly exclude them from this profile's scientific comparison.
+            if search_profile is not None and any(not math.isfinite(value) for value in values_list):
+                evidence = {
+                    "reason": "nonfinite_objective", "phase": "final_evaluation",
+                    "objectives": {name: str(value) for name, value in zip(actual_metrics, values_list)},
+                    "network": config.hpo["objective_network"],
+                }
+                evidence_path = Path(result["results_path"]) / "hpo-divergence-final-evaluation.json"
+                temporary = evidence_path.with_suffix(".json.tmp")
+                temporary.write_text(json.dumps(evidence, indent=2, allow_nan=False), encoding="utf-8")
+                temporary.replace(evidence_path)
+                trial.set_user_attr("divergence", evidence)
+                trial.set_user_attr("divergence_path", str(evidence_path))
+                trial.set_user_attr("results_path", str(result["results_path"]))
+                raise optuna.TrialPruned("Non-finite final evaluation objective; see divergence evidence.")
+            config.hpo["objectives"] = values_list
+
+            resolved_path = Path(result["results_path"]) / "config.yaml"
+            save_config(config, resolved_path)
+            pd.DataFrame([
+                {"name": name, "direction": direction, "value": value}
+                for name, direction, value in zip(
+                    normalized_metrics,
+                    normalized_directions,
+                    values_list,
+                )
+            ]).to_csv(
+                Path(result["results_path"]) / "objectives.csv",
+                index=False
+            )
             trial.set_user_attr("results_path", str(result["results_path"]))
-            raise optuna.TrialPruned("Non-finite final evaluation objective; see divergence evidence.")
-        config.hpo["objectives"] = values_list
+            trial.set_user_attr("config_path", str(resolved_path))
+            trial.set_user_attr("resolved_config_path", str(resolved_path))
 
-        resolved_path = Path(result["results_path"]) / "config.yaml"
-        save_config(config, resolved_path)
-        pd.DataFrame([
-            {"name": name, "direction": direction, "value": value}
-            for name, direction, value in zip(
-                normalized_metrics,
-                normalized_directions,
-                values_list,
+            return values
+
+        def objective(trial: Any) -> float | tuple[float, ...]:
+            """Preserve in-process training, exceptions and cleanup for sequential HPO."""
+            from common.callbacks.hpo_guard import TrainingDiverged
+
+            tf.keras.backend.clear_session()
+            gc.collect()
+            config = prepare_trial(trial)
+            try:
+                result = main(config, teacher_network=teacher_network)
+            except TrainingDiverged as error:
+                # Only the joint profile converts numerical divergence into pruning.
+                if search_profile is None:
+                    raise
+                trial.set_user_attr("divergence", error.evidence)
+                trial.set_user_attr("divergence_path", str(error.evidence_path) if error.evidence_path is not None else None)
+                trial.set_user_attr("results_path", str(config.training.results_path))
+                raise optuna.TrialPruned(str(error)) from error
+            return finish_trial(trial, config, result)
+
+
+        def save_trials(study_: Any, trial_: Any) -> None:
+            """Persist the study table after a trial finishes, including failed trials.
+
+            Args:
+                study_ (optuna.study.Study): Updated study.
+                trial_ (optuna.trial.FrozenTrial): Just-completed trial; unused.
+
+            Returns:
+                None: study_root/trials.csv is replaced with the current Optuna table.
+
+            Raises:
+                OSError: If the study CSV cannot be opened or written.
+            """
+
+            study_.trials_dataframe().to_csv(
+                study_root / "trials.csv",
+                index=False
             )
-        ]).to_csv(
-            Path(result["results_path"]) / "objectives.csv", 
-            index=False
-        )
-        trial.set_user_attr("results_path", str(result["results_path"]))
-        trial.set_user_attr("config_path", str(resolved_path))
-        trial.set_user_attr("resolved_config_path", str(resolved_path))
-
-        return values
+            # Named profiles publish per-trial outcomes and Pareto tables.
+            if search_profile is not None:
+                _write_trial_tensorboard(study_root, study_, trial_)
+                summarize_hpo(study_).to_csv(study_root / "pareto_trials.csv", index=False)
 
 
-    def save_trials(study_: Any, trial_: Any) -> None:
-        """Persist the study table after a trial finishes, including failed trials.
+        trials_to_run = n_trials
+        # Count allocated and queued trials once under the coordinator lock.
+        if trial_budget_mode == "total":
+            allocated = study.get_trials(deepcopy=False)
+            waiting = sum(
+                trial.state.name == "WAITING" and trial.number < n_trials
+                for trial in allocated
+            )
+            # Already allocated queued retries still need execution; running them
+            # creates no new trial record and must not consume the allowance twice.
+            trials_to_run = max(0, n_trials - len(allocated)) + waiting
+        # Existing HPO modes retain Optuna's established in-process execution path.
+        if concurrent_trials == 1:
+            study.optimize(
+                objective,
+                n_trials=trials_to_run,
+                timeout=timeout,
+                callbacks=[save_trials],
+                catch=(tf.errors.ResourceExhaustedError,),
+                gc_after_trial=True,
+            )
+        # Only fully serialized joint-profile trials enter isolated training workers.
+        else:
+            _optimize_concurrently(
+                study, prepare_trial, finish_trial, save_trials,
+                study_root=study_root, n_trials=trials_to_run,
+                concurrent_trials=concurrent_trials, timeout=timeout,
+                worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb,
+            )
 
-        Args:
-            study_ (optuna.study.Study): Updated study.
-            trial_ (optuna.trial.FrozenTrial): Just-completed trial; unused.
-
-        Returns:
-            None: study_root/trials.csv is replaced with the current Optuna table.
-
-        Raises:
-            OSError: If the study CSV cannot be opened or written.
-        """
-
-        study_.trials_dataframe().to_csv(
-            study_root / "trials.csv", 
-            index=False
-        )
-        if search_profile is not None:
-            _write_trial_tensorboard(study_root, study_, trial_)
-            summarize_hpo(study_).to_csv(study_root / "pareto_trials.csv", index=False)
-
-
-    trials_to_run = n_trials
-    if trial_budget_mode == "total":
-        allocated = study.get_trials(deepcopy=False)
-        waiting = sum(
-            trial.state.name == "WAITING" and trial.number < n_trials
-            for trial in allocated
-        )
-        # Already allocated queued retries still need execution; running them
-        # creates no new trial record and must not consume the allowance twice.
-        trials_to_run = max(0, n_trials - len(allocated)) + waiting
-    study.optimize(
-        objective, 
-        n_trials=trials_to_run,
-        timeout=timeout, 
-        callbacks=[save_trials], 
-        catch=(tf.errors.ResourceExhaustedError,), 
-        gc_after_trial=True
-    )
-
-    return study
+        return study
 
 
 def summarize_hpo(study: Any, *, pareto_only: bool = True) -> pd.DataFrame:
