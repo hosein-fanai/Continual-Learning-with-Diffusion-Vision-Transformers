@@ -352,9 +352,11 @@ class DiffusionClassifier(DiffusionModel):
             "clf_train_noisy_input_type must be 'noisy' or 'clean'."
         )
 
+        # Null conditioning requires an unconditional label in the network vocabulary.
         if local_vars["clf_train_class_input_type"] == "null_class_only":
             require(self.use_cfg, "Null classifier inputs require CFG.")
 
+        # Explicit classifier inputs cannot be replaced by a timestep ensemble.
         if local_vars["clf_train_noisy_input_type"] == "clean" \
         or local_vars["clf_train_class_input_type"] == "null_class_only":
             require(
@@ -362,6 +364,7 @@ class DiffusionClassifier(DiffusionModel):
                 "Explicit clean/null classifier inputs cannot replace their prediction with an ensemble."
             )
 
+        # Partitioned batches require a single ordinary network prediction.
         if local_vars["clf_train_batch_fraction"] > 0.:
             require(
                 self.train_cfg_scale is None, 
@@ -704,10 +707,12 @@ class DiffusionClassifier(DiffusionModel):
                 tf.cast(batch_size, tf.float64) * self.clf_train_batch_fraction
             ), tf.int32)
         ))
-        permutation = tf.random.experimental.stateless_shuffle(
-            tf.range(batch_size), 
+        # Sorting random keys retains an exact allocation and supports GPU XLA.
+        keys = tf.random.stateless_uniform(
+            (batch_size,),
             seed=self._random_streams["classifier_batch"].next_seed()
         )
+        permutation = tf.argsort(keys, stable=True)
 
         return permutation < selected_count
 
@@ -1745,6 +1750,7 @@ class DiffusionClassifier(DiffusionModel):
             ensemble probabilities used to compute it.
         """
 
+        # The optional ensemble supplies classifier probabilities for this loss.
         if self.ensemble_loss_fn is not None:
             classes_pred = self.ensemble_loss_fn.ensemble_predict_batched(
                 x0, 
@@ -2466,9 +2472,11 @@ class DiffusionClassifier(DiffusionModel):
             clf_loss, 
             sample_weight=selected_weight
         )
+        # Static batch shapes keep XLA metric counts correct for partial allocations.
         self.accuracy_tracker.update_state(
-            classes[clf_acc_mask], 
-            classes_pred[clf_acc_mask]
+            classes,
+            classes_pred,
+            sample_weight=tf.cast(clf_acc_mask, stable_dtype),
         )
 
         results = {}
@@ -2535,8 +2543,9 @@ class DiffusionClassifier(DiffusionModel):
         # Track classifier token accuracy alongside its active loss.
         if use_ctr_loss:
             self.clf_ctr_accuracy_tracker.update_state(
-                classes[clf_ctr_mask],
-                clf_ctr_preds[clf_ctr_mask]
+                classes,
+                clf_ctr_preds,
+                sample_weight=tf.cast(clf_ctr_mask, stable_dtype),
             )
             results.update({
                 self.clf_ctr_accuracy_tracker.name: 
@@ -2547,7 +2556,7 @@ class DiffusionClassifier(DiffusionModel):
         if (use_ctr_loss and self.ctr_acc_coef > 0.) or (
             use_clf_distil_loss and self.clf_distil_acc_coef > 0.
         ):
-            total_preds = classes_pred[clf_acc_mask] * self.clf_acc_coef
+            total_preds = classes_pred * self.clf_acc_coef
 
             # Add classifier-regularizer predictions when weighted in.
             if use_ctr_loss and self.ctr_acc_coef > 0.:
@@ -2556,7 +2565,7 @@ class DiffusionClassifier(DiffusionModel):
                     "ctr_acc_coef > 0 requires clf_ctr_preds."
                 )
 
-                ctr_component = clf_ctr_preds[clf_acc_mask]
+                ctr_component = clf_ctr_preds
                 total_preds += ctr_component * self.ctr_acc_coef
 
             # Add independent distillation-head predictions when weighted in.
@@ -2566,13 +2575,14 @@ class DiffusionClassifier(DiffusionModel):
                     "clf_distil_acc_coef > 0 requires distil_classes."
                 )
 
-                distil_component = distil_classes[clf_acc_mask]
+                distil_component = distil_classes
 
                 total_preds += distil_component * self.clf_distil_acc_coef
 
             self.total_accuracy_tracker.update_state(
-                classes[clf_acc_mask], 
+                classes,
                 total_preds,
+                sample_weight=tf.cast(clf_acc_mask, stable_dtype),
             )
             results.update({
                 self.total_accuracy_tracker.name: 
@@ -2592,8 +2602,9 @@ class DiffusionClassifier(DiffusionModel):
                 sample_weight=clf_distil_selected_weight
             )
             self.clf_distil_acc_tracker.update_state(
-                classes[clf_distil_acc_mask],
-                distil_classes[clf_distil_acc_mask]
+                classes,
+                distil_classes,
+                sample_weight=tf.cast(clf_distil_acc_mask, stable_dtype),
             )
 
             results.update({

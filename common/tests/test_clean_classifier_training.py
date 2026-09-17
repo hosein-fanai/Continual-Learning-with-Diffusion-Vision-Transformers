@@ -287,12 +287,12 @@ class CleanClassifierTrainingTests(unittest.TestCase):
     def test_noisy_default_and_positional_arguments_follow_constructor_order(self) -> None:
         """Preserve the fourth input argument and only legacy uncond CFG validation."""
         params = list(inspect.signature(DiffusionClassifier.__init__).parameters)
-        self.assertEqual(params[1:9], ["mask_by_nulls", "mask_by_t_threshold",
+        self.assertEqual(params[1:10], ["mask_by_nulls", "mask_by_t_threshold",
                                      "mask_t_percentage", "clf_train_noisy_input_type",
-                                     "clf_train_class_input_type",
+                                     "clf_train_class_input_type", "clf_train_batch_fraction",
                                      "use_ensemble_loss_instead", "clf_train_type", "clf_loss_coef"])
         wrapper = DiffusionClassifier(
-            True, False, 70, "noisy", None, False, "cond", 0.25,
+            True, False, 70, "noisy", None, 0.0, False, "cond", 0.25,
             network=self.make_network(), test_steps=4, p_uncond=0.1, use_ema=False,
         )
         self.assertEqual(wrapper.clf_train_noisy_input_type, "noisy")

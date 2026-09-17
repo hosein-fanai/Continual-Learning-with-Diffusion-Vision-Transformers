@@ -215,6 +215,86 @@ class ClassifierBatchFractionTests(unittest.TestCase):
         self.assertEqual(int(tf.reduce_sum(tf.cast(draw(tf.range(3)), tf.int32))), 1)
         self.assertEqual(int(tf.reduce_sum(tf.cast(draw(tf.range(1)), tf.int32))), 1)
 
+    def test_xla_allocator_exact_counts_reset_and_saved_randomness(self) -> None:
+        """Compile allocation itself and retain replayable streams for short/empty batches."""
+        wrapper = self.make_wrapper(clf_train_batch_fraction=0.4)
+        wrapper.reset_seed(811)
+        states = {name: stream.state.numpy().copy()
+                  for name, stream in wrapper._random_streams.items()}
+        draw = tf.function(wrapper._classifier_batch_mask, jit_compile=True,
+                           input_signature=[tf.TensorSpec((None,), tf.int32)])
+        self.assertTrue(draw.get_concrete_function().function_def.attr["_XlaMustCompile"].b)
+        labels = tf.range(17, dtype=tf.int32)
+        first = draw(labels).numpy()
+        saved = wrapper.get_weights()
+        second = draw(labels).numpy()
+        self.assertEqual(int(first.sum()), 6)
+        self.assertEqual(int(second.sum()), 6)
+        self.assertFalse(np.array_equal(first, second))
+        np.testing.assert_array_equal(
+            wrapper._random_streams["classifier_batch"].state.numpy(),
+            states["classifier_batch"] + np.array([512, 0, 0], dtype=np.int64),
+        )
+        for name, old in states.items():
+            # Classifier allocation must not consume any corruption/dropout stream.
+            if name != "classifier_batch":
+                np.testing.assert_array_equal(wrapper._random_streams[name].state.numpy(), old)
+        wrapper.set_weights(saved)
+        np.testing.assert_array_equal(draw(labels).numpy(), second)
+        clone = DiffusionClassifier.from_config(json.loads(json.dumps(wrapper.get_config())))
+        clone.set_weights(saved)
+        clone_draw = tf.function(clone._classifier_batch_mask, jit_compile=True)
+        np.testing.assert_array_equal(clone_draw(labels).numpy(), second)
+        wrapper.reset_seed(811)
+        np.testing.assert_array_equal(draw(labels).numpy(), first)
+        for batch_size, expected in ((3, 1), (1, 1), (0, 0)):
+            with self.subTest(batch_size=batch_size):
+                old = wrapper._random_streams["classifier_batch"].state.numpy().copy()
+                mask = draw(tf.range(batch_size, dtype=tf.int32)).numpy()
+                self.assertEqual(mask.shape, (batch_size,))
+                self.assertEqual(int(mask.sum()), expected)
+                np.testing.assert_array_equal(
+                    wrapper._random_streams["classifier_batch"].state.numpy(),
+                    old + np.array([256, 0, 0], dtype=np.int64),
+                )
+
+    def test_xla_training_hpo_fraction_and_input_policy_matrix(self) -> None:
+        """Real Keras XLA updates cover each positive HPO fraction and both input selectors."""
+        combinations = [(fraction, input_type, class_input)
+                        for fraction in (0.25, 0.5)
+                        for input_type in ("noisy", "clean")
+                        for class_input in ("all_classes", "null_class_only")]
+        combinations.append((1.0, "clean", "null_class_only"))
+        for fraction, input_type, class_input in combinations:
+            with self.subTest(fraction=fraction, input_type=input_type, class_input=class_input):
+                tf.keras.backend.clear_session()
+                wrapper = self.make_wrapper(clf_train_batch_fraction=fraction,
+                                            clf_train_noisy_input_type=input_type,
+                                            clf_train_class_input_type=class_input,
+                                            image_loss_coef=1.0)
+                wrapper.compile(optimizer=tf.keras.optimizers.SGD(0.05), loss="mse",
+                                run_eagerly=False, jit_compile=True)
+                self.assertIs(wrapper.jit_compile, True)
+                before = [variable.numpy().copy() for variable in wrapper.network.trainable_variables]
+                with patch.object(wrapper.network, "predict_class",
+                                  side_effect=AssertionError("extra classifier pass")):
+                    result = wrapper.train_on_batch(self.images, self.labels, return_dict=True)
+                self.assertIs(wrapper.jit_compile, True)
+                self.assertTrue(all(np.isfinite(value).all() for value in result.values()))
+                self.assertEqual(int(wrapper.optimizer.iterations), 1)
+                self.assertTrue(any(not np.array_equal(variable.numpy(), old)
+                                    for variable, old in zip(wrapper.network.trainable_variables, before)))
+                selected = int(4 * fraction)
+                self.assertEqual(int(wrapper.accuracy_tracker.count), selected)
+                self.assertEqual(int(wrapper.clf_loss_tracker.count), selected)
+                self.assertEqual(int(wrapper.noise_loss_tracker.count), 4 - selected)
+                self.assertEqual(int(wrapper.image_loss_tracker.count), 4 - selected)
+                self.assertEqual(int(wrapper.total_loss_tracker.count), 4)
+                # Full allocation must retain a finite classifier update with zero denoising.
+                if fraction == 1.0:
+                    self.assertEqual(float(result[wrapper.noise_loss_tracker.name]), 0.0)
+                    self.assertEqual(float(result["image_loss"]), 0.0)
+
     def test_classifier_and_denoising_losses_have_disjoint_output_gradients(self) -> None:
         """Excluded per-row logits/noises get zero gradient from the other task."""
         wrapper = self.make_wrapper()
@@ -264,7 +344,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def compute(mask: tf.Tensor) -> tuple:
             """Use real loss implementations with fixed auditable auxiliary outputs."""
-            return wrapper._compute_batch_diffusion_losses(mask, **inputs)
+            return wrapper.compute_batch_diffusion_losses(mask, **inputs)
 
         # The tiny architecture omits auxiliary heads; activate their real loss implementations.
         with patch.object(wrapper, "use_kl_loss", True), patch.object(wrapper, "use_ctr_loss", True):

@@ -553,7 +553,7 @@ class HpoConcurrencyTests(unittest.TestCase):
         self.assertEqual(len(workers.handles), 2)
 
     def test_two_real_cpu_workers_train_and_publish_through_the_coordinator(self) -> None:
-        """Run the actual scheduler, two isolated fits, evaluation, and Optuna storage."""
+        """Run two isolated XLA fits, evaluation, and real Optuna persistence."""
         from common.hpo import _build_trial_config
 
         processes = []
@@ -577,6 +577,7 @@ class HpoConcurrencyTests(unittest.TestCase):
             config.model.show_network_summary = False
             config.model.kwargs.update(dim=8, depth=1, mha_num_heads=1,
                                        clf_mha_num_heads=1, timesteps=4)
+            config.model.kwargs.setdefault("compile_args", {})["jit_compile"] = True
             config.model.wrapper_kwargs.update(test_steps=2)
             config.training.verbose = 0
             config.training.tensorboard = False
@@ -619,6 +620,7 @@ class HpoConcurrencyTests(unittest.TestCase):
             config = load_config(trial.user_attrs["resolved_config_path"])
             self.assertEqual(config.hpo["objectives"], trial.values)
             self.assertEqual(config.hpo["trial_number"], trial.number)
+            self.assertIs(config.model.kwargs["compile_args"]["jit_compile"], True)
             self.assertEqual(config.dataset.split_metadata["training_rows_per_epoch"], 4)
             payload = json.loads(Path(trial.user_attrs["worker_result_path"]).read_text())
             self.assertEqual(payload["status"], "complete")
