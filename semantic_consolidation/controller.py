@@ -306,6 +306,9 @@ class RouteController:
             tf.errors.InvalidArgumentError: If the phase objective or gradients are nonfinite.
         """
 
+        # Identify semantic phases before their Keras progress and loss output.
+        if self.verbose:
+            print(f"Semantic {phase.phase}: {steps} optimizer updates.", flush=True)
         # An explicit zero-step phase records no optimizer work or data presentations.
         if steps == 0:
             return {
@@ -328,7 +331,7 @@ class RouteController:
         )
         started = time.perf_counter()
         history = train_model(
-            None, phase, ticks, save_config_=False, epochs=1, verbose=0,
+            None, phase, ticks, save_config_=False, epochs=1, verbose=self.verbose,
             results_path=None, show_images=True, save_gifs=False,
             report_every_epoch=False, save_weights=False, use_tensorboard=False,
         )
@@ -796,8 +799,11 @@ class RouteController:
                     budget = settings.extra_joint_seconds[len(self.records)]
                     stopper = _ElapsedBudget(budget)
                     extra_fit = getattr(wrapper, "fit_joint", None) or (lambda *args, **options: DiffusionClassifier.fit(wrapper, *args, **options))
+                    # Name the time-budgeted control before its training progress.
+                    if self.verbose:
+                        print(f"Extra joint training: {budget:g}s budget.", flush=True)
                     extra_history = extra_fit(
-                        dataset, epochs=1_000_000, verbose=0, callbacks=[stopper],
+                        dataset, epochs=1_000_000, verbose=self.verbose, callbacks=[stopper],
                     )
                     # Time-control epoch safety cap reached before its budget.
                     if not stopper.reached:
@@ -810,8 +816,11 @@ class RouteController:
                     # Call the existing wrapper's fit, bypassing only the route adapter.
                     finite = dataset.repeat().take(steps)
                     extra_fit = getattr(wrapper, "fit_joint", None) or (lambda *args, **options: DiffusionClassifier.fit(wrapper, *args, **options))
+                    # Name the fixed-update control before its training progress.
+                    if self.verbose:
+                        print(f"Extra joint training: {steps} optimizer updates.", flush=True)
                     extra_history = extra_fit(
-                        finite, epochs=1, verbose=0, steps_per_epoch=steps,
+                        finite, epochs=1, verbose=self.verbose, steps_per_epoch=steps,
                     )
                     record["extra_joint_history"] = extra_history.history
                 record["extra_joint_seconds"] = (getattr(wrapper, "_checkpoint_elapsed_seconds", time.perf_counter() - extra_started)

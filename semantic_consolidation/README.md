@@ -428,8 +428,10 @@ Use the public runner to reconstruct a fresh model for a normal resume.
 
 ## Reading the corrected diagnostics
 
-Boundary diagnostics follow `training.verbose`: `0` keeps evaluations quiet;
-`1` (or `true`) shows progress, and `2` shows completed progress summaries.
+Training and boundary diagnostics follow `training.verbose`: `0` (or `false`)
+keeps them quiet; `1` (or `true`) shows progress, and `2` shows completed progress
+summaries. Acquisition, consolidation and extra-joint control fits display their
+phase name and Keras training metrics using the same setting as joint training.
 Route probes and the experimental observer identify each evaluation stage and
 print measured accuracy and elapsed time. These display settings do not change
 the diagnostic cohorts, calculations, or training updates.
