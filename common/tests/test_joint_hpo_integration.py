@@ -122,11 +122,11 @@ class JointHpoIntegrationTests(unittest.TestCase):
         return scalars
 
     def test_selected_validation_score_and_configs_survive_real_storage(self) -> None:
-        """Both objective values use EMA; accuracy follows V1/V2 noising policy."""
+        """Every V1/V2 objective uses ordinary EMA accuracy despite other scores."""
         cases = (
-            ("diffusion_classifier", None, "ensemble_accuracy", 0.83),
+            ("diffusion_classifier", None, "classification_accuracy", 0.82),
             ("diffusion_classifier_v2", None, "classification_accuracy", 0.82),
-            ("diffusion_classifier_v2", 32, "ensemble_accuracy", 0.83),
+            ("diffusion_classifier_v2", 32, "classification_accuracy", 0.82),
         )
         for index, (wrapper, cap, selected, expected) in enumerate(cases):
             with self.subTest(wrapper=wrapper, cap=cap), patch(
@@ -149,7 +149,11 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 self.assertEqual(source.hpo["accuracy_metric"], selected)
                 self.assertEqual(resolved.hpo["objective_metrics"], ["classification_accuracy", "noise_loss"])
                 self.assertEqual(resolved.hpo["objectives"], [expected, 0.07])
-                self.assertEqual(resolved.reporting.evaluate_ensemble_accuracy, selected == "ensemble_accuracy")
+                self.assertFalse(resolved.reporting.evaluate_ensemble_accuracy)
+                self.assertFalse(resolved.training.ensemble_monitor)
+                self.assertFalse(resolved.hpo["use_ensemble_accuracy"])
+                self.assertEqual(resolved.reporting.ensemble_accuracy_kwargs, {})
+                self.assertEqual(resolved.hpo["ensemble_accuracy_kwargs"], {})
                 self.assertEqual(resolved.model.wrapper_kwargs["test_network_name"], "ema")
                 self.assertTrue(resolved.model.wrapper_kwargs["use_ema"])
                 self.assertEqual(resolved.dataset.validation_source, "test")
@@ -176,8 +180,8 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
                 report = Path(trial.user_attrs["results_path"])
                 saved = json.loads((report / "evaluations.json").read_text(encoding="utf-8"))
-                actual_key = "classifier_accuracy" if selected == "classification_accuracy" else selected
-                self.assertEqual(trial.values[0], saved["valset_ema_eval"][actual_key])
+                self.assertEqual(trial.values[0], saved["valset_ema_eval"]["classifier_accuracy"])
+                self.assertNotEqual(trial.values[0], saved["valset_ema_eval"]["ensemble_accuracy"])
                 self.assertEqual(trial.values[1], saved["valset_ema_eval"]["noise_loss"])
                 objectives = pd.read_csv(report / "objectives.csv")
                 self.assertEqual(objectives["name"].tolist(), ["classification_accuracy", "noise_loss"])
@@ -239,7 +243,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(retry.params, abandoned_params)
             self.assertEqual(retry.user_attrs["resume_source_trial_number"], 1)
             self.assertEqual(retry.user_attrs["resume_original_trial_number"], 1)
-            self.assertEqual(retry.values, [0.83, 0.07])
+            self.assertEqual(retry.values, [0.82, 0.07])
 
             repeated = run_hpo(**self._options(n_trials=3, resume_from=study_root))
             self.assertEqual(len(repeated.trials), 3)
@@ -306,7 +310,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(failed.state, optuna.trial.TrialState.FAIL)
             self.assertIsNone(failed.values)
             self.assertEqual(complete.state, optuna.trial.TrialState.COMPLETE)
-            self.assertEqual(complete.values, [0.83, 0.07])
+            self.assertEqual(complete.values, [0.82, 0.07])
             config = load_config(complete.user_attrs["resolved_config_path"])
             study_root = self._study_root(config)
             scalars = self._outcome_scalars(study_root, failed.number)
@@ -327,7 +331,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
             result["evaluations"]["valset_ema_eval"].update(
-                ensemble_accuracy=accuracy, noise_loss=noise,
+                classifier_accuracy=accuracy, noise_loss=noise,
             )
             return result
 
@@ -337,7 +341,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
         self.assertEqual({trial.number for trial in study.best_trials}, {0, 1})
 
     def test_nonfinite_final_objectives_are_pruned_and_search_continues(self) -> None:
-        """A finite fit does not guarantee a valid post-fit ensemble/noise score."""
+        """A finite fit does not guarantee valid final ordinary accuracy/noise."""
         pairs = ((0.8, float("inf")), (float("inf"), 0.2),
                  (float("nan"), 0.2), (0.8, float("nan")), (0.7, 0.3))
 
@@ -345,7 +349,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
             result["evaluations"]["valset_ema_eval"].update(
-                ensemble_accuracy=accuracy, noise_loss=noise,
+                classifier_accuracy=accuracy, noise_loss=noise,
             )
             return result
 
@@ -438,6 +442,17 @@ class JointHpoIntegrationTests(unittest.TestCase):
             with self.subTest(changes=changes), patch("common.hpo.main") as training:
                 destination = self.root / "invalid"
                 with self.assertRaises(ValueError):
+                    run_hpo(**self._options(results_path=str(destination), **changes))
+                training.assert_not_called()
+                self.assertFalse(destination.exists())
+
+    def test_profile_rejects_explicit_ensemble_accuracy_before_allocating_a_study(self) -> None:
+        """The ordinary-accuracy profile must not silently re-enable ensembles."""
+        for changes in ({"use_ensemble_accuracy": True},
+                        {"ensemble_accuracy_kwargs": {"max_t": 128}}):
+            with self.subTest(changes=changes), patch("common.hpo.main") as training:
+                destination = self.root / "invalid-ensemble"
+                with self.assertRaisesRegex(ValueError, "ordinary.*accuracy"):
                     run_hpo(**self._options(results_path=str(destination), **changes))
                 training.assert_not_called()
                 self.assertFalse(destination.exists())

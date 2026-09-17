@@ -3189,6 +3189,7 @@ def _build_trial_config(
             search_profile, task, model_name, dataset_name,
             use_distillation=use_distillation, fit_method=fit_method,
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
         )
         from common.hpo_profiles import build_joint_classifier_config
         config = build_joint_classifier_config(
@@ -4257,6 +4258,7 @@ def _validate_search_profile(
     profile: str, task: str, model_name: str, dataset_name: str, *,
     use_distillation: bool, fit_method: str,
     fit_kwargs: Mapping[str, object] | None, use_ensemble_accuracy: bool,
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None,
 ) -> None:
     """Reject incompatible profile options before creating a persistent study."""
     if profile != "joint_dit_classifier":
@@ -4269,8 +4271,13 @@ def _validate_search_profile(
         raise ValueError("joint_dit_classifier uses ordinary fit without distillation or fit_kwargs.")
     if use_ensemble_accuracy:
         raise ValueError(
-            "joint_dit_classifier selects ensemble accuracy automatically for V1 and noisy V2; "
+            "joint_dit_classifier reports ordinary accuracy for V1 and V2; "
             "leave use_ensemble_accuracy=False."
+        )
+    if ensemble_accuracy_kwargs:
+        raise ValueError(
+            "joint_dit_classifier reports ordinary accuracy; "
+            "ensemble_accuracy_kwargs must be empty."
         )
 
 
@@ -4481,8 +4488,7 @@ def run_hpo(
             CIFAR DiT/class-token V1/V2 profile. It maximizes EMA accuracy and
             minimizes EMA noise loss, using an 80/20 training split by default.
             The validation_source option can explicitly select official test rows.
-            Accuracy uses an
-            ensemble for V1 and positive-noise V2, ordinary accuracy for clean V2.
+            All trials use ordinary EMA classifier accuracy without an ensemble.
             It includes synchronized plateau/early-stopping callbacks, numerical
             divergence pruning and four final sampling reports. None retains
             existing spaces and data protocols.
@@ -4583,6 +4589,7 @@ def run_hpo(
             search_profile, task, model_name, dataset_name,
             use_distillation=effective_distillation, fit_method=fit_method,
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
         )
         if objective_metrics is None:
             objective_metrics = ["classification_accuracy", "noise_loss"]
@@ -5045,7 +5052,7 @@ def run_hpo(
         )
         # Serialize a scalar objective as one list entry or preserve all tuple dimensions.
         values_list = list(values) if isinstance(values, tuple) else [values]
-        # Epoch-end guards cannot see failures first produced by final ensemble
+        # Epoch-end guards cannot see failures first produced by final classifier
         # or denoising evaluation. Optuna accepts infinities as COMPLETE, so
         # explicitly exclude them from this profile's scientific comparison.
         if search_profile is not None and any(not math.isfinite(value) for value in values_list):

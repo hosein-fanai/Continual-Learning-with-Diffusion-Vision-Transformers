@@ -16,7 +16,7 @@ from common.config import Config
 
 
 JOINT_CLASSIFIER_PROFILE = "joint_dit_classifier"
-JOINT_CLASSIFIER_PROFILE_VERSION = 5
+JOINT_CLASSIFIER_PROFILE_VERSION = 6
 
 JOINT_CLASSIFIER_SEARCH_SPACE = {
     "learning_rate_schedule": ["constant", "cosine"], 
@@ -92,11 +92,10 @@ def build_joint_classifier_config(
     second, with up to ``epochs`` in each phase and independent optimizers.
 
     Early stopping selects weights using ordinary validation accuracy (generator
-    validation loss during V2's first phase). Final HPO feedback uses a timestep
-    ensemble for V1 and for V2 with a positive noising cap. Clean V2 uses ordinary
-    accuracy. V1 retains the wrapper's 128-timestep ensemble default; V2's
-    horizon always equals its classifier cap. Chunking changes memory use, not
-    the number of predictions. An explicit ``max_t`` override affects V1 only.
+    validation loss during V2's first phase). Final HPO feedback uses ordinary
+    EMA classifier accuracy for every trial, with no timestep ensemble. V2's
+    ordinary evaluation retains its selected classifier noising cap.
+    ``ensemble_accuracy_kwargs`` must be empty for this profile.
 
     Fixed controls deliberately keep unrequested dimensions out of the search:
     1000 diffusion timesteps, clipped-cosine noise schedule, p_uncond=0.1,
@@ -114,6 +113,11 @@ def build_joint_classifier_config(
 
 
     dataset_name = dataset_name.lower()
+    if ensemble_accuracy_kwargs:
+        raise ValueError(
+            "joint_dit_classifier reports ordinary accuracy; "
+            "ensemble_accuracy_kwargs must be empty."
+        )
     if dataset_name not in ("cifar10", "cifar100"):
         raise ValueError("joint_dit_classifier supports cifar10 and cifar100 only.")
     if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs <= 0:
@@ -255,34 +259,11 @@ def build_joint_classifier_config(
     _add_fixed_overrides(model_kwargs, model_overrides, "model_overrides")
     _add_fixed_overrides(wrapper_kwargs, wrapper_overrides, "wrapper_overrides")
 
-    use_ensemble = not is_v2 or (cap is not None and cap > 0)
-    ensemble_options = {
-        "compute_type": "chunked", 
-        "max_t": 128, 
-        "t_chunk_size": 8, 
-        "weighted": False, 
-        "separate_probas": False, 
-        "network_name": "ema", 
-        "seed": seed, 
-        **dict(ensemble_accuracy_kwargs or {})
-    }
-    if is_v2 and use_ensemble:
-        ensemble_options["max_t"] = cap
-    if ensemble_options["network_name"] != "ema":
-        raise ValueError("This profile evaluates EMA weights; network_name must be 'ema'.")
-    for name in ("max_t", "t_chunk_size"):
-        value = ensemble_options[name]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"Ensemble {name} must be a positive integer.")
-    if ensemble_options["max_t"] > 1000:
-        raise ValueError("Ensemble max_t cannot exceed 1000 diffusion timesteps.")
-
     tensorboard_name = _tensorboard_name(trial)
     profile_root = (
         Path(results_path) / "joint" / "dit_classifier" / dataset_name
         / JOINT_CLASSIFIER_PROFILE
     )
-    accuracy_metric = "ensemble_accuracy" if use_ensemble else "classification_accuracy"
     config = Config(
         dataset={
             "name": dataset_name, 
@@ -352,8 +333,8 @@ def build_joint_classifier_config(
             "plot_without_20percent": False, 
             "run_trainset_eval": False, 
             "run_valset_eval": True, 
-            "evaluate_ensemble_accuracy": use_ensemble, 
-            "ensemble_accuracy_kwargs": ensemble_options, 
+            "evaluate_ensemble_accuracy": False,
+            "ensemble_accuracy_kwargs": {},
             "save_csv": True
         }, 
         hpo={
@@ -365,9 +346,9 @@ def build_joint_classifier_config(
             "trial_number": trial.number,
             "params": dict(trial.params),
             "tensorboard_name": tensorboard_name,
-            "use_ensemble_accuracy": use_ensemble,
-            "ensemble_accuracy_kwargs": ensemble_options,
-            "accuracy_metric": accuracy_metric,
+            "use_ensemble_accuracy": False,
+            "ensemble_accuracy_kwargs": {},
+            "accuracy_metric": "classification_accuracy",
             "use_distillation": False,
             "objective_metrics": ["classification_accuracy", "noise_loss"],
             "objective_directions": ["maximize", "minimize"],

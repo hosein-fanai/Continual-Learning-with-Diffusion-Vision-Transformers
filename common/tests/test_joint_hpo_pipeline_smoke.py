@@ -22,6 +22,7 @@ from common.config import load_config
 from common.dataloader import get_datasets
 from common.hpo_profiles import build_joint_classifier_config
 from common.train import main
+from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
 
 class _FirstTrial:
@@ -82,9 +83,14 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                 results_path=temporary, dtype_policy="mixed_bfloat16",
                 validation_source="test", max_train_samples=7, max_val_samples=3,
                 search_space_overrides=choices,
-                ensemble_accuracy_kwargs={"max_t": 2, "t_chunk_size": 2},
             )
-            self.assertEqual(config.hpo["profile_version"], 5)
+            self.assertEqual(config.hpo["profile_version"], 6)
+            self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
+            self.assertFalse(config.hpo["use_ensemble_accuracy"])
+            self.assertFalse(config.reporting.evaluate_ensemble_accuracy)
+            self.assertFalse(config.training.ensemble_monitor)
+            self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
+            self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
             self.assertNotIn("test_noisified_min_timesteps", config.model.wrapper_kwargs)
             self.assertNotIn("test_noisified_max_timesteps", config.model.wrapper_kwargs)
             # Test-only budget reductions after building the production recipe.
@@ -99,16 +105,17 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             if is_v2 and classifier_cap is not None:
                 config.model.wrapper_kwargs.update(clf_train_noisified_max_timesteps=2,
                                                    clf_test_noisified_max_timesteps=2)
-                config.reporting.ensemble_accuracy_kwargs["max_t"] = 2
-                config.hpo["ensemble_accuracy_kwargs"]["max_t"] = 2
             for mode in config.reporting.final_generation_modes:
                 if mode["steps"] is not None:
                     mode["steps"] = 3
 
             with contextlib.redirect_stdout(io.StringIO()), \
                     patch("tensorflow.keras.datasets.cifar10.load_data", side_effect=self._cifar) as loader, \
-                    patch("common.train.get_datasets", side_effect=capture_datasets):
+                    patch("common.train.get_datasets", side_effect=capture_datasets), \
+                    patch.object(DiffusionClassifier, "evaluate_ensemble_accuracy",
+                                 side_effect=AssertionError("Ordinary HPO must not evaluate ensembles")) as ensemble:
                 result = main(config)
+            ensemble.assert_not_called()
             self.assertEqual(loader.call_count, 1)
             self.assertEqual(batches, {"train": [4, 3], "validation": [3]})
             self.assertEqual(config.dataset.trainset_len, 2)
@@ -141,9 +148,8 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                     self.assertTrue(np.isfinite(metrics[name]))
                     self.assertTrue(pd.api.types.is_numeric_dtype(metrics_csv[name]))
                     self.assertAlmostEqual(metrics_csv.loc[branch, name], metrics[name])
-                self.assertEqual("ensemble_accuracy" in metrics, config.hpo["use_ensemble_accuracy"])
-                if config.hpo["use_ensemble_accuracy"]:
-                    self.assertTrue(np.isfinite(metrics["ensemble_accuracy"]))
+                self.assertNotIn("ensemble_accuracy", metrics)
+            self.assertNotIn("ensemble_accuracy", metrics_csv.columns)
 
             manifest = json.loads((output / "final-generation-modes.json").read_text())
             self.assertEqual([mode["steps"] for mode in manifest], [3, 3, 2, 2])

@@ -56,9 +56,12 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertFalse(wrapper["mask_by_t_threshold"])
         self.assertNotIn("test_noisified_min_timesteps", wrapper)
         self.assertNotIn("test_noisified_max_timesteps", wrapper)
-        self.assertTrue(config.reporting.evaluate_ensemble_accuracy)
-        self.assertEqual(config.hpo["accuracy_metric"], "ensemble_accuracy")
-        self.assertEqual(config.reporting.ensemble_accuracy_kwargs["max_t"], 128)
+        self.assertFalse(config.reporting.evaluate_ensemble_accuracy)
+        self.assertFalse(config.hpo["use_ensemble_accuracy"])
+        self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
+        self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
+        self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
+        self.assertEqual(config.hpo["profile_version"], 6)
         self.assertNotIn("clf_train_noisified_max_timesteps", config.hpo["params"])
         self.assertIsNone(config.optimizer.clipnorm)
         self.assertEqual(config.hpo["epoch_budget"]["maximum_total_epochs"], 50)
@@ -68,23 +71,24 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.hpo["objective_metrics"], ["classification_accuracy", "noise_loss"])
         self.assertEqual(config.hpo["objective_directions"], ["maximize", "minimize"])
 
-    def test_v2_caps_control_both_inputs_and_accuracy(self):
+    def test_v2_caps_control_inputs_and_keep_ordinary_accuracy(self):
         for cap in (None, 32, 128, 256, 512):
             with self.subTest(cap=cap):
                 config = self.make_config({
                     "wrapper_name": ["diffusion_classifier_v2"],
                     "clf_train_noisified_max_timesteps": [cap],
-                }, ensemble_accuracy_kwargs={"max_t": 1000, "t_chunk_size": 16})
+                })
                 wrapper = config.model.wrapper_kwargs
                 self.assertNotIn("test_noisified_min_timesteps", wrapper)
                 self.assertNotIn("test_noisified_max_timesteps", wrapper)
                 self.assertEqual(wrapper["clf_train_noisified_max_timesteps"], cap)
                 self.assertEqual(wrapper["clf_test_noisified_max_timesteps"], cap)
-                self.assertEqual(config.reporting.evaluate_ensemble_accuracy, cap is not None)
-                self.assertEqual(config.hpo["accuracy_metric"],
-                                 "classification_accuracy" if cap is None else "ensemble_accuracy")
-                if cap is not None:
-                    self.assertEqual(config.reporting.ensemble_accuracy_kwargs["max_t"], cap)
+                self.assertFalse(config.reporting.evaluate_ensemble_accuracy)
+                self.assertFalse(config.hpo["use_ensemble_accuracy"])
+                self.assertFalse(config.training.ensemble_monitor)
+                self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
+                self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
+                self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
                 self.assertEqual(config.hpo["epoch_budget"]["maximum_total_epochs"], 100)
                 self.assertEqual(wrapper["clf_vars_embedding_ids"], [])
                 self.assertEqual(wrapper["clf_vars_noise_part_ids"], [])
@@ -157,7 +161,7 @@ class JointClassifierProfileTests(unittest.TestCase):
     def test_configuration_round_trip_preserves_cifar100_and_inputs(self):
         overrides = {"wrapper_name": ["diffusion_classifier_v2"],
                      "clf_train_noisified_max_timesteps": [128]}
-        ensemble_options = {"max_t": 1000, "t_chunk_size": 8}
+        ensemble_options = {}
         inputs = deepcopy((overrides, ensemble_options))
         config = build_joint_classifier_config(
             _Trial(), dataset_name="CIFAR100", epochs=50, seed=17,
@@ -194,8 +198,9 @@ class JointClassifierProfileTests(unittest.TestCase):
             self.make_config(model_overrides={"clf_cls_token_type": None})
         with self.assertRaisesRegex(ValueError, "replaces profile"):
             self.make_config(wrapper_overrides={"noise_distil_loss_coef": 1.0})
-        with self.assertRaisesRegex(ValueError, "evaluates EMA"):
-            self.make_config(ensemble_accuracy_kwargs={"network_name": "raw"})
+        for options in ({"network_name": "ema"}, {"max_t": 128}, {"t_chunk_size": 8}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "ordinary.*accuracy"):
+                self.make_config(ensemble_accuracy_kwargs=options)
         for override in ({"clf_train_type": "uncond"}, {"train_cfg_scale": 1.0},
                          {"test_cfg_scale": 1.0}, {"swap_noise_image": True}):
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "replaces profile"):
