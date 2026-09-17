@@ -5,6 +5,7 @@ __pycache__
 .tmp
 
 old
+tmp
 
 allocation_study
 gist_memory

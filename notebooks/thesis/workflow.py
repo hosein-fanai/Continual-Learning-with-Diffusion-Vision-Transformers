@@ -607,8 +607,10 @@ def _development_identity(config: RouteConfig) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def load_development(config_path: str | Path, condition: str="baseline", seed: int=17) -> tuple:
-    """Prepare one fresh, validation-only pilot using a seeded full class order.
+def load_development(config_path: str | Path, condition: str="baseline", seed: int=17, *,
+                     resume_from: str | Path | None=None,
+                     checkpoint_dir: str | Path | None=None) -> tuple:
+    """Prepare or resume a validation-only pilot using a seeded full class order.
 
     Args:
         config_path (str | Path): Central or materialized route YAML, loaded through the
@@ -616,14 +618,21 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
         condition (str): Declared treatment name; CE-only maps to the native no_consolidation
             control.
         seed (int): Integer stream seed in [0, 2**32); 17 is the development default.
+        resume_from (str | Path | None): Explicit completed-task checkpoint to seed a
+            continuation under the current code. Requires a separate checkpoint_dir.
+            Existing progress in that destination takes precedence on later restarts.
+            Native schedule, model, optimizer and data compatibility checks still apply.
+        checkpoint_dir (str | Path | None): Optional dedicated recovery destination.
+            None uses the recipe/source-specific default. Explicit continuations must
+            keep this path separate from the source checkpoint tree.
 
     Returns:
         selected (tuple[RouteConfig, dict]): One validation-only config/context with a fixed
             seeded complete class order and recipe-specific recovery root.
 
     Raises:
-        ValueError: If dataset, treatment, seed, recipe or existing checkpoint evidence is
-            invalid.
+        ValueError: If dataset, treatment, seed, recipe, recovery destination or existing
+            checkpoint evidence is invalid. An explicit source must be a completed task.
         OSError: If configuration or checkpoint files cannot be read.
     """
     config = load_route_config(config_path)
@@ -648,11 +657,41 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
     config.route.condition = CONDITIONS[dataset][condition]["route"]["condition"]
     config.common.training.project_tag = f"development-{dataset}-{condition}-seed-{seed}"
     # Bind inherited settings and executable sources, not only the leaf YAML.
-    checkpoint_dir = Path(config.common.training.results_path) / "checkpoints" / f"{condition}-{seed}-{_development_identity(config)}"
-    _configure_recovery(config, checkpoint_dir)
+    destination = Path(checkpoint_dir).resolve() if checkpoint_dir is not None else (
+        Path(config.common.training.results_path) / "checkpoints" / f"{condition}-{seed}-{_development_identity(config)}"
+    ).resolve()
+    context = {"record_path": None, "dataset": dataset}
+    if resume_from is not None:
+        from common.recovery import load_task_checkpoint
+        if checkpoint_dir is None:
+            raise ValueError("Explicit resume_from requires a separate checkpoint_dir.")
+        source = Path(resume_from).resolve()
+        # A directory for a specific task prevents silently selecting a later task.
+        if not re.fullmatch(r"task-\d{4,}", source.name):
+            raise ValueError("resume_from must name one completed task-NNNN directory.")
+        if destination.is_relative_to(source.parent) or source.parent.is_relative_to(destination):
+            raise ValueError("checkpoint_dir must be separate from the source checkpoint tree.")
+        recovered = load_task_checkpoint(source, expected_class_order=continual.class_order,
+                                         expected_task_groups=continual.task_groups)
+        saved = recovered.experiment_state
+        if "active_task_index" in saved or "restart_task_index" in saved:
+            raise ValueError("resume_from must be a completed task, not initial or fit-progress state.")
+        # Record lineage without changing the historical checkpoint or its source identity.
+        config.common.hpo["development_resume"] = {
+            "source_checkpoint": str(source),
+            "source_state_sha256": _digest(source / "state.json"),
+            "source_run_fingerprint": recovered.fingerprint,
+            "completed_tasks": recovered.next_task_index,
+        }
+        context["development_resume_from"] = str(source)
+        # A continuation is seeded only once; subsequent retries use its own progress.
+        if _configure_recovery(config, destination) is None:
+            continual.resume_from = str(source)
+    else:
+        _configure_recovery(config, destination)
     validate_route_config(config)
     validate_planned_config(config)
-    return _initialize(config, {"record_path": None, "dataset": dataset})
+    return _initialize(config, context)
 
 
 def _check_context(context: dict) -> None:

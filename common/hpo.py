@@ -76,11 +76,12 @@ _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
 }
 # Version 13 adds global gradient clipping when per-variable clipping is disabled.
 SEARCH_SPACE_VERSION = 13
-TRAINING_SEMANTICS_VERSION = 2
-"""Version 2 seals stable logits KD, deployed-head metrics and resolved validation.
+TRAINING_SEMANTICS_VERSION = 3
+"""Version 3 adds isolated, paired seeded final diffusion evaluation.
 
-Old specifications lack this field and cannot resume into the repaired training
-behavior. Search-space changes are versioned independently above.
+Version 2 sealed stable logits KD, deployed-head metrics and resolved validation.
+Older studies cannot mix their previous objective draws with repaired evaluation.
+Search-space changes are versioned independently above.
 """
 
 _OPTIMIZATION = {
@@ -2545,6 +2546,40 @@ def _feature_archive_signature(
     }
 
 
+def _hpo_validation_selection(
+    task: str, search_profile: str | None,
+    validation_source: str | None, validation_ratio: float | None,
+) -> dict[str, object] | None:
+    """Resolve explicit ordinary-HPO data choices without changing legacy identity."""
+    explicit = validation_source is not None or validation_ratio is not None
+    if not explicit and search_profile is None:
+        return None
+    if explicit and task == "continual":
+        raise ValueError("HPO validation_source/validation_ratio overrides require a non-continual task.")
+    source = "split" if validation_source is None else validation_source
+    if not isinstance(source, str) or source not in ("split", "test"):
+        raise ValueError("validation_source must be 'split' or 'test'.")
+    ratio = (0.0 if source == "test" else 0.2) if validation_ratio is None else validation_ratio
+    if isinstance(ratio, (bool, np.bool_)) or not isinstance(
+        ratio, (int, float, np.integer, np.floating)
+    ) or not math.isfinite(ratio) or not 0 <= ratio < 1:
+        raise ValueError("validation_ratio must be finite and within [0, 1).")
+    if source == "split" and ratio == 0:
+        raise ValueError("HPO split validation requires validation_ratio > 0.")
+    return {
+        "requested": {
+            "validation_source": validation_source,
+            "validation_ratio": None if validation_ratio is None else float(validation_ratio),
+        },
+        "resolved": {
+            "validation_source": source,
+            "validation_ratio": float(ratio),
+            "effective_validation_ratio": 0.0 if source == "test" else float(ratio),
+            **({"drop_remainder": False} if source == "test" or search_profile is not None else {}),
+        },
+    }
+
+
 def _make_study_spec(
     *, 
     study_name: str, 
@@ -2577,6 +2612,9 @@ def _make_study_spec(
     max_val_samples: int | None = None,
     n_startup_trials: int = 10,
     search_space_overrides: Mapping[str, object] | None = None,
+    search_profile: str | None = None,
+    validation_source: str | None = None,
+    validation_ratio: float | None = None,
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -2623,7 +2661,22 @@ def _make_study_spec(
         dict[str, object]: Strict JSON-safe immutable study specification.
     """
 
+    data_selection = _hpo_validation_selection(
+        task, search_profile, validation_source, validation_ratio
+    )
+    profile_identity = {}
+    if search_profile is not None:
+        from common.hpo_profiles import (
+            JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE,
+        )
+        profile_identity = {
+            "search_profile": search_profile,
+            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION,
+            "profile_specification": JOINT_CLASSIFIER_SEARCH_SPACE,
+        }
     return _study_json_value({
+        **profile_identity,
+        **({"data_selection": data_selection} if data_selection is not None else {}),
         "schema_version": 1, 
         "search_space_version": SEARCH_SPACE_VERSION,
         "training_semantics_version": TRAINING_SEMANTICS_VERSION,
@@ -2911,7 +2964,9 @@ def _trial_checkpoint_dir(study_root: Path, trial: Any) -> Path:
     return candidate
 
 
-def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
+def _enqueue_recovery_trials(
+    study: Any, study_root: Path, *, max_new_trials: int | None = None,
+) -> tuple[int, ...]:
     """Queue one parameter-identical retry for each recoverable trial.
 
     The source trial number is recorded both on the queued retry and in study
@@ -2921,6 +2976,8 @@ def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
     Args:
         study (optuna.study.Study): Loaded persistent Optuna study.
         study_root (pathlib.Path): Root containing the study's checkpoints.
+        max_new_trials (int | None): Maximum new retry allocations permitted by
+            a total trial budget. None retains the unbounded recovery behavior.
 
     Returns:
         tuple[int, ...]: Source trial numbers newly enqueued by this call.
@@ -2942,6 +2999,8 @@ def _enqueue_recovery_trials(study: Any, study_root: Path) -> tuple[int, ...]:
     # Inspect persisted trials for killed runs or failed runs with a committed
     # task boundary. Failed trials without recovery state stay failed.
     for frozen in trials:
+        if max_new_trials is not None and len(enqueued) >= max_new_trials:
+            break
         state_name = str(getattr(frozen.state, "name", frozen.state)).upper()
         checkpoint_dir = _trial_checkpoint_dir(study_root, frozen)
         has_task_checkpoint = _has_committed_task_checkpoint(checkpoint_dir)
@@ -3008,6 +3067,9 @@ def _build_trial_config(
     max_train_samples: int | None = None,
     max_val_samples: int | None = None,
     search_space_overrides: Mapping[str, object] | None = None,
+    search_profile: str | None = None,
+    validation_source: str | None = None,
+    validation_ratio: float | None = None,
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -3098,9 +3160,10 @@ def _build_trial_config(
             by all trials; None keeps the full split. Continual caps preserve every selected
             class. This is an experiment budget, not a sampled hyperparameter. Defaults to
             ``None``.
-        max_val_samples (int | None): Fixed positive development validation-row cap shared
-            by all trials; None keeps the full split. Classes are preserved, and test rows
-            are never substituted. Defaults to ``None``.
+        max_val_samples (int | None): Fixed positive validation-row cap shared by
+            all trials; None keeps the selected split. Classes are preserved.
+            The joint classifier profile explicitly selects official test rows;
+            other templates retain their internal validation source.
         search_space_overrides (Mapping[str, object] | None): Immutable parameter-name
             mapping of categorical scalars/lists or {'choices': ...}, and numeric {'low':
             ..., 'high': ..., 'step': ..., 'log': ...} overrides. None leaves template
@@ -3118,6 +3181,29 @@ def _build_trial_config(
             unsupported, or progressive training omits ``stage_tasks``.
     """
 
+    data_selection = _hpo_validation_selection(
+        task, search_profile, validation_source, validation_ratio
+    )
+    if search_profile is not None:
+        _validate_search_profile(
+            search_profile, task, model_name, dataset_name,
+            use_distillation=use_distillation, fit_method=fit_method,
+            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
+        )
+        from common.hpo_profiles import build_joint_classifier_config
+        config = build_joint_classifier_config(
+            trial, dataset_name=dataset_name.lower(), epochs=epochs, seed=seed,
+            results_path=results_path, dtype_policy=dtype_policy,
+            deterministic_ops=deterministic_ops,
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
+            search_space_overrides=search_space_overrides,
+            max_train_samples=max_train_samples, max_val_samples=max_val_samples,
+            model_overrides=model_overrides, wrapper_overrides=wrapper_overrides,
+            validation_source=data_selection["resolved"]["validation_source"],
+            validation_ratio=data_selection["resolved"]["validation_ratio"],
+        )
+        config.hpo["data_selection"] = data_selection
+        return config
     dataset_name = dataset_name.lower()
     study_model_name = model_name
     base_trial = trial
@@ -3874,6 +3960,13 @@ def _build_trial_config(
         }
     )
 
+    if data_selection is not None:
+        resolved_data = data_selection["resolved"]
+        config.dataset.validation_source = resolved_data["validation_source"]
+        config.dataset.validation_ratio = resolved_data["validation_ratio"]
+        if "drop_remainder" in resolved_data:
+            config.dataset.drop_remainder = resolved_data["drop_remainder"]
+        config.hpo["data_selection"] = data_selection
     return config
 
 
@@ -4160,6 +4253,53 @@ def _objective_values(
     return values[0] if len(values) == 1 else values
 
 
+def _validate_search_profile(
+    profile: str, task: str, model_name: str, dataset_name: str, *,
+    use_distillation: bool, fit_method: str,
+    fit_kwargs: Mapping[str, object] | None, use_ensemble_accuracy: bool,
+) -> None:
+    """Reject incompatible profile options before creating a persistent study."""
+    if profile != "joint_dit_classifier":
+        raise ValueError("Unknown search_profile; expected 'joint_dit_classifier'.")
+    if task != "joint" or model_name != "dit_classifier" or dataset_name.lower() not in (
+        "cifar10", "cifar100"
+    ):
+        raise ValueError("joint_dit_classifier requires joint/dit_classifier on CIFAR-10 or CIFAR-100.")
+    if use_distillation or fit_method != "fit" or fit_kwargs:
+        raise ValueError("joint_dit_classifier uses ordinary fit without distillation or fit_kwargs.")
+    if use_ensemble_accuracy:
+        raise ValueError(
+            "joint_dit_classifier selects ensemble accuracy automatically for V1 and noisy V2; "
+            "leave use_ensemble_accuracy=False."
+        )
+
+
+def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
+    """Log the final outcome of every trial, including failed/OOM trials."""
+    logdir = study_root / "tensorboard" / f"trial-{trial.number:04d}" / "outcome"
+    writer = tf.summary.create_file_writer(str(logdir))
+    with writer.as_default():
+        tf.summary.scalar("hpo/completed", float(trial.state.name == "COMPLETE"), step=0)
+        tf.summary.scalar("hpo/failed", float(trial.state.name == "FAIL"), step=0)
+        tf.summary.scalar("hpo/pruned", float(trial.state.name == "PRUNED"), step=0)
+        tf.summary.text("hpo/state", trial.state.name, step=0)
+        tf.summary.text("hpo/parameters", json.dumps(trial.params, sort_keys=True), step=0)
+        if "divergence" in trial.user_attrs:
+            tf.summary.text("hpo/divergence", json.dumps(trial.user_attrs["divergence"]), step=0)
+        spec = study.user_attrs.get(_STUDY_SPEC_ATTR, {})
+        for name, value in zip(spec.get("objective_metrics", []), trial.values or []):
+            tf.summary.scalar(f"hpo/{name}", value, step=0)
+        for name, value in trial.user_attrs.get("validation_metrics", {}).items():
+            tf.summary.scalar(f"validation/{name}", value, step=0)
+        metric = trial.user_attrs.get("accuracy_metric")
+        if metric is not None:
+            tf.summary.text("hpo/accuracy_metric", metric, step=0)
+        if trial.duration is not None:
+            tf.summary.scalar("hpo/duration_seconds", trial.duration.total_seconds(), step=0)
+    writer.flush()
+    writer.close()
+
+
 def run_hpo(
     task: str, 
     model_name: str, 
@@ -4194,6 +4334,10 @@ def run_hpo(
     max_val_samples: int | None = None,
     n_startup_trials: int = 10,
     search_space_overrides: Mapping[str, object] | None = None,
+    search_profile: str | None = None,
+    trial_budget_mode: str = "additional",
+    validation_source: str | None = None,
+    validation_ratio: float | None = None,
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -4218,6 +4362,8 @@ def run_hpo(
         dataset_name (str): ``FMNIST``, ``MNIST``, ``CIFAR10``, or ``CIFAR100``.
             Xception requires a three-channel CIFAR dataset. Defaults to ``'CIFAR10'``.
         n_trials (int): Positive number of additional trials to run. Defaults to ``30``.
+            With trial_budget_mode='total', this is the maximum number of allocated
+            trials across executions, including failed or interrupted trials.
         epochs (int): Positive ordinary-fit budget. Progressive diffusion phases use
             ``stage_epochs`` and ``final_epochs`` instead; this value still sizes
             existing cosine schedules and any ordinary continual classifier phase.
@@ -4321,8 +4467,8 @@ def run_hpo(
             class. This is an experiment budget, not a sampled hyperparameter. Defaults to
             ``None``.
         max_val_samples (int | None): Fixed positive development validation-row cap shared
-            by all trials; None keeps the full split. Classes are preserved, and test rows
-            are never substituted. Defaults to ``None``.
+            by all trials; None keeps the full selected validation source. Test rows
+            are selected only by explicit validation_source='test'. Defaults to ``None``.
         n_startup_trials (int): Random observations before TPE begins using its fitted
             density model. Defaults to ``10``.
         search_space_overrides (Mapping[str, object] | None): Immutable parameter-name
@@ -4331,6 +4477,29 @@ def run_hpo(
             distributions unchanged. Names may be prefixed by a raw family and may omit
             topology suffixes; _TrialView resolves their precedence and validates
             categorical choices. Defaults to ``None``.
+        search_profile (str | None): ``'joint_dit_classifier'`` selects the offline
+            CIFAR DiT/class-token V1/V2 profile. It maximizes EMA accuracy and
+            minimizes EMA noise loss, using an 80/20 training split by default.
+            The validation_source option can explicitly select official test rows.
+            Accuracy uses an
+            ensemble for V1 and positive-noise V2, ordinary accuracy for clean V2.
+            It includes synchronized plateau/early-stopping callbacks, numerical
+            divergence pruning and four final sampling reports. None retains
+            existing spaces and data protocols.
+        trial_budget_mode (str): ``'additional'`` preserves the existing append
+            behavior; ``'total'`` runs only the remaining trial allowance so Run All
+            does not append a full new budget. Budget changes do not alter study identity.
+        validation_source (str | None): Ordinary HPO validation source: ``'split'``
+            reserves training rows, while ``'test'`` fits on all official training
+            rows and uses official test rows for validation and HPO. Test rows then
+            cease to be an untouched evaluation set. None defaults to ``'split'``.
+            Together with an omitted ratio, None preserves legacy generic study identity.
+            Explicit overrides are unavailable for continual HPO.
+        validation_ratio (float | None): Fraction reserved when source is ``'split'``;
+            must be positive and below one for HPO. None resolves to 0.2 for split
+            or 0.0 for test. Test selection bypasses splitting even when an explicit
+            positive ratio is supplied. Requested and resolved data choices are immutable
+            study settings. Test-source trials retain the final incomplete batch.
 
     Example:
         To keep a distilled continual study on V2 while optimizing two metrics
@@ -4361,6 +4530,15 @@ def run_hpo(
     """
 
     task = normalize_training_task(task)
+    data_selection = _hpo_validation_selection(
+        task, search_profile, validation_source, validation_ratio
+    )
+    validation_options = {} if data_selection is None else {
+        "validation_source": validation_source,
+        "validation_ratio": validation_ratio,
+    }
+    if trial_budget_mode not in ("additional", "total"):
+        raise ValueError("trial_budget_mode must be 'additional' or 'total'.")
     try:
         import optuna
     except ImportError as error:
@@ -4400,6 +4578,14 @@ def run_hpo(
     effective_distillation = bool(
         use_distillation or teacher_network is not None
     )
+    if search_profile is not None:
+        _validate_search_profile(
+            search_profile, task, model_name, dataset_name,
+            use_distillation=effective_distillation, fit_method=fit_method,
+            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
+        )
+        if objective_metrics is None:
+            objective_metrics = ["classification_accuracy", "noise_loss"]
     fixed_wrapper_overrides = dict(wrapper_overrides or {})
     # Require an exact raw family for fixed architecture or wrapper overrides.
     if model_name == _DIFFUSION_CLASSIFIER_STUDY and (
@@ -4518,6 +4704,12 @@ def run_hpo(
         use_ensemble_accuracy,
     )
 
+    if search_profile is not None and (
+        tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
+        or tuple(normalized_directions) != ("maximize", "minimize")
+    ):
+        raise ValueError("joint_dit_classifier maximizes EMA classification accuracy and minimizes EMA noise_loss.")
+
     root = Path(results_path)
     # Reuse the explicitly selected persistent study directory when resuming.
     if resume_from is not None:
@@ -4544,6 +4736,8 @@ def run_hpo(
         # Keep progressive trials separate from resumable ordinary-fit studies.
         if fit_method == "fit_progressively":
             study_root /= "fit_progressively"
+        if search_profile is not None:
+            study_root /= search_profile
 
     # Append the ensemble study suffix only when ensemble feedback is enabled.
     study_name = f"{task}-{model_name}-{dataset_name.lower()}" + (
@@ -4555,6 +4749,8 @@ def run_hpo(
     # Give progressive studies an independent SQLite study identity.
     if fit_method == "fit_progressively":
         study_name += "-fit-progressively"
+    if search_profile is not None:
+        study_name += "-" + search_profile
 
     study_spec = _make_study_spec(
         study_name=study_name,
@@ -4587,6 +4783,8 @@ def run_hpo(
         max_val_samples=max_val_samples,
         n_startup_trials=n_startup_trials,
         search_space_overrides=search_space_overrides,
+        search_profile=search_profile,
+        **validation_options,
     )
     # Validate identity from a sidecar before touching Optuna storage. This
     # prevents a mismatched resume request from creating a second study name in
@@ -4685,7 +4883,13 @@ def run_hpo(
             _restore_sampler_rng_state(sampler, sampler_state)
     # Convert recoverable abandoned trials into one-time queued retries.
     if resume_from is not None:
-        _enqueue_recovery_trials(study, study_root)
+        if trial_budget_mode == "total":
+            _enqueue_recovery_trials(
+                study, study_root,
+                max_new_trials=max(0, n_trials - len(existing_trials)),
+            )
+        else:
+            _enqueue_recovery_trials(study, study_root)
 
 
     def objective(trial: Any) -> float | tuple[float, ...]:
@@ -4751,6 +4955,8 @@ def run_hpo(
                 max_train_samples=max_train_samples,
                 max_val_samples=max_val_samples,
                 search_space_overrides=search_space_overrides,
+                search_profile=search_profile,
+                **validation_options,
             )
         finally:
             # Persist every draw even when conditional config construction
@@ -4776,7 +4982,7 @@ def run_hpo(
         if recovery_original is not None:
             config.hpo["resume_original_trial_number"] = int(recovery_original)
         # Keep resumed-study TensorBoard events under the explicit study root.
-        if resume_from is not None:
+        if resume_from is not None or search_profile is not None:
             config.training.tensorboard_path = str(study_root / "tensorboard")
         # Install task-boundary recovery only for continual training.
         if task == "continual":
@@ -4795,14 +5001,36 @@ def run_hpo(
         save_config(config, input_config_path)
         config = load_config(input_config_path)
 
-        result = main(config, teacher_network=teacher_network)
+        if search_profile is not None:
+            trial.set_user_attr("accuracy_metric", config.hpo["accuracy_metric"])
+        from common.callbacks.hpo_guard import TrainingDiverged
+        try:
+            result = main(config, teacher_network=teacher_network)
+        except TrainingDiverged as error:
+            if search_profile is None:
+                raise
+            trial.set_user_attr("divergence", error.evidence)
+            trial.set_user_attr("divergence_path", str(error.evidence_path) if error.evidence_path is not None else None)
+            trial.set_user_attr("results_path", str(config.training.results_path))
+            raise optuna.TrialPruned(str(error)) from error
+        actual_metrics = objective_metrics
+        if search_profile is not None:
+            actual_metrics = [config.hpo["accuracy_metric"], "noise_loss"]
+            validation_metrics = {}
+            for name, value in result["evaluations"].get("valset_ema_eval", {}).items():
+                scalar = np.asarray(value)
+                if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
+                    number = float(scalar)
+                    if math.isfinite(number):
+                        validation_metrics[name] = number
+            trial.set_user_attr("validation_metrics", validation_metrics)
         values = _objective_values(
             task, 
             config.model.name,
             result["history"], 
             evaluations=result["evaluations"], 
             use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"],
-            objective_metrics=objective_metrics,
+            objective_metrics=actual_metrics,
             objective_directions=objective_directions,
             diffusion_network_name=config.model.wrapper_kwargs.get(
                 "test_network_name",
@@ -4817,6 +5045,23 @@ def run_hpo(
         )
         # Serialize a scalar objective as one list entry or preserve all tuple dimensions.
         values_list = list(values) if isinstance(values, tuple) else [values]
+        # Epoch-end guards cannot see failures first produced by final ensemble
+        # or denoising evaluation. Optuna accepts infinities as COMPLETE, so
+        # explicitly exclude them from this profile's scientific comparison.
+        if search_profile is not None and any(not math.isfinite(value) for value in values_list):
+            evidence = {
+                "reason": "nonfinite_objective", "phase": "final_evaluation",
+                "objectives": {name: str(value) for name, value in zip(actual_metrics, values_list)},
+                "network": "ema",
+            }
+            evidence_path = Path(result["results_path"]) / "hpo-divergence-final-evaluation.json"
+            temporary = evidence_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(evidence, indent=2, allow_nan=False), encoding="utf-8")
+            temporary.replace(evidence_path)
+            trial.set_user_attr("divergence", evidence)
+            trial.set_user_attr("divergence_path", str(evidence_path))
+            trial.set_user_attr("results_path", str(result["results_path"]))
+            raise optuna.TrialPruned("Non-finite final evaluation objective; see divergence evidence.")
         config.hpo["objectives"] = values_list
 
         resolved_path = Path(result["results_path"]) / "config.yaml"
@@ -4853,16 +5098,28 @@ def run_hpo(
             OSError: If the study CSV cannot be opened or written.
         """
 
-        del trial_
         study_.trials_dataframe().to_csv(
             study_root / "trials.csv", 
             index=False
         )
+        if search_profile is not None:
+            _write_trial_tensorboard(study_root, study_, trial_)
+            summarize_hpo(study_).to_csv(study_root / "pareto_trials.csv", index=False)
 
 
+    trials_to_run = n_trials
+    if trial_budget_mode == "total":
+        allocated = study.get_trials(deepcopy=False)
+        waiting = sum(
+            trial.state.name == "WAITING" and trial.number < n_trials
+            for trial in allocated
+        )
+        # Already allocated queued retries still need execution; running them
+        # creates no new trial record and must not consume the allowance twice.
+        trials_to_run = max(0, n_trials - len(allocated)) + waiting
     study.optimize(
         objective, 
-        n_trials=n_trials, 
+        n_trials=trials_to_run,
         timeout=timeout, 
         callbacks=[save_trials], 
         catch=(tf.errors.ResourceExhaustedError,), 
@@ -4872,4 +5129,29 @@ def run_hpo(
     return study
 
 
-__all__ = ["SEARCH_SPACES", "run_hpo"]
+def summarize_hpo(study: Any, *, pareto_only: bool = True) -> pd.DataFrame:
+    """Return readable objective values and artifact paths without selecting a winner.
+
+    Multi-objective studies have a Pareto set rather than one best trial. Failed
+    and pruned records are included only with ``pareto_only=False``. Objective
+    names follow the immutable study specification, and values remain unscaled.
+    """
+    metrics = study.user_attrs.get(_STUDY_SPEC_ATTR, {}).get("objective_metrics", [])
+    trials = study.best_trials if pareto_only else study.trials
+    rows = []
+    for trial in trials:
+        row = {"trial": trial.number, "state": trial.state.name}
+        row.update({name: value for name, value in zip(metrics, trial.values or [])})
+        row.update({
+            "accuracy_metric": trial.user_attrs.get("accuracy_metric"),
+            "seconds": trial.duration.total_seconds() if trial.duration is not None else None,
+            "config": trial.user_attrs.get("resolved_config_path", trial.user_attrs.get("config_path")),
+            "results": trial.user_attrs.get("results_path"),
+        })
+        rows.append(row)
+    return pd.DataFrame(rows, columns=[
+        "trial", "state", *metrics, "accuracy_metric", "seconds", "config", "results",
+    ])
+
+
+__all__ = ["SEARCH_SPACES", "run_hpo", "summarize_hpo"]

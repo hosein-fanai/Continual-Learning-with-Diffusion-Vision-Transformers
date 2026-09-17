@@ -33,12 +33,11 @@ def _set_paths(root: Path) -> Path:
 
 
 def prepare_notebook(
-    *, 
-    checkout_name: str = CHECKOUT_NAME,
+    checkout_name: str = CHECKOUT_NAME, 
     repository: str | None = None, 
-    revision: str = "main",
+    revision: str = "main", 
     runtime: str = "auto", 
-    cuda: bool | None = None,
+    cuda: bool | None = None, 
     install: bool | None = None
 ) -> tuple[Path, dict[str, str]]:
     """Find or clone the project, then prepare dependencies before model imports.

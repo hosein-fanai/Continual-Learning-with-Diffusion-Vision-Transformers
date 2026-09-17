@@ -16,6 +16,8 @@ from tensorflow.keras import metrics
 
 import numpy as np
 
+from numbers import Integral
+
 from typing import Any, TypeAlias, Literal, get_args
 
 from common.runtime import derive_seed, effective_seed
@@ -113,7 +115,6 @@ class EnsembleAccuracy(metrics.Metric):
                 Defaults to ``False``.
             max_t (int): Positive exclusive timestep horizon, no greater than
                 wrapper.timesteps.
-                Values are integer-normalized after the upper-bound check.
                 Defaults to ``128``.
             t_chunk_size (int): Positive timesteps per chunk; values above max_t produce one
                 chunk.
@@ -146,8 +147,9 @@ class EnsembleAccuracy(metrics.Metric):
             prediction implementation, and creates a zeroed accuracy tracker.
 
         Raises:
-            ValueError: Network/compute selection is unsupported, max_t exceeds the
-                wrapper horizon, head coefficients have a nonpositive sum, CFG is disabled,
+            ValueError: Network/compute selection is unsupported, timestep bounds are
+                not positive integers, max_t exceeds the wrapper horizon, head
+                coefficients are negative/nonfinite or all zero, CFG is disabled,
                 separate conditioning lacks its required label vocabulary, or the seed is
                 invalid.
         """
@@ -158,7 +160,7 @@ class EnsembleAccuracy(metrics.Metric):
                 getattr(diffusion_clf, "dtype_policy", None), 
                 "variable_dtype", 
                 tf.keras.mixed_precision.global_policy().variable_dtype
-            ),
+            )
         )
         super().__init__(
             name=name, 
@@ -170,9 +172,19 @@ class EnsembleAccuracy(metrics.Metric):
             raise ValueError(
                 f"network_name must be {get_args(NetworkName)}."
             )
+        for key, value in (("max_t", max_t), ("t_chunk_size", t_chunk_size)):
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{key} must be a positive integer.")
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
+        for key, value in (
+            ("clf_acc_coef", clf_acc_coef), 
+            ("clf_distil_acc_coef", clf_distil_acc_coef), 
+            ("ctr_acc_coef", ctr_acc_coef)
+        ):
+            if not np.isfinite(value) or value < 0.:
+                raise ValueError(f"{key} must be finite and nonnegative.")
         # Require at least one prediction head to contribute to the ensemble.
         if clf_acc_coef + clf_distil_acc_coef + ctr_acc_coef <= 0.:
             raise ValueError("At least one accuracy coefficient must be positive.")
@@ -185,6 +197,7 @@ class EnsembleAccuracy(metrics.Metric):
                 "EnsembleAccuracy requires use_cfg=True so label 0 is "
                 "an unconditional condition."
             )
+
         self.compute_type = compute_type
         self.separate_probas = bool(separate_probas)
         self.weighted = weighted
@@ -660,8 +673,8 @@ class EnsembleAccuracy(metrics.Metric):
         """Update accuracy from one labeled image batch.
 
         Dynamic original labels are mapped through the wrapper's seen_classes before
-        accuracy accumulation. Prediction receives the default training=None argument,
-        so Keras context governs it; ordinary eager evaluation uses inference behavior.
+        accuracy accumulation. Prediction explicitly uses inference behavior even
+        when a caller invokes the metric inside an enclosing training context.
 
         Args:
             y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
@@ -675,10 +688,11 @@ class EnsembleAccuracy(metrics.Metric):
             tf.Tensor: Scalar floating cumulative accuracy.
         """
 
-        y_pred = self.ensemble_predict(x)
+        y_pred = self.ensemble_predict(x, training=False)
         # Map original dataset labels to dense classifier targets only for a dynamic vocabulary.
         if getattr(self.network, "dynamic_num_classes", False):
             y_true = self.diffusion_clf._map_classes(y_true)
+
         self.update_state(
             y_true, y_pred, 
             sample_weight=sample_weight
@@ -715,17 +729,8 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         dataset_len = len(dataset)
-        acc = 0.
 
         for i, batch in enumerate(dataset):
-            # Print the current cumulative value when progress is enabled.
-            if verbose:
-                print(
-                    f"\rStep ({i+1}/{dataset_len}) --- "
-                    f"Ensemble Accuracy: {acc:.4f}", 
-                    end=''
-                )
-
             # Treat two-item batches as unweighted examples and labels.
             if len(batch) == 2:
                 x, y = batch
@@ -743,10 +748,18 @@ class EnsembleAccuracy(metrics.Metric):
                 y, x, 
                 sample_weight=sample_weight
             )
+            # Display the completed batch's value, including the final result.
+            if verbose:
+                print(
+                    f"\rStep ({i+1}/{dataset_len}) --- "
+                    f"Ensemble Accuracy: {float(acc):.4f}", 
+                    end='', 
+                    flush=True
+                )
 
         # Finish the in-place progress line when one was printed.
         if verbose:
-            print()
+            print(flush=True)
 
         return self.result().numpy()
 

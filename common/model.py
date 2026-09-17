@@ -250,6 +250,9 @@ def _make_optimizer(config: Config | None = None,
             ``global_clipnorm`` defaults to None and otherwise clips gradients
             together by their combined norm. Keras requires at most one of
             ``clipnorm`` and ``global_clipnorm`` to be set.
+            ``plateau_jump=False`` preserves ordinary cosine decay; True uses an
+            independently tracked virtual-step offset and ``min_learning_rate``
+            (default 1e-6) as its floor for plateau reductions.
 
     Returns:
         tf.keras.optimizers.Optimizer | object: The requested Keras optimizer,
@@ -276,6 +279,8 @@ def _make_optimizer(config: Config | None = None,
         decay_steps = kwargs.get("decay_steps")
         name = kwargs.get("name", "adam")
         schedule = kwargs.get("schedule", "constant")
+        plateau_jump = kwargs.get("plateau_jump", False)
+        min_learning_rate = kwargs.get("min_learning_rate", 1e-6)
         weight_decay = kwargs.get("weight_decay")
         momentum = kwargs.get("momentum", 0.)
         clipnorm = kwargs.get("clipnorm")
@@ -288,6 +293,8 @@ def _make_optimizer(config: Config | None = None,
         decay_steps = config.optimizer.decay_steps
         name = config.optimizer.name
         schedule = config.optimizer.schedule
+        plateau_jump = config.optimizer.plateau_jump
+        min_learning_rate = config.training.min_learning_rate
         weight_decay = config.optimizer.weight_decay
         momentum = config.optimizer.momentum
         clipnorm = config.optimizer.clipnorm
@@ -320,10 +327,17 @@ def _make_optimizer(config: Config | None = None,
     learning_rate = initial_learning_rate
     # Construct the requested cosine learning-rate schedule.
     if schedule == "cosine":
-        learning_rate = optimizers.schedules.CosineDecay(
-            initial_learning_rate=initial_learning_rate, 
-            decay_steps=decay_steps
-        )
+        if plateau_jump:
+            from common.callbacks.plateau_lr import OffsetCosineDecay
+            learning_rate = OffsetCosineDecay(
+                initial_learning_rate, decay_steps,
+                min_learning_rate=min_learning_rate,
+            )
+        else:
+            learning_rate = optimizers.schedules.CosineDecay(
+                initial_learning_rate=initial_learning_rate,
+                decay_steps=decay_steps
+            )
 
     # Reject misspelled schedules instead of silently using a constant rate.
     elif schedule not in ("constant", None):

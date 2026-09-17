@@ -2518,7 +2518,7 @@ class HpoConfigTests(unittest.TestCase):
             )
             self.assertEqual(SEARCH_SPACE_VERSION, 13)
             self.assertEqual(original["search_space_version"], 13)
-            self.assertEqual(original["training_semantics_version"], 2)
+            self.assertEqual(original["training_semantics_version"], 3)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (

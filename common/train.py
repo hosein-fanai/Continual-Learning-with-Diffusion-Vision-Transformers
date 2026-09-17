@@ -32,12 +32,14 @@ import shutil
 import h5py
 
 from copy import deepcopy
+from contextlib import contextmanager
 from dataclasses import asdict
 
 from collections.abc import Callable, Mapping, Sequence
 
 from common.utils import plot_images, plot_history, create_gif
 from common.callbacks.lr_logger import LrLogger
+from common.callbacks.plateau_lr import PlateauLearningRate, ValidationEnsembleAccuracy
 from common.config import (
     Config,
     normalize_training_task,
@@ -136,7 +138,11 @@ def _resolve_training_options(
             switches ``show_images``/``report_every_epoch`` default True and
             ``save_gifs``/``save_weights`` default False. ``results_path`` defaults
             to ``"./results"`` and ``project_tag`` to ``""``. Early stopping uses
-            ``patience=0``, ``monitor=None``, ``monitor_mode="auto"``. Logging uses
+            ``patience=0``, ``monitor=None``, ``monitor_mode="auto"``.
+            Plateau reduction uses ``reduce_lr_patience=0`` (disabled),
+            ``reduce_lr_factor=0.5`` and ``min_learning_rate=1e-6``.
+            ``ensemble_monitor=False`` optionally enables an epoch validation
+            score using ``ensemble_accuracy_kwargs``. Logging uses
             ``tensorboard=False``, with optional ``tensorboard_run_name`` and
             ``tensorboard_path`` both defaulting to None. ``hpo`` and
             ``continually_learn_kwargs`` default to empty mappings.
@@ -180,6 +186,11 @@ def _resolve_training_options(
             "patience": kwargs.get("patience", 0),
             "monitor": kwargs.get("monitor"),
             "monitor_mode": kwargs.get("monitor_mode", "auto"),
+            "reduce_lr_patience": kwargs.get("reduce_lr_patience", 0),
+            "reduce_lr_factor": kwargs.get("reduce_lr_factor", 0.5),
+            "min_learning_rate": kwargs.get("min_learning_rate", 1e-6),
+            "ensemble_monitor": kwargs.get("ensemble_monitor", False),
+            "ensemble_accuracy_kwargs": dict(kwargs.get("ensemble_accuracy_kwargs") or {}),
             "use_tensorboard": kwargs.get("tensorboard", False),
             "tensorboard_run_name": kwargs.get("tensorboard_run_name"),
             "tensorboard_path": kwargs.get("tensorboard_path"),
@@ -238,6 +249,11 @@ def _resolve_training_options(
         "patience": config.training.patience,
         "monitor": config.training.monitor,
         "monitor_mode": config.training.monitor_mode,
+        "reduce_lr_patience": config.training.reduce_lr_patience,
+        "reduce_lr_factor": config.training.reduce_lr_factor,
+        "min_learning_rate": config.training.min_learning_rate,
+        "ensemble_monitor": config.training.ensemble_monitor,
+        "ensemble_accuracy_kwargs": dict(config.reporting.ensemble_accuracy_kwargs or {}),
         "use_tensorboard": config.training.tensorboard,
         "tensorboard_run_name": config.training.tensorboard_run_name,
         "tensorboard_path": config.training.tensorboard_path,
@@ -289,6 +305,10 @@ def _resolve_reporting_options(
             defaults are ``dataset_name="mnist"``, ``save_final_images=False``,
             ``show_final_images=True``, ``final_images_steps=1000``,
             ``final_images_cfg_scale=3.0``, and ``save_final_gifs=False``.
+            ``final_generation_modes=[]`` optionally replaces the single diffusion
+            setting with named scale/steps/eta mappings. Their network defaults to
+            ``final_generation_network_name=None`` (wrapper test network) and
+            ``final_generation_add_null_label=True`` includes its CFG-null row.
             ``seed``/``task`` are optional inputs to ``effective_seed``; omitted
             seed behavior therefore follows the selected runtime task contract.
 
@@ -326,6 +346,9 @@ def _resolve_reporting_options(
                 "final_images_cfg_scale", 3.0
             ),
             "save_final_gifs": kwargs.get("save_final_gifs", False),
+            "final_generation_modes": deepcopy(kwargs.get("final_generation_modes") or []),
+            "final_generation_network_name": kwargs.get("final_generation_network_name"),
+            "final_generation_add_null_label": kwargs.get("final_generation_add_null_label", True),
             "seed": effective_seed(
                 seed=kwargs.get("seed"),
                 task=kwargs.get("task")
@@ -353,8 +376,55 @@ def _resolve_reporting_options(
         "final_images_steps": config.reporting.final_images_steps,
         "final_images_cfg_scale": config.reporting.final_images_cfg_scale,
         "save_final_gifs": config.reporting.save_final_gifs,
+        "final_generation_modes": deepcopy(config.reporting.final_generation_modes),
+        "final_generation_network_name": config.reporting.final_generation_network_name,
+        "final_generation_add_null_label": config.reporting.final_generation_add_null_label,
         "seed": effective_seed(config)
     }
+
+
+def _plain_metric_values(metrics: Mapping[str, object]) -> dict[str, object]:
+    """Copy evaluation metrics, converting tensor/NumPy scalars to Python values.
+
+    Keeping scalar cells numeric lets pandas write usable metric columns instead
+    of TensorFlow object representations. Non-scalar values are left unchanged.
+    """
+    result = {}
+    for name, value in metrics.items():
+        if tf.is_tensor(value) or isinstance(value, (np.ndarray, np.generic)):
+            array = np.asarray(value.numpy() if tf.is_tensor(value) else value)
+            if array.ndim == 0:
+                value = array.item()
+        result[name] = value
+    return result
+
+
+@contextmanager
+def _report_evaluation_random_streams(model: DiffusionModel, seed: int | None):
+    """Use fixed report draw counters without consuming the caller's RNG state.
+
+    SeedStream combines its configured base seed with a tracked draw counter.
+    A deterministic counter offset gives seeded final reports their own draws
+    without changing Python seeds or retracing cached TensorFlow functions.
+    Equal model/report seeds and identical batching yield equal draws across raw/EMA
+    branches and candidates, independently of their completed training epochs.
+    Unseeded reports retain the existing advancing-stream behavior.
+    """
+    streams = getattr(model, "_random_streams", {})
+    saved = []
+    try:
+        if seed is not None and isinstance(streams, Mapping):
+            for name, stream in streams.items():
+                state = stream.state.numpy().copy()
+                saved.append((stream, state))
+                # PHILOX skip(1) advances the low counter by 256. Keep its key
+                # intact: explicit model seeds are already fixed by the study.
+                counter = derive_seed(seed, "report_evaluation", name)
+                stream.state.assign([int(counter) << 8, 0, state[2]])
+        yield
+    finally:
+        for stream, state in saved:
+            stream.state.assign(state)
 
 
 def _evaluate_diffusion(
@@ -422,7 +492,7 @@ def _evaluate_diffusion(
             dataset, **selected_kwargs
         )
 
-    return results
+    return _plain_metric_values(results)
 
 
 def _plain_config_value(value: object) -> object:
@@ -459,6 +529,77 @@ def _plain_config_value(value: object) -> object:
     return value
 
 
+def _fit_control_callbacks(options: Mapping[str, object], valset: object,
+                           phase: str | None = None) -> list:
+    """Build independent epoch controls, with generator-specific V2 monitoring.
+
+    Ensemble evaluation precedes early stopping and plateau control, so both
+    consume the same epoch's held-out score. V2 generator/classifier calls use
+    separate callback instances and never share best-weight or patience state.
+    """
+    ensemble = bool(options["ensemble_monitor"]) and phase != "generator"
+    if phase == "generator":
+        monitor, mode = ("val_noise_loss" if valset is not None else "noise_loss"), "min"
+    else:
+        default_metric = "classifier_accuracy" if phase == "discriminator" else "loss"
+        monitor = options["monitor"] or (
+            "val_ensemble_accuracy" if ensemble else
+            ("val_" if valset is not None else "") + default_metric
+        )
+        mode = options["monitor_mode"]
+        if mode == "auto" and (phase == "discriminator" or ensemble):
+            mode = "max" if "acc" in monitor or "auc" in monitor else "min"
+    selected = []
+    if ensemble:
+        selected.append(ValidationEnsembleAccuracy(
+            valset, **options["ensemble_accuracy_kwargs"]
+        ))
+    if options["patience"] > 0:
+        selected.append(callbacks.EarlyStopping(
+            monitor=monitor, mode=mode, patience=options["patience"],
+            restore_best_weights=True,
+        ))
+    if options["reduce_lr_patience"] > 0:
+        selected.append(PlateauLearningRate(
+            monitor=monitor, mode=mode, patience=options["reduce_lr_patience"],
+            factor=options["reduce_lr_factor"],
+            min_learning_rate=options["min_learning_rate"],
+            verbose=options["training_verbose"],
+        ))
+    return selected
+
+
+def _fit_with_callback_cleanup(model: tf.keras.Model, **fit_kwargs: object) -> object:
+    """Close TensorBoard writers after divergence/OOM, preserving the fit error.
+
+    Keras does not invoke callback ``on_train_end`` when a fit raises. Only
+    TensorBoard receives that cleanup hook here: restoring early-stopping
+    weights or invoking unrelated successful-fit hooks would be misleading.
+    V2's nested phase callbacks are included, with shared instances deduplicated.
+    Successful fits retain Keras's normal return value and callback lifecycle.
+    """
+    from common.callbacks.hpo_guard import TrainingDiverged
+
+    try:
+        return model.fit(**fit_kwargs)
+    except (TrainingDiverged, tf.errors.ResourceExhaustedError) as error:
+        closed: set[int] = set()
+        for group in (fit_kwargs, fit_kwargs.get("gen_kwargs"), fit_kwargs.get("clf_kwargs")):
+            if not isinstance(group, Mapping):
+                continue
+            for callback in group.get("callbacks") or ():
+                if not isinstance(callback, callbacks.TensorBoard) or id(callback) in closed:
+                    continue
+                closed.add(id(callback))
+                try:
+                    callback.on_train_end()
+                except Exception as cleanup_error:
+                    # Retain diagnostics without masking the original failure or
+                    # preventing cleanup of another phase's event writer.
+                    error.add_note(f"TensorBoard cleanup failed: {cleanup_error!r}")
+        raise
+
+
 def train_model(
     config: Config | None = None,
     model: tf.keras.Model | dict[str, object] | None = None,
@@ -478,6 +619,11 @@ def train_model(
     classifier template, materialize a task schedule, and delegate replay/KD and
     task training to the learner before updating the bundle with final models and
     ``continual_details``.
+
+    Opt-in epoch plateau control gives V2 generator/classifier phases separate
+    stopping state and TensorBoard directories. Its generator monitors noise
+    loss while the classifier uses the requested monitor. The cosine virtual
+    clock requires optimizer.plateau_jump and does not alter actual iterations.
 
     Configured external-classifier recovery keeps one immutable initial template
     beside the task checkpoints. Its HDF5 metadata records the model, optimizer,
@@ -652,6 +798,18 @@ def train_model(
             }
 
     progressive_fit = fit_method.endswith("progressively")
+    if isinstance(training_options["reduce_lr_patience"], (bool, np.bool_)) or not isinstance(
+        training_options["reduce_lr_patience"], (int, np.integer)
+    ) or training_options["reduce_lr_patience"] < 0:
+        raise ValueError("reduce_lr_patience must be a nonnegative integer.")
+    controlled_fit = training_options["reduce_lr_patience"] > 0 or training_options["ensemble_monitor"]
+    if controlled_fit and (is_continual or progressive_fit):
+        raise ValueError("Epoch plateau/ensemble controls require ordinary non-continual fit.")
+    if training_options["ensemble_monitor"] and (
+        valset is None or not isinstance(model, DiffusionClassifier)
+    ):
+        raise ValueError("ensemble_monitor requires a diffusion classifier and validation data.")
+    separate_phase_callbacks = controlled_fit and isinstance(model, DiffusionClassifierV2)
 
     # Continual bundles checkpoint their generator; ordinary runs checkpoint the supplied
     # model.
@@ -710,6 +868,15 @@ def train_model(
         callbacks.ProgbarLogger()
     ]
     callbacks_list = list(base_callbacks)
+    classifier_callbacks = [LrLogger(), callbacks.ProgbarLogger()] if separate_phase_callbacks else None
+    if controlled_fit:
+        callbacks_list = _fit_control_callbacks(
+            training_options, valset, "generator" if separate_phase_callbacks else None
+        ) + callbacks_list
+        if separate_phase_callbacks:
+            classifier_callbacks = _fit_control_callbacks(
+                training_options, valset, "discriminator"
+            ) + classifier_callbacks
     forwarded_callbacks = []
     generative_forwarded_callbacks = []
 
@@ -732,7 +899,7 @@ def train_model(
             callbacks_list.append(image_callback)
 
     # Add ordinary early stopping outside continual bundle training.
-    if not is_continual and patience > 0 and not progressive_fit:
+    if not is_continual and patience > 0 and not progressive_fit and not controlled_fit:
         # Default to validation loss when validation exists and training loss otherwise.
         callbacks_list.append(callbacks.EarlyStopping(
             monitor=monitor or ("val_loss" if valset is not None else "loss"),
@@ -747,6 +914,18 @@ def train_model(
     # Configured callers retain the established in-place path update.
     if config is not None:
         config.training.results_path = image_callback.results_path
+
+    if hpo.get("prune_nonfinite_losses", False) and not is_continual:
+        from common.callbacks.hpo_guard import NonFiniteLossGuard
+
+        callbacks_list.append(NonFiniteLossGuard(
+            phase="generator" if separate_phase_callbacks else None,
+            evidence_dir=image_callback.results_path,
+        ))
+        if separate_phase_callbacks:
+            classifier_callbacks.append(NonFiniteLossGuard(
+                phase="discriminator", evidence_dir=image_callback.results_path,
+            ))
 
     # Give configured continual runs a stable task-checkpoint root before the
     # initial resolved config is written. A resumed run continues the same
@@ -785,12 +964,17 @@ def train_model(
         )
 
         tensorboard_callback = callbacks.TensorBoard(
-            log_dir=tensorboard_path,
+            log_dir=os.path.join(tensorboard_path, "generator") if separate_phase_callbacks else tensorboard_path,
             histogram_freq=0,
             write_graph=False
         )
         callbacks_list.append(tensorboard_callback)
         forwarded_callbacks.append(tensorboard_callback)
+        if separate_phase_callbacks:
+            classifier_callbacks.append(callbacks.TensorBoard(
+                log_dir=os.path.join(tensorboard_path, "discriminator"),
+                histogram_freq=0, write_graph=False,
+            ))
 
         writer = tf.summary.create_file_writer(
             tensorboard_path,
@@ -812,6 +996,8 @@ def train_model(
     if extra_callbacks is not None:
         extra_callbacks = list(extra_callbacks)
         callbacks_list += extra_callbacks
+        if separate_phase_callbacks:
+            classifier_callbacks += extra_callbacks
         forwarded_callbacks += extra_callbacks
 
     # Write the resolved configuration before training when requested.
@@ -1262,13 +1448,17 @@ def train_model(
         history = getattr(trained, "history", trained)
     # Train V2 generator and classifier phases with separate fit mappings.
     elif isinstance(model, DiffusionClassifierV2):
-        history = model.fit(
+        classifier_fit_kwargs = dict(standard_fit_kwargs)
+        if separate_phase_callbacks:
+            classifier_fit_kwargs["callbacks"] = classifier_callbacks
+        history = _fit_with_callback_cleanup(
+            model,
             gen_kwargs=standard_fit_kwargs,
-            clf_kwargs=dict(standard_fit_kwargs),
+            clf_kwargs=classifier_fit_kwargs,
         )
     # Use ordinary Keras fit for remaining model families.
     else:
-        history = model.fit(**standard_fit_kwargs).history
+        history = _fit_with_callback_cleanup(model, **standard_fit_kwargs).history
 
     # Persist final trained weights when requested.
     if save_weights:
@@ -1392,6 +1582,110 @@ def train_model(
     return history
 
 
+def _report_generation_modes(
+    model: DiffusionModel,
+    modes: Sequence[Mapping[str, object]],
+    network_name: str | None,
+    add_null_label: bool,
+    results_path: str | os.PathLike[str] | None,
+    show_images: bool,
+    save_images: bool,
+    save_gifs: bool,
+    seed: int | None,
+    verbose: bool = False,
+) -> None:
+    """Render named sampler comparisons, sharing each mode's PNG/GIF samples.
+
+    Omitted steps/eta resolve against the trained wrapper, exactly as sample().
+    Seeded modes temporarily restart only the sampling stream and restore its
+    state even on failure. Repeated reports therefore produce the same samples
+    without consuming the model's future sampling or training draws.
+    """
+    if not isinstance(modes, (list, tuple)):
+        raise TypeError("final_generation_modes must be a list of mode mappings.")
+    requested_network = model.test_network_name if network_name is None else network_name
+    if requested_network not in ("raw", "ema"):
+        raise ValueError("final_generation_network_name must be raw, ema, or None.")
+    # The wrapper falls back to raw when EMA is unavailable; record the actual branch.
+    selected_network = "raw" if requested_network == "ema" and not model.use_ema else requested_network
+    network = model.get_network(selected_network)
+    if not isinstance(add_null_label, bool):
+        raise TypeError("final_generation_add_null_label must be boolean.")
+    names, resolved = set(), []
+    for entry in modes:
+        if not isinstance(entry, Mapping) or set(entry) - {"name", "steps", "scale", "eta"}:
+            raise ValueError("Generation modes accept only name, steps, scale, and eta.")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name or len(name) > 80 or not name.isascii() or not all(
+            char.isalnum() or char in "-_" for char in name
+        ):
+            raise ValueError("Generation mode names must use 1-80 ASCII letters, digits, '-' or '_'.")
+        if name in names:
+            raise ValueError("Generation mode names must be unique.")
+        names.add(name)
+        steps = model.test_steps if entry.get("steps") is None else entry["steps"]
+        eta = model.test_eta if entry.get("eta") is None else entry["eta"]
+        scale = entry.get("scale")
+        if isinstance(steps, (bool, np.bool_)) or not isinstance(steps, (int, np.integer)) or not 2 <= steps <= model.timesteps:
+            raise ValueError(f"Generation mode {name!r} steps must be in [2, {model.timesteps}].")
+        if isinstance(scale, (bool, np.bool_)) or not isinstance(scale, (int, float, np.number)) or not np.isfinite(scale):
+            raise ValueError(f"Generation mode {name!r} requires a finite scale.")
+        if isinstance(eta, (bool, np.bool_)) or not isinstance(eta, (int, float, np.number)) or not np.isfinite(eta) or not 0 <= eta <= 1:
+            raise ValueError(f"Generation mode {name!r} eta must be in [0, 1].")
+        resolved.append({"name": name, "steps": int(steps), "scale": float(scale), "eta": float(eta)})
+
+    manifest = []
+    stream = getattr(model, "_random_streams", {}).get("sampling")
+    has_null = bool(add_null_label and network.use_cfg)
+    for mode in resolved:
+        mode_seed = derive_seed(seed, "final_report", "generation_mode", mode["name"])
+        sampling_kwargs = {
+            "network_name": selected_network,
+            "add_null_label": add_null_label,
+            "steps": mode["steps"], "scale": mode["scale"], "eta": mode["eta"],
+            "seed": mode_seed, "verbose": bool(verbose),
+        }
+        if save_gifs:
+            sampling_kwargs.update(return_x_ts=True, return_x0s=True)
+        saved_state = stream.state.numpy().copy() if stream is not None and mode_seed is not None else None
+        try:
+            if saved_state is not None:
+                stream.state.assign([0, 0, saved_state[2]])
+            generated = model.sample(**sampling_kwargs)
+        finally:
+            if saved_state is not None:
+                stream.state.assign(saved_state)
+        if save_gifs:
+            imgs, frames1, frames2 = generated
+        else:
+            imgs = generated
+        basename = (
+            f"final-{mode['name']}_network-{selected_network}_steps-{mode['steps']}"
+            f"_scale-{mode['scale']:g}_eta-{mode['eta']:g}"
+        )
+        image_name = basename + ".png" if save_images else None
+        gif_name = basename + ".gif" if save_gifs else None
+        if show_images or save_images:
+            plot_images(
+                imgs, has_null_label=has_null, show_images=show_images,
+                save_path=os.path.join(results_path, image_name) if save_images else None,
+            )
+        if save_gifs:
+            create_gif(os.path.join(results_path, gif_name), frames1, frames2, verbose=verbose)
+        manifest.append({**mode, "network_name": selected_network,
+                         "requested_network_name": requested_network,
+                         "add_null_label": has_null, "seed": mode_seed,
+                         "sample_count": int(np.shape(imgs)[0]),
+                         "image": image_name, "gif": gif_name})
+        # Do not retain one mode's potentially long trajectories while sampling the next.
+        del generated, imgs
+        if save_gifs:
+            del frames1, frames2
+    if save_images or save_gifs:
+        with open(os.path.join(results_path, "final-generation-modes.json"), "w", encoding="utf-8") as stream_file:
+            json.dump(manifest, stream_file, indent=2, sort_keys=True, allow_nan=False)
+
+
 def _report_final_visuals(
     model: tf.keras.Model | None,
     dataset_name: str,
@@ -1401,7 +1695,12 @@ def _report_final_visuals(
     save_final_gifs: bool,
     final_images_steps: int,
     final_images_cfg_scale: float,
-    seed: int | None
+    seed: int | None,
+    *,
+    final_generation_modes: Sequence[Mapping[str, object]] | None = None,
+    final_generation_network_name: str | None = None,
+    final_generation_add_null_label: bool = True,
+    verbose: bool = False,
 ) -> None:
     """Generate requested final VAE images or diffusion images/trajectories.
 
@@ -1431,6 +1730,13 @@ def _report_final_visuals(
         seed (int | None): Master report seed used to derive separate VAE/diffusion
             final-sampling seeds. None supplies no new seed override, leaving the
             model's generation method to use its own configured seed behavior.
+        final_generation_modes (Sequence[Mapping[str, object]] | None): Optional
+            named steps/scale/eta modes. None or empty preserves legacy reporting.
+        final_generation_network_name (str | None): Named modes' raw/EMA branch;
+            None uses the wrapper's test network.
+        final_generation_add_null_label (bool): Include the CFG-null row in named
+            modes alongside all real classes. Defaults to True.
+        verbose (bool): Named-mode sampling and GIF-writing progress.
 
     Returns:
         None: May sample the model, display plots, and write PNG/GIF files. Existing
@@ -1512,6 +1818,16 @@ def _report_final_visuals(
         diffusion_file_outputs.append("final GIF saving")
     results_path = _normalize_results_path(results_path, diffusion_file_outputs)
 
+    if final_generation_modes:
+        if model.swap_noise_image:
+            raise ValueError("Named diffusion generation modes require a denoising sampler.")
+        _report_generation_modes(
+            model, final_generation_modes, final_generation_network_name,
+            final_generation_add_null_label, results_path,
+            show_final_images, save_final_images, save_final_gifs, seed, verbose,
+        )
+        return
+
     final_seed = derive_seed(seed, "final_report", "diffusion_sampling")
 
     # Sample and save the full denoising trajectory when GIF output is enabled.
@@ -1574,6 +1890,8 @@ def report(
     instead of rerunning its callable loader. Their validation metric mapping stays
     separate from ordinary/test summaries, including development runs without test
     observations. Optional CSV output also exports all five continual report tables.
+    Seeded final diffusion evaluations use fixed per-split corruption draws for
+    paired raw/EMA branches and restore the model's random streams afterward.
 
     Args:
         config (Config | None): Typed report/training/dataset settings. Default None
@@ -1632,6 +1950,14 @@ def report(
     final_images_cfg_scale = reporting_options["final_images_cfg_scale"]
     save_final_gifs = reporting_options["save_final_gifs"]
     seed = reporting_options["seed"]
+    generation_options = {}
+    if reporting_options["final_generation_modes"]:
+        generation_options = {
+            "final_generation_modes": reporting_options["final_generation_modes"],
+            "final_generation_network_name": reporting_options["final_generation_network_name"],
+            "final_generation_add_null_label": reporting_options["final_generation_add_null_label"],
+            "verbose": bool(verbose),
+        }
     is_continual = isinstance(model, dict)
 
     # Continual visual reports use the replay generator; ordinary reports use the supplied
@@ -1780,7 +2106,8 @@ def report(
             save_final_gifs,
             final_images_steps,
             final_images_cfg_scale,
-            seed
+            seed,
+            **generation_options,
         )
 
         return eval_results
@@ -1791,19 +2118,19 @@ def report(
 
         # Evaluate training data when requested.
         if run_trainset_eval:
-            eval_results["trainset_eval"] = model.evaluate(
+            eval_results["trainset_eval"] = _plain_metric_values(model.evaluate(
                 trainset,
                 return_dict=True,
                 verbose=verbose
-            )
+            ))
 
         # Evaluate available validation data when requested.
         if run_valset_eval and valset is not None:
-            eval_results["valset_eval"] = model.evaluate(
+            eval_results["valset_eval"] = _plain_metric_values(model.evaluate(
                 valset,
                 return_dict=True,
                 verbose=verbose
-            )
+            ))
 
         # Persist any standard-model evaluations when requested.
         if eval_results and save_csv:
@@ -1821,7 +2148,8 @@ def report(
             save_final_gifs,
             final_images_steps,
             final_images_cfg_scale,
-            seed
+            seed,
+            **generation_options,
         )
 
         return eval_results
@@ -1847,16 +2175,20 @@ def report(
         # Keep network labels and result-key suffixes aligned.
         for network_title, network_name, result_suffix in network_evaluations:
             print(f"{network_title} Network:")
-            eval_results[f"{dataset_key}_{result_suffix}"] = (
-                _evaluate_diffusion(
-                    model,
-                    dataset,
-                    network_name,
-                    verbose,
-                    evaluate_ensemble_accuracy,
-                    ensemble_accuracy_kwargs
+            # Pair raw/EMA corruption draws and separate them from training and
+            # other data splits without advancing checkpointed random streams.
+            evaluation_seed = derive_seed(seed, "final_report", "evaluation", dataset_key)
+            with _report_evaluation_random_streams(model, evaluation_seed):
+                eval_results[f"{dataset_key}_{result_suffix}"] = (
+                    _evaluate_diffusion(
+                        model,
+                        dataset,
+                        network_name,
+                        verbose,
+                        evaluate_ensemble_accuracy,
+                        ensemble_accuracy_kwargs
+                    )
                 )
-            )
 
     # Persist nonempty diffusion evaluations when requested.
     if len(eval_results) > 0 and save_csv:
@@ -1876,7 +2208,8 @@ def report(
         save_final_gifs,
         final_images_steps,
         final_images_cfg_scale,
-        seed
+        seed,
+        **generation_options,
     )
 
     return eval_results

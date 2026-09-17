@@ -1558,7 +1558,17 @@ class DatasetConfig:
             construction; None retains every class. Continual selection follows
             continually_learn.class_order and task_groups instead. Defaults to ``None``.
         validation_ratio (float): Fraction of training rows reserved for a stratified
-            validation split; ``0`` disables the split. Defaults to ``0.0``.
+            validation split when validation_source is ``'split'``; ``0`` disables
+            that split. Ignored with validation_source ``'test'``. Defaults to ``0.0``.
+        validation_source (str): ``'split'`` uses that internal partition. Explicit
+            ``'test'`` uses the official test set for ordinary-training fit
+            validation and HPO selection, using all official training rows without
+            creating an internal validation partition.
+            Test-selected scores are therefore model-selection scores, not independent
+            held-out test estimates. Defaults to ``'split'``.
+        split_metadata (dict): Resolved source/count provenance for explicit
+            test-as-validation execution, filled by get_datasets. Defaults to a fresh
+            empty mapping; it does not change dataset selection.
         features_path (str | None): Base path of a saved feature archive without '.npy';
             None provides no explicit archive path. Used only when return_features selects
             the feature-input path. Defaults to ``None``.
@@ -1571,9 +1581,14 @@ class DatasetConfig:
             preserving every represented class, so the cap must cover all selected classes.
             Defaults to ``None``.
         max_val_samples (int | None): Positive optional validation-row cap; None keeps the
-            full validation split. Caps preserve represented classes and apply only to an
-            explicit validation split, never to test rows. Defaults to ``None``.
+            full selected validation source. Caps preserve represented classes; official
+            test rows are capped only with explicit validation_source='test'. Defaults
+            to ``None``.
         batch_size (int): Positive examples per batch. Defaults to ``128``.
+        drop_remainder (bool): Omit an undersized final ordinary-training batch when
+            at least one full batch exists. False includes every selected training
+            row each epoch. Validation and continual batches always retain tails.
+            Defaults to ``True`` for compatibility with existing training pipelines.
         shuffle_buffer (int): Training shuffle-buffer capacity, including each continual
             task. Values above zero enable shuffling; ``0`` disables it. Defaults to
             ``10000``.
@@ -1589,12 +1604,15 @@ class DatasetConfig:
     preprocess: str | None = None
     indices: list[int] | None = None
     validation_ratio: float = 0.
+    validation_source: str = "split"
+    split_metadata: dict = field(default_factory=dict)
     features_path: str | None = None
     return_features: bool = False
     onehot_labels: bool = False
     max_train_samples: int | None = None
     max_val_samples: int | None = None
     batch_size: int = 128
+    drop_remainder: bool = True
     shuffle_buffer: int = 10_000
     pad: int = 0
     trainset_len: int | None = None
@@ -1615,6 +1633,10 @@ class DatasetConfig:
             "fixed-min-max", "fixed-standardize",
         ):
             raise ValueError(f"Unknown dataset preprocessing mode: {self.preprocess!r}.")
+        if self.validation_source not in ("split", "test"):
+            raise ValueError("dataset.validation_source must be 'split' or 'test'.")
+        if not isinstance(self.drop_remainder, bool):
+            raise ValueError("dataset.drop_remainder must be a boolean.")
         # Repeated class IDs duplicate original rows before validation splitting.
         if self.indices is not None:
             class_num = {"mnist": 10, "fmnist": 10, "cifar10": 10, "cifar100": 100}.get(
@@ -1824,6 +1846,9 @@ class OptimizerConfig:
             Defaults to ``'adam'``.
         schedule (str): 'cosine' uses cosine decay over decay_steps; 'constant' or None
             keeps initial_learning_rate unchanged. Defaults to ``'cosine'``.
+        plateau_jump (bool): Give cosine decay a separate, serializable virtual-step
+            offset for plateau reductions without modifying optimizer iterations.
+            Uses training.min_learning_rate as its floor. Defaults to ``False``.
         weight_decay (float | None): AdamW-style weight decay; None omits an explicit decay
             setting. Nonzero values require name='adamw' in the shared optimizer
             optimizer API. Defaults to ``None``.
@@ -1841,6 +1866,7 @@ class OptimizerConfig:
     decay_steps: int | None = None
     name: str = "adam"
     schedule: str = "cosine"
+    plateau_jump: bool = False
     weight_decay: float | None = None
     momentum: float = 0.0
     clipnorm: float | None = None
@@ -2138,6 +2164,17 @@ class TrainingConfig:
             explicit validation dataset exists and loss otherwise; progressive pacing uses
             progressive_monitor instead. Defaults to ``None``.
         monitor_mode (str): ``"auto"``, ``"min"``, or ``"max"``. Defaults to ``'auto'``.
+        reduce_lr_patience (int): Non-improving epochs before reducing the learning
+            rate; zero disables this callback. Cosine requires optimizer.plateau_jump.
+            For V2, generator controls use validation noise loss and classifier
+            controls use the requested accuracy metric. Defaults to ``0``.
+        reduce_lr_factor (float): Multiplicative plateau reduction, strictly between
+            zero and one. Defaults to ``0.5``.
+        min_learning_rate (float): Nonnegative plateau/cosine rate floor.
+            Defaults to ``1e-6``.
+        ensemble_monitor (bool): Compute val_ensemble_accuracy each classifier epoch
+            using reporting.ensemble_accuracy_kwargs before stopping and logging.
+            Requires explicit validation data. Defaults to ``False``.
         tensorboard (bool): Write TensorBoard summaries when true. Defaults to ``False``.
         tensorboard_path (str | None): TensorBoard root directory. None uses a tensorboard
             subdirectory of the resolved result run. Training appends the project tag (or
@@ -2181,6 +2218,10 @@ class TrainingConfig:
     patience: int = 0
     monitor: str | None = None
     monitor_mode: str = "auto"
+    reduce_lr_patience: int = 0
+    reduce_lr_factor: float = 0.5
+    min_learning_rate: float = 1e-6
+    ensemble_monitor: bool = False
     tensorboard: bool = False
     tensorboard_path: str | None = None
     tensorboard_run_name: str | None = None
@@ -2210,6 +2251,17 @@ class ReportingConfig:
         final_images_cfg_scale (float): CFG scale for final generation. Defaults to ``3.0``.
         final_images_steps (int): Reverse-diffusion steps for final samples; it must satisfy
             wrapper sampling bounds. Defaults to ``1000``.
+        final_generation_modes (list[dict[str, object]]): Optional named diffusion
+            sampling modes replacing the single final-images setting. Each mapping
+            accepts name (unique filename-safe string), scale (finite float), steps
+            (integer or None for wrapper.test_steps), and eta (float in [0, 1] or
+            None for wrapper.test_eta). One sampling call supplies both PNG and GIF
+            for each mode. Empty by default, preserving ordinary final reporting.
+        final_generation_network_name (str | None): Raw/EMA network for the named
+            modes. None uses the wrapper's test_network_name. Defaults to ``None``.
+        final_generation_add_null_label (bool): Include the CFG-null condition
+            before every real class in each named mode. Applies only to the opt-in
+            modes and CFG-enabled networks. Defaults to ``True``.
         show_final_images (bool): Display the final sample grid. Defaults to ``False``.
         save_final_images (bool): Save the final sample grid as PNG. Defaults to ``True``.
         save_final_gifs (bool): Request sampling trajectories and save a GIF; VAE/swap
@@ -2237,6 +2289,9 @@ class ReportingConfig:
     save_history_plot: bool = True
     final_images_cfg_scale: float = 3.0
     final_images_steps: int = 1_000
+    final_generation_modes: list[dict[str, object]] = field(default_factory=list)
+    final_generation_network_name: str | None = None
+    final_generation_add_null_label: bool = True
     show_final_images: bool = False
     save_final_images: bool = True
     save_final_gifs: bool = True

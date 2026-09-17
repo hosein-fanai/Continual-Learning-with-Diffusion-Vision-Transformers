@@ -2908,13 +2908,18 @@ def _run_continual_tasks(
         classification_objective_defined = seen_class_num > 1
         task_resource["classification_objective_defined"] = classification_objective_defined
 
-        # Report this task's position, class count, and original dataset labels.
+        # Report this task's position/count and all original labels introduced so far.
         if verbose:
+            introduced_classes = [
+                label
+                for group in original_task_groups[:task_index + 1]
+                for label in group
+            ]
             print(
                 75*'-', 
                 f"\nStarting new task: {task_index + 1}/{len(original_task_groups)}, "
                 f"Task's class size: {len(original_task_groups[task_index])}, "
-                f"Task's classes: {original_task_groups[task_index]}", 
+                f"Introduced classes so far: {introduced_classes}",
                 flush=True
             )
 

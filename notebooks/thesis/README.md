@@ -196,6 +196,20 @@ must be prepared. Setup does not relax that provenance check.
 | [10 Collect](10_Collect_Thesis_Results.ipynb) | Authenticate saved outcomes and export the compact writing package. No new predictions. |
 | [11 Offline joint reference](11_Offline_Joint_Reference.ipynb) | Train on all classes together, with no replay, distillation or semantic phases. |
 | [12 Naive sequential reference](12_Naive_Sequential_Reference.ipynb) | Train the same DiT platform task by task using current-task examples only, with no CL retention mechanism. |
+| [13 CIFAR-10 joint HPO](13_CIFAR10_Joint_HPO.ipynb) | Tune ordinary all-class diffusion/classification with a learned class token, no distillation, and persistent TensorBoard/Optuna results. |
+| [14 CIFAR-100 joint HPO](14_CIFAR100_Joint_HPO.ipynb) | The same conditional V1/V2 search on CIFAR-100. |
+
+Notebooks **13 and 14** are independent development searches, outside the frozen
+campaign. They use the shared HPO API, EMA accuracy/noise-loss objectives, 50 epochs
+per fit phase, and synchronized early-stopping/plateau controls. V2 allows 50
+generator plus 50 classifier epochs. Their explicit development setup trains on
+all official training data and reuses all official test data for fit validation
+and HPO, without reserving training rows. The validation source is configurable;
+these scores are tuning results, not independent final test estimates.
+See the [joint-classifier HPO guide](JOINT_CLASSIFIER_HPO.md)
+for the search space, ensemble scoring rules, hardware/budget guidance, and
+recommendations from the reports. Their results do not automatically replace
+the continual-learning recipes.
 
 ## Offline and naive reference benchmarks
 

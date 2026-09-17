@@ -1062,11 +1062,13 @@ def _dataset_option_inputs(
             "model_name": model_name, 
             "preprocess": kwargs.get("preprocess", default_preprocess), 
             "indices": kwargs.get("indices"), 
-            "validation_ratio": kwargs.get("validation_ratio", 0.), 
+            "validation_ratio": kwargs.get("validation_ratio", 0.),
+            "validation_source": kwargs.get("validation_source", "split"),
             "return_features": kwargs.get("return_features", False), 
             "features_path": kwargs.get("features_path", ""), 
             "onehot_labels": kwargs.get("onehot_labels", False), 
             "batch_size": kwargs.get("batch_size", 128), 
+            "drop_remainder": kwargs.get("drop_remainder", True),
             "shuffle_buffer": kwargs.get("shuffle_buffer", 10_000), 
             "pad": kwargs.get("pad", 0), 
             "max_train_samples": kwargs.get("max_train_samples"), 
@@ -1090,11 +1092,13 @@ def _dataset_option_inputs(
         "model_name": model_name, 
         "preprocess": config.dataset.preprocess, 
         "indices": config.dataset.indices, 
-        "validation_ratio": config.dataset.validation_ratio, 
+        "validation_ratio": config.dataset.validation_ratio,
+        "validation_source": config.dataset.validation_source,
         "return_features": config.dataset.return_features, 
         "features_path": config.dataset.features_path, 
         "onehot_labels": config.dataset.onehot_labels, 
         "batch_size": config.dataset.batch_size, 
+        "drop_remainder": config.dataset.drop_remainder,
         "shuffle_buffer": config.dataset.shuffle_buffer, 
         "pad": config.dataset.pad, 
         "max_train_samples": config.dataset.max_train_samples, 
@@ -1268,9 +1272,10 @@ def get_datasets(
             ``dataset_name`` (``"mnist"``, ``"fmnist"``, ``"cifar10"``, or
             ``"cifar100"``), ``model_name`` (str), ``preprocess``
             (str | None), ``indices`` (Sequence[int] | None),
-            ``validation_ratio`` (float), ``return_features`` (bool),
+            ``validation_ratio`` (float), ``validation_source`` ('split' or 'test'),
+            ``return_features`` (bool),
             ``features_path`` (str), ``onehot_labels`` (bool), ``batch_size``
-            (int), ``shuffle_buffer`` (int), ``pad`` (int),
+            (int), ``drop_remainder`` (bool), ``shuffle_buffer`` (int), ``pad`` (int),
             ``max_train_samples`` and ``max_val_samples`` (int | None),
             ``use_valset`` (bool), ``seed`` (int | None), and ``task`` (str).
 
@@ -1285,12 +1290,22 @@ def get_datasets(
         validation partition. ``return_features=False``, ``features_path=""``,
         and ``onehot_labels=False`` select raw images and sparse labels before
         any required VAE conditioning adjustment. ``batch_size=128``,
-        ``shuffle_buffer=10000``, and ``pad=0`` define training batching,
-        shuffle capacity, and spatial padding. ``max_train_samples=None`` and
+        ``drop_remainder=True``, ``shuffle_buffer=10000``, and ``pad=0`` define
+        training batching, shuffle capacity, and spatial padding. The final
+        undersized training batch is retained with ``drop_remainder=False`` or
+        when it is the only batch. Validation always retains this final batch.
+        ``max_train_samples=None`` and
         ``max_val_samples=None`` retain all rows; positive caps preserve at
         least one row per represented class. ``use_valset=True`` returns an
         existing validation partition, ``seed=None`` leaves selection unseeded,
         and ``task="legacy"`` selects ordinary dataset construction.
+        ``validation_source='split'`` retains that behavior. Explicit ``'test'``
+        uses official test rows as validation for ordinary image training;
+        no internal split is made, regardless of ``validation_ratio``. Preprocessing
+        is fitted on all selected official training rows before sample caps.
+        ``validation_ratio`` applies only to ``'split'``. ``max_val_samples`` then
+        caps the chosen official test rows; ``drop_remainder=False`` includes all
+        selected official training rows each epoch.
         ``model_kwargs`` (alias ``kwargs``, default empty mapping) supplies an
         optional VAE ``conditioned`` choice, defaulting to true for continual
         VAE runs and false for ordinary standalone VAEs.
@@ -1314,6 +1329,8 @@ def get_datasets(
         standardization. Conditional VAEs also record ``onehot_labels=True``.
         Continual mode loads and sizes the selected training pool for optimizer
         setup, then defers task-specific dataset creation to the learner.
+        Explicit test-as-validation execution records source/count provenance in
+        dataset.split_metadata and hpo.data_split when a Config is supplied.
 
     Raises:
         ValueError: If ``task`` is unsupported, or if ``pad`` is incompatible
@@ -1326,10 +1343,12 @@ def get_datasets(
     preprocess = options["preprocess"]
     indices = options["indices"]
     validation_ratio = options["validation_ratio"]
+    validation_source = options["validation_source"]
     return_features = options["return_features"]
     features_path = options["features_path"]
     onehot_labels = options["onehot_labels"]
     batch_size = options["batch_size"]
+    drop_remainder = options["drop_remainder"]
     shuffle_buffer = options["shuffle_buffer"]
     pad = options["pad"]
     max_train_samples = options["max_train_samples"]
@@ -1339,6 +1358,27 @@ def get_datasets(
     task = options["task"]
 
     dataset_name = dataset_name.lower()
+
+    if validation_source not in ("split", "test"):
+        raise ValueError("validation_source must be 'split' or 'test'.")
+    if not isinstance(drop_remainder, bool):
+        raise ValueError("drop_remainder must be a boolean.")
+    # Test-as-validation is an explicit ordinary-image protocol; reject
+    # unsupported paths before loading data or changing any training state.
+    if validation_source == "test":
+        if task == "continual":
+            raise ValueError("validation_source='test' requires ordinary training.")
+        if return_features:
+            raise ValueError("validation_source='test' does not support saved feature inputs.")
+        if not use_valset:
+            raise ValueError("validation_source='test' requires use_valset=True.")
+    elif config is not None and config.dataset.split_metadata.get("validation_source") == "test":
+        # Reusing a mutable Config with its default source must not retain
+        # provenance from an earlier explicit test-as-validation execution.
+        config.dataset.split_metadata = {}
+        if isinstance(config.hpo.get("data_split"), dict) and \
+        config.hpo["data_split"].get("validation_source") == "test":
+            config.hpo.pop("data_split")
 
     # Prevent image padding from being applied to saved feature vectors.
     if pad and return_features:
@@ -1384,9 +1424,10 @@ def get_datasets(
     }
     loader = loaders[dataset_name]
 
+    effective_validation_ratio = 0.0 if validation_source == "test" else validation_ratio
     x_train, y_train, x_val, y_val, x_test, y_test = loader(
         indices=indices, 
-        validation_ratio=validation_ratio, 
+        validation_ratio=effective_validation_ratio,
         preprocess=preprocess, 
         features_path=features_path, 
         return_features=return_features, 
@@ -1394,6 +1435,17 @@ def get_datasets(
         seed=seed, 
         verbose=0
     )
+    internal_validation_rows = 0 if x_val is None else len(x_val)
+    training_rows_before_cap = len(x_train)
+    official_test_rows = None
+    # The test-source loader retains every official training row and fits
+    # preprocessing there. Select the identically transformed official test
+    # rows for validation without reserving any internal training partition.
+    if validation_source == "test":
+        if x_test is None or y_test is None or not len(x_test):
+            raise ValueError("validation_source='test' requires nonempty official test arrays.")
+        official_test_rows = len(x_test)
+        x_val, y_val = x_test, y_test
     # Flatten sparse labels into the shape expected by Keras losses.
     if not onehot_labels:
         y_train = np.asarray(y_train).reshape(-1)
@@ -1414,13 +1466,49 @@ def get_datasets(
             config.dataset.trainset_len = (len(x_train) + batch_size - 1) // batch_size
         return loader, None
 
-    # Limit only an independently created validation partition.
+    # Limit the explicitly selected source; default execution still caps only
+    # the independent internal validation partition.
     if x_val is not None:
         x_val, y_val = _limit_samples(
             x_val, y_val, 
             max_val_samples, 
             rng
         )
+
+    effective_drop_remainder = drop_remainder and len(x_train) >= batch_size
+    if config is not None and validation_source == "test":
+        split_metadata = {
+            "validation_source": "test",
+            "training_source": "official_train",
+            "selected_validation_location": "official_test",
+            "internal_validation_location": None,
+            "internal_validation_usage": "not_created",
+            "internal_validation_ratio": float(effective_validation_ratio),
+            "requested_validation_ratio": float(validation_ratio),
+            "split_seed": seed,
+            "counts_after_class_filter": True,
+            "selected_original_classes": [int(value) for value in indices],
+            "official_training_rows": training_rows_before_cap + internal_validation_rows,
+            "training_rows_before_cap": training_rows_before_cap,
+            "training_rows_selected": len(x_train),
+            "training_rows_per_epoch": (
+                len(x_train) // batch_size * batch_size
+                if effective_drop_remainder else len(x_train)
+            ),
+            "drop_remainder": drop_remainder,
+            "effective_drop_remainder": effective_drop_remainder,
+            "reserved_internal_validation_rows": internal_validation_rows,
+            "official_test_rows": official_test_rows,
+            "validation_rows_before_cap": official_test_rows,
+            "validation_rows_selected": 0 if x_val is None else len(x_val),
+            "max_train_samples": max_train_samples,
+            "max_val_samples": max_val_samples,
+            "preprocess_fit_source": "official_train",
+            "official_test_used_for_model_selection": True,
+            "independent_test_estimate": False,
+        }
+        config.dataset.split_metadata = dict(split_metadata)
+        config.hpo["data_split"] = dict(split_metadata)
 
     # Pad raw images before any dense-model flattening.
     if pad > 0:
@@ -1446,7 +1534,7 @@ def get_datasets(
         pad=0, 
         shuffle_buffer=shuffle_buffer, 
         batch_size=batch_size, 
-        drop_remainder=len(x_train) >= batch_size,
+        drop_remainder=effective_drop_remainder,
         seed=seed
     )
 
