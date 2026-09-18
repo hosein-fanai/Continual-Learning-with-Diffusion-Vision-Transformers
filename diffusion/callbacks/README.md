@@ -35,17 +35,17 @@ This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`
 and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
 renders the result on the configured schedule.
 
-The keyword-only `frequency` option defaults to `1`, which generates samples
-after every epoch. Sampling starts at zero-based epoch index 0 and repeats every
-`frequency` epochs: `ImageGenerator(frequency=5)` produces previews after
-one-based epochs 1, 6, 11, and so on. Skipped epochs perform no sampling, plotting,
-or GIF creation. The schedule uses the epoch index supplied by Keras, including
-when `fit(initial_epoch=...)` resumes a run; separate fits starting at epoch 0
-start the schedule again. Training end does not force an extra preview.
+The `frequency` option defaults to `1`, which generates samples after every
+epoch. Sampling occurs when `(epoch + 1) % frequency == 0`, where Keras supplies
+a zero-based epoch index: `ImageGenerator(frequency=5)` produces previews after
+one-based epochs 5, 10, 15, and so on. Skipped epochs perform no sampling,
+plotting, or GIF creation. The schedule uses the epoch index supplied by Keras,
+including when `fit(initial_epoch=...)` resumes a run; separate fits starting at
+epoch 0 start the schedule again. Training end does not force an extra preview.
 
 `frequency` must be a positive integer; zero, negative values, booleans, and
-nonintegers raise `ValueError` before output directories are created. Existing
-positional arguments keep their original order; pass the interval by name.
+nonintegers raise `ValueError` before output directories are created. The
+constructor accepts `frequency` before `seed`; pass both by name for clarity.
 
 `ImageGenerator(add_null_label=True)` forwards that flag to the sampler and
 omits explicit labels. The wrapper chooses observed classes for a dynamic
@@ -84,8 +84,8 @@ The saving constructor immediately creates
 `results/YYYY-MM-DD_HH-MM-SS project_tag/images` and `.../gifs`. GIF mode asks
 `sample` for both noisy-state and predicted-clean frame sequences. Filenames
 record the one-based epoch, sampling steps, guidance scale, and eta.
-With the example interval, artifact filenames contain `epoch-1`, `epoch-6`,
-`epoch-11`, and so on. The constructor still reserves its directories immediately,
+With the example interval, artifact filenames contain `epoch-5`, `epoch-10`,
+`epoch-15`, and so on. The constructor still reserves its directories immediately,
 regardless of the sampling frequency.
 
 Supplying `results_path` saves PNGs whether or not GIF output is enabled. If

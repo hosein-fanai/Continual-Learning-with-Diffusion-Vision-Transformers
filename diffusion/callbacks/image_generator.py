@@ -33,11 +33,11 @@ class ImageGenerator(callbacks.Callback):
       ``show_images`` controls simultaneous display.
 
     A dated run directory is created immediately during construction when
-    saving. GIF output additionally requires a result path. Sampling starts at
-    epoch index 0 and repeats every ``frequency`` epochs; skipped epochs do no
-    sampling, plotting, or GIF work. The supplied Keras epoch index determines
-    the schedule, including when resuming with ``initial_epoch``. There is no
-    extra sample at training end.
+    saving. GIF output additionally requires a result path. Sampling occurs
+    after every ``frequency`` completed epochs, when ``epoch + 1`` is divisible
+    by ``frequency``; skipped epochs do no sampling, plotting, or GIF work.
+    The supplied Keras epoch index determines the schedule, including when
+    resuming with ``initial_epoch``. There is no extra sample at training end.
 
     Args:
         add_null_label (bool): Whether a CFG model's null condition is included in
@@ -55,12 +55,12 @@ class ImageGenerator(callbacks.Callback):
             Defaults to ``None``.
         project_tag (str | None): Optional text appended to the timestamped directory name.
             Defaults to ``None``.
+        frequency (int): Positive integer interval between samples.
+            Defaults to ``1`` (every epoch). For example, ``frequency=5`` samples
+            after one-based epochs 5, 10, 15, and so on. Booleans and nonintegers
+            are rejected.
         seed (int | None): Optional sampling seed reused at each epoch.
             Defaults to ``None``.
-        frequency (int): Keyword-only positive integer interval between samples.
-            Defaults to ``1`` (every epoch). For example, ``frequency=5`` samples
-            after one-based epochs 1, 6, 11, and so on. Booleans and nonintegers
-            are rejected.
         **kwargs (Any): Arguments forwarded to ``tf.keras.callbacks.Callback``. The
             base callback normally requires no extra options.
 
@@ -109,9 +109,10 @@ class ImageGenerator(callbacks.Callback):
             project_tag (str | None): Optional suffix for the run-directory
                 name.
                 Defaults to ``None``.
-            frequency (int): Keyword-only positive integer sampling interval,
-                starting at zero-based epoch 0. Defaults to ``1``. Booleans and
-                nonintegers are rejected before creating output directories.
+            frequency (int): Positive integer sampling interval. The first
+                sample is generated after one-based epoch ``frequency``.
+                Defaults to ``1`` (every epoch). Booleans and nonintegers are
+                rejected before creating output directories.
             seed (int | None): Optional seed forwarded to model sampling.
                 Defaults to ``None``.
                 None is forwarded unchanged to model.sample, leaving seed resolution to the
@@ -235,8 +236,9 @@ class ImageGenerator(callbacks.Callback):
 
         Args:
             epoch (int): Zero-based epoch index. Output filenames use
-                ``epoch + 1``. Only indices divisible by ``frequency`` generate
-                artifacts; all other calls return before accessing the model.
+                ``epoch + 1``. Artifacts are generated only when this one-based
+                epoch number is divisible by ``frequency``; all other calls
+                return before accessing the model.
             logs (dict[str, Any] | None): Optional Keras epoch-log mapping. It
                 is accepted for callback compatibility and is not read.
                 Defaults to ``None``. No caller-owned log mapping is available in that case.
@@ -248,8 +250,8 @@ class ImageGenerator(callbacks.Callback):
             to ``create_gif``.
         """
 
-        # Sample epoch index 0 and each configured interval thereafter.
-        if epoch % self.frequency != 0:
+        # Sample after each complete interval of one-based training epochs.
+        if (epoch + 1) % self.frequency != 0:
             return
 
         sample_kwargs = {
@@ -313,7 +315,7 @@ def run_self_tests() -> dict[str, str]:
 
     Returns:
         dict[str, str]: A one-entry mapping after frequency validation, positional
-        compatibility, cadence, directory creation, sampling arguments,
+        argument order, cadence, directory creation, sampling arguments,
         image/GIF paths, plotting flags, and hook returns pass.
     """
 
@@ -338,18 +340,19 @@ def run_self_tests() -> dict[str, str]:
                 raise AssertionError("Invalid sampling frequencies must fail.")
             assert not absent_root.exists()
 
-    positional_callback = ImageGenerator(False, True, False, None, None, 13)
+    positional_callback = ImageGenerator(False, True, False, None, None, 5, 13)
     assert positional_callback.add_null_label is False
     assert positional_callback.show_images is True
     assert positional_callback.save_gifs is False
     assert positional_callback.results_path is None
     assert positional_callback.seed == 13
-    assert positional_callback.frequency == 1
+    assert positional_callback.frequency == 5
 
     interval_callback = ImageGenerator(frequency=np.int64(3))
     assert type(interval_callback.frequency) is int
     assert interval_callback.get_config()["frequency"] == 3
     # A skipped hook must not even require a bound model.
+    assert interval_callback.on_epoch_end(0) is None
     assert interval_callback.on_epoch_end(1) is None
 
     for invalid_kwargs in (
@@ -410,9 +413,9 @@ def run_self_tests() -> dict[str, str]:
     ))
     with patch.object(sys.modules[__name__], "plot_images") as interval_plot:
         # Starting partway through a fit retains the supplied absolute epoch schedule.
-        for epoch in (2, 3, 4, 5, 6, 7):
+        for epoch, expected_count in ((3, 0), (4, 0), (5, 1), (6, 1), (7, 1), (8, 2)):
             interval_callback.on_epoch_end(epoch)
-        assert interval_sample.call_count == interval_plot.call_count == 2
+            assert interval_sample.call_count == interval_plot.call_count == expected_count
 
     with patch.object(sys.modules[__name__], "plot_images") as default_plot:
         for epoch in (1, 2, 3):
@@ -506,25 +509,25 @@ def run_self_tests() -> dict[str, str]:
         )
 
         periodic_saving_callback = ImageGenerator(
-            frequency=3, show_images=False, save_gifs=True,
+            frequency=5, show_images=False, save_gifs=True,
             results_path=temporary_directory,
         )
         periodic_saving_callback.set_model(saving_callback.model)
         save_sample.reset_mock()
         with patch.object(sys.modules[__name__], "create_gif") as periodic_gif, \
              patch.object(sys.modules[__name__], "plot_images") as periodic_plot:
-            for epoch in range(8):
+            expected_counts = [0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3]
+            for epoch, expected_count in enumerate(expected_counts):
                 logs = {"loss": 1.0}
                 periodic_saving_callback.on_epoch_end(epoch, logs)
                 assert logs == {"loss": 1.0}
-                expected_count = epoch // 3 + 1
                 assert save_sample.call_count == expected_count
                 assert periodic_plot.call_count == periodic_gif.call_count == expected_count
         assert [Path(call.args[0]).name for call in periodic_gif.call_args_list] == [
-            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.gif" for epoch in (1, 4, 7)
+            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.gif" for epoch in (5, 10, 15)
         ]
         assert [Path(call.kwargs["save_path"]).name for call in periodic_plot.call_args_list] == [
-            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.png" for epoch in (1, 4, 7)
+            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.png" for epoch in (5, 10, 15)
         ]
 
         shown_saving_callback = ImageGenerator(
