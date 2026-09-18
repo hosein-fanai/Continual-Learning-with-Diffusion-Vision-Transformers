@@ -209,7 +209,7 @@ UNet classifier sets `classifier_only_distil_token: true`. Set
 `clf_distil_type`, `clf_distil_loss_coef`, `clf_acc_coef`, `clf_distil_acc_coef`, and
 `ctr_acc_coef` in its diffusion-classifier wrapper.
 Token regularizer mappings accept `train_type: normal|distil|both` and
-`clf_distil_type: hard|soft`. Continual configs additionally set
+`distil_type: hard|soft`. Continual configs additionally set
 `continually_learn.use_distillation: true`. Task one trains without a teacher by
 default. Before each later task, the completed `snapshot_network_name`
 (`raw` or `ema`) student is copied into an independent frozen teacher, then the
@@ -297,7 +297,8 @@ diffusion uses it with the paired config's current raw `num_classes` and wrapper
 zero-based `seen_classes`; the wrapper rebuilds the grown raw/EMA topology before loading
 the checkpoint. Dynamic diffusion weight saving requires a `Config` and writes
 this paired `config.yaml` even when `save_config_=False`. Curriculum saving
-rewrites the final constructor mapping. Native Keras 3 does not support the
-legacy post-build depth additions, so construct the full depth before training;
-serialization metadata does not make that growth path executable. See the
+rewrites the final constructor mapping. The supported progressive-depth API
+preserves built layers and their weights under native Keras 3; classifier growth
+from `clf_depth=0` remains unsupported. Raw post-build `add_class()` is also
+unsupported; class expansion uses the wrapper's reconstruction path. See the
 [compatibility guide](../compatibility_migration.md).

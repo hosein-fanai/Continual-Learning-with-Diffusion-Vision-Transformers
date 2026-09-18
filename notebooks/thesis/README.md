@@ -23,10 +23,8 @@ configuration together before using them. For an unpublished notebook, upload
 the `.ipynb` to Colab or Kaggle; the shared initializer must still be available
 locally or on GitHub. Opening a runtime does not start training automatically.
 
-`00_Development2.ipynb` currently retains local-only initialization. It requires
-an existing repository checkout and a prepared TensorFlow 2.20 / Keras 3.11.2
-kernel; it does not download the checkout or install dependencies. Use
-`00_Development.ipynb` for automatic hosted setup.
+Earlier development and HPO executions are retained under `runs/` as historical
+artifacts. Use the numbered notebooks in this directory for the current recipe.
 
 ### Google Colab
 
@@ -197,17 +195,19 @@ must be prepared. Setup does not relax that provenance check.
 | [11 Offline joint reference](11_Offline_Joint_Reference.ipynb) | Train on all classes together, with no replay, distillation or semantic phases. |
 | [12 Naive sequential reference](12_Naive_Sequential_Reference.ipynb) | Train the same DiT platform task by task using current-task examples only, with no CL retention mechanism. |
 | [13 CIFAR-10 joint HPO](13_CIFAR10_Joint_HPO.ipynb) | Tune ordinary all-class diffusion/classification with a learned class token, no distillation, and persistent TensorBoard/Optuna results. |
-| [14 CIFAR-100 joint HPO](14_CIFAR100_Joint_HPO.ipynb) | The same conditional V1/V2 search on CIFAR-100. |
+| [14 CIFAR-100 joint HPO](14_CIFAR100_Joint_HPO.ipynb) | The same V1 search on CIFAR-100. |
 
 Notebooks **13 and 14** are independent development searches, outside the frozen
-campaign. They use the shared HPO API, EMA accuracy/noise-loss objectives, 50 epochs
-per fit phase, and synchronized early-stopping/plateau controls. V2 allows 50
-generator plus 50 classifier epochs. Their explicit development setup trains on
-all official training data and reuses all official test data for fit validation
-and HPO, without reserving training rows. The validation source is configurable;
-these scores are tuning results, not independent final test estimates.
+campaign. They use V1, raw weights without EMA, separate ordinary accuracy and
+noise-loss objectives, and 50 epochs without early stopping or fit validation.
+Version-13 notebooks select on a stratified 20% holdout of official training
+data; the other 80% supplies gradients. Earlier test-selected HPO studies remain
+exploratory and cannot support independent confirmation on those same test rows.
+Keep HPO selection metadata when transferring settings: preparation rejects
+recorded official-test selection. Manual copying can discard that provenance,
+so absence of a recorded warning does not establish an untouched test set.
 See the [joint-classifier HPO guide](JOINT_CLASSIFIER_HPO.md)
-for the search space, ensemble scoring rules, hardware/budget guidance, and
+for the search space, ordinary scoring rules, hardware/budget guidance, and
 recommendations from the reports. Their results do not automatically replace
 the continual-learning recipes.
 
@@ -241,7 +241,13 @@ Confirmation uses three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five tw
 
 The primary comparison is **learned minus extra joint in final clean task-average test accuracy**. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons. This deliberately reduced design does not reproduce every study or ablation proposed in the thesis guides.
 
-The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, depth 4, patch size 4, four heads, raw inference and no EMA. Common APIs own splitting, replay, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. Deployed inference uses the clean, unmodulated all-seen classifier, without task identity, gates or predictor. Clean semantic views and uniform reliability do not test noise-dependent reliability claims.
+The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, depth 4, patch size 4, four heads, raw inference and no EMA. Common APIs own splitting, replay, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. The maintained recipes use TMCL's published image policy: acquisition flips and four independently cropped/colored consolidation views. `noise_levels=[0]` disables diffusion noise, not image augmentation; reliability remains uniform. CE uses its separate clean input. Deployed inference uses the clean, unmodulated all-seen classifier, without task identity, gates or predictor. This does not test noise-dependent reliability claims or reproduce TMCL's full view-invariance objective.
+
+Learned versus extra joint compares the complete added procedure, including its
+image-view policy and losses. Equal optimizer-update allowances do not match
+images, target passes, FLOPs or wall time. Learned versus random shares the image
+policy and tests gate acquisition within that procedure; the minimum campaign
+has no identity-gate or augmentation-only arm, so it cannot isolate every cause.
 
 | Budget | CIFAR-10 | CIFAR-100 |
 |---|---|---|

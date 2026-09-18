@@ -2,6 +2,8 @@
 # These are unvalidated development settings, not a benchmark recipe.
 base_config: common_v1.yaml
 route:
+  image_augmentation: tmcl
+  augmentation_views: 4
   condition: learned
   acquisition_steps: 100
   consolidation_steps: 100

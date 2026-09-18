@@ -201,10 +201,11 @@ unflattened features instead of reaching around the bridge to pre-latent
 encoder features.
 
 Train the network through `DiffusionModel` with a nonzero `kl_loss_coef`, then
-use `sample_vae(...)` to decode latent samples. Construct the complete network
-depth before training: the legacy `add_depths(...)` methods cannot append
-tracked state to built models under native Keras 3. Fixed-depth class expansion
-uses the wrapper's existing reconstruction path. See the
+use `sample_vae(...)` to decode latent samples. Supported `add_depths(...)`
+calls retain existing stages and append new ones through the stage container;
+use wrapper growth to refresh optimizer and EMA ownership. Classifier depth
+cannot grow from `clf_depth=0`. Class expansion uses the wrapper's existing
+reconstruction path. See the
 [convolution model guide](diffusion/models/convolution/README.md) for supported
 construction specifications and the [compatibility guide](compatibility_migration.md)
 for growth boundaries.

@@ -38,6 +38,8 @@ common:
     replay_old_examples: 2048
     mechanistic_metrics: false
 route:
+  image_augmentation: tmcl
+  augmentation_views: 4
   checkpoint_interval: 200  # Same fixed recovery policy across paired conditions.
   condition: learned
   acquisition_steps: 1000  # 100 updates per new gate, cycling over ten new classes.

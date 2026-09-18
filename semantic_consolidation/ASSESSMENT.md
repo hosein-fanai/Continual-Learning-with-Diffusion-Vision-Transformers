@@ -1,6 +1,86 @@
 ﻿# Implementation assessment
 
-## Current audit scope
+## Thesis consistency review: 18 September 2026
+
+The selected route is consistent with the adaptation described in the thesis
+method draft; it is not an implementation-equivalent reproduction of TMCL or
+JDCL. The read-only manuscript check used `thesis/thesis_chapter_3.docx`,
+especially body paragraphs 87-91 (counting table paragraphs). These distinguish
+the independent acquired target and projection/head update scope from TMCL.
+The draft still contains unresolved protocol decisions; it supplies no measured
+evidence that the method improves retention.
+
+The review inventory contains **706 Markdown files**: **179 project documents,
+reports and historical artifacts**, and **527 bundled skill/reference files**.
+Project narratives were read, repeated archive paragraphs/code were reviewed
+once by exact identity, and historical synthetic tables were checked against
+their CSV sources. All **18 thesis notebooks**, including three archived copies,
+were inspected for source flow. Bundled skill files were read programmatically
+and screened for project-specific references; they were not treated as thesis
+evidence. Full training campaigns and historical notebook outputs were not
+re-executed as part of this audit. The local coverage ledger is
+`.tmp/semantic_audit/coverage_summary.json`, with per-file hashes in the adjacent
+read-coverage inventories.
+
+Primary-source checks used the
+[TMCL manuscript v3](https://arxiv.org/html/2505.14125v3), its
+[official code at 2cb306c](https://github.com/Dendritic-Learning-Group/tmcl/tree/2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b),
+the [JDCL manuscript v3](https://arxiv.org/html/2411.08224v3#S4), and
+[official JDCL code at ffa5303](https://github.com/pskiers/Joint-Diffusion-in-Latent-Space/tree/ffa5303ef156c69505ff358982529d410621b5a3).
+The inspected TMCL files include `main_tmcl.py`, `config_tmcl.py`, the Kornia
+dataset transforms, `nn/losses/contrastive_opl.py` and `nn/losses/mv_barlow.py`.
+JDCL checks covered `train_joint_diffusion_cl.py`, `cl_methods/generative_replay.py`
+and `models/standard_diffusion/joint_diffusion.py`.
+
+| Comparison | Verified distinction and allowed interpretation |
+|---|---|
+| TMCL acquisition | Local bounded late affine modulation and linear-positive/squared-negative loss are an explicit variant of official OPL. |
+| TMCL consolidation | Local CE plus instance InfoNCE uses a separate frozen target; it does not implement the separate VI term or the official multiview Barlow loss. Four views means one student plus three targets. |
+| JDCL lifecycle | JDCL consolidates old/global and new/local synthetic pools with two teachers. The local platform trains on current real data plus previous generated replay. |
+| Augmentation controls | Learned versus extra joint compares complete training procedures, including differing view exposure. Learned, random and replacement-CE semantic controls retain the same configured augmentation. |
+| Noise claim | The minimum thesis recipes use only level zero. They test augmented clean semantic consolidation, not noise dependence or cross-noise invariance. |
+| Evidence | Fixed-source repeated streams and authentic held-out outcomes are needed for efficacy claims; unit tests and synthetic tables establish neither retention gains nor biological validity. |
+
+Corrections from this review are small: new canonical HPO notebooks select on
+training-split validation and use a new storage identity; confirmation preparation
+rejects recorded official-test HPO selection; current documentation states the
+actual growth APIs and augmentation pairing. Previous test-selected HPO artifacts
+remain exploratory. Resetting a split or changing seeds cannot make previously
+used test data independent, and missing metadata cannot prove an absence of
+manual test-informed selection. See the
+[notebook audit](../notebooks/thesis/SCIENTIFIC_AUDIT.md) for that boundary.
+
+The scientific-critical-thinking skill supported the review procedure. Tooling
+reference: Kassis, T., Agarwal, V., He, Y., Patel, D., and Brueckner, A. M. (2026),
+[Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents](https://doi.org/10.48550/arXiv.2609.00065).
+This is tooling provenance, not evidence for the learning method.
+
+### Verification for this review
+
+The existing `tf_env_220` container was inspected: image
+`tensorflow/full-tensorflow:2.20.0-gpu-jupyter`, with `/workspace` bound to this
+exact checkout. Installed versions were Python **3.11.13**, TensorFlow **2.20.0**
+and Keras **3.11.2**. Checks ran in separate processes; the semantic suite had
+the RTX 2060 visible, while focused shared/notebook checks used CPU execution.
+
+| Check | Actual result |
+|---|---|
+| `python -m unittest discover -s semantic_consolidation/tests -v` | **213 passed**, no failures/errors/skips; 1224.867 seconds. |
+| `python -m unittest common.tests.test_dataloader_task common.tests.test_clean_classifier_training common.tests.test_classifier_batch_fraction common.tests.test_distillation_controls -v` | **42 passed, 1 framework placeholder skipped**, no failures/errors; 334.863 seconds. |
+| Focused notebook preparation, selection and aggregation regressions | **19 distinct tests passed**; exact commands in [notebook validation](../notebooks/thesis/VALIDATION.md). |
+| Notebook format and transformed-code syntax | **All 18 passed**; full-budget notebook execution was not performed. |
+| Semantic sources/tests plus the three edited notebook Python files | Static contracts passed for **48 files, 65 classes, 570 functions and 856 branches**. |
+
+The initial static review found eight missing branch comments in semantic
+diagnostic display paths and five in notebook recovery display/control paths.
+Only explanatory comments were added there. Before/after AST comparisons
+confirmed unchanged executable syntax; the semantic comments were added after
+the full suite finished to preserve its source-authentication tests. `diffusion`
+changes are confined to its wrapper README. Logs and syntax evidence are in
+`.tmp/semantic_audit/{semantic_tests.log,shared_tests.log,final_static.json}`.
+The full repository `python test.py` registry was not rerun in this review.
+
+## Earlier implementation audit scope
 
 The implementation targets TensorFlow 2.20 with Keras 3. This assessment covers
 production modules, route configurations and executable tests in
@@ -159,8 +239,11 @@ cosines. The gate bank keeps independent class variables; old gates are absent
 from new-gate optimizer applications, so optimizer momentum cannot move them.
 
 Consolidation uses a separate frozen post-acquisition target and frozen gate
-values. It does not reuse the previous-task retention teacher. Student and target
-receive identical image/noise tensors at each configured level. The default
+values. It does not reuse the previous-task retention teacher. With `tmcl`
+augmentation, student and targets receive independent augmented images and
+noise draws at the same configured level; `none` preserves the identical
+image/noise tensor. Fixed boundary diagnostics still use identical cached views.
+The default
 trainable network scope is the existing classifier projection and primary head,
 plus a temporary predictor. The shared denoising path remains fixed. The explicit
 backbone condition expands the eligible gradient scope and needs separate

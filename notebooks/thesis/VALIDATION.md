@@ -1,5 +1,31 @@
 # Thesis workflow validation — audit of 15 September 2026
 
+## Selection and scientific-interpretation follow-up — 18 September 2026
+
+The verified existing `tf_env_220` container mounts this checkout at `/workspace`.
+Checks used Python 3.11.13, TensorFlow 2.20.0 and Keras 3.11.2 in separate
+processes with GPU access disabled for these bounded checks.
+
+```bash
+python -m unittest notebooks.thesis.tests.test_recipe.PreparedRecipeTests.test_test_selected_hpo_cannot_be_frozen_as_confirmation notebooks.thesis.tests.test_recipe.PreparedRecipeTests.test_validation_selection_and_existing_fixed_recipe_are_eligible notebooks.thesis.tests.test_recipe.NotebookContractTests -q
+python -m unittest notebooks.thesis.tests.test_recipe.PreparedRecipeTests notebooks.thesis.tests.test_recipe.SavedDevelopmentReviewTests notebooks.thesis.tests.test_results_package.AggregationTests -q
+```
+
+Both commands passed: **6 tests** and **15 tests**, respectively (two selection
+regressions occur in both commands; **19 distinct tests**, no failures or skips).
+These verify validation-only HPO defaults, rejection of recorded test selection
+before campaign creation, unchanged source recipes, the 24-stream paired plan,
+and saved-only metric aggregation. All **18 thesis notebooks**, including three
+archived executions, also passed nbformat and transformed-code syntax checks.
+No notebook training or full HPO search was executed.
+
+The review read all **36 Markdown files** under `notebooks`: 15 narrative files
+and 21 historical synthetic tables. All **8,960 table rows** were parsed and
+cross-checked against their companion CSVs at the Markdown display precision;
+all 27,025 numeric cells were finite. These are synthetic validation artifacts,
+not measured thesis outcomes. Historical notebook outputs were inventoried and
+preserved, not treated as new confirmation evidence.
+
 ## Shared initializer and notebook preservation — 16 September 2026
 
 GitHub's repository metadata confirmed the public repository's canonical name:

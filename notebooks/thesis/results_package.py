@@ -60,6 +60,12 @@ LIMITATIONS = ("Three full training streams are the independent replicates; task
     "not strong representation-preservation evidence. Cosine geometry and CKA are not TMCL's CDNV. "
     "Replay label agreement is learner self-consistency, not independent perceptual quality. "
     "Update-matched extra joint is not matched wall time, FLOPs or example presentations. "
+    "With image augmentation enabled, learned versus extra joint compares the complete "
+    "procedure, including different view policies and losses; the minimum design has no "
+    "augmentation-only or identity-gate control. Independent test interpretation requires "
+    "that settings were selected without those test outcomes. The preparation guard rejects "
+    "recorded test-selected HPO metadata but cannot detect manually discarded provenance "
+    "or prior human test-informed choices; fresh seeds do not restore independence. "
     "Absence and nonfinite measurements remain unavailable; no favorable-run selection is allowed.")
 
 

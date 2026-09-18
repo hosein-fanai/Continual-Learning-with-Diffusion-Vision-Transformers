@@ -62,21 +62,26 @@ expose all permitted current examples. State the exposure budget in thesis table
 5. Acquisition freezes all network weights and state. A seeded shuffled cycle
    selects new classes. Each update uses at least two positive examples and a
    balanced set of negative examples, without reusing an index within a batch.
+   With `image_augmentation: tmcl`, each image is horizontally flipped with
+   probability 0.5 before the configured acquisition diffusion noise is applied.
    **One selected-class gain/bias pair is applied to every row.** The separation
    loss attracts positive pairs and penalizes squared positive/negative cosine.
    Only that class's two independent variables are updated; old gates cannot
    drift through momentum. Short budgets explicitly report untrained classes.
 6. A separate frozen copy of the acquired network becomes the consolidation
    target. Frozen copies of the modulation values produce its target features.
-   The previous-task KD teacher remains separate and unchanged. Student and
-   target receive the exact same image/noise tensor with null conditioning.
+   The previous-task KD teacher remains separate and unchanged. In `tmcl` mode,
+   student and target receive independent augmented views of matching images at
+   the same diffusion level. In `none` mode, they receive the exact same
+   image/noise tensor. Both use null conditioning.
 7. Consolidation trains the **existing primary classifier projection and head**,
    plus a temporary predictor. The default loss is clean CE plus weighted,
    normalized instance InfoNCE against the frozen modulated target. Other batch
    indices are negatives, including same-class examples. The semantic loss
-   averages over examples and noise levels; bounded signal-retention weights
+   averages over examples, target views and noise levels; bounded signal-retention weights
    affect only that term. Acquisition and CE have their own fixed noise-level
-   controls, so varying semantic bands does not also vary supervised augmentation.
+   controls. CE uses a separate image without geometric/color augmentation, so
+   varying semantic views or noise bands does not also vary supervised inputs.
 8. Reproducible mixed-class probes use a fixed subset of the permitted validation
    split. Each selected gate sees every probe batch. Hidden-to-target alignment
    and predictor-mediated alignment are recorded separately, alongside clean
@@ -121,6 +126,8 @@ route:
   condition: learned
   acquisition_steps: 100
   consolidation_steps: 100
+  image_augmentation: tmcl
+  augmentation_views: 4
   acquisition_noise_level: 0
   ce_noise_level: 0
   noise_levels: [0, 50, 150]
@@ -129,7 +136,8 @@ route:
   alignment_weight: 1.0
 ```
 
-Level `0` means exactly clean, even if scheduler timestep zero has nonzero noise.
+Level `0` means no diffusion noise, even if scheduler timestep zero has nonzero
+noise. Geometric/color augmentation still applies when `image_augmentation: tmcl`.
 Positive values index the platform's schedule. Choose these levels and coefficients
 on validation data; `alpha_bar` is a bounded signal proxy, not calibrated semantic
 confidence. `uniform` disables reliability downweighting.
@@ -142,12 +150,45 @@ confidence. `uniform` disables reliability downweighting.
 | `temperature`, `alignment_weight`, `ce_weight` | InfoNCE temperature and consolidation coefficients |
 | `orthogonality_weight` | Positive weight of acquisition's squared cross-class cosine |
 | `gain_limit`, `bias_limit`, `modulation_init_std` | Bounded affine controls and seeded initialization |
-| `acquisition_noise_level`, `ce_noise_level` | Separate fixed augmentation controls; both default clean |
-| `noise_levels`, `reliability`, `reliability_floor` | Semantic alignment views and bounded weights |
+| `image_augmentation` | `tmcl` enables the image transforms below; `none` retains the original unaugmented behavior |
+| `augmentation_views` | Total independent consolidation image views in `tmcl` mode; default 4, at least 2 |
+| `acquisition_noise_level`, `ce_noise_level` | Separate fixed diffusion-noise controls; both default to no diffusion noise |
+| `noise_levels`, `reliability`, `reliability_floor` | Semantic diffusion levels and bounded weights |
 | `retain_modulators` | Retain old gates; false explicitly tests discarding them after consolidation |
 | `probe_batches` | Validation-probe size target; at least two rows per represented class when available |
 | `probe_max_gates` | Maximum measured gates per diagnostic, default 16; all gates if within the cap, otherwise a seeded old/new subset |
 | `seed` | Semantic seed, defaulting to the common continual master seed |
+
+The maintained CIFAR recipes explicitly select `image_augmentation: tmcl`.
+`RouteSettings()` defaults to `none` to preserve direct-call behavior and provide
+an explicit no-augmentation ablation. In `tmcl` mode, acquisition uses only random
+horizontal flipping (probability 0.5). Consolidation uses random resized crops
+to 32 x 32 with bicubic interpolation, scale `(0.08, 1.0)` and aspect ratio
+`(0.75, 4/3)`; brightness/contrast/saturation/hue jitter `(0.4, 0.4, 0.2, 0.1)`
+with probability 0.8 and random operation order; grayscale with probability 0.2;
+and horizontal flipping with probability 0.5. Even-numbered views (2, 4, ...,
+using the paper's one-based numbering) also apply solarization with probability
+0.2, effective intensity threshold 0.5 and addition 0. This is the fixed
+threshold represented by Kornia's `thresholds=0.0` argument. Image transforms
+operate in `[0,1]` after converting the platform's nominal `[-1,1]` inputs.
+
+The default four independent image views are drawn once per consolidation update,
+before forward diffusion. The first is the student view; the other three are
+frozen-target views. Matching image rows remain positives, and the existing
+InfoNCE or feature-MSE loss is averaged over target views and diffusion levels.
+View seeds derive from phase, committed step and view index, without mutable
+augmentation RNG state, so checkpoint continuation can reproduce the draws.
+In `none` mode the original paired noisy tensor is reused unchanged.
+
+These transforms port the published [TMCL augmentation policy (Appendix A)](https://arxiv.org/html/2505.14125v3#A1)
+to TensorFlow, including flips-only acquisition and even-numbered solarized
+views. The author code differs in acquisition cropping and view ordering;
+this is not code parity. The TensorFlow crop uses ten sampling attempts with a
+center-crop fallback. Interpolation, crop sampling and backend numerics can
+differ from Kornia; bicubic overshoot is not removed by extra final clipping.
+They do not add the paper's separate view-invariance objective or reproduce its
+backbone/consolidation algorithm; see [Appendix C](https://arxiv.org/html/2505.14125v3#A3)
+and the [local scientific specification](SCIENTIFIC_BASIS.md).
 
 The baseline YAML states all active base loss coefficients. Classifier KD uses
 soft temperature-scaled teacher targets over full expanded student support and
@@ -216,19 +257,22 @@ and provenance; duration records alone cannot establish that match.
 
 ### Clean and noisy alignment controls
 
-The CIFAR default remains clean (`noise_levels: [0]`). Three additional standalone
-recipes use the same learned treatment and phase budgets:
+The CIFAR default uses no diffusion noise (`noise_levels: [0]`) while retaining
+the configured `tmcl` image augmentation. Three additional standalone recipes
+use the same learned treatment and phase budgets:
 
-| File in `configs/controls/` | Alignment views | Reliability |
+| File in `configs/controls/` | Diffusion levels | Reliability |
 |---|---|---|
 | `clean_uniform.yaml` | `[0]` | Uniform |
 | `noisy_uniform.yaml` | `[0, 50, 150]` | Uniform |
 | `noisy_weighted.yaml` | `[0, 50, 150]` | Bounded `alpha_bar` |
 
 These bands are starting examples for validation, not selected benchmark
-hyperparameters. Level zero is exactly clean and has weight one under either
-rule, so a separate clean-weighted run would duplicate the clean objective.
-Acquisition and supervised CE remain at their separately configured clean level.
+hyperparameters. Level zero adds no diffusion noise and has weight one under
+either rule, so a separate clean-weighted run would duplicate that objective.
+Keep image-augmentation mode and view count fixed across noise comparisons.
+Acquisition and supervised CE remain at their separately configured noise level;
+acquisition still uses flips in `tmcl` mode, and CE has no image augmentation.
 
 Use the existing study API to pair the three conditions on any supported template:
 
@@ -257,7 +301,7 @@ prepare a separate two-condition mapping ordered noisy uniform, then clean
 uniform. Prespecify bands, weight floors, coefficients and contrasts using
 training/validation information; freeze them before confirmation/test access.
 The weighted comparison changes the magnitude as well as relative contributions
-of alignment gradients, because weights are not sum-normalized. Adding views
+of alignment gradients, because weights are not sum-normalized. Adding noise levels
 keeps optimizer updates fixed but increases image/noise presentations and
 compute; report the existing phase ledgers alongside accuracy.
 
@@ -488,7 +532,8 @@ validation data and unavailable pre-joint hooks are explicitly reported.
 measures post-joint work, so the ordinary adapter's pre-joint diagnostic time is
 additional. Cache tensor bytes are reported separately and are not peak memory.
 Timing-control allowances exclude diagnostics. Each record states eligible
-consolidation variables and the same-noise pairing rule. Default consolidation
+consolidation variables and the diagnostic same-noise pairing rule. These fixed
+diagnostic pairs are distinct from augmented training views. Default consolidation
 acts in the classifier projection/head; shared sensory or generative improvement
 requires the explicit backbone treatment and appropriate generative evaluation.
 The multiple levels test transfer **under** different noise conditions, not

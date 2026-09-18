@@ -40,6 +40,8 @@ common:
     # Use held-out route observations instead of revisiting old training rows.
     mechanistic_metrics: false
 route:
+  image_augmentation: tmcl
+  augmentation_views: 4
   checkpoint_interval: 200  # Updates between recovery commits; retain latest two phase snapshots.
   condition: learned
   acquisition_steps: 200  # 100 optimizer updates per new gate.

@@ -13,6 +13,7 @@ import tensorflow as tf
 from common.gradients import apply_policy_gradients
 from common.keras_compat import format_variable_name
 from common.runtime import derive_seed
+from semantic_consolidation.augmentation import acquisition_augmentation, consolidation_views
 from semantic_consolidation.memory import affine_modulation
 from semantic_consolidation.objectives import (
     contrastive_alignment_loss,
@@ -70,10 +71,12 @@ def semantic_features(
 def paired_view(
     wrapper: tf.keras.Model, images: tf.Tensor, level: int, seed: int
 ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Produce one view used unchanged by both student and frozen target.
+    """Apply one configured diffusion noise level to an input image view.
 
     Route level 0 means an exactly clean image, even for schedules with a noisy
     timestep zero. Positive levels use the platform's forward diffusion API.
+    The no-augmentation policy shares this tensor between student and target;
+    TMCL augmentation calls this helper separately for each image view.
 
     Args:
         wrapper (tf.keras.Model): Live diffusion classifier exposing its raw network, class
@@ -250,6 +253,21 @@ class RoutePhase(tf.keras.Model):
         images, labels, positive = self.pool.draw(focus, self.settings.batch_size, self.rng)
         images = tf.convert_to_tensor(images, dtype=tf.float32)
         labels = tf.convert_to_tensor(labels, dtype=tf.int32)
+        # Pixel transforms have their own stateless seed and precede all diffusion noise.
+        # Generate them once so a noise-band ablation retains the same image views.
+        if self.settings.image_augmentation == "tmcl":
+            augmentation_seed = derive_seed(self.phase_seed, self.step_number, "augmentation")
+            # Acquisition follows the paper's flip-only supervised policy.
+            if self.phase == "acquisition":
+                image_views = (acquisition_augmentation(images, augmentation_seed),)
+            # Consolidation uses independently sampled geometric and color transforms.
+            else:
+                image_views = consolidation_views(
+                    images, augmentation_seed, num_views=self.settings.augmentation_views,
+                )
+        # Preserve the historical paired-tensor ablation when explicitly disabled.
+        else:
+            image_views = (images,)
         semantic_losses = []
         ce_losses = []
         with tf.GradientTape() as tape:
@@ -271,7 +289,7 @@ class RoutePhase(tf.keras.Model):
                 ))
             for draw, level in enumerate(levels):
                 noised, times, alpha_bar = paired_view(
-                    self.wrapper, images, level,
+                    self.wrapper, image_views[0], level,
                     derive_seed(self.phase_seed, self.step_number, draw, "noise"),
                 )
                 # Acquisition trains the gate against an immutable feature backbone.
@@ -305,34 +323,45 @@ class RoutePhase(tf.keras.Model):
                         self.wrapper.network, noised, times,
                         stop_backbone=self.settings.consolidation_scope == "semantic",
                     )
-                    target_features, _ = semantic_features(self.target, noised, times)
-                    # Only the explicitly unmodulated control removes target modulation.
-                    if self.settings.condition != "unmodulated_feature_distillation":
-                        gain, bias = self.frozen_bank[focus]
-                        target_features = affine_modulation(
-                            target_features, gain, bias, self.settings
-                        )
-                    target_features = tf.stop_gradient(target_features)
                     predicted = self.predictor(features, training=True)
                     weight = reliability_weights(
                         alpha_bar, floor=self.settings.reliability_floor
                     ) if self.settings.reliability == "alpha_bar" else tf.constant(1., tf.float32)
                     row_weights = tf.fill((tf.shape(images)[0],), weight)
-                    # Feature-distillation controls use pointwise normalized MSE instead of negatives.
-                    if self.settings.condition in (
-                        "feature_distillation", "unmodulated_feature_distillation"
-                    ):
-                        semantic = normalized_feature_distillation_loss(
-                            predicted, target_features, row_weights=row_weights
-                        )
-                    # The main consolidation objective treats matched target rows as the InfoNCE
-                    # positives.
-                    else:
-                        semantic = contrastive_alignment_loss(
-                            predicted, target_features,
-                            temperature=self.settings.temperature, row_weights=row_weights,
-                        )
-                    semantic_losses.append(semantic)
+                    # Every remaining independently augmented view supplies a matched-row
+                    # positive. The disabled policy retains the original exact shared tensor.
+                    target_views = image_views[1:] if len(image_views) > 1 else (None,)
+                    for view_index, target_view in enumerate(target_views, start=1):
+                        target_images, target_times = noised, times
+                        # Augmented targets get their own forward noise at the student's level.
+                        if target_view is not None:
+                            target_images, target_times, _ = paired_view(
+                                self.wrapper, target_view, level,
+                                derive_seed(self.phase_seed, self.step_number, draw,
+                                            view_index, "target_noise"),
+                            )
+                        target_features, _ = semantic_features(self.target, target_images, target_times)
+                        # Only the explicitly unmodulated control removes target modulation.
+                        if self.settings.condition != "unmodulated_feature_distillation":
+                            gain, bias = self.frozen_bank[focus]
+                            target_features = affine_modulation(
+                                target_features, gain, bias, self.settings
+                            )
+                        target_features = tf.stop_gradient(target_features)
+                        # Feature-distillation controls use pointwise normalized MSE instead of negatives.
+                        if self.settings.condition in (
+                            "feature_distillation", "unmodulated_feature_distillation"
+                        ):
+                            semantic = normalized_feature_distillation_loss(
+                                predicted, target_features, row_weights=row_weights
+                            )
+                        # The main objective treats matched target rows as InfoNCE positives.
+                        else:
+                            semantic = contrastive_alignment_loss(
+                                predicted, target_features,
+                                temperature=self.settings.temperature, row_weights=row_weights,
+                            )
+                        semantic_losses.append(semantic)
             semantic_loss = tf.reduce_mean(tf.stack(semantic_losses))
             ce_loss = tf.reduce_mean(tf.stack(ce_losses))
             # Acquisition uses only the class-separation objective.
@@ -359,7 +388,7 @@ class RoutePhase(tf.keras.Model):
         pairs = apply_policy_gradients(tape, self.optimizer, loss, variables)
         self.updated_names.update(format_variable_name(variable) for _, variable in pairs)
         self.example_draws += len(images)
-        self.view_draws += len(images) * len(levels)
+        self.view_draws += len(images) * len(levels) * len(image_views)
         self.step_number += 1
         self.loss_tracker.update_state(loss)
         self.ce_tracker.update_state(ce_loss)

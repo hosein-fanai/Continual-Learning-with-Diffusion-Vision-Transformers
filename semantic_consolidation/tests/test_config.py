@@ -9,7 +9,7 @@ import unittest
 
 import yaml
 
-from semantic_consolidation.config import RouteConfig, _merge, load_route_config
+from semantic_consolidation.config import RouteConfig, RouteSettings, _merge, load_route_config, validate_route_config
 
 
 class RouteYamlTests(unittest.TestCase):
@@ -63,6 +63,65 @@ class RouteYamlTests(unittest.TestCase):
         merged["route"]["noise_levels"].append(3)
         merged["tags"].append("later")
         self.assertEqual((base, overrides), before)
+
+    def test_tmcl_augmentation_settings_round_trip_through_yaml(self) -> None:
+        """The scientific policy and view count are explicit serialized controls."""
+        config = self._load_text(
+            "route:\n  image_augmentation: tmcl\n  augmentation_views: 6\n"
+        )
+        self.assertEqual(config.route.image_augmentation, "tmcl")
+        self.assertEqual(config.route.augmentation_views, 6)
+
+    def test_augmentation_defaults_preserve_the_historical_api(self) -> None:
+        """Constructing old settings retains the unaugmented paired-view control."""
+        settings = RouteSettings()
+        self.assertEqual(settings.image_augmentation, "none")
+        self.assertEqual(settings.augmentation_views, 4)
+
+    def test_invalid_augmentation_controls_are_rejected(self) -> None:
+        """A misspelled policy or unusable count fails before any phase training."""
+        for value in ("random", "TMCL", "", True):
+            with self.subTest(policy=value), self.assertRaisesRegex(ValueError, "image_augmentation"):
+                RouteSettings(image_augmentation=value)
+        for value in (0, 1, -1, 2.5, True, "4", None):
+            with self.subTest(views=value), self.assertRaisesRegex(ValueError, "augmentation_views"):
+                RouteSettings(image_augmentation="tmcl", augmentation_views=value)
+
+    def test_tmcl_rejects_incompatible_image_geometry(self) -> None:
+        """RGB color operations and the fixed crop cannot silently alter MNIST or padding."""
+        for override in (
+            {"dataset": {"name": "mnist"}},
+            {"dataset": {"pad": 2}},
+            {"model": {"kwargs": {"channels": 1}}},
+            {"model": {"kwargs": {"image_size": 28}}},
+        ):
+            fragment = yaml.safe_dump({"common": override, "route": {"image_augmentation": "tmcl"}})
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, "32x32 RGB CIFAR"):
+                self._load_text(fragment)
+
+    def test_shipped_cifar_recipes_enable_tmcl_and_mnist_retains_none(self) -> None:
+        """Maintained benchmark entry points select the applicable published image policy."""
+        project = Path(__file__).resolve().parents[2]
+        for directory in (project / "semantic_consolidation/configs", project / "notebooks/thesis/configs"):
+            for name in ("cifar10", "cifar100"):
+                with self.subTest(directory=directory, dataset=name):
+                    route = load_route_config(directory / f"{name}.yaml").route
+                    self.assertEqual(route.image_augmentation, "tmcl")
+                    self.assertEqual(route.augmentation_views, 4)
+        route = load_route_config(project / "semantic_consolidation/configs/smoke.yaml").route
+        self.assertEqual(route.image_augmentation, "none")
+
+    def test_typed_cifar_geometry_uses_dataset_dimensions(self) -> None:
+        """Shared model construction replaces typed MNIST geometry with CIFAR RGB."""
+        config = self._load_text("route:\n  image_augmentation: tmcl\n")
+        config.common.model.kwargs = {}
+        config.common.model.dit_classifier.classifier_mlp_ratio = 1
+        config.common.model.diffusion_classifier.use_ema = False
+        config.common.model.diffusion_classifier.test_noisified_max_timesteps = 0
+        for name in (None, "dit_classifier"):
+            with self.subTest(model_name=name):
+                config.common.model.name = name
+                validate_route_config(config)
 
 
 # Direct execution runs only these configuration regressions.

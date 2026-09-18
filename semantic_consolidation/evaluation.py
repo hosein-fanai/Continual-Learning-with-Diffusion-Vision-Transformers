@@ -430,6 +430,7 @@ def _predict(
         # Validate before correcting only floating-point row-sum roundoff.
         probability = _probability_matrix(probability)
         probabilities.append(probability / probability.sum(axis=1, keepdims=True))
+        # Quiet evaluation has no progress display to advance.
         if progress is not None:
             progress.update(min(start + settings.batch_size, len(samples)))
     elapsed = time.perf_counter() - started

@@ -326,9 +326,11 @@ configured test network, accepts the `EnsembleAccuracy` options, and is also
 inherited by `DiffusionClassifierV2`; pass `network_name="raw"` or `"ema"` to
 select a network explicitly.
 
-The legacy classifier depth specification can describe both branches. The
-following documents its format; execution on an already built model fails
-under native Keras 3 and is outside the supported training path:
+The classifier depth specification can grow both branches on built models.
+The wrapper preserves existing layers, registers the appended variables with
+the optimizer, and initializes new EMA weights from their raw counterparts.
+Classifier growth requires a positive initial `clf_depth` and must preserve
+the retained classifier head's feature width:
 
 ```python
 depths = [{

@@ -25,7 +25,7 @@ Unpublished notebooks can instead be uploaded to Colab or Kaggle; their setup
 still requires the shared initializer to be available locally or on GitHub.
 Binder is for small CPU checks, and Studio Lab requires an existing account.
 
-`thesis/00_Development2.ipynb` currently retains local-only initialization. Its
+The archived `thesis/runs/00_Development2.ipynb` retains local-only initialization. Its
 first code cell requires an existing checkout and a prepared TensorFlow 2.20 /
 Keras 3.11.2 kernel; it does not download files, install dependencies or expose
 the shared runtime settings. Use `thesis/00_Development.ipynb` for automatic

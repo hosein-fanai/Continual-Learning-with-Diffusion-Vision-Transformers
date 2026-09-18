@@ -11,6 +11,8 @@ common:
   training:
     results_path: ./results/semantic_consolidation_extensions_cifar100
 route:
+  image_augmentation: tmcl
+  augmentation_views: 4
   condition: learned
   acquisition_steps: 100
   consolidation_steps: 100

@@ -24,9 +24,11 @@ class RouteSettings:
     ablation. Steps count optimizer updates, independently of joint-fit epochs.
     ``consolidation_scope='semantic'`` permits only classifier projection/head
     and temporary predictor updates; the shared diffusion backbone stays fixed.
-    Multiple noise levels pair the same corrupted input within each level, not
-    features from different levels. ``probe_max_gates`` caps measured coverage,
-    never the training bank.
+    ``image_augmentation='tmcl'`` uses the paper's acquisition flips and
+    independently augmented consolidation views before diffusion noising.
+    ``'none'`` retains the historical same-input alignment. Noise levels never
+    align features from different timesteps. ``probe_max_gates`` caps measured
+    coverage, never the training bank.
     """
 
     acquisition_steps: int = 100
@@ -43,6 +45,8 @@ class RouteSettings:
     acquisition_noise_level: int = 0
     ce_noise_level: int = 0
     noise_levels: tuple[int, ...] = (0,)
+    image_augmentation: str = "none"
+    augmentation_views: int = 4
     reliability: str = "alpha_bar"
     reliability_floor: float = 0.05
     condition: str = "learned"
@@ -85,6 +89,9 @@ class RouteSettings:
         # Zero preserves completed-task recovery; positive intervals also commit fit progress.
         if type(self.checkpoint_interval) is not int or self.checkpoint_interval < 0:
             raise ValueError("route.checkpoint_interval must be a nonnegative integer.")
+        # TMCL uses four views; explicit experimental overrides still need a positive pair.
+        if type(self.augmentation_views) is not int or self.augmentation_views < 2:
+            raise ValueError("route.augmentation_views must be an integer >= 2.")
         # route.batch_size must be at least four for positives and negatives.
         if self.batch_size < 4:
             raise ValueError("route.batch_size must be at least four for positives and negatives.")
@@ -130,6 +137,7 @@ class RouteSettings:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"route.{name} must be a nonnegative integer.")
         choices = {
+            "image_augmentation": {"none", "tmcl"},
             "condition": {"baseline", "learned", "random", "no_consolidation", "feature_distillation", "unmodulated_feature_distillation", "extra_joint", "time_matched_joint"},
             "reliability": {"alpha_bar", "uniform"},
             "consolidation_scope": {"semantic", "backbone"},
@@ -361,6 +369,15 @@ def validate_route_config(config: RouteConfig) -> None:
         raise ValueError("Training route runs start fresh; use load_inference_model for a completed checkpoint.")
     raw = project.model.kwargs if project.model.name is not None and project.model.kwargs else asdict(project.model.dit_classifier)
     wrapper = project.model.wrapper_kwargs if project.model.name is not None and project.model.wrapper_kwargs else asdict(project.model.diffusion_classifier)
+    # The published CIFAR policy has RGB color operations and a fixed 32-pixel crop.
+    # Typed geometry is overwritten by dataset dimensions in common.model.get_model.
+    explicit_geometry = project.model.name is not None and bool(project.model.kwargs)
+    # Reject geometry incompatible with the published RGB32 policy before building models.
+    if settings.image_augmentation == "tmcl" and (
+        dataset.name not in ("cifar10", "cifar100") or dataset.pad != 0
+        or (explicit_geometry and (raw.get("image_size", 32) != 32 or raw.get("channels", 3) != 3))
+    ):
+        raise ValueError("TMCL image augmentation requires unpadded 32x32 RGB CIFAR inputs.")
     # Route one currently requires diffusion_classifier.use_ema=false.
     if wrapper.get("use_ema", True):
         raise ValueError("Route one currently requires diffusion_classifier.use_ema=false.")

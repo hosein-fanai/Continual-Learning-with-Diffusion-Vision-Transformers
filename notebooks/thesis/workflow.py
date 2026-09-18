@@ -232,6 +232,7 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
         # Template dataset differs from the selected artifact.
         if config.common.dataset.name != name:
             raise ValueError(f"Template dataset differs from {name}.")
+        _validate_confirmation_selection(config)
     notebook_dir = Path(__file__).resolve().parent
     notebooks = sorted(path for path in notebook_dir.glob("*.ipynb")
                        if re.match(r"^0[2-9][ _-]", path.name))
@@ -262,6 +263,39 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
     _write_new(record_path, record)
     _campaign(record_path)
     return record_path
+
+
+def _validate_confirmation_selection(config: RouteConfig) -> None:
+    """Reject recorded official-test selection before creating a confirmation study.
+
+    HPO records both requested and resolved validation sources. Retain that metadata
+    when transferring settings: resetting the live dataset split does not undo prior
+    test-based selection. Missing metadata cannot prove that no manual test-informed
+    choice occurred; the freeze instructions state this limit explicitly.
+
+    Args:
+        config (RouteConfig): Planned recipe retaining any transferred HPO metadata.
+
+    Returns:
+        validated (None): None; this check neither trains nor writes artifacts.
+
+    Raises:
+        ValueError: If the live split or recorded HPO selection uses official test rows.
+    """
+    selection = config.common.hpo.get("data_selection", {})
+    selected_on_test = isinstance(selection, dict) and any(
+        isinstance(selection.get(section), dict)
+        and selection[section].get("validation_source") == "test"
+        for section in ("requested", "resolved")
+    )
+    # Known selection provenance remains disqualifying after a live split reset.
+    if config.common.dataset.validation_source == "test" or selected_on_test:
+        raise ValueError(
+            "Confirmation cannot use settings selected on the official test set. "
+            "Preserve test-selected HPO evidence as exploratory; use training-split "
+            "validation for selection. Changing seeds or the live split does not "
+            "restore an independent test set."
+        )
 
 
 def _campaign(record_path: str | Path) -> tuple[dict, dict]:
@@ -661,19 +695,23 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
         Path(config.common.training.results_path) / "checkpoints" / f"{condition}-{seed}-{_development_identity(config)}"
     ).resolve()
     context = {"record_path": None, "dataset": dataset}
+    # Explicit continuations adopt one completed task while preserving its source tree.
     if resume_from is not None:
         from common.recovery import load_task_checkpoint
+        # A continuation needs its own recovery destination before loading old state.
         if checkpoint_dir is None:
             raise ValueError("Explicit resume_from requires a separate checkpoint_dir.")
         source = Path(resume_from).resolve()
         # A directory for a specific task prevents silently selecting a later task.
         if not re.fullmatch(r"task-\d{4,}", source.name):
             raise ValueError("resume_from must name one completed task-NNNN directory.")
+        # Reject overlap in either direction so new checkpoints cannot replace lineage.
         if destination.is_relative_to(source.parent) or source.parent.is_relative_to(destination):
             raise ValueError("checkpoint_dir must be separate from the source checkpoint tree.")
         recovered = load_task_checkpoint(source, expected_class_order=continual.class_order,
                                          expected_task_groups=continual.task_groups)
         saved = recovered.experiment_state
+        # Partial-task states cannot seed the completed-task continuation protocol.
         if "active_task_index" in saved or "restart_task_index" in saved:
             raise ValueError("resume_from must be a completed task, not initial or fit-progress state.")
         # Record lineage without changing the historical checkpoint or its source identity.
@@ -687,6 +725,7 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
         # A continuation is seeded only once; subsequent retries use its own progress.
         if _configure_recovery(config, destination) is None:
             continual.resume_from = str(source)
+    # Ordinary pilots discover their own recovery state without adopting an external task.
     else:
         _configure_recovery(config, destination)
     validate_route_config(config)

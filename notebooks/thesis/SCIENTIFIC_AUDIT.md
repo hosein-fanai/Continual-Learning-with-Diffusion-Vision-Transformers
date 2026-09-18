@@ -1,6 +1,25 @@
 # Thesis experiment audit — 15 September 2026
 
-## Verdict
+## Follow-up: 18 September 2026
+
+The earlier audit below remains a dated record. The maintained CIFAR recipes now
+use the published TMCL image policy: acquisition flips and four independent
+geometric/color consolidation views. Zero semantic diffusion noise no longer
+means an unaugmented image. This preserves the local CE plus InfoNCE adaptation;
+it does not add TMCL's full view-invariance objective. The learned/extra-joint
+contrast therefore measures the whole procedure, including different view
+policies. The minimum campaign has no augmentation-only or identity-gate arm.
+
+The dedicated HPO notebooks previously selected on official test data. Their
+new version-13 directories use training-only 80/20 selection, while historical
+studies remain unchanged. Confirmation preparation now rejects recorded
+test-selected HPO metadata even if the live split was reset. Retain selection
+provenance when transferring settings. This guard cannot detect manual copying
+that discards provenance or prior human test-informed choices, and it cannot
+retroactively certify an untouched test set. Repeated seeds do not repair such
+selection. No full-budget CIFAR campaign was executed for this follow-up.
+
+## Verdict from 15 September
 
 **The notebooks can produce a defensible evaluation of the local TMCL-inspired
 classifier procedure. They do not yet contain the evidence needed for a positive

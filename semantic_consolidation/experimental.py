@@ -376,6 +376,7 @@ class ExperimentalController:
         self.verbose = kwargs.get(
             "verbose", getattr(getattr(self.project, "training", None), "verbose", False)
         )
+        # Announce validation preparation only when fit verbosity enables output.
         if self.verbose:
             print("Boundary diagnostics: preparing held-out validation data...", flush=True)
         self.validation = _validation_arrays(wrapper, validation_data)
@@ -487,10 +488,12 @@ class ExperimentalController:
         images, labels = self.validation
         fit_seconds = time.perf_counter() - self.fit_started
         started = time.perf_counter()
+        # Identify the held-out cohort before a verbose boundary evaluation.
         if self.verbose:
             print(f"Boundary diagnostics (task {len(self.records) + 1}): "
                   f"validation evaluation on {len(images)} images", flush=True)
         outcome, cost = self._classify(wrapper, images, labels, verbose=self.verbose)
+        # Summaries expose measured values without changing the observation itself.
         if self.verbose:
             metrics = ", ".join(
                 f"{name}={outcome[name]:.4f}" if outcome.get(name) is not None else f"{name}=unavailable"
@@ -504,6 +507,7 @@ class ExperimentalController:
         generation = {"available": False, "reason": "No actual generated replay before this task."}
         # Generated-memory diagnostics require actual captured replay candidates.
         if self.candidates:
+            # Report the captured sample count only on the verbose path.
             if self.verbose:
                 print(f"Boundary diagnostics: generated replay audit on {len(self.candidates)} images", flush=True)
             gx = np.stack([row[2] for row in self.candidates])
@@ -520,8 +524,10 @@ class ExperimentalController:
                                "classifier": "current learner primary head; internal label consistency, not independent semantic labels",
                                "prediction_cost": generation_cost})
             self.representatives.append((len(self.records) + 1, gx, gy))
+        # An empty candidate pool has no generated-replay evidence to summarize.
         elif self.verbose:
             print("Boundary diagnostics: generated replay audit unavailable (no captured replay)", flush=True)
+        # Resource measurement runs regardless of whether its stage is displayed.
         if self.verbose:
             print("Boundary diagnostics: resource accounting", flush=True)
         route = getattr(wrapper, "route_controller", None)
@@ -556,6 +562,7 @@ class ExperimentalController:
                               "generated_replay_sampling": self.sampling_seconds,
                               "boundary_diagnostics": time.perf_counter() - started}}
         self.records.append(record)
+        # Print the completed measurement duration only when requested.
         if self.verbose:
             print(f"Boundary diagnostics complete in {record['seconds']['boundary_diagnostics']:.2f}s", flush=True)
         self.old_count = wrapper.network.num_classes

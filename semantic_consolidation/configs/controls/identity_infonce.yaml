@@ -2,6 +2,8 @@
 # Acquisition still executes with zero learning rate; consolidation uses InfoNCE.
 base_config: ../common_v1.yaml
 route:
+  image_augmentation: tmcl
+  augmentation_views: 4
   condition: random
   modulation_init_std: 0.0
   acquisition_steps: 100

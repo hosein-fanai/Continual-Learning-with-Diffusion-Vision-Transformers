@@ -319,6 +319,10 @@ class RouteController:
                 "supervised_view_draws": 0, "image_noise_draws": 0,
                 "gradient_variable_names": [], "trace": [],
                 "zero_learning_rate_control": random_control,
+                "image_augmentation": phase.settings.image_augmentation,
+                "augmentation_views": (phase.settings.augmentation_views
+                                       if phase.phase == "consolidation" and
+                                       phase.settings.image_augmentation == "tmcl" else 1),
             }
         phase.compile(
             optimizer=tf.keras.optimizers.Adam(
@@ -350,6 +354,10 @@ class RouteController:
             ),
             "gradient_variable_names": sorted(phase.updated_names),
             "zero_learning_rate_control": random_control, "trace": phase.trace,
+            "image_augmentation": phase.settings.image_augmentation,
+            "augmentation_views": (phase.settings.augmentation_views
+                                   if phase.phase == "consolidation" and
+                                   phase.settings.image_augmentation == "tmcl" else 1),
             "focus_class_updates": phase.focus_counts,
             "untrained_focus_classes": [c for c, count in phase.focus_counts.items() if count == 0],
             "supervised_view_draws": phase.example_draws if phase.phase == "consolidation" else 0,
@@ -415,11 +423,13 @@ class RouteController:
         started = time.perf_counter()
         # Missing validation produces an unavailable observation instead of fabricated metrics.
         if probe is None:
+            # Explain omitted observations only when progress reporting is requested.
             if self.verbose:
                 print(f"Boundary diagnostics ({self._diagnostic_stage}): validation unavailable.", flush=True)
             return {"split": "unavailable"}, None, None
         x, y = probe
         progress = None
+        # Quiet runs avoid allocating or displaying the progress bar.
         if self.verbose:
             print(
                 f"Boundary diagnostics ({self._diagnostic_stage}): "
@@ -437,6 +447,7 @@ class RouteController:
             hidden, predicted = semantic_features(wrapper.network, images, times)
             features.append(hidden.numpy())
             probabilities.append(predicted.numpy())
+            # Update only the explicitly enabled progress display.
             if progress is not None:
                 progress.update(min(start + self.settings.batch_size, len(x)))
         features, probabilities = np.concatenate(features), np.concatenate(probabilities)
@@ -465,6 +476,7 @@ class RouteController:
                 list(frozen_bank), old, self.settings.probe_max_gates,
                 derive_seed(self.settings.seed, len(self.records), "alignment_probe_gates"),
             )
+            # Report the bounded gate comparison when progress output is enabled.
             if self.verbose:
                 print(
                     f"Boundary diagnostics ({self._diagnostic_stage}): "
@@ -536,6 +548,7 @@ class RouteController:
             }
         elapsed = time.perf_counter() - started
         self.diagnostic_seconds += elapsed
+        # Render measured summaries only for verbose runs.
         if self.verbose:
             measures = [f"accuracy={result['clean_accuracy']:.4f}"]
             for group in ("old", "new"):
@@ -604,6 +617,7 @@ class RouteController:
 
         self.diagnostic_seconds = 0.
         self._diagnostic_stage = "before joint training"
+        # Announce probe selection without adding output to quiet experiments.
         if self.verbose:
             print("Boundary diagnostics: selecting validation probes before joint training...", flush=True)
         started = time.perf_counter()
@@ -726,6 +740,7 @@ class RouteController:
             features.nbytes for features in (boundary["pre_features"], post_features) if features is not None
         )
         self._boundary = None
+        # Display accumulated observer cost only on the verbose path.
         if self.verbose:
             print(f"Route boundary diagnostics complete: {self.diagnostic_seconds:.1f}s total.", flush=True)
 
@@ -770,7 +785,12 @@ class RouteController:
                 if settings.consolidation_scope == "semantic" else
                 "eligible: connected classifier/shared-backbone variables and temporary predictor; backbone ablation"
             ),
-            "noise_pairing": "same image and same noise tensor for student/target at each level; no cross-noise alignment",
+            "image_augmentation": settings.image_augmentation,
+            "noise_pairing": (
+                "independent augmented views and noise draws for student/targets at the same level; no cross-noise alignment"
+                if settings.image_augmentation == "tmcl" else
+                "same image and same noise tensor for student/target at each level; no cross-noise alignment"
+            ),
         }
         boundary = self._boundary
         if boundary is None:
@@ -789,6 +809,7 @@ class RouteController:
         # Platform and extra-joint controls preserve the original joint training objective.
         if settings.condition in ("baseline", "extra_joint", "time_matched_joint"):
             record["gradient_boundary"] = "consolidation not run; original joint training boundaries apply"
+            record["noise_pairing"] = "consolidation not run"
             # The extra-training controls spend their declared semantic-phase allowance on joint fits.
             if settings.condition in ("extra_joint", "time_matched_joint"):
                 steps = settings.acquisition_steps + settings.consolidation_steps

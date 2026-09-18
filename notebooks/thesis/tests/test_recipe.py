@@ -33,6 +33,38 @@ SEEDS = [1103, 2207, 3301]
 class PreparedRecipeTests(unittest.TestCase):
     """Exercise native materialization of the complete declared reduced campaign."""
 
+    def test_test_selected_hpo_cannot_be_frozen_as_confirmation(self) -> None:
+        """Reject recorded test selection without creating or changing artifacts."""
+        configs = {name: load_route_config(path) for name, path in TEMPLATES.items()}
+        configs["cifar10"].common.hpo["data_selection"] = {
+            "requested": {"validation_source": "test", "validation_ratio": 0.0},
+            "resolved": {"validation_source": "test", "validation_ratio": 0.0},
+        }
+        # A later reset of the live split must not erase selection provenance.
+        configs["cifar10"].common.dataset.validation_source = "split"
+        before = {name: path.read_bytes() for name, path in TEMPLATES.items()}
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "campaign"
+            with patch.object(workflow, "check_runtime", return_value={}), \
+                    patch.object(workflow, "load_route_config", side_effect=lambda path: configs[Path(path).stem]), \
+                    self.assertRaisesRegex(ValueError, "selected on the official test set"):
+                workflow.prepare_campaign(destination, TEMPLATES, SEEDS)
+            self.assertFalse(destination.exists())
+        self.assertEqual(before, {name: path.read_bytes() for name, path in TEMPLATES.items()})
+
+    def test_validation_selection_and_existing_fixed_recipe_are_eligible(self) -> None:
+        """Accept training-only selection and reject direct test-split recipes."""
+        config = load_route_config(TEMPLATES["cifar10"])
+        workflow._validate_confirmation_selection(config)
+        config.common.hpo["data_selection"] = {
+            "requested": {"validation_source": "split", "validation_ratio": .2},
+            "resolved": {"validation_source": "split", "validation_ratio": .2},
+        }
+        workflow._validate_confirmation_selection(config)
+        config.common.dataset.validation_source = "test"
+        with self.assertRaisesRegex(ValueError, "official test set"):
+            workflow._validate_confirmation_selection(config)
+
     def test_development_identity_tracks_inherited_settings_and_source(self) -> None:
         """Keep revised pilots separate without rewriting their earlier evidence.
 
@@ -229,6 +261,23 @@ class PreparedRecipeTests(unittest.TestCase):
 
 class NotebookContractTests(unittest.TestCase):
     """Structural checks do not execute training cells or claim useful learning."""
+
+    def test_joint_hpo_defaults_preserve_official_test_for_confirmation(self) -> None:
+        """Use training-only selection in new studies without altering old runs."""
+        from IPython.core.inputtransformer2 import TransformerManager
+        transformer = TransformerManager()
+        for filename in ("13_CIFAR10_Joint_HPO.ipynb", "14_CIFAR100_Joint_HPO.ipynb"):
+            with self.subTest(notebook=filename):
+                notebook = nbformat.read(NOTEBOOKS / filename, as_version=4)
+                nbformat.validate(notebook)
+                source = "\n".join(transformer.transform_cell(cell.source)
+                                   for cell in notebook.cells if cell.cell_type == "code")
+                tree = ast.parse(source)
+                settings = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
+                            for target in node.targets if isinstance(target, ast.Name)}
+                self.assertEqual(ast.literal_eval(settings["VALIDATION_SOURCE"]), "split")
+                self.assertEqual(ast.literal_eval(settings["VALIDATION_RATIO"]), .2)
+                self.assertIn("joint_classifier_hpo_v13", ast.unparse(settings["STUDY_ROOT"]))
 
     def test_all_thirteen_notebooks_are_valid_clean_and_syntactically_executable(self) -> None:
         """Validate canonical notebook sources and the portable hosted kernel metadata.
