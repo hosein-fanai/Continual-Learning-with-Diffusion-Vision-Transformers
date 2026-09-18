@@ -1,9 +1,9 @@
 """Epoch-end diffusion sampling, image plotting, and denoising GIF output.
 
-ImageGenerator samples the selected raw/EMA diffusion network after every
-epoch, displays or saves image grids, and optionally saves denoising trajectories
-as GIFs. Constructor output modes control immediate directory creation; portable
-phase prefixes keep later task artifacts distinct.
+ImageGenerator samples the selected raw/EMA diffusion network at a configurable
+epoch frequency, displays or saves image grids, and optionally saves denoising
+trajectories as GIFs. Constructor output modes control immediate directory
+creation; portable phase prefixes keep later task artifacts distinct.
 """
 
 from tensorflow.keras import callbacks
@@ -12,6 +12,7 @@ import os
 
 from datetime import datetime
 
+from numbers import Integral
 from typing import Any
 
 from common.utils import plot_images, create_gif
@@ -19,7 +20,7 @@ from common.result_directory import reserve_result_directory
 
 
 class ImageGenerator(callbacks.Callback):
-    """Generate qualitative diffusion samples after every training epoch.
+    """Generate qualitative diffusion samples on selected training epochs.
 
     The callback expects a ``DiffusionModel``-compatible bound model exposing
     ``test_steps``, ``test_cfg_scale``, ``test_eta``, ``test_network_name``, and
@@ -32,7 +33,11 @@ class ImageGenerator(callbacks.Callback):
       ``show_images`` controls simultaneous display.
 
     A dated run directory is created immediately during construction when
-    saving. GIF output additionally requires a result path.
+    saving. GIF output additionally requires a result path. Sampling starts at
+    epoch index 0 and repeats every ``frequency`` epochs; skipped epochs do no
+    sampling, plotting, or GIF work. The supplied Keras epoch index determines
+    the schedule, including when resuming with ``initial_epoch``. There is no
+    extra sample at training end.
 
     Args:
         add_null_label (bool): Whether a CFG model's null condition is included in
@@ -42,7 +47,7 @@ class ImageGenerator(callbacks.Callback):
         show_images (bool): Whether ``plot_images`` displays the generated image grid.
             Defaults to ``True``.
         save_gifs (bool): Whether to request intermediate ``x_t`` and ``x_0`` frames
-            and write a denoising GIF per epoch.
+            and write a denoising GIF per selected epoch.
             Defaults to ``False``.
         results_path (str | os.PathLike[str] | None): Optional string or path-like base directory. A timestamped
             child containing ``images`` is created; ``gifs`` is added when GIF
@@ -52,8 +57,12 @@ class ImageGenerator(callbacks.Callback):
             Defaults to ``None``.
         seed (int | None): Optional sampling seed reused at each epoch.
             Defaults to ``None``.
+        frequency (int): Keyword-only positive integer interval between samples.
+            Defaults to ``1`` (every epoch). For example, ``frequency=5`` samples
+            after one-based epochs 1, 6, 11, and so on. Booleans and nonintegers
+            are rejected.
         **kwargs (Any): Arguments forwarded to ``tf.keras.callbacks.Callback``. The
-            TensorFlow 2.10 base callback normally requires no extra options.
+            base callback normally requires no extra options.
 
     Inputs:
         Keras supplies a zero-based integer epoch and optional metric mapping;
@@ -69,6 +78,7 @@ class ImageGenerator(callbacks.Callback):
         seed (int | None): Current seed forwarded to each sampling call.
         base_seed (int | None): Original constructor seed retained for recovery fingerprints.
         artifact_prefix (str): Validated filename prefix, initially empty.
+        frequency (int): Positive epoch interval, normalized to a Python integer.
     """
 
     def __init__(
@@ -76,8 +86,9 @@ class ImageGenerator(callbacks.Callback):
         add_null_label: bool = True, 
         show_images: bool = True, 
         save_gifs: bool = False, 
-        results_path: str | os.PathLike[str] | None = None,
+        results_path: str | os.PathLike[str] | None = None, 
         project_tag: str | None = None, 
+        frequency: int = 1, 
         seed: int | None = None, 
         **kwargs: Any
     ) -> None:
@@ -90,7 +101,7 @@ class ImageGenerator(callbacks.Callback):
             show_images (bool): Whether to display each generated image grid.
                 Defaults to ``True``.
             save_gifs (bool): Whether to save intermediate denoising frames as
-                a GIF for each epoch.
+                a GIF for each selected epoch.
                 Defaults to ``False``.
             results_path (str | os.PathLike[str] | None): Optional output base
                 directory. A timestamped run directory is created beneath it.
@@ -98,6 +109,9 @@ class ImageGenerator(callbacks.Callback):
             project_tag (str | None): Optional suffix for the run-directory
                 name.
                 Defaults to ``None``.
+            frequency (int): Keyword-only positive integer sampling interval,
+                starting at zero-based epoch 0. Defaults to ``1``. Booleans and
+                nonintegers are rejected before creating output directories.
             seed (int | None): Optional seed forwarded to model sampling.
                 Defaults to ``None``.
                 None is forwarded unchanged to model.sample, leaving seed resolution to the
@@ -108,12 +122,16 @@ class ImageGenerator(callbacks.Callback):
             None: No value is returned.
 
         Raises:
-            ValueError: If ``project_tag`` is not a portable filename fragment,
-                or if the requested output mode cannot emit artifacts.
+            ValueError: If ``frequency`` is not a positive integer,
+                ``project_tag`` is not a portable filename fragment, or the
+                requested output mode cannot emit artifacts.
         """
 
         super().__init__(**kwargs)
 
+        # Reject invalid intervals before modulo arithmetic or filesystem writes.
+        if isinstance(frequency, bool) or not isinstance(frequency, Integral) or frequency <= 0:
+            raise ValueError("frequency must be a positive integer.")
         # Reject configurations that neither display nor save generated images.
         if not show_images and results_path is None:
             raise ValueError("The callback must show or save images.")
@@ -137,6 +155,7 @@ class ImageGenerator(callbacks.Callback):
         self.show_images = show_images
         self.save_gifs = save_gifs
         self.results_path = results_path
+        self.frequency = int(frequency)
         self.seed = seed
         self.base_seed = seed
         self.artifact_prefix = ""
@@ -195,14 +214,15 @@ class ImageGenerator(callbacks.Callback):
         """Return behavior-defining callback options for recovery fingerprints.
 
         Returns:
-            dict[str, object]: Sampling/display/GIF options and the initial
-            seed. Filesystem paths and mutable task prefixes are excluded.
+            dict[str, object]: Sampling frequency, display/GIF options and the
+            initial seed. Filesystem paths and mutable task prefixes are excluded.
         """
 
         return {
             "add_null_label": self.add_null_label, 
             "show_images": self.show_images, 
             "save_gifs": self.save_gifs, 
+            "frequency": self.frequency, 
             "seed": self.base_seed
         }
 
@@ -211,11 +231,12 @@ class ImageGenerator(callbacks.Callback):
         epoch: int, 
         logs: dict[str, Any] | None = None
     ) -> None:
-        """Sample the bound diffusion model and render epoch artifacts.
+        """Sample and render artifacts when the epoch index is due.
 
         Args:
             epoch (int): Zero-based epoch index. Output filenames use
-                ``epoch + 1``.
+                ``epoch + 1``. Only indices divisible by ``frequency`` generate
+                artifacts; all other calls return before accessing the model.
             logs (dict[str, Any] | None): Optional Keras epoch-log mapping. It
                 is accepted for callback compatibility and is not read.
                 Defaults to ``None``. No caller-owned log mapping is available in that case.
@@ -226,6 +247,10 @@ class ImageGenerator(callbacks.Callback):
             ``(images, x_t_frames, x0_frames)``; the frame sequences are passed
             to ``create_gif``.
         """
+
+        # Sample epoch index 0 and each configured interval thereafter.
+        if epoch % self.frequency != 0:
+            return
 
         sample_kwargs = {
             "network_name": self.model.test_network_name,
@@ -281,14 +306,15 @@ class ImageGenerator(callbacks.Callback):
 
 
 def run_self_tests() -> dict[str, str]:
-    """Test display and filesystem modes of :class:`ImageGenerator`.
+    """Test sampling cadence and output modes of :class:`ImageGenerator`.
 
     Args:
         None.
 
     Returns:
-        dict[str, str]: A one-entry mapping after constructor combinations, directory creation,
-        sampling arguments, image/GIF paths, plotting flags, and hook returns.
+        dict[str, str]: A one-entry mapping after frequency validation, positional
+        compatibility, cadence, directory creation, sampling arguments,
+        image/GIF paths, plotting flags, and hook returns pass.
     """
 
     import tempfile
@@ -297,6 +323,34 @@ def run_self_tests() -> dict[str, str]:
     from types import SimpleNamespace
     from unittest.mock import Mock, patch
 
+    import numpy as np
+
+
+    with tempfile.TemporaryDirectory() as validation_directory:
+        absent_root = Path(validation_directory) / "must-not-exist"
+        for invalid_frequency in (0, -1, True, False, 1.0, 1.5, "2", None, np.bool_(True)):
+            try:
+                ImageGenerator(frequency=invalid_frequency, results_path=absent_root)
+            except ValueError as error:
+                assert str(error) == "frequency must be a positive integer."
+            # Invalid intervals must fail before they reserve a result directory.
+            else:
+                raise AssertionError("Invalid sampling frequencies must fail.")
+            assert not absent_root.exists()
+
+    positional_callback = ImageGenerator(False, True, False, None, None, 13)
+    assert positional_callback.add_null_label is False
+    assert positional_callback.show_images is True
+    assert positional_callback.save_gifs is False
+    assert positional_callback.results_path is None
+    assert positional_callback.seed == 13
+    assert positional_callback.frequency == 1
+
+    interval_callback = ImageGenerator(frequency=np.int64(3))
+    assert type(interval_callback.frequency) is int
+    assert interval_callback.get_config()["frequency"] == 3
+    # A skipped hook must not even require a bound model.
+    assert interval_callback.on_epoch_end(1) is None
 
     for invalid_kwargs in (
         {"show_images": False, "save_gifs": False, "results_path": None}, 
@@ -349,6 +403,23 @@ def run_self_tests() -> dict[str, str]:
     )
     plot_mock.assert_called_once_with("images", has_null_label=False)
 
+    interval_sample = Mock(return_value="interval-images")
+    interval_callback.set_model(SimpleNamespace(
+        test_steps=4, test_cfg_scale=1.5, test_eta=0.25,
+        test_network_name="raw", use_cfg=False, sample=interval_sample,
+    ))
+    with patch.object(sys.modules[__name__], "plot_images") as interval_plot:
+        # Starting partway through a fit retains the supplied absolute epoch schedule.
+        for epoch in (2, 3, 4, 5, 6, 7):
+            interval_callback.on_epoch_end(epoch)
+        assert interval_sample.call_count == interval_plot.call_count == 2
+
+    with patch.object(sys.modules[__name__], "plot_images") as default_plot:
+        for epoch in (1, 2, 3):
+            display_callback.on_epoch_end(epoch)
+        assert display_sample.call_count == 4
+        assert default_plot.call_count == 3
+
     with tempfile.TemporaryDirectory() as png_directory:
         png_callback = ImageGenerator(
             show_images=False, 
@@ -371,6 +442,7 @@ def run_self_tests() -> dict[str, str]:
         assert (result_root / "gifs").is_dir()
         saving_callback.set_artifact_prefix("task-2_classes-4-5")
         assert saving_callback.get_config() == {
+            "frequency": 1,
             "add_null_label": True,
             "show_images": False,
             "save_gifs": True,
@@ -432,6 +504,28 @@ def run_self_tests() -> dict[str, str]:
         assert Path(plot_kwargs["save_path"]).name == (
             "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.png"
         )
+
+        periodic_saving_callback = ImageGenerator(
+            frequency=3, show_images=False, save_gifs=True,
+            results_path=temporary_directory,
+        )
+        periodic_saving_callback.set_model(saving_callback.model)
+        save_sample.reset_mock()
+        with patch.object(sys.modules[__name__], "create_gif") as periodic_gif, \
+             patch.object(sys.modules[__name__], "plot_images") as periodic_plot:
+            for epoch in range(8):
+                logs = {"loss": 1.0}
+                periodic_saving_callback.on_epoch_end(epoch, logs)
+                assert logs == {"loss": 1.0}
+                expected_count = epoch // 3 + 1
+                assert save_sample.call_count == expected_count
+                assert periodic_plot.call_count == periodic_gif.call_count == expected_count
+        assert [Path(call.args[0]).name for call in periodic_gif.call_args_list] == [
+            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.gif" for epoch in (1, 4, 7)
+        ]
+        assert [Path(call.kwargs["save_path"]).name for call in periodic_plot.call_args_list] == [
+            f"epoch-{epoch}_steps-3_scale-2.0_eta-0.1250.png" for epoch in (1, 4, 7)
+        ]
 
         shown_saving_callback = ImageGenerator(
             show_images=True, 

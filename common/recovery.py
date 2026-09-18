@@ -912,7 +912,7 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
         # Repository sampling callbacks use task-isolated seeds and change no learned state.
         elif _qualified_name(callback) == "diffusion.callbacks.image_generator.ImageGenerator":
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
-                                      for key in ("add_null_label", "show_images", "save_gifs", "base_seed")},
+                                      for key in ("frequency", "add_null_label", "show_images", "save_gifs", "base_seed")},
                               state_scope="per_fit")
         # Unknown callbacks must declare a behavior/state contract before strict execution.
         else:

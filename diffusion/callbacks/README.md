@@ -33,7 +33,19 @@ epoch-wise pacing. Use `stopper_mode="max"` for an accuracy monitor.
 
 This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`,
 and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
-renders the result.
+renders the result on the configured schedule.
+
+The keyword-only `frequency` option defaults to `1`, which generates samples
+after every epoch. Sampling starts at zero-based epoch index 0 and repeats every
+`frequency` epochs: `ImageGenerator(frequency=5)` produces previews after
+one-based epochs 1, 6, 11, and so on. Skipped epochs perform no sampling, plotting,
+or GIF creation. The schedule uses the epoch index supplied by Keras, including
+when `fit(initial_epoch=...)` resumes a run; separate fits starting at epoch 0
+start the schedule again. Training end does not force an extra preview.
+
+`frequency` must be a positive integer; zero, negative values, booleans, and
+nonintegers raise `ValueError` before output directories are created. Existing
+positional arguments keep their original order; pass the interval by name.
 
 `ImageGenerator(add_null_label=True)` forwards that flag to the sampler and
 omits explicit labels. The wrapper chooses observed classes for a dynamic
@@ -60,6 +72,7 @@ Save PNG and GIF artifacts, optionally also display them:
 
 ```python
 artifacts = ImageGenerator(
+    frequency=5,
     show_images=False,
     save_gifs=True,
     results_path="results",
@@ -71,6 +84,9 @@ The saving constructor immediately creates
 `results/YYYY-MM-DD_HH-MM-SS project_tag/images` and `.../gifs`. GIF mode asks
 `sample` for both noisy-state and predicted-clean frame sequences. Filenames
 record the one-based epoch, sampling steps, guidance scale, and eta.
+With the example interval, artifact filenames contain `epoch-1`, `epoch-6`,
+`epoch-11`, and so on. The constructor still reserves its directories immediately,
+regardless of the sampling frequency.
 
 Supplying `results_path` saves PNGs whether or not GIF output is enabled. If
 `results_path=None`, `show_images` must be true; `save_gifs=True` always
@@ -78,6 +94,11 @@ requires a result path.
 
 New result directories are reserved exclusively using timestamp and tag, with a
 unique suffix on collision. Every writer for the same run shares that reservation.
+The callback's `get_config()` and recovery fingerprints include `frequency`, so
+changing the sampling interval changes the declared recovery configuration.
+Strict recovery may also reject checkpoints created before this field was
+included, even with the default interval; retain the original source when
+resuming those runs.
 
 ## `RawNetworkValidation`
 

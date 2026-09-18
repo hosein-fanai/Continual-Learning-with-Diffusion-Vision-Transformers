@@ -251,6 +251,14 @@ class AuditBoundaryTests(unittest.TestCase):
         self.assertEqual(callback_recovery_descriptor([callback], strict=True), descriptor)
         callback.add_null_label = False
         self.assertNotEqual(callback_recovery_descriptor([callback], strict=True), descriptor)
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                every_epoch = ImageGenerator(seed=11)
+                every_third_epoch = ImageGenerator(seed=11, frequency=3)
+                self.assertNotEqual(
+                    callback_recovery_descriptor([every_epoch], strict=strict),
+                    callback_recovery_descriptor([every_third_epoch], strict=strict),
+                )
 
     def test_decoder_accuracy_accepts_sparse_columns(self) -> None:
         """Compare one prediction per sparse column label without broadcasting.
