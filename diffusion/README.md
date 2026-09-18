@@ -216,9 +216,20 @@ save_schedule_plots(
 `EnsembleAccuracy` averages unconditional classifier predictions across
 timesteps in either bounded-memory `"chunked"` or single-call `"batched"` mode.
 Use `network_name="raw"|"ema"`; omitting it defaults to `"ema"`, which the
-wrapper resolves to raw when EMA is disabled. With a seed, stateless noise is
-derived per logical timestep, so
-batched and chunked results are invariant to chunk size and prior RNG use.
+wrapper resolves to raw when EMA is disabled. Optional `t_range_drop_rate`
+removes a fraction of timestep IDs without replacement, favoring noisier,
+lower-SNR timesteps through reciprocal normalized SNR sampling weights. For
+example, `max_t=128, t_range_drop_rate=0.25` evaluates 96 timesteps. The default
+`0` evaluates the full horizon; at least one timestep is always retained, and
+both uniform and SNR-weighted means normalize over the retained IDs. This
+reduces classifier work; preserving accuracy requires measurement.
+
+An explicit seed, or the wrapper's seed when omitted, fixes both the subset
+and stateless noise derived per original timestep ID, making batched and
+chunked results invariant to chunk size and prior RNG use. With neither seed
+set, each prediction uses advancing TensorFlow randomness to select its
+subset and noise. See the [metric guide](metrics/README.md) for selection
+semantics, model requirements, and memory bounds.
 
 ## Package map
 

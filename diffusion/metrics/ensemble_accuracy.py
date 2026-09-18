@@ -2,9 +2,10 @@
 
 EnsembleAccuracy binds a trained classifier wrapper and combines primary,
 optional token-regularizer, and independent distillation-head outputs over
-integer timesteps [0, max_t). It supports uniform or normalized SNR weighting
-and vectorized or memory-bounded timestep groups. Seeded noise is stateless
-per timestep, making the two compute modes comparable for the same input batch.
+integer timesteps [0, max_t). It supports uniform or normalized SNR weighting,
+optional inverse-SNR timestep dropping, and vectorized or memory-bounded
+timestep groups. Seeded selection and noise are stateless, making the two
+compute modes comparable for the same input batch.
 
 Methods return score/probability tensors and update a Keras categorical
 accuracy tracker; evaluate does not reset existing metric state. Importing
@@ -35,8 +36,8 @@ ComputeType: TypeAlias = Literal[
 class EnsembleAccuracy(metrics.Metric):
     """Measure classifier accuracy after averaging predictions over timesteps.
 
-    For every clean input, this metric creates noisy versions at integer
-    timesteps ``0`` through ``max_t - 1``, obtains unconditional class
+    For every clean input, this metric creates noisy versions at selected
+    integer timesteps from ``0`` through ``max_t - 1``, obtains unconditional class
     predictions, optionally combines their primary, classifier-regularizer,
     and distillation heads, averages them, and delegates accuracy tracking to
     ``SparseCategoricalAccuracy``. ``"batched"`` evaluates all replicas in one
@@ -45,8 +46,8 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify`` and ``get_network``. Weighted evaluation also requires
-    ``get_noise_and_signal_rates``. Each selected inner
+    ``noisify`` and ``get_network``. Weighted evaluation or timestep dropping
+    also requires ``get_noise_and_signal_rates``. Each selected inner
     network must expose ``num_classes`` and the project's five-or-six-value
     ``predict_class(full_return=True)`` interface. Seeded mode additionally
     requires ``q_sample`` so stateless per-timestep noise can be applied without
@@ -63,6 +64,8 @@ class EnsembleAccuracy(metrics.Metric):
         weighted (bool): Whether to use schedule-derived SNR weights instead of a uniform
             mean.
         max_t (int): Exclusive integer ensemble horizon; must be positive.
+        t_range_drop_rate (float): Fraction of individual timesteps to drop,
+            preferentially removing low-SNR steps; at least one step is retained.
         t_chunk_size (int): Positive maximum timesteps per chunked call.
         clf_acc_coef (float): Primary probability coefficient; weights are not divided
             by their sum when combining heads.
@@ -70,8 +73,8 @@ class EnsembleAccuracy(metrics.Metric):
         ctr_acc_coef (float): Coefficient of the mean available regularizer predictions.
         separate_probas (bool): Combine null predictions with each class-conditioned
             diagonal and apply softmax after timestep aggregation.
-        seed (int | None): Effective master noise seed, inherited from the wrapper
-            when omitted. None after fallback uses advancing stateful noising.
+        seed (int | None): Effective master selection/noise seed, inherited from the
+            wrapper when omitted. None after fallback uses advancing stateful RNG.
         tracker (tf.keras.metrics.SparseCategoricalAccuracy): Running weighted correct
             and example counts; reset_state clears them.
 
@@ -92,6 +95,7 @@ class EnsembleAccuracy(metrics.Metric):
         compute_type: ComputeType = "chunked", 
         weighted: bool = False, 
         max_t: int = 128, 
+        t_range_drop_rate: float = 0., 
         t_chunk_size: int = 16, 
         clf_acc_coef: float = 1., 
         clf_distil_acc_coef: float = 0., 
@@ -116,6 +120,12 @@ class EnsembleAccuracy(metrics.Metric):
             max_t (int): Positive exclusive timestep horizon, no greater than
                 wrapper.timesteps.
                 Defaults to ``128``.
+            t_range_drop_rate (float): Finite fraction in ``[0, 1]``. Remove
+                ``min(floor(max_t * rate), max_t - 1)`` distinct timesteps,
+                sampling without replacement with weights proportional to
+                ``1 / softmax(log SNR)``. For example, ``0.25`` drops 25%,
+                rounded down; ``1.0`` retains one step. Selection is shared
+                across the batch in both compute modes. Defaults to ``0.0``.
             t_chunk_size (int): Positive timesteps per chunk; values above max_t produce one
                 chunk.
                 Batched mode does not use this limit.
@@ -131,9 +141,10 @@ class EnsembleAccuracy(metrics.Metric):
             separate_probas (bool): Whether to combine separate null and
                 class-conditioned CFG predictions.
                 Defaults to ``False``.
-            seed (int | None): Independent ensemble noise seed; None inherits
-                diffusion_clf.seed. If
-                that is also None, no stateless master stream is installed.
+            seed (int | None): Independent ensemble selection/noise seed; None
+                inherits diffusion_clf.seed. An effective seed fixes the subset
+                across calls and compute modes while preserving noise per original
+                timestep ID. If both are None, each call uses advancing randomness.
                 Defaults to ``None``.
             name (str | None): Keras metric name. None delegates automatic naming to Keras.
                 Defaults to ``'ensemble_accuracy'``.
@@ -148,7 +159,8 @@ class EnsembleAccuracy(metrics.Metric):
 
         Raises:
             ValueError: Network/compute selection is unsupported, timestep bounds are
-                not positive integers, max_t exceeds the wrapper horizon, head
+                not positive integers, max_t exceeds the wrapper horizon, the drop
+                rate is nonfinite or outside [0, 1], head
                 coefficients are negative/nonfinite or all zero, CFG is disabled,
                 separate conditioning lacks its required label vocabulary, or the seed is
                 invalid.
@@ -178,6 +190,8 @@ class EnsembleAccuracy(metrics.Metric):
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
+        if not np.isfinite(t_range_drop_rate) or not 0. <= t_range_drop_rate <= 1.:
+            raise ValueError("t_range_drop_rate must be finite and in [0, 1].")
         for key, value in (
             ("clf_acc_coef", clf_acc_coef), 
             ("clf_distil_acc_coef", clf_distil_acc_coef), 
@@ -202,15 +216,23 @@ class EnsembleAccuracy(metrics.Metric):
         self.separate_probas = bool(separate_probas)
         self.weighted = weighted
         self.max_t = int(max_t)
+        self.t_range_drop_rate = float(t_range_drop_rate)
         self.t_chunk_size = int(t_chunk_size)
         self.clf_acc_coef = float(clf_acc_coef)
         self.clf_distil_acc_coef = float(clf_distil_acc_coef)
         self.ctr_acc_coef = float(ctr_acc_coef)
-        # Inherit the wrapper seed only when no independent ensemble seed is supplied.
         self.seed = effective_seed(seed=(
             getattr(diffusion_clf, "seed", None) 
             if seed is None else seed
         ))
+        # A Python seed table lets symbolic selected IDs retain their original
+        # noise streams without passing tensors into derive_seed's hash function.
+        self._timestep_seeds = (
+            tuple(
+                derive_seed(self.seed, "ensemble_accuracy", "timestep", timestep)
+                for timestep in range(self.max_t)
+            ) if self.seed is not None else None
+        )
         self.tracker = metrics.SparseCategoricalAccuracy(
             name="tracker", 
             dtype=self.dtype
@@ -228,7 +250,8 @@ class EnsembleAccuracy(metrics.Metric):
                 "compute_type can either be chunked or batched."
             )
 
-        # Separate conditioning requires exactly one null label plus one label per predicted class.
+        # Separate conditioning requires exactly one 
+        # null label plus one label per predicted class.
         if self.separate_probas and (
             not getattr(self.network, "use_cfg", False)
             or getattr(
@@ -351,36 +374,26 @@ class EnsembleAccuracy(metrics.Metric):
 
         return total_pred
 
-    def _get_timestep_weights(self) -> tf.Tensor:
-        """Return uniform or normalized SNR weights for all ensemble steps.
+    def _get_softmax_log_snr(self) -> tf.Tensor:
+        """Return normalized SNR weights for all ``[0, max_t)`` timesteps.
 
-        Args:
-            None.
+        Signal and noise powers are epsilon-clamped before taking logarithms.
+        Arithmetic uses at least float32 so reciprocal sampling weights and
+        retained-weight normalization do not underflow in float16 metrics.
 
         Returns:
-            tf.Tensor: Metric-dtype vector [max_t]. Unweighted mode returns ones;
-            weighted mode returns softmax(log SNR), using epsilon-clamped signal/noise
-            powers. Predictors divide by sum(weights), so both routes produce a mean.
+            tf.Tensor: Positive vector [max_t], in float64 for float64 metrics
+            and float32 otherwise, summing to one up to floating-point error.
         """
-
-        # Preserve a uniform mean when schedule-aware weighting is disabled.
-        if not self.weighted:
-            return tf.ones((self.max_t,), dtype=self.dtype)
 
         timesteps = tf.range(self.max_t, dtype=tf.int32)
         signal_rates, noise_rates = self.diffusion_clf.get_noise_and_signal_rates(
             timesteps
         )
 
-        stable_dtype = tf.as_dtype(self.dtype)
-        signal_power = tf.cast(
-            tf.square(signal_rates), 
-            stable_dtype,
-        )
-        noise_power = tf.cast(
-            tf.square(noise_rates), 
-            stable_dtype,
-        )
+        stable_dtype = tf.float64 if tf.as_dtype(self.dtype) == tf.float64 else tf.float32
+        signal_power = tf.square(tf.cast(signal_rates, stable_dtype))
+        noise_power = tf.square(tf.cast(noise_rates, stable_dtype))
         epsilon = tf.cast(
             tf.keras.backend.epsilon(), 
             stable_dtype,
@@ -390,13 +403,76 @@ class EnsembleAccuracy(metrics.Metric):
             tf.math.log(tf.maximum(noise_power, epsilon))
         )
 
-        return tf.cast(tf.nn.softmax(log_snr), self.dtype)
+        return tf.nn.softmax(log_snr)
+
+    def _select_timesteps(self) -> tf.Tensor:
+        """Sample individual timestep removals with inverse-SNR weights.
+
+        Gumbel ranking samples without replacement: the largest scores are
+        removed, with selection weights proportional to reciprocal normalized
+        SNR. This targets a fixed compute budget, rather than independently
+        dropping steps with a variable total count. A zero removal count avoids
+        both schedule evaluation and random draws. Seeded selection is fixed
+        across calls; unseeded selection is redrawn on each prediction.
+
+        Returns:
+            tf.Tensor: Sorted int32 retained IDs with a static, positive length.
+        """
+
+        drop_count = min(int(self.max_t * self.t_range_drop_rate), self.max_t - 1)
+        if drop_count == 0:
+            return tf.range(self.max_t, dtype=tf.int32)
+
+        nsr = tf.math.reciprocal(self._get_softmax_log_snr())
+        selection_seed = derive_seed(self.seed, "ensemble_accuracy", "timestep_dropout")
+        uniform_kwargs = {
+            "shape": (self.max_t,), 
+            "minval": np.finfo(nsr.dtype.as_numpy_dtype).tiny, 
+            "maxval": 1., 
+            "dtype": nsr.dtype
+        }
+        if selection_seed is None:
+            uniform = tf.random.uniform(**uniform_kwargs)
+        else:
+            uniform = tf.random.stateless_uniform(
+                seed=tf.constant((selection_seed, 0), dtype=tf.int32), 
+                **uniform_kwargs
+            )
+
+        gumbel = -tf.math.log(-tf.math.log(uniform))
+        removal_order = tf.argsort(tf.math.log(nsr) + gumbel, direction="DESCENDING")
+
+        # Keep Python chunking and unstack 
+        # usable while tracing a tf.function.
+        return tf.ensure_shape(
+            tf.sort(removal_order[drop_count:]), 
+            (self.max_t - drop_count,)
+        )
+
+    def _get_timestep_weights(self, timesteps: tf.Tensor) -> tf.Tensor:
+        """Return uniform or normalized SNR weights for retained ensemble steps.
+
+        Args:
+            timesteps (tf.Tensor): Nonempty int32 vector of retained timestep IDs.
+
+        Returns:
+            tf.Tensor: Metric-dtype vector matching timesteps. Unweighted mode
+            returns ones; weighted mode normalizes the selected SNR weights in
+            stable precision before casting. Predictors divide by sum(weights).
+        """
+
+        # Preserve a uniform mean when schedule-aware weighting is disabled.
+        if not self.weighted:
+            return tf.ones_like(timesteps, dtype=self.dtype)
+
+        weights = tf.gather(self._get_softmax_log_snr(), timesteps)
+
+        return tf.cast(weights / tf.reduce_sum(weights), self.dtype)
 
     def _noisify_timestep_block(
         self, 
         x: tf.Tensor, 
-        start: int, 
-        count: int
+        timesteps: tf.Tensor
     ) -> tf.Tensor:
         """Create a noisy timestep block, preserving seeded streams across chunking.
 
@@ -411,31 +487,29 @@ class EnsembleAccuracy(metrics.Metric):
 
         Args:
             x (tf.Tensor): Clean images shaped ``[batch,height,width,channels]``.
-            start (int): First timestep in the block.
-            count (int): Positive number of consecutive timesteps.
+            timesteps (tf.Tensor): Nonempty int32 vector of original timestep IDs
+                with a statically known length; IDs need not be consecutive.
 
         Returns:
             tf.Tensor: Noisy replicas shaped
-            ``[batch,count,height,width,channels]``.
+            ``[batch,len(timesteps),height,width,channels]``.
         """
 
         batch_shape = tf.reshape(tf.shape(x)[0], (1,))
+        timestep_seeds = (
+            tf.constant(self._timestep_seeds, dtype=tf.int32)
+            if self._timestep_seeds is not None else None
+        )
         noised_by_timestep = []
-        for timestep in range(start, start + count):
+        for timestep in tf.unstack(timesteps):
             timestep_batch = tf.fill(batch_shape, timestep)
-            timestep_seed = derive_seed(
-                self.seed, 
-                "ensemble_accuracy", 
-                "timestep", 
-                timestep
-            )
 
             # Seeded metrics use counter-free noise so compute mode and prior
             # random calls cannot change a logical timestep's realization.
-            if timestep_seed is not None:
+            if timestep_seeds is not None:
                 noises = tf.random.stateless_normal(
                     tf.shape(x), 
-                    seed=tf.constant((timestep_seed, 0), dtype=tf.int32), 
+                    seed=tf.stack((tf.gather(timestep_seeds, timestep), 0)), 
                     dtype=x.dtype
                 )
                 x_t = self.diffusion_clf.q_sample(
@@ -504,7 +578,10 @@ class EnsembleAccuracy(metrics.Metric):
         # TensorFlow 2.10 misreads a one-column prediction as binary output.
         if getattr(self.network, "dynamic_num_classes", False) \
         and y_pred.shape[-1] == 1:
-            y_pred = tf.concat([y_pred, tf.zeros_like(y_pred)], axis=-1)
+            y_pred = tf.concat([
+                y_pred, 
+                tf.zeros_like(y_pred)
+            ], axis=-1)
 
         self.tracker.update_state(
             y_true, y_pred, 
@@ -529,7 +606,7 @@ class EnsembleAccuracy(metrics.Metric):
         x: tf.Tensor, 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
-        """Average predictions for all examples and timesteps in one call.
+        """Average predictions for all examples and retained timesteps in one call.
 
         The returned mean is in metric dtype and need not sum to one when head
         coefficients do not sum to one. With separate_probas=True a final softmax
@@ -546,16 +623,16 @@ class EnsembleAccuracy(metrics.Metric):
 
         Returns:
             tf.Tensor: Floating scores shaped ``[batch, num_classes]`` containing
-            the uniform or SNR-weighted timestep mean.
+            the uniform or SNR-weighted mean over retained timesteps.
         """
 
         batch_size = tf.shape(x)[0]
-        ts = tf.range(self.max_t, dtype=tf.int32)
+        ts = self._select_timesteps()
+        num_timesteps = ts.shape[0]
 
         x_rep = self._noisify_timestep_block(
             x, 
-            start=0, 
-            count=self.max_t
+            timesteps=ts,
         )
         x_rep = tf.reshape(
             x_rep, 
@@ -563,7 +640,7 @@ class EnsembleAccuracy(metrics.Metric):
         )
         t_rep = tf.tile(ts, multiples=[batch_size])
         uncond_labels = tf.zeros(
-            (batch_size * self.max_t,), 
+            (batch_size * num_timesteps,),
             dtype=tf.int32
         )
 
@@ -573,17 +650,17 @@ class EnsembleAccuracy(metrics.Metric):
         )
         cls_pred = tf.reshape(
             cls_pred, 
-            (batch_size, self.max_t, -1)
+            (batch_size, num_timesteps, -1)
         )
 
-        weights = self._get_timestep_weights()
+        weights = self._get_timestep_weights(ts)
         denominator = tf.reduce_sum(weights)
-        cls_pred = cls_pred * tf.reshape(weights, (1, self.max_t, 1))
+        cls_pred = cls_pred * tf.reshape(weights, (1, num_timesteps, 1))
 
         total_pred = tf.reduce_sum(cls_pred, axis=1) / denominator
 
-        # Separate conditioning uses a final softmax; ordinary head mixtures retain their weighted
-        # scores.
+        # Separate conditioning uses a final softmax; ordinary 
+        # head mixtures retain their weighted scores.
         return tf.nn.softmax(
             total_pred, 
             axis=-1
@@ -594,7 +671,10 @@ class EnsembleAccuracy(metrics.Metric):
         x: tf.Tensor, 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
-        """Average timestep predictions using bounded-size network calls.
+        """Average retained timestep predictions using bounded-size network calls.
+
+        Timesteps are selected once for the input batch, then grouped in
+        increasing order. Dropped steps are neither noised nor classified.
 
         Args:
             x (tf.Tensor): Clean floating image tensor
@@ -612,15 +692,17 @@ class EnsembleAccuracy(metrics.Metric):
 
         batch_size = tf.shape(x)[0]
         num_classes = self.network.num_classes
-        weights = self._get_timestep_weights()
+        timestep_list = self._select_timesteps()
+        num_timesteps = timestep_list.shape[0]
+        weights = self._get_timestep_weights(timestep_list)
 
         pred_sum = tf.zeros(
             (batch_size, num_classes), 
             dtype=self.dtype
         )
-        for start in range(0, self.max_t, self.t_chunk_size):
-            chunk_t = min(self.t_chunk_size, self.max_t - start)
-            ts_chunk = tf.range(start, start + chunk_t, dtype=tf.int32)
+        for start in range(0, num_timesteps, self.t_chunk_size):
+            chunk_t = min(self.t_chunk_size, num_timesteps - start)
+            ts_chunk = timestep_list[start: start + chunk_t]
             t_rep = tf.tile(ts_chunk, multiples=[batch_size])
             uncond_labels = tf.zeros(
                 (batch_size * chunk_t,), 
@@ -629,8 +711,7 @@ class EnsembleAccuracy(metrics.Metric):
 
             x_rep = self._noisify_timestep_block(
                 x, 
-                start=start, 
-                count=chunk_t
+                timesteps=ts_chunk
             )
             x_rep = tf.reshape(
                 x_rep, 
@@ -654,11 +735,10 @@ class EnsembleAccuracy(metrics.Metric):
 
             pred_sum += tf.reduce_sum(cls_pred, axis=1)
 
-        denominator = tf.reduce_sum(weights)
+        total_pred = pred_sum / tf.reduce_sum(weights)
 
-        total_pred = pred_sum / denominator
-
-        # Apply final softmax only for separately conditioned class scores.
+        # Apply final softmax only for separately 
+        # conditioned class scores.
         return tf.nn.softmax(
             total_pred, 
             axis=-1
@@ -689,7 +769,8 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         y_pred = self.ensemble_predict(x, training=False)
-        # Map original dataset labels to dense classifier targets only for a dynamic vocabulary.
+        # Map original dataset labels to dense classifier 
+        # targets only for a dynamic vocabulary.
         if getattr(self.network, "dynamic_num_classes", False):
             y_true = self.diffusion_clf._map_classes(y_true)
 
