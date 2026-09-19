@@ -1,14 +1,19 @@
-# Reduced TensorFlow 2.20 recipe. See ../HYPERPARAMETER_RATIONALE.md; validate in notebook 00.
+# User-selected TensorFlow 2.20 recipe. Validate in notebook 00 before freezing.
 base_config: ../../../semantic_consolidation/configs/common_v1.yaml
 common:
   dataset:
     name: cifar10
-    batch_size: 64
+    batch_size: 128
   model:
     kwargs:
       dim: 128
-      depth: 4
+      depth: 6
+      patchify_with_cnn: true
+      clf_depth: 6
     wrapper_kwargs:
+      mask_by_nulls: false
+      clf_train_noisy_input_type: noisy
+      clf_train_class_input_type: null_class_only
       noise_loss_coef: 1.0
       clf_loss_coef: 1.0
       noise_distil_loss_coef: 0.1
@@ -16,16 +21,19 @@ common:
       clf_distil_type: soft
       clf_distil_temperature: 2.0
       clf_distil_scope: replay_only
-      test_steps: 50
-      test_eta: 0.0
+      test_steps: 1000
+      test_eta: 1.0
       test_cfg_scale: 3.0
   optimizer:
-    name: adam  # Native Keras 3; explicit conservative zero-decay recipe.
-    initial_learning_rate: 0.0002
+    name: adam
+    initial_learning_rate: 0.005
     weight_decay: 0.0
-    schedule: constant
+    schedule: cosine
+    # 46,950 joint updates + the 3,000-update extra-joint allowance.
+    # Shared global optimizer clock; no restart at task boundaries.
+    decay_steps: 49950
   training:
-    epochs: 40
+    epochs: 50
     verbose: 1
     # Seeded runs; nondeterministic GPU kernels are allowed.
     deterministic_ops: false
@@ -35,8 +43,17 @@ common:
     class_num: 10
     class_order: null
     task_size: 2
+    replay_budget_mode: match_current
     replay_current_examples: null  # All permitted current training rows (validation excluded).
-    replay_old_examples: 2048  # Fixed total, independent of the old-class count.
+    replay_old_examples: null  # Generate as many examples per old class as per current class.
+    use_ensemble_accuracy: true
+    evaluate_ensemble_accuracy: true
+    ensemble_accuracy_kwargs:
+      network_name: raw
+      max_t: 256
+      t_range_drop_rate: 0.5
+      clf_distil_acc_coef: 0.5
+      clf_acc_coef: 0.5
     # Use held-out route observations instead of revisiting old training rows.
     mechanistic_metrics: false
 route:

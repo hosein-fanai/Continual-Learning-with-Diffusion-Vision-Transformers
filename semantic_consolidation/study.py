@@ -26,7 +26,7 @@ from common.experiment import (
     materialize_run_plan, paired_run_statistics, read_experiment_manifest,
     write_experiment_manifest, write_long_results,
 )
-from semantic_consolidation.config import RouteConfig, _merge, load_route_config, validate_route_config
+from semantic_consolidation.config import RouteConfig, _merge, load_route_config, primary_accuracy_matrix_name, validate_route_config
 
 
 def planned_config(entry: dict, manifest_path: str | Path) -> RouteConfig:
@@ -323,7 +323,7 @@ def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) ->
         result = run(config)
         validate_study_source(manifest, "semantic_consolidation")
         details = result["model"]["continual_details"]
-        matrix_name = "validation_accuracy_matrix" if manifest["phase"] == "development" else "ordinary_accuracy_matrix"
+        matrix_name = primary_accuracy_matrix_name(config)
         matrix = np.asarray(details[matrix_name], dtype="float64")
         metrics = _completed_metrics(matrix, len(entry["stream"]["task_groups"]))
         from semantic_consolidation.controller import _json_value
@@ -387,12 +387,12 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
         # Every supported route study uses a fractional final accuracy endpoint.
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value) or not 0. <= value <= 1.:
             raise ValueError("The primary final-average-accuracy outcome must be a finite fraction in [0, 1].")
+        expected_source = primary_accuracy_matrix_name(planned_config(planned[run_id], manifest_path))
         # New exports retain the exact source matrix; older indexes remain usable.
         if "accuracy_matrix" in result:
-            expected_source = "validation_accuracy_matrix" if manifest["phase"] == "development" else "ordinary_accuracy_matrix"
-            # Validation outcomes cannot be mislabeled as locked-test confirmation outcomes.
+            # Saved outcomes must retain both the frozen split and predictor identity.
             if result.get("accuracy_matrix_source") != expected_source:
-                raise ValueError("Completed accuracy matrix source differs from the study phase.")
+                raise ValueError("Completed accuracy matrix source differs from the study phase or configured predictor.")
             checked = _completed_metrics(result["accuracy_matrix"], len(planned[run_id]["stream"]["task_groups"]))
             # Saved summary metrics disagree with the completed accuracy matrix.
             if any(name not in result["metrics"] or not np.isclose(checked[name], result["metrics"][name], rtol=0., atol=1e-12)
@@ -400,9 +400,9 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
                 raise ValueError("Saved summary metrics disagree with the completed accuracy matrix.")
         # Matrix-free outcomes retain exploratory compatibility only.
         else:
-            # Confirmation must establish the complete scheduled evaluation trajectory.
-            if manifest["phase"] == "confirmation":
-                raise ValueError("Confirmation requires a complete saved accuracy matrix for every run.")
+            # Ensemble endpoints always require their source matrix; legacy scalars cannot identify it.
+            if manifest["phase"] == "confirmation" or "ensemble" in expected_source:
+                raise ValueError("Confirmation or selected ensemble accuracy requires a complete saved accuracy matrix for every run.")
             scalar_only_runs.append(run_id)
     rows = collect_final_stream_metrics(
         manifest, {run_id: result["metrics"][metric] for run_id, result in outputs.items()},

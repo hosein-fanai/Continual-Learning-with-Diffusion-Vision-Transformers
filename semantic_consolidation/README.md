@@ -89,10 +89,12 @@ expose all permitted current examples. State the exposure budget in thesis table
    Old-gate function is measured before joint training, after joint training and
    after consolidation on identical clean inputs; parameter hashes are separate.
    Hash checks enforce the frozen target, old bank, prior teacher, and default
-   nonsemantic network boundaries. The learner then records its ordinary clean
-   task matrix and snapshots the **post-consolidation** model for the next task.
-9. Final inference uses the original primary classifier with null conditioning,
-   all seen classes, and no modulator or predictor. The raw network and its
+   nonsemantic network boundaries. The learner then records the configured
+   ordinary or ensemble task matrix and snapshots the **post-consolidation** model
+   for the next task. The registered thesis recipes select ensemble accuracy.
+9. Final inference uses null conditioning, all seen classes, and no modulator
+   or predictor. Ordinary inference uses the primary classifier; ensemble
+   inference combines the configured classifier heads and timesteps. The raw network and its
    saved weights retain the existing common API. Modulators are saved separately
    as numeric NPZ arrays for inspection; the predictor is discarded after its task.
 
@@ -102,7 +104,7 @@ flowchart LR
     B --> C[Freeze network: learn new class gains and biases]
     C --> D[Clone independent frozen target]
     D --> E[Train unmodulated projection and head + temporary predictor]
-    E --> F[Common clean evaluation and next-task teacher]
+    E --> F[Common configured evaluation and next-task teacher]
 ```
 
 The gain/bias bank uses `8 * seen_classes * projection_dimension` bytes in

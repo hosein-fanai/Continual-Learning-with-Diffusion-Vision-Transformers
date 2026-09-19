@@ -18,7 +18,7 @@ import numpy as np
 
 from common.experiment import materialize_run_plan, read_experiment_manifest, read_long_results
 from common.study_artifacts import write_completed_artifact
-from semantic_consolidation.config import load_route_config, validate_route_config
+from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name, validate_route_config
 from semantic_consolidation.study import _completed_metrics, analyze_study, prepare_study, run_study, validate_planned_config
 
 
@@ -319,6 +319,37 @@ class StudyTests(unittest.TestCase):
             analyze_study(path)
         self.assertFalse((path.parent / "paired_statistics.json").exists())
 
+    def test_study_exports_and_authenticates_selected_ensemble_on_both_splits(self) -> None:
+        """A complete study retains ensemble scores even when ordinary scores differ."""
+        self.template.common.continually_learn.use_ensemble_accuracy = True
+        ordinary = [[.9, None], [.8, 1.]]
+        ensemble = [[.5, None], [.4, .7]]
+        for phase in ("development", "confirmation"):
+            path = prepare_study(self.template, self.directory / phase, [17, 29], phase=phase)
+            manifest = read_experiment_manifest(path)
+            details = {"ordinary_accuracy_matrix": ordinary, "validation_accuracy_matrix": ordinary,
+                       "ensemble_accuracy_matrix": ensemble, "validation_ensemble_accuracy_matrix": ensemble}
+            with self.subTest(phase=phase), patch("semantic_consolidation.runner.run", return_value={
+                "model": {"continual_details": details}, "results_path": _SYNTHETIC_LABEL,
+                "route_records": [{"total_updates": 0}],
+            }):
+                results = run_study(path, expected_hash=manifest["manifest_hash"])
+                for record in results.values():
+                    config = load_route_config(path.parent / f"{record['run_id']}.yaml")
+                    self.assertEqual(record["accuracy_matrix_source"], primary_accuracy_matrix_name(config))
+                    self.assertEqual(record["accuracy_matrix"], ensemble)
+                    self.assertAlmostEqual(record["metrics"]["final_average_accuracy"], .55)
+                self.assertEqual(analyze_study(path, expected_hash=manifest["manifest_hash"])["pair_count"], 2)
+                index_path = path.parent / "completed_runs.json"
+                first = next(iter(results.values()))
+                first["accuracy_matrix_source"] = "validation_accuracy_matrix" if phase == "development" else "ordinary_accuracy_matrix"
+                (path.parent / f"{first['run_id']}.completed.json").unlink()
+                first.pop("completed_artifact")
+                first["completed_artifact"] = write_completed_artifact(path.parent, first)
+                index_path.write_text(json.dumps(results), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "accuracy matrix source differs"):
+                    analyze_study(path, expected_hash=manifest["manifest_hash"])
+
     def test_legacy_index_primary_accuracy_must_still_be_a_finite_fraction(self) -> None:
         """Older scalar-only exports do not permit impossible or boolean accuracies."""
 
@@ -329,6 +360,14 @@ class StudyTests(unittest.TestCase):
             self._write_synthetic_outcomes(path, outputs)
             with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, "finite fraction"):
                 analyze_study(path)
+
+    def test_ensemble_development_rejects_scalar_only_legacy_outcomes(self) -> None:
+        """Unknown legacy predictor scalars cannot supply a selected ensemble endpoint."""
+        self.template.common.continually_learn.use_ensemble_accuracy = True
+        path, _, plan = self._prepare()
+        self._write_synthetic_outcomes(path, self._synthetic_outcomes(plan))
+        with self.assertRaisesRegex(ValueError, "selected ensemble accuracy requires a complete saved accuracy matrix"):
+            analyze_study(path)
 
 
 # Run this module directly while keeping imports free of execution side effects.

@@ -491,6 +491,32 @@ def _label_ids(labels: np.ndarray | None) -> np.ndarray | None:
         else labels.reshape(-1)
 
 
+def _matched_current_class_count(labels: np.ndarray, classes: Sequence[int]) -> int:
+    """Require one positive current-data count shared by the requested classes.
+
+    Args:
+        labels (np.ndarray): Permitted training labels, sparse or one-hot. Other
+            classes may be present when validating the complete stream before fitting.
+        classes (Sequence[int]): Current task's class IDs in the remapped vocabulary.
+
+    Returns:
+        count (int): Exact number of permitted real examples per current class.
+
+    Raises:
+        ValueError: If any class is absent or current class counts are unequal.
+    """
+    ids = _label_ids(labels)
+    counts = [int(np.count_nonzero(ids == class_id)) for class_id in classes]
+    # Matching old classes cannot balance absent or unequal current-class pools.
+    if not counts or min(counts) <= 0 or len(set(counts)) != 1:
+        raise ValueError(
+            "match_current replay requires equal positive current-class counts "
+            "after the training/validation split and sample caps; got "
+            + str(dict(zip(map(int, classes), counts))) + "."
+        )
+    return counts[0]
+
+
 def _select_classes(
     x: np.ndarray,
     y: np.ndarray,
@@ -895,6 +921,7 @@ def _sample_diffusion_replay(
     batch_starts = range(0, len(labels), batch_size)
     for chunk_index, start in enumerate(batch_starts):
         chunk_labels = labels[start:start + batch_size]
+        # Report each bounded generation batch only when progress output is enabled.
         if verbose:
             print(
                 f"Replay generation batch {chunk_index + 1}/{len(batch_starts)} "
@@ -1260,17 +1287,20 @@ def _run_continual_tasks(
         generative_model_kwargs (dict[str, int] | None): Generator exposure settings. None
             supplies train_num=1000 and samples_per_class=1000. In legacy budgeting,
             diffusion generator train_num resamples the combined pool with replacement; -1
-            retains it. fixed_total forces -1. V2 discriminator training retains the full
+            retains it. fixed_total and match_current force -1. V2 discriminator training retains the full
             combined pool independently of generator resampling. Defaults to ``None``.
         use_generative_replay (bool): Whether a supplied generator produces rehearsal rows
             for previously introduced classes. Defaults to ``True``.
         replay_budget_mode (str): legacy uses per-class generated counts or the buffer
-            sample count; fixed_total uses explicit old/current exposure counts. Defaults to
-            ``'legacy'``.
+            sample count; fixed_total uses explicit old/current exposure counts.
+            match_current preserves every current real row and generates the same positive
+            per-class count for each old class. Requires equal current-class counts,
+            new-only real data, and enabled generative replay. Defaults to ``'legacy'``.
         replay_old_examples (int | None): Exact old-row budget in fixed_total mode; None is
-            valid only for legacy budgeting. Defaults to ``None``.
+            valid for legacy budgeting and required by match_current. Defaults to ``None``.
         replay_current_examples (int | None): Current-row exposure budget in fixed_total
-            mode; None retains the available current pool. Defaults to ``None``.
+            mode; None retains the available current pool and is required by match_current.
+            Defaults to ``None``.
         replay_candidate_multiplier (int): Multiplier applied to the old-row budget before
             candidate selection. Defaults to ``1``.
         replay_selection (str): all preserves candidates up to the budget; uniform selects
@@ -1870,9 +1900,9 @@ def _run_continual_tasks(
         )
 
     replay_budget_mode = str(replay_budget_mode).lower()
-    # Keep replay accounting under a known per-class or fixed-total contract.
-    if replay_budget_mode not in ("legacy", "fixed_total"):
-        raise ValueError("replay_budget_mode must be 'legacy' or 'fixed_total'.")
+    # Keep replay accounting under an explicitly supported exposure contract.
+    if replay_budget_mode not in ("legacy", "fixed_total", "match_current"):
+        raise ValueError("replay_budget_mode must be 'legacy', 'fixed_total', or 'match_current'.")
 
     # Normalize an explicit shared optimizer-step budget before routing it to phases.
     if optimizer_steps_per_epoch is not None:
@@ -1889,9 +1919,20 @@ def _run_continual_tasks(
     if replay_budget_mode == "fixed_total" and replay_old_examples is None:
         raise ValueError("fixed_total replay requires replay_old_examples to be set.")
 
-    # Fixed-total replay uses its explicit count; legacy replay uses the buffer or per-class
-    # generator count.
-    old_replay_count = replay_old_examples \
+    # Current-matched generation has no explicit budget or historical-real-data source.
+    if replay_budget_mode == "match_current" and (
+        replay_old_examples is not None or replay_current_examples is not None
+        or not remove_prev_classes or use_buffer
+        or generative_model is None or not use_generative_replay
+    ):
+        raise ValueError(
+            "match_current replay requires generative replay, remove_prev_classes=True, "
+            "no buffer, and replay_old_examples=replay_current_examples=None."
+        )
+
+    # Current-matched replay infers a positive quota after loading; other modes already
+    # expose an explicit total or historical buffer/per-class generator count.
+    old_replay_count = 1 if replay_budget_mode == "match_current" else replay_old_examples \
         if replay_budget_mode == "fixed_total" else (
             buffer_kwargs["sample_num"] if use_buffer
             else generative_model_kwargs["samples_per_class"]
@@ -1922,6 +1963,15 @@ def _run_continual_tasks(
         raise ValueError(
             "replay_selection must be one of "
             f"{sorted(replay_selection_names)}."
+        )
+    # Uniform quotas preserve balance; unrestricted selection or truncation may not.
+    if replay_budget_mode == "match_current" and not (
+        replay_selection == "uniform"
+        or replay_selection == "all" and replay_candidate_multiplier == 1
+    ):
+        raise ValueError(
+            "match_current replay requires selection='uniform', or selection='all' "
+            "with replay_candidate_multiplier=1, to preserve equal class counts."
         )
     replay_surprise_weight = float(replay_surprise_weight)
     # Treat False as disabled caching; normalize named cache modes to lowercase.
@@ -2281,6 +2331,14 @@ def _run_continual_tasks(
         seed
     )
 
+    matched_current_counts = None
+    # Validate every planned current pool before training or checkpoint publication.
+    if replay_budget_mode == "match_current":
+        matched_current_counts = [
+            _matched_current_class_count(dataset_arrays[1], group)
+            for group in internal_task_groups
+        ]
+
     # Development requires nonempty validation data and cannot substitute locked test rows.
     if experiment_phase == "development" and (
         not use_valset or
@@ -2449,6 +2507,9 @@ def _run_continual_tasks(
         },
     }
     model_task_config = None
+    # Bind inferred counts along with the existing source arrays for recovery and caches.
+    if matched_current_counts is not None:
+        run_descriptor["replay"]["matched_current_examples_per_class"] = matched_current_counts
     model_task_hooks = ()
     # Ordinary training does not inspect or snapshot optional Python recovery state.
     if save_task_checkpoints or resume_from is not None:
@@ -3008,6 +3069,10 @@ def _run_continual_tasks(
             )
 
         task_resource["current_examples_exposed"] = int(len(x_train))
+        # Keep the dynamically inferred class exposure visible in each task's saved ledger.
+        if matched_current_counts is not None:
+            task_resource["replay"]["budget_mode"] = replay_budget_mode
+            task_resource["replay"]["target_examples_per_class"] = matched_current_counts[task_index]
         x_test, y_test = _select_classes(all_x_test, all_y_test, seen_classes)
 
         # Select seen-class validation rows when both validation arrays exist.
@@ -3080,10 +3145,11 @@ def _run_continual_tasks(
         elif use_generative_replay and \
         generative_model is not None \
         and task_index > 0:
-            # Use the fixed old-example total or multiply legacy samples per class by old-
-            # class count.
+            # Match every old class to current exposure, or retain fixed/legacy budgets.
             target_replay_count = int(
-                replay_old_examples
+                matched_current_counts[task_index] * len(old_classes)
+                if matched_current_counts is not None
+                else replay_old_examples
                 if replay_budget_mode == "fixed_total"
                 else generative_model_kwargs["samples_per_class"]
                 * len(old_classes)
@@ -3139,6 +3205,7 @@ def _run_continual_tasks(
             # Read mode, or an existing automatic cache, supplies the candidate pool from
             # disk.
             if read_cached_pool:
+                # An empty pool needs no cache-loading progress message.
                 if verbose and candidate_count:
                     print(f"Loading {candidate_count} replay candidates from cache...", flush=True)
                 # The read branch ignores candidate x bytes; only exact count,
@@ -3155,6 +3222,7 @@ def _run_continual_tasks(
                 )
             # Without a readable candidate cache, generate a fresh replay pool.
             else:
+                # An empty pool needs no generation progress message.
                 if verbose and candidate_count:
                     print(f"Generating {candidate_count} replay candidates...", flush=True)
                 # VAE generation exposes a per-class API; reduce only the
@@ -3223,6 +3291,7 @@ def _run_continual_tasks(
             task_resource["seconds"]["generator_sampling"] = float(
                 time.perf_counter() - sample_started
             )
+            # Report the realized candidate count and sampling time when requested.
             if verbose and candidate_count:
                 print(
                     f"Replay candidates ready: {len(x_buffer)} samples "
@@ -3259,9 +3328,11 @@ def _run_continual_tasks(
                     time.perf_counter() - diagnostics_started
                 )
 
+            # Render a preview only when requested and candidate images exist.
             if show_generated_images and len(x_buffer):
                 preview_started = time.perf_counter()
                 preview_min, preview_range = diffusion_data_min, diffusion_data_range
+                # Non-diffusion standardized images also use the signed pixel range.
                 if not isinstance(generative_model, DiffusionModel) and load_dataset_fn_kwargs.get(
                     "preprocess"
                 ) in ("standardize", "diffusion", "fixed-standardize"):
@@ -3355,6 +3426,19 @@ def _run_continual_tasks(
                 )
 
         task_resource["training_examples_total"] = int(len(x_train))
+        # Never start a fit with silently unbalanced generated/current class pools.
+        if matched_current_counts is not None:
+            training_ids = _label_ids(y_train)
+            class_counts = {
+                str(class_id): int(np.count_nonzero(training_ids == class_id))
+                for class_id in seen_classes
+            }
+            target_per_class = matched_current_counts[task_index]
+            # Missing, surplus, or wrongly labeled replay invalidates the promised balance.
+            if any(count != target_per_class for count in class_counts.values()) \
+                    or len(y_train) != target_per_class * len(seen_classes):
+                raise ValueError("match_current replay did not produce equal seen-class counts.")
+            task_resource["training_class_counts"] = class_counts
 
         classifier_x_train = x_train
         classifier_x_val = x_val
@@ -3464,9 +3548,8 @@ def _run_continual_tasks(
         generative_trainset = None
         generative_valset = None
         generative_testset = None
-        # Fixed-total replay preserves all exposed rows; legacy mode uses the generator row
-        # budget.
-        phase_train_num = -1 if replay_budget_mode == "fixed_total" \
+        # Explicit replay exposure modes preserve every row; legacy uses its generator cap.
+        phase_train_num = -1 if replay_budget_mode in ("fixed_total", "match_current") \
                         else generative_model_kwargs["train_num"]
         # VAE generators train through their custom array-based training API.
         if isinstance(generative_model, VariationalAutoencoder):

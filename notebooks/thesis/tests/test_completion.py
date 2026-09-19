@@ -22,7 +22,7 @@ from common.config import save_config
 from common.continual_reporting import write_continual_csv_artifacts
 from common.experiment import materialize_run_plan, read_experiment_manifest
 from notebooks.thesis import completion, workflow
-from semantic_consolidation.config import load_route_config, save_route_settings
+from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name, save_route_settings
 from semantic_consolidation.provenance import save_provenance, source_provenance
 from semantic_consolidation.study import _completed_metrics, prepare_study
 
@@ -107,8 +107,9 @@ class CompletionRecoveryTests(unittest.TestCase):
         save_provenance(source_provenance(), result_path)
         matrix = np.asarray([[0.7, np.nan], [0.6, 0.8]])
         metrics = _completed_metrics(matrix, 2)
+        matrix_name = primary_accuracy_matrix_name(config)
         write_continual_csv_artifacts({
-            "ordinary_accuracy_matrix": matrix, "continual_metrics": metrics,
+            "ordinary_accuracy_matrix": matrix * .5, matrix_name: matrix, "continual_metrics": metrics,
             "class_order": entry["stream"]["class_order"], "task_classes": entry["stream"]["task_groups"],
             "seed": entry["stream"]["stream_seed"]}, result_path)
         (result_path / "route_metrics.json").write_text(json.dumps([
@@ -118,7 +119,7 @@ class CompletionRecoveryTests(unittest.TestCase):
                 "results_path": str(result_path), "seconds": 1.25, "total_updates": 10,
                 "started_utc": "2026-09-14T00:00:00+00:00",
                 "accuracy_matrix": [[0.7, None], [0.6, 0.8]],
-                "accuracy_matrix_source": "ordinary_accuracy_matrix", "metrics": metrics}
+                "accuracy_matrix_source": matrix_name, "metrics": metrics}
 
     def artifact(self, record: dict | None=None) -> dict:
         """Exercise the existing native artifact operation with the enclosing test fixture.
@@ -358,7 +359,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         value["accuracy_matrix"][1][0] = 0.3
         value["metrics"] = _completed_metrics(value["accuracy_matrix"], 2)
         self.artifact(value)
-        with self.assertRaisesRegex(ValueError, "Native ordinary matrix differs"):
+        with self.assertRaisesRegex(ValueError, "Native selected matrix differs"):
             self.reconcile()
 
     def test_missing_native_matrix_cell_is_incomplete(self) -> None:
@@ -377,9 +378,24 @@ class CompletionRecoveryTests(unittest.TestCase):
         matrix_path = Path(self.record["results_path"]) / "accuracy_matrices.csv"
         lines = matrix_path.read_text().splitlines()
         matrix_path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "Native ordinary matrix is incomplete"):
+        with self.assertRaisesRegex(ValueError, "Native selected matrix is incomplete"):
             self.reconcile()
         self.assertFalse(self.index.exists())
+
+    def test_predictor_mismatch_and_missing_selected_matrix_are_rejected(self) -> None:
+        """A valid ordinary diagnostic cannot substitute for an expected ensemble endpoint."""
+        matrix_name = self.record["accuracy_matrix_source"]
+        other_name = "ordinary_accuracy_matrix" if matrix_name == "ensemble_accuracy_matrix" else "ensemble_accuracy_matrix"
+        invalid = {**self.record, "accuracy_matrix_source": other_name}
+        self.artifact(invalid)
+        with self.assertRaisesRegex(ValueError, "configured .* endpoint"):
+            self.reconcile()
+        (self.manifest_path.parent / f"{self.entry['run_id']}.completed.json").unlink()
+        self.artifact()
+        matrix_path = Path(self.record["results_path"]) / "accuracy_matrices.csv"
+        matrix_path.write_text(matrix_path.read_text().replace(matrix_name, "unselected_diagnostic"), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Native selected matrix is incomplete"):
+            self.reconcile()
 
     def test_failed_recovery_index_replacement_can_be_retried(self) -> None:
         """Verify failed recovery index replacement can be retried.

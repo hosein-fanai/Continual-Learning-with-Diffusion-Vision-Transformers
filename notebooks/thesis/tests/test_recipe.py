@@ -65,6 +65,48 @@ class PreparedRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "official test set"):
             workflow._validate_confirmation_selection(config)
 
+    def test_explicit_cosine_horizon_cannot_change_after_run_selection(self) -> None:
+        """Reject altered or removed registered horizons before controller attachment."""
+        for dataset in ("cifar10", "cifar100"):
+            config = load_route_config(TEMPLATES[dataset])
+            frozen = asdict(config)
+            declared = config.common.optimizer.decay_steps
+            for replacement in (None, declared + 1):
+                with self.subTest(dataset=dataset, replacement=replacement):
+                    config.common.optimizer.decay_steps = replacement
+                    context = {"controller": None, "runtime_config": frozen, "config": config}
+                    with patch.object(workflow, "_check_context"), \
+                            patch("semantic_consolidation.controller.RouteController") as controller, \
+                            patch("semantic_consolidation.model.adapt_model") as adapt:
+                        with self.assertRaisesRegex(ValueError, "Runtime scientific settings changed"):
+                            workflow.attach_route(context, {})
+                        controller.assert_not_called()
+                        adapt.assert_not_called()
+                    self.assertIsNone(context["controller"])
+
+    def test_omitted_cosine_horizon_accepts_native_factory_inference(self) -> None:
+        """Allow only the registered None-to-inferred duration transition."""
+        from common.model import _make_optimizer
+
+        config = load_route_config(TEMPLATES["cifar10"])
+        config.common.optimizer.decay_steps = None
+        config.route.experimental = {}
+        context = {"controller": None, "runtime_config": asdict(config), "config": config,
+                   "settings": config.route, "record_path": None}
+        config.common.dataset.trainset_len = 7
+        optimizer = _make_optimizer(config.common)
+        self.assertEqual(config.common.optimizer.decay_steps, config.common.training.epochs * 7)
+        self.assertEqual(optimizer._learning_rate.decay_steps, config.common.optimizer.decay_steps)
+        original, controller = object(), object()
+        bundle = {"generative_model": original}
+        with patch.object(workflow, "_check_context"), \
+                patch("semantic_consolidation.controller.RouteController", return_value=controller), \
+                patch("semantic_consolidation.model.adapt_model", return_value=original) as adapt:
+            workflow.attach_route(context, bundle)
+        adapt.assert_called_once_with(original, controller)
+        self.assertIs(context["controller"], controller)
+        self.assertIs(bundle["generative_model"], original)
+
     def test_development_identity_tracks_inherited_settings_and_source(self) -> None:
         """Keep revised pilots separate without rewriting their earlier evidence.
 
@@ -140,8 +182,8 @@ class PreparedRecipeTests(unittest.TestCase):
                     workflow._campaign(frozen)
             total = 0
             for dataset, classes, tasks, task_size, epochs, acquisition, consolidation in (
-                ("cifar10", 10, 5, 2, 40, 200, 400),
-                ("cifar100", 100, 10, 10, 60, 1000, 2000),
+                ("cifar10", 10, 5, 2, 50, 200, 400),
+                ("cifar100", 100, 10, 10, 50, 1000, 2000),
             ):
                 manifest = manifests[dataset]
                 plan = materialize_run_plan(manifest)
@@ -172,23 +214,40 @@ class PreparedRecipeTests(unittest.TestCase):
                         self.assertEqual(project.dataset.validation_ratio, .2)
                         self.assertIsNone(project.dataset.max_train_samples)
                         self.assertIsNone(continual.replay_current_examples)
-                        self.assertEqual(continual.replay_old_examples, 2048)
-                        self.assertEqual(continual.replay_budget_mode, "fixed_total")
+                        self.assertIsNone(continual.replay_old_examples)
+                        self.assertEqual(continual.replay_budget_mode, "match_current")
                         self.assertTrue(continual.remove_prev_classes)
-                        self.assertEqual(project.dataset.batch_size, 64)
+                        self.assertEqual(project.dataset.batch_size, 128)
                         self.assertEqual(project.training.epochs, epochs)
                         self.assertEqual(project.model.name, "dit_classifier")
                         self.assertEqual(project.model.wrapper_name, "diffusion_classifier")
                         self.assertEqual(project.model.kwargs["dim"], 128)
-                        self.assertEqual(project.model.kwargs["depth"], 4)
+                        self.assertEqual(project.model.kwargs["depth"], 6)
+                        self.assertEqual(project.model.kwargs["clf_depth"], 6)
+                        self.assertTrue(project.model.kwargs["patchify_with_cnn"])
                         self.assertEqual(project.optimizer.name, "adam")
-                        self.assertEqual(project.optimizer.initial_learning_rate, .0002)
+                        self.assertEqual(project.optimizer.initial_learning_rate, .005)
                         self.assertEqual(project.optimizer.weight_decay, 0.)
-                        self.assertEqual(project.optimizer.schedule, "constant")
-                        self.assertFalse(continual.use_ensemble_accuracy)
-                        self.assertFalse(continual.evaluate_ensemble_accuracy)
+                        self.assertEqual(project.optimizer.schedule, "cosine")
+                        self.assertTrue(continual.use_ensemble_accuracy)
+                        self.assertTrue(continual.evaluate_ensemble_accuracy)
+                        ensemble = continual.ensemble_accuracy_kwargs
+                        self.assertEqual(ensemble["network_name"], "raw")
+                        self.assertEqual(ensemble["max_t"], 256)
+                        self.assertEqual(ensemble["t_range_drop_rate"], .5)
+                        self.assertEqual(ensemble["clf_acc_coef"], .5)
+                        self.assertEqual(ensemble["clf_distil_acc_coef"], .5)
+                        self.assertNotIn("distil_acc_coef", ensemble)
                         self.assertFalse(project.model.wrapper_kwargs["use_ema"])
                         self.assertEqual(project.model.wrapper_kwargs["test_network_name"], "raw")
+                        self.assertFalse(project.model.wrapper_kwargs["mask_by_nulls"])
+                        self.assertEqual(project.model.wrapper_kwargs["clf_train_noisy_input_type"], "noisy")
+                        self.assertEqual(project.model.wrapper_kwargs["clf_train_class_input_type"], "null_class_only")
+                        self.assertEqual(project.model.wrapper_kwargs.get("clf_train_batch_fraction",
+                                         project.model.diffusion_classifier.clf_train_batch_fraction), 0.)
+                        self.assertEqual(project.model.wrapper_kwargs["test_steps"], 1000)
+                        self.assertEqual(project.model.wrapper_kwargs["test_eta"], 1.)
+                        self.assertEqual(project.model.wrapper_kwargs["test_cfg_scale"], 3.)
                         self.assertEqual(project.model.wrapper_kwargs["test_noisified_min_timesteps"], 0)
                         self.assertEqual(project.model.wrapper_kwargs["test_noisified_max_timesteps"], 0)
                         self.assertEqual(route.experimental["probe_per_class"], 8)
@@ -399,6 +458,8 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         config.common.continually_learn.class_num = 4
         config.common.continually_learn.class_order = [0, 1, 2, 3]
         config.common.continually_learn.task_groups = [[0, 1], [2, 3]]
+        # This saved compact-view fixture contains only ordinary classifier measurements.
+        config.common.continually_learn.use_ensemble_accuracy = False
         matrix = np.asarray([[0.5, np.nan], [0.4, 0.7]])
         bundle = {"continual_details": {"ordinary_accuracy_matrix": matrix,
                   "generative_histories": [{"loss": [1.0, 0.5]}]}}

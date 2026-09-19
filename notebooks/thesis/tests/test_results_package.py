@@ -84,6 +84,7 @@ def synthetic_campaign(directory: Path) -> tuple[dict, dict, dict]:
                     np.savez_compressed(run / f"generated_examples_task_{count:03d}.npz", images=np.zeros((3, 4, 4, 3)), labels=np.arange(3))
                 results[run_id] = {"run_id": run_id, "condition": condition, "results_path": str(run),
                     "accuracy_matrix": package._clean(matrix.tolist()), "seconds": 999,
+                    "accuracy_matrix_source": "ordinary_accuracy_matrix",
                     "total_updates": count * 10, "metrics": package.continual_metrics(matrix)}
         manifests[dataset] = {"manifest_hash": "synthetic-only", "spec": {"base_config": config}, "_entries": entries}
         outputs[dataset] = results
@@ -316,6 +317,35 @@ class LearningViewTests(unittest.TestCase):
             self.assertAlmostEqual(values["final_average_accuracy"], 55.)
             self.assertAlmostEqual(values["backward_transfer"], -10.)
 
+    def test_ensemble_scalar_view_never_substitutes_ordinary_accuracy(self) -> None:
+        """Both splits export ensemble values and fail if only ordinary values are present."""
+        from notebooks.thesis.presentation import show_learning_results
+
+        with tempfile.TemporaryDirectory(prefix="SYNTHETIC_ENSEMBLE_VIEW_") as temporary:
+            directory = Path(temporary)
+            continual = types.SimpleNamespace(use_ensemble_accuracy=True,
+                class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], task_size=2)
+            config = types.SimpleNamespace(common=types.SimpleNamespace(
+                training=types.SimpleNamespace(results_path=str(directory / "native")),
+                continually_learn=continual))
+            for phase, selected, ordinary in (
+                ("development", "validation_ensemble_accuracy_matrix", "validation_accuracy_matrix"),
+                ("confirmation", "ensemble_accuracy_matrix", "ordinary_accuracy_matrix"),
+            ):
+                continual.experiment_phase = phase
+                bundle = {"continual_details": {ordinary: [[.9, None], [.8, 1.]],
+                                                selected: [[.5, None], [.4, .7]]}}
+                with self.subTest(phase=phase), patch("IPython.display.display"):
+                    _, views = show_learning_results(config, bundle, output_dir=directory / phase, details=False)
+                    saved = pd.read_csv(views / "metrics.csv")
+                    self.assertTrue(saved.accuracy_matrix_source.eq(selected).all())
+                    self.assertTrue(saved.inference.eq("timestep ensemble").all())
+                    self.assertAlmostEqual(saved.set_index("metric").loc["final_average_accuracy", "value"], 55.)
+                    del bundle["continual_details"][selected]
+                    with self.assertRaises(KeyError):
+                        show_learning_results(config, bundle, output_dir=directory / f"{phase}-missing", details=False)
+                    self.assertFalse((directory / f"{phase}-missing").exists())
+
 
 class SavedPackageTests(unittest.TestCase):
     """Bounded saved-evidence regression fixtures; never research outcomes."""
@@ -421,6 +451,23 @@ class SavedPackageTests(unittest.TestCase):
         rows[0]["after_consolidation"]["input_sha256"] = "changed"
         package._json(path, rows)
         with self.assertRaisesRegex(ValueError, "identical fixed examples"):
+            package.extract_saved_evidence(self.manifests, self.outputs)
+
+    def test_ensemble_exports_label_efficacy_and_preserve_ordinary_diagnostics(self) -> None:
+        """Exported endpoint metadata cannot relabel ordinary saved phase measurements."""
+        for manifest in self.manifests.values():
+            manifest["spec"]["base_config"]["common"]["continually_learn"]["use_ensemble_accuracy"] = True
+        for outcomes in self.outputs.values():
+            for record in outcomes.values():
+                record["accuracy_matrix_source"] = "ensemble_accuracy_matrix"
+        evidence = package.extract_saved_evidence(self.manifests, self.outputs)
+        for name in ("individual_runs", "main_results", "trajectories_individual", "trajectories", "paired_effects", "thesis_summary"):
+            self.assertTrue(evidence["tables"][name].accuracy_matrix_source.eq("ensemble_accuracy_matrix").all(), name)
+        self.assertNotIn("accuracy_matrix_source", evidence["tables"]["phase_observations"])
+        self.assertIn("ordinary clean", package.TABLE_CAPTIONS["phase_observations"])
+        first = next(iter(self.outputs["cifar10"].values()))
+        first["accuracy_matrix_source"] = "ordinary_accuracy_matrix"
+        with self.assertRaisesRegex(ValueError, "configured accuracy predictor"):
             package.extract_saved_evidence(self.manifests, self.outputs)
 
     def test_unavailable_phase_payload_cannot_produce_a_numeric_change(self) -> None:

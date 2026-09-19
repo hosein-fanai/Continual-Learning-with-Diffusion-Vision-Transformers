@@ -27,16 +27,20 @@ def describe_run(config: RouteConfig) -> None:
         KeyError: If the configuration lacks required stream fields.
     """
     from IPython.display import display
+    from semantic_consolidation.config import primary_accuracy_matrix_name
     project, route = config.common, config.route
     display(pd.Series({
         "dataset / condition": f"{project.dataset.name} / {route.condition}",
-        "evaluation split": "test" if project.continually_learn.experiment_phase == "confirmation" else "validation",
+        "evaluation split": "validation" if project.continually_learn.experiment_phase == "development" else "test",
+        "task accuracy endpoint": primary_accuracy_matrix_name(config),
         "recovery": project.continually_learn.resume_from or "fresh stream",
         "seed": project.training.seed,
         "classes / tasks": f"{project.continually_learn.class_num} / {len(project.continually_learn.task_groups)}",
         "joint epochs / batch": f"{project.training.epochs} / {project.dataset.batch_size}",
         "current rows": project.continually_learn.replay_current_examples or "all permitted training rows",
-        "old replay rows": project.continually_learn.replay_old_examples,
+        "old replay rows": ("per old class: match permitted current rows per class"
+                            if project.continually_learn.replay_budget_mode == "match_current"
+                            else project.continually_learn.replay_old_examples),
         "configured semantic update budget": f"acquisition {route.acquisition_steps} / consolidation {route.consolidation_steps}",
     }, name="Selected stream").to_frame())
 
@@ -66,6 +70,7 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     """
     from IPython.display import display
     from common.config import resolve_continual_schedule
+    from semantic_consolidation.config import primary_accuracy_matrix_name
     from semantic_consolidation.study import _completed_metrics
     project, result_details = config.common, bundle["continual_details"]
     run = Path(project.training.results_path).resolve()
@@ -75,8 +80,10 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     if views == run or run in views.parents or views in run.parents:
         raise ValueError("Notebook views must be separate from original run artifacts.")
     continual = project.continually_learn
-    confirmation = continual.experiment_phase == "confirmation"
-    matrix = np.asarray(result_details["ordinary_accuracy_matrix" if confirmation else "validation_accuracy_matrix"], dtype=float)
+    confirmation = continual.experiment_phase != "development"
+    matrix_name = primary_accuracy_matrix_name(config)
+    inference = "timestep ensemble" if "ensemble" in matrix_name else "ordinary clean classifier"
+    matrix = np.asarray(result_details[matrix_name], dtype=float)
     _, groups = resolve_continual_schedule(continual.class_num, continual.class_order,
                                           continual.task_groups, task_size=continual.task_size)
     # Final notebook values require every scheduled learned-task observation.
@@ -85,7 +92,8 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     metrics = pd.DataFrame([
         {"metric": name, "value": value * 100,
          "unit": "%" if "accuracy" in name else "percentage points",
-         "split": "test" if confirmation else "validation", "completed_tasks": len(groups)}
+         "split": "test" if confirmation else "validation", "completed_tasks": len(groups),
+         "accuracy_matrix_source": matrix_name, "inference": inference}
         for name, value in scalars.items()
     ])
     views.mkdir(parents=True, exist_ok=True)
@@ -108,7 +116,7 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     trajectory.to_csv(views / "accuracy_trajectory.csv")
     ax = trajectory[["new", "old", "all_seen"]].plot(marker="o", ylim=(0, 100), ylabel="Accuracy (%)")
     ax.plot(trajectory.index, trajectory.uniform_chance, ":", color="gray", label="Uniform all-seen chance")
-    ax.set(title=f"{project.dataset.name} / {config.route.condition} / {'test' if confirmation else 'validation'}",
+    ax.set(title=f"{project.dataset.name} / {config.route.condition} / {inference} / {'test' if confirmation else 'validation'}",
            xticks=trajectory.index)
     ax.legend()
     ax.figure.savefig(views / "accuracy_trajectory.png", dpi=160, bbox_inches="tight")
@@ -124,7 +132,7 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
         # Plot only measurements actually retained in the native history.
         if keys:
             print("Final task joint history; all tasks remain in the native epoch_metrics.csv.")
-            print("Classifier validation uses clean images; training uses masked/noisy views. "
+            print("Ordinary classifier epoch validation uses clean images; training uses masked/noisy views. "
                   "Validation total/noise losses are omitted here: clean zero-target noise loss "
                   "does not measure held-out denoising.")
             plotted_history = {key: values for key, values in last.items()
@@ -159,7 +167,7 @@ def show_diagnostics(run: str | Path, views: str | Path) -> dict[str, pd.DataFra
     tables = review_development_run(run, output_dir=Path(views) / "diagnostics")
     names = {
         "gate_coverage": "Gate coverage (visits are updates, not distinct images)",
-        "deployed_classifier_and_hidden_phase_changes": "Consolidation changes (after minus before)",
+        "deployed_classifier_and_hidden_phase_changes": "Ordinary clean classifier and hidden consolidation changes (after minus before)",
         "optimizer_work": "Optimizer work",
         "measured_task_runtime": "Measured runtime (disjoint task totals only)",
         "measured_checkpoint_io": "Measured recovery writes (separate from active task time)",

@@ -34,7 +34,7 @@ from common.experiment import (
     collect_final_stream_metrics, materialize_run_plan, paired_run_statistics,
     read_experiment_manifest, read_long_results,
 )
-from semantic_consolidation.config import load_route_config, save_route_settings, validate_route_config
+from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name, save_route_settings, validate_route_config
 from semantic_consolidation.study import (
     _completed_metrics, _read_study_manifest, analyze_study, prepare_study,
     validate_planned_config,
@@ -57,7 +57,7 @@ CONDITIONS = {
 }
 
 CONFIRMATION_SEEDS = [1103, 2207, 3301]
-CAMPAIGN_VERSION = "minimum_v4_tf220"
+CAMPAIGN_VERSION = "minimum_v5_tf220"
 
 
 def check_runtime() -> dict:
@@ -780,9 +780,12 @@ def attach_route(context: dict, bundle: dict) -> None:
     if context["controller"] is not None:
         raise RuntimeError("Route is already attached; restart this notebook in a fresh kernel.")
     expected, actual = deepcopy(context["runtime_config"]), asdict(context["config"])
+    infer_decay_steps = expected["common"]["optimizer"]["decay_steps"] is None
     for values in (expected, actual):
         values["common"]["dataset"].pop("trainset_len", None)
-        values["common"]["optimizer"].pop("decay_steps", None)
+        # Native optimizer construction may infer an unspecified horizon, never replace a frozen one.
+        if infer_decay_steps:
+            values["common"]["optimizer"].pop("decay_steps", None)
     # Runtime scientific settings changed after selecting the run.
     if expected != actual:
         raise ValueError("Runtime scientific settings changed after selecting the run.")
@@ -908,14 +911,15 @@ def finish_run(context: dict, config: RouteConfig, bundle: dict, history: dict, 
         # This stream already has a completed record.
         if entry["run_id"] in outputs:
             raise FileExistsError("This stream already has a completed record.")
-        matrix = bundle["continual_details"]["ordinary_accuracy_matrix"]
+        matrix_name = primary_accuracy_matrix_name(config)
+        matrix = bundle["continual_details"][matrix_name]
         metrics = _completed_metrics(matrix, len(entry["stream"]["task_groups"]))
         completed = {"manifest_hash": entry["manifest_hash"], "run_id": entry["run_id"],
                      "condition": entry["condition"], "results_path": str(result_path),
                      "seconds": time.perf_counter() - context["started"],
                      "started_utc": context["started_utc"], "completed_utc": datetime.now(timezone.utc).isoformat(),
                      "total_updates": sum(row["total_updates"] for row in controller.records),
-                     "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": "ordinary_accuracy_matrix",
+                     "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": matrix_name,
                      "metrics": metrics}
         publish_completion(manifest_path, completed, expected_hash=entry["manifest_hash"])
     context["finished"] = True

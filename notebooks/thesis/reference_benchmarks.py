@@ -22,9 +22,9 @@ import pandas as pd
 from common.config import Config, resolve_continual_schedule, save_config
 from common.continual_reporting import continual_metrics
 from common.dataloader import get_dataset, get_datasets, load_cifar10, load_cifar100
-from common.learner import _load_continual_arrays, _predict_diffusion_classes
+from common.learner import _ensemble_accuracy_row, _load_continual_arrays, _predict_diffusion_classes
 from common.model import get_model
-from common.runtime import configure_runtime
+from common.runtime import configure_runtime, derive_seed
 from common.train import report, train_model
 from notebooks.thesis.workflow import check_runtime
 from semantic_consolidation.config import load_route_config
@@ -86,11 +86,11 @@ def configure_reference(
     continual.use_buffer = continual.use_generative_replay = continual.use_distillation = False
     continual.use_generative_model_classifier = True
     continual.remove_prev_classes = continual.keep_same_model = True
+    continual.replay_budget_mode = 'fixed_total'
     continual.replay_old_examples = 0
     continual.replay_current_examples = None
     continual.replay_cache_mode = 'off'
     continual.mechanistic_metrics = False
-    continual.use_ensemble_accuracy = continual.evaluate_ensemble_accuracy = False
     continual.plot_results = False
     continual.return_details = True
     continual.resume_from = continual.checkpoint_dir = None
@@ -246,7 +246,7 @@ def train_reference(config: Config, context: dict) -> dict:
 
 
 def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict, pd.DataFrame]:
-    """Save clean final task accuracy and native CL metrics where they are defined."""
+    """Save the configured ordinary/ensemble accuracy and applicable native CL metrics."""
     spec = _validate_controls(config)
     # Failed or mismatched runs cannot publish completed accuracy outcomes.
     if context.get('config') is not config or not context.get('training_finished'):
@@ -263,22 +263,37 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
         # An empty partition cannot provide an accuracy observation.
         if not len(labels):
             raise ValueError('The requested evaluation partition is empty.')
-        scores = _predict_diffusion_classes(context['model'], x, y, -1., 2., config.dataset.batch_size)
-        # Every evaluated row needs finite scores for the entire class vocabulary.
-        if scores.shape != (len(labels), len(config.continually_learn.class_order)) or not np.isfinite(scores).all():
-            raise ValueError('Offline predictions lack complete, finite class support.')
-        correct = np.argmax(scores, axis=1) == labels
         boundaries = np.cumsum([0, *map(len, groups)])
-        final = []
-        for start, stop in zip(boundaries[:-1], boundaries[1:]):
-            selected = (labels >= start) & (labels < stop)
-            # Each scheduled task must contribute held-out rows to its accuracy.
-            if not selected.any():
-                raise ValueError('An evaluation task has no held-out examples.')
-            final.append(float(np.mean(correct[selected])))
+        counts = [int(np.sum((labels >= start) & (labels < stop)))
+                  for start, stop in zip(boundaries[:-1], boundaries[1:])]
+        # Each scheduled task must contribute held-out rows to its accuracy.
+        if not all(counts):
+            raise ValueError('An evaluation task has no held-out examples.')
+        # Match the primary inference policy of the continually trained references.
+        if config.continually_learn.use_ensemble_accuracy:
+            dense_groups = [list(range(start, stop)) for start, stop
+                            in zip(boundaries[:-1], boundaries[1:])]
+            final = _ensemble_accuracy_row(
+                context['model'], x, y, dense_groups, len(groups),
+                -1., 2., config.dataset.batch_size,
+                config.continually_learn.ensemble_accuracy_kwargs,
+                derive_seed(config.training.seed, 'ensemble', len(groups) - 1, spec['evaluation_split']),
+                False)
+            # Unavailable ensemble results cannot be published as final task scores.
+            if not np.isfinite(final).all():
+                raise ValueError('Offline ensemble evaluation returned unavailable accuracy.')
+        # Preserve ordinary clean scoring when that is the configured primary endpoint.
+        else:
+            scores = _predict_diffusion_classes(context['model'], x, y, -1., 2., config.dataset.batch_size)
+            # Every evaluated row needs finite scores for the entire class vocabulary.
+            if scores.shape != (len(labels), len(config.continually_learn.class_order)) or not np.isfinite(scores).all():
+                raise ValueError('Offline predictions lack complete, finite class support.')
+            correct = np.argmax(scores, axis=1) == labels
+            final = [float(np.mean(correct[(labels >= start) & (labels < stop)]))
+                     for start, stop in zip(boundaries[:-1], boundaries[1:])]
         metrics = {'final_average_accuracy': float(np.mean(final)),
                    'average_incremental_accuracy': None, 'average_forgetting': None,
-                   'backward_transfer': None, 'final_example_accuracy': float(np.mean(correct))}
+                   'backward_transfer': None, 'final_example_accuracy': float(np.average(final, weights=counts))}
     # Naive learning supplies the native matrix of learned-task observations.
     else:
         details = context['model']['continual_details']
@@ -298,6 +313,9 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
         'benchmark': spec['benchmark'], 'dataset': config.dataset.name,
         'seed': config.training.seed, 'evaluation_split': spec['evaluation_split'],
         'metric_scale': 'fraction', **metrics,
+        'accuracy_source': 'ensemble' if config.continually_learn.use_ensemble_accuracy else 'ordinary',
+        'ensemble_accuracy_kwargs': deepcopy(config.continually_learn.ensemble_accuracy_kwargs)
+        if config.continually_learn.use_ensemble_accuracy else {},
         'training_seconds': context['training_seconds'],
         'training_seconds_scope': 'Entire native train_model call, including any task evaluation, reporting and checkpoint writes; excludes preparation and final reference reporting.',
         'native_results_path': str(config.training.results_path),

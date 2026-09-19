@@ -239,9 +239,9 @@ budget interpretation, artifacts and primary sources.
 
 Confirmation uses three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five two-class tasks and three methods (9 streams). CIFAR-100 has ten ten-class tasks and five methods (15 streams). Follow the saved **24-row checklist**, one fresh kernel per row. Every method in a block shares the seed and class order. A failed or unfavorable stream cannot be skipped.
 
-The primary comparison is **learned minus extra joint in final clean task-average test accuracy**. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons. This deliberately reduced design does not reproduce every study or ablation proposed in the thesis guides.
+The primary comparison is **learned minus extra joint in final ensemble task-average test accuracy**. The registered ensemble uses `max_t=256`, `t_range_drop_rate=0.5`, and classifier/distillation-head coefficients of 0.5 each. Ordinary clean accuracy remains a separately labeled diagnostic. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons.
 
-The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, depth 4, patch size 4, four heads, raw inference and no EMA. Common APIs own splitting, replay, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. The maintained recipes use TMCL's published image policy: acquisition flips and four independently cropped/colored consolidation views. `noise_levels=[0]` disables diffusion noise, not image augmentation; reliability remains uniform. CE uses its separate clean input. Deployed inference uses the clean, unmodulated all-seen classifier, without task identity, gates or predictor. This does not test noise-dependent reliability claims or reproduce TMCL's full view-invariance objective.
+The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, backbone and classifier depth 6, CNN patchification, patch size 4, four heads, raw inference and no EMA. Joint classifier training uses noisy inputs, null conditioning and no null-row mask; all rows contribute to both classifier and denoising objectives. Common APIs own splitting, class-balanced generated replay, soft distillation, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. The maintained recipes use TMCL's published image policy: acquisition flips and four independently cropped/colored consolidation views. `noise_levels=[0]` disables diffusion noise in the semantic objective, not image augmentation or ensemble inference. CE uses its separate clean input. Inference uses all seen classes without task identity, gates or predictor. This does not test noise-dependent consolidation or reproduce TMCL's full view-invariance objective.
 
 Learned versus extra joint compares the complete added procedure, including its
 image-view policy and losses. Equal optimizer-update allowances do not match
@@ -251,15 +251,17 @@ has no identity-gate or augmentation-only arm, so it cannot isolate every cause.
 
 | Budget | CIFAR-10 | CIFAR-100 |
 |---|---|---|
-| Joint batch / epochs per task | 64 / 40 | 64 / 60 |
+| Joint batch / epochs per task | 128 / 50 | 128 / 50 |
 | Acquisition / consolidation updates per task | 200 / 400 | 1000 / 2000 |
 | Semantic batch / Adam learning rate | 32 / 0.0003 | Same |
-| Joint Adam learning rate / decay | 0.0002 / 0 | Same |
-| Current / generated-old pool | All permitted current rows / fixed 2048 old rows | Same policy |
+| Joint Adam / weight decay | Initial LR 0.005, cosine / 0 | Same |
+| Whole-stream cosine horizon | 49,950 updates | 116,150 updates |
+| Current / generated-old pool | All current rows; 4,000 generated rows per old class | All current rows; 400 generated rows per old class |
+| Replay sampling | 1,000 steps, eta 1, CFG scale 3 | Same |
 | Fixed validation probe | 8 examples per class | Same |
 | Recovery interval | 200 completed updates, plus native phase boundaries | Same |
 
-These are reduced starting budgets, **not a promise of short runtime or convergence**. Expected ordinary updates are 30,120/55,080 per stream; learned and extra-joint totals are 33,120/85,080. Measure full-stream learning, replay usefulness, task time, checkpoint overhead and storage in notebook 00, including the last CIFAR-100 task. Adjust only from validation evidence before freezing. The [recipe rationale](HYPERPARAMETER_RATIONALE.md) distinguishes source settings from local choices.
+These user-selected settings are **not a measured convergence or runtime result**. With the maintained 20% validation split, expected ordinary updates are 46,950/86,150 per stream; learned and extra-joint total optimizer applications are 49,950/116,150. Semantic optimizers have their own clocks. The shared joint cosine horizon includes the maximum fixed extra-joint allowance and never restarts per task; extra-joint updates therefore advance later tasks farther along this global schedule. Each final-task training pool contains 40,000 rows with equal class counts. Measure replay usefulness, full-stream learning and cost in notebook 00. The [recipe rationale](HYPERPARAMETER_RATIONALE.md) records the settings and budget assumptions.
 
 ## Validation, test and metrics
 
@@ -280,7 +282,7 @@ Phase changes require identical hashed validation examples and positive actual c
 
 ## Freeze, interruption and rerun
 
-Finish all source and recipe changes before notebook 01. The configured campaign path is `results/thesis_route_one/minimum_v4_tf220/`. Keep an independent unchanged copy of `frozen_design.json`. Existing campaigns are preserved and cannot be resealed silently. Source or scientific-setting changes require a new campaign.
+Finish all source and recipe changes before notebook 01. The configured campaign path is `results/thesis_route_one/minimum_v5_tf220/`. Keep an independent unchanged copy of `frozen_design.json`. Existing campaigns are preserved and cannot be resealed silently. Source or scientific-setting changes require a new campaign.
 
 Checkpoint saving is sealed into the recipe. Each stream has its own `checkpoints/<run_id>/` directory. Native recovery preserves completed-task boundaries and the latest two intermediate progress snapshots. The notebook uses the native authenticated selector; it never reconstructs model state itself. After an interruption, restart the kernel and **Run All**: the same unfinished repeat resumes from its latest valid commit, and work after that commit is repeated. Before the first published commit, the same stream restarts while unpublished temporary evidence is retained. Damaged published evidence is reported, not overwritten.
 

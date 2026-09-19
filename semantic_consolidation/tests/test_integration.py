@@ -54,6 +54,10 @@ class RouteIntegrationTests(unittest.TestCase):
         """Verify actual optimization, frozen boundaries, metrics and saved weights."""
 
         config = load_route_config(_ROOT / "semantic_consolidation/configs/smoke.yaml")
+        config.common.continually_learn.use_ensemble_accuracy = True
+        config.common.continually_learn.ensemble_accuracy_kwargs = {
+            "max_t": 4, "t_range_drop_rate": .5, "clf_acc_coef": .5, "clf_distil_acc_coef": .5,
+        }
         temporary_root = _ROOT / ".tmp"
         temporary_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -99,8 +103,12 @@ class RouteIntegrationTests(unittest.TestCase):
             self.assertTrue(np.isnan(matrix[0, 1]))
             self.assertTrue(np.isfinite(matrix[np.tril_indices(2)]).all())
             self.assertEqual(
-                result["evaluations"]["validation_continual_metrics"], continual_metrics(matrix),
+                result["evaluations"]["validation_continual_metrics"],
+                continual_metrics(details["validation_ensemble_accuracy_matrix"]),
             )
+            np.testing.assert_allclose(details["accuracy_matrix"], details["validation_ensemble_accuracy_matrix"], equal_nan=True)
+            self.assertEqual(np.asarray(details["validation_ensemble_accuracy_matrix"]).shape, (2, 2))
+            self.assertEqual(details["ensemble_accuracy_matrix"], [])
             output = Path(result["results_path"])
             for filename in (
                 "config.yaml", "input_config.yaml", "route.settings.yaml",

@@ -44,11 +44,12 @@ def _small_template(directory: Path) -> Path:
     config.common.dataset.validation_ratio = .2
     config.common.model.show_network_summary = False
     config.common.model.kwargs.update(
-        dim=8, depth=1, patch_size=8, mha_num_heads=1,
+        dim=8, depth=1, clf_depth=1, patch_size=8, mha_num_heads=1,
         clf_mha_num_heads=1, timesteps=4, compile_args={"run_eagerly": True})
     config.common.model.wrapper_kwargs.update(test_steps=2)
     config.common.training.epochs = 1
     config.common.training.verbose = 0
+    config.common.continually_learn.ensemble_accuracy_kwargs.update(max_t=4)
     config.common.continually_learn.class_num = 4
     config.common.continually_learn.class_order = None
     config.common.continually_learn.task_groups = None
@@ -93,6 +94,11 @@ class ReferenceConfigurationTests(unittest.TestCase):
                         self.assertFalse(control.use_buffer)
                         self.assertFalse(control.use_generative_replay)
                         self.assertFalse(control.use_distillation)
+                        self.assertEqual(control.replay_budget_mode, "fixed_total")
+                        self.assertTrue(control.use_ensemble_accuracy)
+                        self.assertTrue(control.evaluate_ensemble_accuracy)
+                        self.assertEqual(control.ensemble_accuracy_kwargs,
+                                         original.continually_learn.ensemble_accuracy_kwargs)
                         self.assertEqual(control.replay_old_examples, 0)
                         self.assertIsNone(control.replay_current_examples)
                         self.assertEqual(config.model.name, "dit_classifier")
@@ -224,6 +230,9 @@ class ReferenceExecutionTests(unittest.TestCase):
                         self.assertTrue((run / "reference_plan.json").is_file())
                         self.assertTrue(list(Path(config.training.results_path).glob("*.weights.h5")))
                         self.assertEqual(summary["metric_scale"], "fraction")
+                        self.assertEqual(summary["accuracy_source"], "ensemble")
+                        self.assertEqual(summary["ensemble_accuracy_kwargs"],
+                                         config.continually_learn.ensemble_accuracy_kwargs)
                         self.assertEqual(summary["evaluation_split"], "validation")
                         self.assertEqual(len(per_task), 2)
                         self.assertTrue(per_task.accuracy.between(0, 1).all())

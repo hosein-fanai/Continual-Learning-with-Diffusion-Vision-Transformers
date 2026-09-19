@@ -1,4 +1,60 @@
-# Reduced Route One starting recipe — TensorFlow 2.20
+# Registered Route One recipe — TensorFlow 2.20
+
+## User-selected revision, 18 September 2026
+
+The maintained CIFAR-10 and CIFAR-100 YAMLs now register the user's requested
+recipe. These are explicit experimental choices, not an HPO optimum or a claim
+of reproducing JDCL/TMCL. `dim=True` was clarified to integer width **128**.
+
+| Component | Registered value |
+|---|---|
+| DiT architecture | Width 128, backbone depth 6, classifier depth 6, CNN patchification; existing patch 4, four heads and FFN ratio 2 retained |
+| Classifier training | Noisy images, null-only conditioning, `mask_by_nulls=false`; batch fraction 0 retains all rows for both objectives |
+| Joint optimization | Adam, initial LR 0.005, zero weight decay, one whole-stream cosine, batch 128, 50 epochs/task, no early stopping |
+| Cosine duration | 49,950 optimizer applications for CIFAR-10; 116,150 for CIFAR-100; same duration across each dataset's paired conditions |
+| Primary accuracy | Raw timestep ensemble: `max_t=256`, `t_range_drop_rate=0.5`, classifier/distillation coefficients 0.5 each |
+| Replay | `match_current`: every old class receives the same number of generated rows as each permitted current real class; no old raw training rows |
+| Replay sampling | 1,000 reverse steps, eta 1, CFG scale 3 |
+| Distillation | Soft classifier KD, temperature 2, replay-only scope; classifier/noise KD coefficients 0.1 retained |
+| Semantic phases | Existing budgets, Adam 0.0003, batch 32, TMCL four-view augmentation, InfoNCE 0.2, alignment 0.1, CE/orthogonality 1 retained |
+
+With the existing stratified 20% validation split, current classes provide
+4,000 real examples/class on CIFAR-10 and 400/class on CIFAR-100. The generated
+old pool grows to 32,000/36,000 rows at the final task; every seen class has the
+same training count. Unequal current class counts are rejected rather than
+silently truncating real data or claiming balance. No generative replay is
+introduced in the offline/naive supplemental references.
+
+Retained partial batches give CIFAR-10 task batch counts
+`[63,125,188,250,313]` and CIFAR-100
+`[32,63,94,125,157,188,219,250,282,313]`. Fifty epochs give 46,950/86,150
+ordinary joint updates. The global cosine horizons add the maximum fixed
+extra-joint allowance: 3,000/30,000. Semantic phase optimizers use separate
+clocks; extra-joint advances the joint clock, including the learning rates in
+later tasks. This control matches additional optimizer applications, not
+task-relative learning rates, images, FLOPs or wall time. Changing the split,
+batch, task schedule, epochs or phase allowance requires reviewing these
+explicit horizons. Arbitrary time-matched or extension budgets are not covered.
+
+`max_t` is an exclusive upper timestep bound, not a count of independent votes.
+The existing ensemble drops half of the 256 candidate timesteps using its
+seeded inverse-SNR selection and retains the default SNR weighting. Its two
+head coefficients apply to ensemble inference; ordinary clean metrics remain
+separate diagnostics. Classifier KD has no previous teacher at the first task;
+the requested inference mixture is still used. Fixed recipes do not prove that
+this mixture or the replay images are useful.
+
+The default campaign is `minimum_v5_tf220`. No campaign was frozen and no full
+training was started by registering these settings. Preserve prior campaigns,
+results and HPO selection provenance. Validation/development is still required
+before freezing; a user-selected recipe does not undo earlier test exposure.
+
+## Previous reduced recipe and source comparison (historical)
+
+The remainder records the earlier starting recipe. Its architecture, optimizer,
+batch, replay budget, sampler and primary clean endpoint are superseded above;
+unchanged semantic settings and the distinctions from official sources remain
+relevant.
 
 Runtime and primary sources reviewed 15 September 2026 for TensorFlow 2.20 / Keras 3. These are concrete local starting values, not demonstrated convergence or an exact reproduction. Keep the same platform within each dataset across all conditions. Confirmation uses three paired seeds `[1103, 2207, 3301]`; development uses 17.
 
@@ -23,7 +79,7 @@ Code locators below are relative to the pinned repositories. **J10/J100** mean `
 | Semantic phase duration | T: acquisition100/consolidation200 epochs/session, pretraining250 epochs | T-launch actually sets acquisition**50**/consolidation200, pretraining `(250,200)`; `data_setups.py` and `main_tmcl.py` interpret these as epochs. Generic Config defaults `(100,100)` are overridden | CIFAR10 **200 acquisition +400 consolidation updates/task**; CIFAR100 **1000+2000**. Exactly100 acquisition visits per new gate; final retained-gate consolidation minimum40/20 visits. These are optimizer applications, not T epochs. |
 | Semantic optimizer and modulation | T: modulationLR0.01/feedforwardLR0.001, cosine with10 warmup epochs | T-launch matches those rates; `main_tmcl.py` scales by batch/256 and implements AdamW/schedules. Generic defaults0.015/0.0015 differ. Layerwise modulation decay0.4→0.04 | Existing shared phase **Adam LR0.0003**, constant, **zero weight decay** in both phases; local API exposes one shared rate. Raw gate initialization SD**0.02**, gain/bias tanh limits**1**, orthogonality weight**1**. No unimplemented phase schedules or layerwise decay. |
 | Alignment | T: multi-view Barlow Twins, lambda0.005, scale0.1 | T-launch/main loss: four views, lambda0.005, **scale0.024**; sums correlation penalties. SupCon's0.1 temperature is a different comparator | Existing asymmetric instance **InfoNCE T0.2**, weight**0.1**, CE weight**1**, phase batch**32**, **four independently augmented image views**, no diffusion noise `[0]`, uniform reliability. Average InfoNCE over three frozen-target views; CE uses a separate clean input. Approximate collapsed alignment contribution0.1×log32=0.347 versus CE log(number of classes). This scale argument is not empirical validation. |
-| Diagnostics | T studies CDNV | `main_tmcl.py` calls `represent/neural_collapse.py:class_distance_normalized_variance` on class-split features | **8 fixed validation examples/class**, observer batch32, replay audit4/class; phase probe2 batches, max4 gates. Existing cosine geometry, rank, hidden drift and CKA remain their own measurements, **not CDNV**. Eight is a local cost choice. |
+| Diagnostics | T studies CDNV | `main_tmcl.py` calls `represent/neural_collapse.py:class_distance_normalized_variance` on class-split features | **8 fixed validation examples/class**, observer batch 32, replay audit4/class; phase probe2 batches, max4 gates. Existing cosine geometry, rank, hidden drift and CKA remain their own measurements, **not CDNV**. Eight is a local cost choice. |
 
 The paper/code disagreements above remain unresolved historical differences. The complete launcher-linked YAML inventory adds two exceptions: **CIFAR10 global task3 uses LR0.00002**, and **CIFAR100 global task2 uses104,000 updates** (later global tasks use70,000). The local constant0.0002 rate and reduced epochs deliberately do not emulate either exception. Neither filename checkpoint steps nor generic config defaults define the effective launcher budget. JDCL's dependency requirements point to moving `latent-diffusion@main`; we separately inspected dependency commit `e544c57f8537e60515fc938d1c337774aa934717`. This verifies its current implementation, **not** the dependency state used for published experiments. No official run logs were retrieved to reconcile those differences.
 

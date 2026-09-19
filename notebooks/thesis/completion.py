@@ -31,7 +31,7 @@ from common.study_artifacts import (
 )
 from common.config import _safe_load_unique_yaml, load_config
 from common.experiment import materialize_run_plan
-from semantic_consolidation.config import load_route_config
+from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name
 from semantic_consolidation.study import (
     _completed_metrics, _read_study_manifest, planned_config, validate_planned_config,
 )
@@ -359,7 +359,7 @@ def _validate_native_result(record: dict, entry: dict, manifest_path: Path, mani
             stream definitions.
 
     Returns:
-        validated (None): None; verifies complete ordinary test matrix, recomputed metrics,
+        validated (None): None; verifies the complete selected test matrix, recomputed metrics,
             schedule, source and update counts against saved native evidence.
 
     Raises:
@@ -397,9 +397,10 @@ def _validate_native_result(record: dict, entry: dict, manifest_path: Path, mani
     size = len(groups)
     matrix = np.asarray(record["accuracy_matrix"], dtype="float64")
     metrics = _completed_metrics(matrix, size)
-    # Confirmation requires the ordinary held-out test accuracy matrix.
-    if record.get("accuracy_matrix_source") != "ordinary_accuracy_matrix":
-        raise ValueError("Confirmation requires the ordinary held-out test accuracy matrix.")
+    matrix_name = primary_accuracy_matrix_name(expected)
+    # Confirmation authenticates the predictor selected in the frozen configuration.
+    if record.get("accuracy_matrix_source") != matrix_name:
+        raise ValueError(f"Confirmation requires the configured {matrix_name} endpoint.")
     # Completed metrics differ from their full saved matrix.
     if not isinstance(record.get("metrics"), dict) or any(
             key not in record["metrics"] or isinstance(record["metrics"][key], bool)
@@ -407,25 +408,25 @@ def _validate_native_result(record: dict, entry: dict, manifest_path: Path, mani
             for key, value in metrics.items()):
         raise ValueError("Completed metrics differ from their full saved matrix.")
     rows = [row for row in _csv(result_path / "accuracy_matrices.csv")
-            if row["matrix"] == "ordinary_accuracy_matrix"]
+            if row["matrix"] == matrix_name]
     coordinates = set()
     for row in rows:
         i, j = int(row["after_task_index"]), int(row["evaluated_task_index"])
-        # Native ordinary matrix has duplicate/out-of-schedule cells.
+        # Native selected matrix has duplicate/out-of-schedule cells.
         if not 0 <= i < size or not 0 <= j < size or (i, j) in coordinates:
-            raise ValueError("Native ordinary matrix has duplicate/out-of-schedule cells.")
+            raise ValueError("Native selected matrix has duplicate/out-of-schedule cells.")
         coordinates.add((i, j))
         # Native matrix class metadata differs from the frozen schedule.
         if json.loads(row["after_task_classes"]) != groups[i] or json.loads(row["evaluated_task_classes"]) != groups[j] \
                 or json.loads(row["seen_classes"]) != sum(groups[:i + 1], []):
             raise ValueError("Native matrix class metadata differs from the frozen schedule.")
         value = float(row["value"]) if row["value"] else np.nan
-        # Native ordinary matrix differs from the completion artifact.
+        # Native selected matrix differs from the completion artifact.
         if not np.isclose(value, matrix[i, j], rtol=0., atol=1e-12, equal_nan=True):
-            raise ValueError("Native ordinary matrix differs from the completion artifact.")
-    # Native ordinary matrix is incomplete; expected every scheduled cell.
+            raise ValueError("Native selected matrix differs from the completion artifact.")
+    # Native selected matrix is incomplete; expected every scheduled cell.
     if len(coordinates) != size * size:
-        raise ValueError("Native ordinary matrix is incomplete; expected every scheduled cell.")
+        raise ValueError("Native selected matrix is incomplete; expected every scheduled cell.")
     schedule = _csv(result_path / "schedule.csv")
     # Native schedule does not cover the full stream.
     if len(schedule) != size:

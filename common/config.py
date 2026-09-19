@@ -1984,13 +1984,18 @@ class ContinuallyLearnConfig(KwargsMixin):
             ``training.verbose``. Defaults to ``True``.
         replay_budget_mode (str): ``"legacy"`` retains per-class generation and buffer
             counts. ``"fixed_total"`` uses the explicit old/current example budgets below so
-            replay methods receive matched exposure. Defaults to ``'legacy'``.
+            replay methods receive matched exposure. ``"match_current"`` retains every
+            permitted current row and generates equally many rows for each old class as
+            for each current class; current class counts must be equal and positive.
+            This mode requires new-class-only real data and generative replay, with no
+            explicit old/current budgets. Defaults to ``'legacy'``.
         replay_old_examples (int | None): Exact old-row budget in fixed_total mode, where it
-            must be supplied. None is permitted only in legacy mode, which derives counts
-            from buffer or per-class generation settings; zero requests no old examples.
+            must be supplied. None lets legacy mode derive counts from buffer or per-class
+            generation settings, and is required by match_current mode; zero requests no old examples.
             Defaults to ``None``.
         replay_current_examples (int | None): Optional exact current-data exposure per task
-            in fixed-total mode; ``None`` keeps every current example. Defaults to ``None``.
+            in fixed-total mode; ``None`` keeps every current example and is required by
+            match_current mode. Defaults to ``None``.
         replay_candidate_multiplier (int): Positive candidate-pool multiplier used before an
             optional cognitive replay gate. Defaults to ``1``.
         replay_selection (str): 'all' keeps the legacy candidate selection;

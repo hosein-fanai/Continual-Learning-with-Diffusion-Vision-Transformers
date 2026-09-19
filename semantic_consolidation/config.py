@@ -202,6 +202,27 @@ class RouteConfig:
             raise TypeError("RouteConfig requires common.Config and RouteSettings.")
 
 
+def primary_accuracy_matrix_name(config: RouteConfig) -> str:
+    """Identify the declared task endpoint without substituting another predictor.
+
+    Args:
+        config (RouteConfig): Route configuration containing the experiment phase
+            and optional ensemble accuracy switch.
+
+    Returns:
+        name (str): Exact native result key for the selected split and predictor.
+
+    Raises:
+        AttributeError: If the configuration lacks the continual experiment phase.
+    """
+    continual = config.common.continually_learn
+    ensemble = getattr(continual, "use_ensemble_accuracy", False)
+    # Development endpoints use held-out training validation, never official test data.
+    if continual.experiment_phase == "development":
+        return "validation_ensemble_accuracy_matrix" if ensemble else "validation_accuracy_matrix"
+    return "ensemble_accuracy_matrix" if ensemble else "ordinary_accuracy_matrix"
+
+
 def _merge(base: dict, overrides: Mapping) -> dict:
     """Merge nested configuration mappings without changing either input.
 
@@ -339,19 +360,23 @@ def validate_route_config(config: RouteConfig) -> None:
     # reference protocol.
     if not continual.remove_prev_classes:
         raise ValueError("Route one requires remove_prev_classes=true; cumulative historical real-data access is a separate reference protocol.")
-    # The route's primary endpoint requires use_ensemble_accuracy=false; optional ensemble diagnostics may
-    # still be evaluated.
-    if continual.use_ensemble_accuracy:
-        raise ValueError("The route's primary endpoint requires use_ensemble_accuracy=false; optional ensemble diagnostics may still be evaluated.")
     # Use route.condition controls and explicit common replay/KD switches, not named common baselines.
     if continual.baseline is not None:
         raise ValueError("Use route.condition controls and explicit common replay/KD switches, not named common baselines.")
-    # Use replay_budget_mode='fixed_total' for explicit current/replay exposure budgets.
-    if continual.replay_budget_mode != "fixed_total":
-        raise ValueError("Use replay_budget_mode='fixed_total' for explicit current/replay exposure budgets.")
+    # The route supports explicit pools or class-balanced pools matched to current data.
+    if continual.replay_budget_mode not in ("fixed_total", "match_current"):
+        raise ValueError("Use replay_budget_mode='fixed_total' or 'match_current' for explicit replay exposure.")
     # fixed_total requires a nonnegative replay_old_examples count.
-    if continual.replay_old_examples is None or continual.replay_old_examples < 0:
+    if continual.replay_budget_mode == "fixed_total" and (
+        continual.replay_old_examples is None or continual.replay_old_examples < 0
+    ):
         raise ValueError("fixed_total requires a nonnegative replay_old_examples count.")
+    # Matching current class counts determines both pools from the permitted training data.
+    if continual.replay_budget_mode == "match_current" and (
+        continual.replay_old_examples is not None or continual.replay_current_examples is not None
+        or not continual.use_generative_replay
+    ):
+        raise ValueError("match_current requires generated replay and null explicit current/old budgets.")
     # Use raw images, sparse labels, and dataset.preprocess='fixed-standardize'.
     if dataset.return_features or dataset.onehot_labels or dataset.preprocess != "fixed-standardize":
         raise ValueError("Use raw images, sparse labels, and dataset.preprocess='fixed-standardize'.")
@@ -400,9 +425,9 @@ def validate_route_config(config: RouteConfig) -> None:
         # Stochastic variational flattening is unsupported: frozen semantic targets must be deterministic.
         if "flatten" in reshapers.values() and options.get("add_kl", False):
             raise ValueError("Stochastic variational flattening is unsupported: frozen semantic targets must be deterministic.")
-    # The primary endpoint requires clean test bounds: min=0 and max=0.
+    # Ordinary classifier diagnostics keep clean bounds independently of the ensemble endpoint.
     if wrapper.get("test_noisified_min_timesteps", 0) != 0 or wrapper.get("test_noisified_max_timesteps", -1) not in (None, 0):
-        raise ValueError("The primary endpoint requires clean test bounds: min=0 and max=0.")
+        raise ValueError("Ordinary classifier diagnostics require clean test bounds: min=0 and max=0.")
     available = {"mnist": 10, "fmnist": 10, "cifar10": 10, "cifar100": 100}.get(dataset.name)
     _, groups = resolve_continual_schedule(
         continual.class_num, continual.class_order, continual.task_groups,
@@ -424,7 +449,7 @@ def validate_route_config(config: RouteConfig) -> None:
         required = 2 * (sum(map(len, groups)) - len(groups[-1]))
         # Semantic positive pairs require replay_old_examples >= two rows per old class in the largest
         # task.
-        if continual.replay_old_examples < required:
+        if continual.replay_budget_mode == "fixed_total" and continual.replay_old_examples < required:
             raise ValueError("Semantic positive pairs require replay_old_examples >= two rows per old class in the largest task.")
     # route.extra_joint_seconds must contain exactly one measured budget per task.
     if settings.extra_joint_seconds is not None and len(settings.extra_joint_seconds) != len(groups):

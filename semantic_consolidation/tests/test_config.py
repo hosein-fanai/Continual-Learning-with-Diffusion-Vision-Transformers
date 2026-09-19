@@ -9,7 +9,7 @@ import unittest
 
 import yaml
 
-from semantic_consolidation.config import RouteConfig, RouteSettings, _merge, load_route_config, validate_route_config
+from semantic_consolidation.config import RouteConfig, RouteSettings, _merge, load_route_config, primary_accuracy_matrix_name, validate_route_config
 
 
 class RouteYamlTests(unittest.TestCase):
@@ -77,6 +77,32 @@ class RouteYamlTests(unittest.TestCase):
         settings = RouteSettings()
         self.assertEqual(settings.image_augmentation, "none")
         self.assertEqual(settings.augmentation_views, 4)
+
+    def test_primary_predictor_selects_its_own_split_matrix(self) -> None:
+        """Ordinary and ensemble task metrics resolve independently on both data splits."""
+        config = self._load_text("common:\n  continually_learn:\n    use_ensemble_accuracy: true\n")
+        continual = config.common.continually_learn
+        for ensemble, phase, name in (
+            (False, "development", "validation_accuracy_matrix"),
+            (True, "development", "validation_ensemble_accuracy_matrix"),
+            (False, "confirmation", "ordinary_accuracy_matrix"),
+            (True, "confirmation", "ensemble_accuracy_matrix"),
+        ):
+            with self.subTest(ensemble=ensemble, phase=phase):
+                continual.use_ensemble_accuracy, continual.experiment_phase = ensemble, phase
+                validate_route_config(config)
+                self.assertEqual(primary_accuracy_matrix_name(config), name)
+
+    def test_match_current_replay_accepts_dynamic_balanced_pools_only(self) -> None:
+        """Dynamic replay bypasses a fixed-total threshold but rejects explicit pool sizes."""
+        config = self._load_text("common:\n  continually_learn:\n    replay_budget_mode: match_current\n"
+                                 "    replay_old_examples: null\n    replay_current_examples: null\n")
+        self.assertEqual(config.common.continually_learn.replay_budget_mode, "match_current")
+        for name in ("replay_old_examples", "replay_current_examples"):
+            changed = deepcopy(config)
+            setattr(changed.common.continually_learn, name, 8)
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "match_current"):
+                validate_route_config(changed)
 
     def test_invalid_augmentation_controls_are_rejected(self) -> None:
         """A misspelled policy or unusable count fails before any phase training."""

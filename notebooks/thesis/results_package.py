@@ -37,9 +37,9 @@ METRICS = {"final_average_accuracy": ("Final accuracy", "%"),
            "average_incremental_accuracy": ("Average incremental accuracy", "%"),
            "average_forgetting": ("Signed forgetting", "percentage points"),
            "backward_transfer": ("Backward transfer", "percentage points")}
-PHASE_METRICS = {"clean_accuracy": ("Deployed all-seen accuracy", "%", 100),
-                 "old_accuracy": ("Deployed old-class accuracy", "%", 100),
-                 "new_accuracy": ("Deployed new-class accuracy", "%", 100),
+PHASE_METRICS = {"clean_accuracy": ("Ordinary clean all-seen accuracy", "%", 100),
+                 "old_accuracy": ("Ordinary clean old-class accuracy", "%", 100),
+                 "new_accuracy": ("Ordinary clean new-class accuracy", "%", 100),
                  "hidden_target_cosine": ("Predictor-free hidden-target cosine", "cosine", 1),
                  "hidden_infonce": ("Predictor-free hidden InfoNCE", "loss", 1),
                  "representation.centered_effective_rank": ("Hidden effective rank", "rank", 1),
@@ -487,21 +487,28 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
             entry, directory = plan[run_id], Path(record["results_path"])
             identity = dict(dataset=dataset, condition=record["condition"], method=METHODS[record["condition"]],
                             run_id=run_id, block_id=entry["block_id"], seed=entry["stream"]["stream_seed"])
+            expected_source = ("ensemble_accuracy_matrix" if manifest["spec"]["base_config"]["common"]
+                               ["continually_learn"].get("use_ensemble_accuracy", False) else "ordinary_accuracy_matrix")
+            # A saved matrix must identify the predictor frozen for this dataset.
+            if record.get("accuracy_matrix_source") != expected_source:
+                raise ValueError("Saved test endpoint differs from the configured accuracy predictor.")
+            endpoint_identity = {**identity, "accuracy_matrix_source": expected_source,
+                                 "inference": "timestep ensemble" if "ensemble" in expected_source else "ordinary clean classifier"}
             files = [directory / name for name in ("route_metrics.json", "route_resources.csv", "task_metrics.csv",
                      "section11.json", "accuracy_matrices.csv", "schedule.csv", "summary.csv", "config.yaml", "input_config.yaml", "route.settings.yaml", "source_provenance.json")]
             # Bind the prespecified qualitative run before reading its saved replay.
             if identity["condition"] == "learned" and identity["seed"] == SEEDS[0]:
                 files.append(directory / f"generated_examples_task_{len(entry['stream']['task_groups']):03d}.npz")
             sources[f"{dataset}/{run_id}"] = [{"path": str(path), "sha256": _hash(path)} for path in files if path.is_file()]
-            run_inventory.append({**identity, "results_path": str(directory), "manifest_hash": manifest["manifest_hash"],
+            run_inventory.append({**endpoint_identity, "results_path": str(directory), "manifest_hash": manifest["manifest_hash"],
                                   "class_order": entry["stream"]["class_order"], "task_groups": entry["stream"]["task_groups"]})
             matrix = np.asarray(record["accuracy_matrix"], dtype=float)
             for metric, score in continual_metrics(matrix).items():
-                main.append({**identity, "metric": metric, "unit": METRICS[metric][1], "value": score * 100})
+                main.append({**endpoint_identity, "metric": metric, "unit": METRICS[metric][1], "value": score * 100})
             new, old = task_accuracy_summaries(matrix)
             for task in range(len(matrix)):
                 for cohort, score in (("new", new[task]), ("old", old[task]), ("all_seen", matrix[task, :task + 1].mean())):
-                    trajectories.append({**identity, "task": task + 1, "cohort": cohort, "unit": "%", "value": score * 100})
+                    trajectories.append({**endpoint_identity, "task": task + 1, "cohort": cohort, "unit": "%", "value": score * 100})
             route_path, observer_path = directory / "route_metrics.json", directory / "section11.json"
             route = sanitize_cka(_read(route_path)) if route_path.is_file() else []
             observer = sanitize_cka(_read(observer_path)) if observer_path.is_file() else {}
@@ -573,8 +580,8 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
               ("phase_observations", phases), ("temporal_observations", temporal), ("resources_individual", resources),
               ("task_resources", task_resources), ("replay_observations", replay))}
     basic = ["dataset", "condition", "method", "metric", "unit"]
-    frames["main_results"] = summarize_streams(main, basic)
-    frames["trajectories"] = summarize_streams(trajectories, ["dataset", "condition", "method", "task", "cohort", "unit"])
+    frames["main_results"] = summarize_streams(main, [*basic, "accuracy_matrix_source", "inference"])
+    frames["trajectories"] = summarize_streams(trajectories, ["dataset", "condition", "method", "task", "cohort", "unit", "accuracy_matrix_source", "inference"])
     phase_keys = [*KEYS, "metric", "phase", "unit"]
     frames["phase_individual"] = _within_stream(phases, phase_keys)
     frames["phase_changes"] = summarize_streams(frames["phase_individual"], [*basic, "phase"])
@@ -600,12 +607,13 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
             learned = learned.iloc[0]
             for _, comparator in paired.loc[paired["condition"].ne("learned")].iterrows():
                 effects.append({"dataset": dataset, "block_id": block, "seed": learned["seed"],
+                    "accuracy_matrix_source": learned["accuracy_matrix_source"], "inference": learned["inference"],
                     "condition": comparator["condition"], "method": comparator["method"],
                     "comparison": f"Learned minus {comparator['method']}", "role": "primary" if comparator["condition"] == "extra_joint" else "secondary descriptive",
                     "run_id": learned["run_id"], "comparator_run_id": comparator["run_id"],
                     "metric": "final_average_accuracy_difference", "unit": "percentage points", "value": learned["value"] - comparator["value"]})
     frames["paired_individual"] = pd.DataFrame(effects)
-    frames["paired_effects"] = summarize_streams(effects, ["dataset", "condition", "method", "comparison", "role", "metric", "unit"])
+    frames["paired_effects"] = summarize_streams(effects, ["dataset", "condition", "method", "comparison", "role", "metric", "unit", "accuracy_matrix_source", "inference"])
     frames["cifar100_mechanism_comparison"] = frames["main_results"].loc[
         frames["main_results"]["dataset"].eq("cifar100") & frames["main_results"]["condition"].isin(["learned", "random", "ce_only"])].copy()
     frames["thesis_summary"] = compact_summary(frames)
@@ -649,8 +657,10 @@ def compact_summary(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
             sd = f"{row.sample_sd:.2f}" if np.isfinite(row.sample_sd) else "unavailable"
             values.append(f"{row.mean:.2f} ± {sd} (n={int(row.n)})")
     rows["mean ± sample SD (n)"] = values
-    return rows.pivot(index=["dataset", "method"], columns="measurement",
-                      values="mean ± sample SD (n)").reindex(columns=list(selected.values())).reset_index()
+    summary = rows.pivot(index=["dataset", "method"], columns="measurement",
+                         values="mean ± sample SD (n)").reindex(columns=list(selected.values())).reset_index()
+    endpoints = tables["main_results"][["dataset", "method", "accuracy_matrix_source", "inference"]].drop_duplicates()
+    return summary.merge(endpoints, on=["dataset", "method"], validate="one_to_one")
 
 
 def _markdown(frame: pd.DataFrame) -> str:
@@ -713,10 +723,10 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
         KeyError: If required frozen design or evidence fields are missing.
     """
     text = [f"# Study context — {status}",
-        "Research question: does learned temporary class modulation followed by semantic consolidation improve clean class-incremental retention and new-class learning beyond extra ordinary joint updates?",
+        "Research question: does learned temporary class modulation followed by semantic consolidation improve class-incremental retention and new-class learning beyond extra ordinary joint updates?",
         "Methods: Platform (native baseline) uses joint diffusion/classification, generated replay and classification/denoising distillation. Extra joint receives the acquisition-plus-consolidation update allowance. Learned adds trained gates and CE + InfoNCE semantic consolidation. Random uses random gates. CE only (native no_consolidation) retains acquisition and runs the replacement CE phase without the alignment gradient.",
         f"Declared confirmation seeds: {record['seeds']}. Development seed 17 is separate. Revised final design: CIFAR-10, five two-class tasks, three methods, nine streams; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
-        "Inference: clean, null-conditioned raw-network primary classifier over every seen class, without task identity, gates or predictor. Main efficacy uses the ordinary held-out test matrix; phase and temporal diagnostics use validation data and never replace the efficacy endpoint.",
+        "Inference: main efficacy uses the configured ordinary or timestep-ensemble held-out test matrix over every seen class, without task identity, gates or predictor. Each dataset's frozen predictor and coefficients are recorded below; per-stream tables identify the exact matrix source. Phase accuracy remains an ordinary clean-classifier validation diagnostic, and temporal diagnostics also use validation data; neither replaces the efficacy endpoint.",
         "Metrics: for A[i,j], accuracy on task j after training i, final accuracy averages the final row's learned tasks; incremental accuracy averages each learned-prefix row mean. Signed forgetting averages max(A[j:T-1,j]) - A[T-1,j] over old tasks, excluding the final row from the maximum. BWT averages A[T-1,j] - A[j,j] over old tasks. These native formulas are computed separately for each full stream before mean and sample SD (ddof=1). Accuracy is displayed as percent; forgetting, BWT and accuracy differences as percentage points. Negative forgetting and positive BWT indicate improvement. First-task old accuracy is unavailable.",
         "Repeated measurements: trajectory means/SD use one observation per stream at each task/cohort. Phase summaries first average the matched within-task before, after or after-minus-before observations within each stream. Temporal drift averages observed classes within task, then tasks within stream. n_observations and n preserve available cohort/task and independent-stream counts. Missing phases and n<2 SD remain unavailable.",
         "Resources: active stream time sums only complete seconds/task_total entries, including resumed committed segments. Measured checkpoint writes are reported separately; downtime, uncommitted lost work and interrupted unfinished write timers are not complete observations. Notebook elapsed time covers only the current attempt, including setup and pauses. Route/fit/sampling timers overlap task totals and are not added to them. Tensor storage, process RSS sampling and TF allocator high-water values are separate measurements; per-component maxima are not simultaneous total memory.", LIMITATIONS]
@@ -725,7 +735,8 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
         common, route = config["common"], config["route"]
         exposure = common["continually_learn"]
         text.extend([f"\n## {dataset.upper()} frozen settings",
-            f"Current examples per task: {exposure.get('replay_current_examples')} (null means all permitted current training data, after validation split/caps); fixed old replay budget: {exposure.get('replay_old_examples')}. Replay is a fixed generated pool within each task. Extra epochs reuse that pool. Old raw arrays remain in simulator host memory; historical validation supports diagnostics. Actual exposure and runtime are in task_resources.",
+            f"Primary test matrix: {'ensemble_accuracy_matrix' if exposure.get('use_ensemble_accuracy', False) else 'ordinary_accuracy_matrix'}. Frozen ensemble options: {json.dumps(exposure.get('ensemble_accuracy_kwargs', {}), sort_keys=True)}.",
+            f"Replay budget mode: {exposure.get('replay_budget_mode', 'fixed_total')}. Current examples per task: {exposure.get('replay_current_examples')} (null means all permitted current training data, after validation split/caps); explicit old replay budget: {exposure.get('replay_old_examples')}. In match_current mode, each old class receives the same row count as each permitted current class. Replay is a fixed generated pool within each task. Extra epochs reuse that pool. Old raw arrays remain in simulator host memory; historical validation supports diagnostics. Actual exposure and runtime are in task_resources.",
             "The complete resolved frozen settings follow; identifiers and categorical options are not averaged.",
             "```json\n" + json.dumps({"dataset": common.get("dataset"), "model": common.get("model"),
                 "optimizer": common.get("optimizer"), "training": common.get("training"),
@@ -734,14 +745,14 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
 
 
 TABLE_CAPTIONS = {
-    "cifar100_mechanism_comparison": "CIFAR-100 learned/random/CE-only mechanism comparison on the ordinary held-out test matrix. Mean, sample SD and n independent full streams. Random and CE-only differences support interpretation of this adaptation; they do not prove a unique cognitive mechanism.",
-    "individual_runs": "Native continual metrics recomputed independently for every saved full-stream ordinary test matrix, displayed in % or percentage points; no averaged-matrix forgetting.",
+    "cifar100_mechanism_comparison": "CIFAR-100 learned/random/CE-only mechanism comparison on the configured held-out test matrix. Mean, sample SD and n independent full streams. Random and CE-only differences support interpretation of this adaptation; they do not prove a unique cognitive mechanism.",
+    "individual_runs": "Native continual metrics recomputed independently for every saved full-stream selected test matrix, displayed in % or percentage points; accuracy_matrix_source identifies the predictor. No averaged-matrix forgetting.",
     "main_results": "Main continual outcomes: mean, sample SD (ddof=1) and actual n full streams. Signed forgetting and BWT retain their sign. These compare efficacy in the frozen reduced protocol, not convergence or general superiority.",
     "paired_individual": "Each paired learned-minus-comparator final test-accuracy effect in percentage points. Extra joint is primary; other comparisons are descriptive supporting evidence.",
     "paired_effects": "Mean and sample SD across available independent paired effects. SD is not a confidence interval; native primary intervals are supplied separately.",
-    "trajectories_individual": "Per-stream ordinary test new-task, old-task and all-seen task-balanced accuracy (%). No old classes exist at task one; its old value remains unavailable.",
-    "trajectories": "Combined clean test accuracy trajectories by dataset, method, task and cohort. Each mean/SD uses at most three independent streams at that task, with explicit n. Repeated tasks are not independent replicates.",
-    "phase_observations": "Fixed identical validation examples before and after consolidation: deployed accuracy and predictor-free hidden observations. Absent platform/extra-joint phases stay unavailable. Accuracy changes use percentage points.",
+    "trajectories_individual": "Per-stream selected test new-task, old-task and all-seen task-balanced accuracy (%), with explicit accuracy_matrix_source. No old classes exist at task one; its old value remains unavailable.",
+    "trajectories": "Combined configured test accuracy trajectories by dataset, method, task and cohort. Each mean/SD uses at most three independent streams at that task, with explicit n. Repeated tasks are not independent replicates.",
+    "phase_observations": "Fixed identical validation examples before and after consolidation: ordinary clean classifier accuracy and predictor-free hidden observations. Absent platform/extra-joint phases stay unavailable. Accuracy changes use percentage points.",
     "phase_individual": "Before, after and paired within-task change, averaged over available tasks within each stream before uncertainty is summarized. n_observations counts tasks, not independent runs.",
     "phase_changes": "Stream-first validation consolidation summaries with mean, sample SD and n streams. Paired boundary changes establish local effects on the measured classifier/cohort, not independently causal evidence or whole-backbone preservation.",
     "temporal_observations": "Fixed per-class validation temporal drift. CKA requires actual aligned n>2, valid finite nonconstant features; legacy unknown/tiny-cohort CKA is unavailable with reasons. L2/Frobenius observations remain when valid.",
