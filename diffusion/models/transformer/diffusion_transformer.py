@@ -2707,10 +2707,13 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             min_depth=min_depth, 
             training=training
         )
+        # Keep the absent-condition placeholder symbolic so the classifier's
+        # child layers still record their output shapes during the direct build.
         noises = self.unpatchifier(
-            (x, tf.zeros(
-                (tf.shape(x)[0], self.cond_dim), 
-                dtype=self.compute_dtype
+            (x, tf.keras.ops.repeat(
+                tf.keras.ops.zeros_like(x[:, 0, :1]), 
+                self.cond_dim, 
+                axis=-1
             ) if cond is None else cond), 
             training=training
         ) if self.unpatchifier is not None else x
