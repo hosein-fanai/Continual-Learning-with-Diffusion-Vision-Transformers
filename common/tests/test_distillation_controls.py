@@ -361,6 +361,24 @@ class DistillationControlTests(tf.test.TestCase):
                 for tracker in trackers:
                     self.assertAllClose(tracker.count, 0.)
 
+    def test_dynamic_metrics_ignore_disabled_token_placeholder(self) -> None:
+        """Growing class heads must ignore the disabled token loss's scalar placeholder."""
+        for width in (1, 2):
+            for graph in (False, True):
+                with self.subTest(width=width, graph=graph):
+                    wrapper = _DistillationHarness()
+                    wrapper.network.dynamic_num_classes = True
+                    wrapper.use_clf_distil_loss = False
+                    classes = tf.zeros((3,), tf.int32)
+                    step = tf.function(wrapper.get_clf_results_dict) if graph \
+                        else wrapper.get_clf_results_dict
+                    result = step(
+                        tf.constant(0.), classes, tf.one_hot(classes, width),
+                        clf_ctr_preds=0., use_total_loss=False,
+                    )
+                    self.assertAllClose(result["classifier_accuracy"], 1.)
+                    self.assertAllClose(wrapper.accuracy_tracker.count, 3.)
+
     def test_scoped_metrics_use_selected_example_counts(self) -> None:
         """Aggregate KD loss and accuracy over scoped rows, not batches.
 

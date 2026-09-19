@@ -2564,7 +2564,7 @@ class DiffusionClassifier(DiffusionModel):
                 ], axis=-1)
 
             # Apply the same compatibility padding to token predictions.
-            if tf.is_tensor(clf_ctr_preds) and clf_ctr_preds.shape[-1] == 1:
+            if use_ctr_loss and tf.is_tensor(clf_ctr_preds) and clf_ctr_preds.shape[-1] == 1:
                 clf_ctr_preds = tf.concat([
                     clf_ctr_preds, 
                     tf.zeros_like(clf_ctr_preds)
