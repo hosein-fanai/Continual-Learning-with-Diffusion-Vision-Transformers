@@ -16,6 +16,7 @@ import yaml
 
 from common.dataloader import load_cifar10
 from common.learner import _load_continual_arrays
+from common.model import _make_optimizer
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from notebooks.thesis import reference_benchmarks as reference
@@ -143,9 +144,38 @@ class ReferenceConfigurationTests(unittest.TestCase):
                 reference.configure_reference(**kwargs)
         config = reference.configure_reference("cifar10", "naive_sequential")
         config.continually_learn.use_generative_replay = True
-        with patch.object(reference, "get_datasets", side_effect=AssertionError("No data access")):
+        with patch.object(reference, "_offline_arrays", side_effect=AssertionError("No data access")):
             with self.assertRaisesRegex(ValueError, "disabled"):
                 reference.prepare_reference(config)
+
+    def test_reference_cosines_cover_their_own_complete_epochs(self) -> None:
+        """Count each naive partial batch separately and retain the approved starting LR."""
+        for dataset, classes, expected_naive in (("cifar10", 10, 15750), ("cifar100", 100, 16000)):
+            labels = np.repeat(np.arange(classes), 40000 // classes)
+            for benchmark in reference.BENCHMARKS:
+                with self.subTest(dataset=dataset, benchmark=benchmark):
+                    config = reference.configure_reference(dataset, benchmark)
+                    initial_rate = config.optimizer.initial_learning_rate
+                    budget = reference._reference_training_budget(config, labels)
+                    expected = 15650 if benchmark == "offline_joint" else expected_naive
+                    self.assertEqual(budget["planned_optimizer_updates"], expected)
+                    self.assertEqual(config.optimizer.decay_steps, expected)
+                    self.assertEqual(config.optimizer.initial_learning_rate, initial_rate)
+                    schedule = _make_optimizer(config)._learning_rate
+                    self.assertAlmostEqual(float(schedule(0)), initial_rate, places=8)
+                    self.assertAlmostEqual(float(schedule(expected // 2)), initial_rate * .5, places=8)
+                    self.assertEqual(float(schedule(expected)), 0.)
+
+    def test_reference_step_overrides_fail_before_loading_data(self) -> None:
+        """A duration derived from full epochs must not coexist with truncated fit stages."""
+        for benchmark in reference.BENCHMARKS:
+            for override in ("epochs", "steps_per_epoch", "initial_epoch"):
+                config = reference.configure_reference("cifar10", benchmark)
+                config.training.fit_kwargs[override] = 1
+                with self.subTest(benchmark=benchmark, override=override), \
+                        patch.object(reference, "_offline_arrays", side_effect=AssertionError("No data access")):
+                    with self.assertRaisesRegex(ValueError, "complete epochs"):
+                        reference.prepare_reference(config)
 
 
 class ReferenceExecutionTests(unittest.TestCase):
@@ -154,6 +184,49 @@ class ReferenceExecutionTests(unittest.TestCase):
     def tearDown(self) -> None:
         """Release this test process's Keras objects after each isolated check."""
         tf.keras.backend.clear_session()
+
+    def test_capped_reference_budgets_reuse_native_split_and_actual_task_counts(self) -> None:
+        """Plan from the same capped labels consumed by training, with one CIFAR load."""
+        with tempfile.TemporaryDirectory(prefix="SYNTHETIC_REFERENCE_BUDGETS_") as temporary:
+            directory = Path(temporary)
+            template = _small_template(directory)
+            for benchmark in reference.BENCHMARKS:
+                for cap in (None, 19):
+                    with self.subTest(benchmark=benchmark, cap=cap):
+                        config = reference.configure_reference("cifar10", benchmark, config_path=template,
+                                                               results_root=directory / "runs")
+                        config.dataset.max_train_samples = cap
+                        config.dataset.max_val_samples = 4
+                        config.training.epochs = 3
+                        initial_rate = config.optimizer.initial_learning_rate
+                        with patch("tensorflow.keras.datasets.cifar10.load_data", return_value=_synthetic_cifar()) as load, \
+                                patch.object(reference, "get_model", side_effect=lambda active: active.optimizer.decay_steps):
+                            context = reference.prepare_reference(config)
+                            # Offline batches already contain exactly the permitted training rows.
+                            if benchmark == "offline_joint":
+                                rows = [sum(len(x) for x, _ in context["trainset"])]
+                            # Reproduce the native learner's later cap/remapping call on its cached loader.
+                            else:
+                                arrays, _ = _load_continual_arrays(
+                                    context["trainset"], config.continually_learn.class_order, False,
+                                    {"preprocess": config.dataset.preprocess, "onehot_labels": False,
+                                     "validation_ratio": config.dataset.validation_ratio,
+                                     "features_path": config.dataset.features_path, "seed": config.training.seed},
+                                    cap, 4, 0, config.training.seed)
+                                labels = np.asarray(arrays[1]).reshape(-1)
+                                rows = [int(np.sum((labels >= start) & (labels < start + 2))) for start in (0, 2)]
+                                self.assertEqual(len(arrays[2]), 4)
+                            self.assertEqual(load.call_count, 1)
+                        self.assertEqual(sum(rows), 32 if cap is None else cap)
+                        expected = 3 * sum((count + 6) // 7 for count in rows)
+                        self.assertEqual(config.optimizer.decay_steps, expected)
+                        self.assertEqual(context["training_budget"]["training_rows_per_stage"], rows)
+                        self.assertEqual(context["training_budget"]["planned_optimizer_updates"], expected)
+                        self.assertEqual(context["model"], expected)
+                        self.assertEqual(config.optimizer.initial_learning_rate, initial_rate)
+                        plan = json.loads((context["run_dir"] / "reference_plan.json").read_text())
+                        self.assertEqual(plan["training_budget"], context["training_budget"])
+                        self.assertEqual(plan["optimizer"]["decay_steps"], expected)
 
     def test_offline_inputs_match_native_split_remapping_and_keep_partial_batches(self) -> None:
         """Match native row partitions and target identities without dropping examples."""
@@ -262,6 +335,9 @@ class ReferenceExecutionTests(unittest.TestCase):
                                 self.assertEqual(resource["replay"]["selected_count"], 0)
                                 self.assertEqual(resource["training_examples_total"], 16)
                         self.assertIsInstance(model, DiffusionClassifier)
+                        self.assertEqual(int(model.optimizer.iterations.numpy()),
+                                         context["training_budget"]["planned_optimizer_updates"])
+                        self.assertEqual(float(model.optimizer.learning_rate), 0.)
                         self.assertIsNone(model.teacher_network)
                         self.assertIsNone(getattr(model, "route_controller", None))
                         self.assertFalse(model.use_clf_distil_loss)

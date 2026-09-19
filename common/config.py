@@ -2052,12 +2052,13 @@ class ContinuallyLearnConfig(KwargsMixin):
         resume_from (str | None): Checkpoint root or committed task directory from which the
             next unfinished task is restored. Defaults to ``None``.
         experiment_phase (str): ``"legacy"`` preserves test reporting, ``"development"``
-            prohibits test evaluation, and ``"confirmation"`` enables the frozen
-            confirmatory run path. Defaults to ``'legacy'``.
+            prohibits test evaluation. ``"confirmation"`` and test-informed
+            ``"benchmark"`` enable distinct authenticated frozen run paths.
+            Defaults to ``'legacy'``.
         experiment_manifest_path (str | None): Frozen paired-block manifest required for
-            confirmation runs. Defaults to ``None``.
+            confirmation or benchmark runs. Defaults to ``None``.
         experiment_manifest_hash (str | None): Trusted external SHA-256 digest used to
-            authenticate the confirmation manifest. Defaults to ``None``.
+            authenticate the frozen manifest. Defaults to ``None``.
         experiment_run_id (str | None): Planned condition-by-stream run whose schedule and
             seed this invocation must match. Defaults to ``None``.
         optimizer_steps_per_epoch (int | None): Optional positive optimizer update count for

@@ -7,6 +7,7 @@ retention mechanism. Their accuracy values are empirical references, not bounds.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -21,7 +22,7 @@ import pandas as pd
 
 from common.config import Config, resolve_continual_schedule, save_config
 from common.continual_reporting import continual_metrics
-from common.dataloader import get_dataset, get_datasets, load_cifar10, load_cifar100
+from common.dataloader import get_dataset, load_cifar10, load_cifar100
 from common.learner import _ensemble_accuracy_row, _load_continual_arrays, _predict_diffusion_classes
 from common.model import get_model
 from common.runtime import configure_runtime, derive_seed
@@ -157,12 +158,18 @@ def _validate_controls(config: Config) -> dict:
     # Keep a nonempty validation partition separate from training in both routes.
     if not config.training.use_valset or not 0 < config.dataset.validation_ratio < 1:
         raise ValueError('A held-out validation partition is required in both references.')
+    # Exact reference schedules count complete epochs over every permitted current row.
+    if config.training.epochs < 1 or {'epochs', 'steps_per_epoch', 'initial_epoch'}.intersection(config.training.fit_kwargs) \
+            or continual.optimizer_steps_per_epoch is not None or continual.replay_current_examples is not None:
+        raise ValueError('Reference schedules require complete epochs without step or current-pool overrides.')
     return spec
 
 
-def _offline_arrays(config: Config) -> tuple:
+def _offline_arrays(config: Config, loader: Callable[..., tuple] | None = None) -> tuple:
     """Use exactly the native CL split, caps, and schedule-position label mapping."""
-    loader = {'cifar10': load_cifar10, 'cifar100': load_cifar100}[config.dataset.name]
+    # A cached native loader lets schedule planning reuse the arrays consumed by training.
+    if loader is None:
+        loader = {'cifar10': load_cifar10, 'cifar100': load_cifar100}[config.dataset.name]
     arrays, _ = _load_continual_arrays(
         loader, config.continually_learn.class_order, False,
         {'preprocess': config.dataset.preprocess, 'onehot_labels': False,
@@ -174,6 +181,41 @@ def _offline_arrays(config: Config) -> tuple:
     if config.hpo['reference_benchmark']['evaluation_split'] == 'validation':
         arrays = (*arrays[:4], np.asarray(arrays[4])[:0].copy(), np.asarray(arrays[5])[:0].copy())
     return arrays
+
+
+def _reference_training_budget(config: Config, labels: np.ndarray) -> dict:
+    """Resolve full-epoch updates from native capped training labels before optimizer creation.
+
+    Args:
+        config (Config): Validated reference recipe; an inherited cosine horizon is replaced.
+        labels (np.ndarray): Actual permitted sparse labels remapped to schedule positions.
+
+    Returns:
+        budget (dict): Training rows and partial-batch-inclusive counts for each fit/task,
+            plus the exact planned optimizer applications across all epochs.
+
+    Raises:
+        ValueError: If a scheduled training stage has no permitted examples.
+    """
+    labels = np.asarray(labels).reshape(-1)
+    # Offline learning fits one pooled training partition.
+    if config.hpo['reference_benchmark']['benchmark'] == 'offline_joint':
+        rows = [len(labels)]
+    # Naive learning fits each task separately, retaining each task's partial batch.
+    else:
+        boundaries = np.cumsum([0, *map(len, config.continually_learn.task_groups)])
+        rows = [int(np.count_nonzero((labels >= start) & (labels < stop)))
+                for start, stop in zip(boundaries[:-1], boundaries[1:])]
+    # Empty stages cannot supply their declared reference trajectory.
+    if not all(rows):
+        raise ValueError('Every reference training stage requires permitted training rows.')
+    batches = [math.ceil(count / config.dataset.batch_size) for count in rows]
+    updates = config.training.epochs * sum(batches)
+    # Replay-platform horizons do not describe either reference's optimizer clock.
+    if config.optimizer.schedule == 'cosine':
+        config.optimizer.decay_steps = updates
+    return {'training_rows_per_stage': rows, 'batches_per_epoch_per_stage': batches,
+            'planned_optimizer_updates': updates, 'partial_batches_retained': True}
 
 
 def prepare_reference(config: Config) -> dict:
@@ -204,9 +246,27 @@ def prepare_reference(config: Config) -> dict:
         context['evaluation_arrays'] = (x_val, y_val) if spec['evaluation_split'] == 'validation' else (x_test, y_test)
         context['split_counts'] = {'training': len(x_train), 'validation': len(x_val),
                                    'evaluated': len(context['evaluation_arrays'][0])}
+        context['training_budget'] = _reference_training_budget(config, y_train)
     # Naive training defers task selection to the native continual loader.
     else:
-        context['trainset'], context['valset'] = get_datasets(config)
+        source_loader = {'cifar10': load_cifar10, 'cifar100': load_cifar100}[config.dataset.name]
+        cached_arrays, cached_options = None, None
+
+        def cached_loader(**options: object) -> tuple:
+            """Reuse one native uncapped split; the learner still owns capping and its RNG."""
+            nonlocal cached_arrays, cached_options
+            # Load once for both budget resolution and the subsequent native task runner.
+            if cached_arrays is None:
+                cached_arrays, cached_options = source_loader(**options), deepcopy(options)
+            # A changed loader contract cannot silently reuse another split or preprocessing.
+            elif options != cached_options:
+                raise ValueError('Reference data options changed after schedule preparation.')
+            return cached_arrays
+
+        arrays = _offline_arrays(config, loader=cached_loader)
+        context['training_budget'] = _reference_training_budget(config, arrays[1])
+        config.dataset.trainset_len = math.ceil(len(arrays[0]) / config.dataset.batch_size)
+        context['trainset'], context['valset'] = cached_loader, None
     context['model'] = get_model(config)
     # No semantic adapter/controller is attached in either route.
     save_config(config, run_dir / 'reference_config.yaml')
@@ -217,6 +277,9 @@ def prepare_reference(config: Config) -> dict:
         'task_groups': config.continually_learn.task_groups,
         'label_mapping': 'Original class IDs map to their positions in class_order.',
         'epochs': config.training.epochs, 'batch_size': config.dataset.batch_size,
+        'training_budget': context['training_budget'], 'optimizer': {
+            'schedule': config.optimizer.schedule, 'initial_learning_rate': config.optimizer.initial_learning_rate,
+            'decay_steps': config.optimizer.decay_steps},
         'budget': 'Same epochs per current example; offline sees all classes up front. No claim of compute matching to replay methods.',
         'helper_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     })

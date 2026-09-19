@@ -191,8 +191,11 @@ def _write_new(path: Path, value: dict) -> None:
         json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
 
 
-def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds: list[int]) -> Path:
-    """Freeze both fresh confirmation studies without loading data or training.
+def prepare_campaign(
+    campaign_dir: str | Path, templates: dict[str, Path], seeds: list[int], *,
+    phase: str = "confirmation", selection_provenance: dict | None = None,
+) -> Path:
+    """Freeze both studies without loading data or training.
 
     Settle development choices first. Keep the returned frozen_design.json unchanged and retain
     a separate copy; its hashes authenticate the manifests.
@@ -204,6 +207,10 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
             recipe YAML files.
         seeds (list[int]): The three declared independent stream seeds; development seed 17 is
             separate.
+        phase (str): Independent confirmation, or benchmark for an explicitly disclosed
+            test-informed comparison. Both modes authenticate the complete frozen plan.
+        selection_provenance (dict | None): Historical selection evidence. Benchmark mode
+            requires test_informed=True, independent_confirmation=False and a reason.
 
     Returns:
         frozen_record (Path): Path to the new frozen_design.json binding both manifests, recipes
@@ -215,6 +222,18 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
         OSError: If source binding or publication fails.
     """
     runtime = check_runtime()
+    # A frozen campaign must declare its selection interpretation explicitly.
+    if phase not in ("confirmation", "benchmark"):
+        raise ValueError("A frozen campaign must be confirmation or benchmark.")
+    provenance = deepcopy(selection_provenance or {})
+    # Known test exposure requires an explicit, non-confirmatory disclosure.
+    if phase == "benchmark" and (
+        provenance.get("test_informed") is not True
+        or provenance.get("independent_confirmation") is not False
+        or not isinstance(provenance.get("reason"), str)
+        or not provenance["reason"].strip()
+    ):
+        raise ValueError("Benchmark freezing requires explicit test-informed selection provenance and a reason.")
     directory = Path(campaign_dir).resolve()
     # Campaign already exists: the selected artifact; use its frozen record.
     if directory.exists():
@@ -232,7 +251,18 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
         # Template dataset differs from the selected artifact.
         if config.common.dataset.name != name:
             raise ValueError(f"Template dataset differs from {name}.")
-        _validate_confirmation_selection(config)
+        # Caller metadata cannot erase test exposure already recorded in the template.
+        if phase == "confirmation":
+            _validate_confirmation_selection(config)
+        # Bind the approved selection history inside each authenticated native design.
+        if provenance:
+            config.common.hpo["selection_provenance"] = deepcopy(provenance)
+        # Supplied metadata must also be eligible for independent confirmation.
+        if phase == "confirmation":
+            _validate_confirmation_selection(config)
+        # Historical test exposure never permits live validation on official test rows.
+        elif config.common.dataset.validation_source != "split" or config.common.dataset.validation_ratio <= 0:
+            raise ValueError("Benchmark probes still require a separate training-data validation split.")
     notebook_dir = Path(__file__).resolve().parent
     notebooks = sorted(path for path in notebook_dir.glob("*.ipynb")
                        if re.match(r"^0[2-9][ _-]", path.name))
@@ -241,7 +271,7 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
         raise ValueError("Expected the eight numbered training notebooks 02 through 09.")
     # Bind recovery and extraction procedures along with the frozen scientific recipe.
     helpers = sorted(notebook_dir.glob("*.py"))
-    rationale = [notebook_dir / name for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json")
+    rationale = [notebook_dir / name for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json", "benchmark_selection.json")
                  if (notebook_dir / name).is_file()]
     source_root = Path(__file__).resolve().parents[2]
     initializers = [source_root / "init.py", source_root / "notebooks" / "init.py"]
@@ -251,14 +281,17 @@ def prepare_campaign(campaign_dir: str | Path, templates: dict[str, Path], seeds
     studies = {}
     for name, config in configs.items():
         manifest_path = prepare_study(config, directory / name, seeds,
-                                      conditions=CONDITIONS[name], phase="confirmation")
+                                      conditions=CONDITIONS[name], phase=phase)
         manifest = read_experiment_manifest(manifest_path)
         studies[name] = {"manifest_path": manifest_path.relative_to(directory).as_posix(),
                          "manifest_hash": manifest["manifest_hash"]}
-    record = {"schema_version": 2, "phase": "confirmation", "seeds": list(seeds),
+    record = {"schema_version": 2, "phase": phase, "seeds": list(seeds),
               "campaign_version": CAMPAIGN_VERSION, "declared_stream_count": 24, "runtime": runtime,
               "studies": studies, "bound_files": fingerprints,
               "notebook_hash_scope": "Every cell type/source; execution outputs and metadata excluded."}
+    # Retain the same disclosure at the campaign and native-study levels.
+    if provenance:
+        record["selection_provenance"] = provenance
     record_path = directory / "frozen_design.json"
     _write_new(record_path, record)
     _campaign(record_path)
@@ -283,13 +316,16 @@ def _validate_confirmation_selection(config: RouteConfig) -> None:
         ValueError: If the live split or recorded HPO selection uses official test rows.
     """
     selection = config.common.hpo.get("data_selection", {})
+    provenance = config.common.hpo.get("selection_provenance", {})
     selected_on_test = isinstance(selection, dict) and any(
         isinstance(selection.get(section), dict)
         and selection[section].get("validation_source") == "test"
         for section in ("requested", "resolved")
     )
     # Known selection provenance remains disqualifying after a live split reset.
-    if config.common.dataset.validation_source == "test" or selected_on_test:
+    if config.common.dataset.validation_source == "test" or selected_on_test or (
+        isinstance(provenance, dict) and provenance.get("test_informed") is True
+    ):
         raise ValueError(
             "Confirmation cannot use settings selected on the official test set. "
             "Preserve test-selected HPO evidence as exploratory; use training-split "
@@ -316,9 +352,9 @@ def _campaign(record_path: str | Path) -> tuple[dict, dict]:
     """
     record_path = Path(record_path).resolve()
     record = _read_json(record_path)
-    # Expected a separately retained confirmation frozen_design.
-    if record.get("schema_version") not in (1, 2) or record.get("phase") != "confirmation":
-        raise ValueError("Expected a separately retained confirmation frozen_design.json.")
+    # Both frozen modes require the same separately retained identities.
+    if record.get("schema_version") not in (1, 2) or record.get("phase") not in ("confirmation", "benchmark"):
+        raise ValueError("Expected a separately retained confirmation or benchmark frozen_design.json.")
     # Frozen campaign must contain both declared datasets.
     if set(record["studies"]) != set(CONDITIONS):
         raise ValueError("Frozen campaign must contain both declared datasets.")
@@ -336,6 +372,20 @@ def _campaign(record_path: str | Path) -> tuple[dict, dict]:
             study["manifest_path"] = str(_relative_path(record_path.parent, study["manifest_path"]))
     manifests = {name: _read_study_manifest(Path(study["manifest_path"]), study["manifest_hash"])
                  for name, study in record["studies"].items()}
+    for manifest in manifests.values():
+        # Relabelling the outer record cannot change the authenticated study phase.
+        if manifest["phase"] != record["phase"]:
+            raise ValueError("Frozen record phase differs from its authenticated study.")
+        provenance = manifest["spec"]["base_config"]["common"].get("hpo", {}).get("selection_provenance", {})
+        # Selection history cannot be removed or rewritten after freezing.
+        if provenance != record.get("selection_provenance", {}):
+            raise ValueError("Frozen selection provenance differs from its authenticated study.")
+        # Every benchmark must preserve its test-informed interpretation.
+        if record["phase"] == "benchmark" and (
+            provenance.get("test_informed") is not True
+            or provenance.get("independent_confirmation") is not False
+        ):
+            raise ValueError("A benchmark must retain its test-informed interpretation.")
     return record, manifests
 
 

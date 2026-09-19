@@ -2,9 +2,9 @@
 
 These notebooks use TensorFlow 2.20 and native Keras 3. Locally, select the project's TensorFlow kernel, restart it, and run one notebook from top to bottom. For hosted sessions, use the setup below. Each training notebook runs one complete seed/class-order stream.
 
-**Defense scope:** this is a TMCL-inspired supervised classifier experiment. It can produce the accuracy, forgetting, local backward-transfer and paired-effect values for that claim after complete runs. It does not reproduce TMCL's published protocol or test noise-dependent consolidation. The [scientific audit](SCIENTIFIC_AUDIT.md) explains the comparison, required evidence and limits. No authenticated confirmation campaign was present in this checkout on 15 September 2026.
+**Defense scope:** this is a TMCL-inspired supervised classifier experiment, designated a **test-informed fixed benchmark** because earlier official-test HPO results informed recipe discussion. It can produce accuracy, forgetting, local backward-transfer and paired-effect values after complete runs, but not independent confirmation on those previously inspected test rows. It does not reproduce TMCL's published protocol or test noise-dependent consolidation. The [selection record](benchmark_selection.json) explains the known test exposure and interpretation limits. Registering the settings below does not itself freeze or execute a campaign.
 
-Training notebooks keep four main steps: select a stream, load data/create the model, train, and save/read results. Development then reviews diagnostics; confirmation diagnostics are optional.
+Training notebooks keep four main steps: select a stream, load data/create the model, train, and save/read results. Development then reviews diagnostics; benchmark diagnostics are optional.
 
 ## Hosted runtimes
 
@@ -82,7 +82,7 @@ It does not maintain another requirements list. Binder starts with the repositor
 already present; its first build may take time.
 
 Use public Binder to inspect code or run small CPU checks. Full CIFAR training
-and the confirmation campaign need more resources: public Binder provides only
+and the benchmark campaign need more resources: public Binder provides only
 1-2 GB RAM and limits computational session time. Its files are temporary.
 See [Binder's usage limits](https://mybinder.readthedocs.io/en/latest/about/user-guidelines.html).
 
@@ -161,7 +161,7 @@ see [Colab's runtime version guide](https://research.google.com/colaboratory/run
 
 Notebook **00** can start a development experiment in a fresh session. Notebooks
 **11 and 12** can also start their reference runs independently. Notebook **01**
-prepares the frozen confirmation campaign; notebooks **02 through 09** require
+prepares the fixed benchmark campaign; notebooks **02 through 09** require
 that campaign, and notebook **10** requires its completed streams. Restore the
 same campaign artifacts when moving those stages to another hosted runtime.
 Downloading the source alone does not recreate a frozen campaign or its results.
@@ -172,7 +172,7 @@ checkpoints and `frozen_design.json`, outside the runtime before deleting it.
 Keeping only the notebook in Drive does not save the VM's other files. See the
 [Colab FAQ](https://research.google.com/colaboratory/faq.html).
 
-Finish source and notebook changes before freezing a confirmation campaign.
+Finish source and notebook changes before freezing a benchmark campaign.
 The bootstrap and maintained helper code participate in its source identity;
 an existing frozen campaign must use its retained source, or a new campaign
 must be prepared. Setup does not relax that provenance check.
@@ -203,9 +203,13 @@ noise-loss objectives, and 50 epochs without early stopping or fit validation.
 Version-13 notebooks select on a stratified 20% holdout of official training
 data; the other 80% supplies gradients. Earlier test-selected HPO studies remain
 exploratory and cannot support independent confirmation on those same test rows.
-Keep HPO selection metadata when transferring settings: preparation rejects
-recorded official-test selection. Manual copying can discard that provenance,
-so absence of a recorded warning does not establish an untouched test set.
+Keep HPO selection metadata when transferring settings: strict confirmation
+preparation rejects recorded official-test selection. The approved campaign
+instead uses native `phase="benchmark"` with bound selection provenance
+`test_informed=true` and `independent_confirmation=false`. Manual copying can
+discard provenance, so absence of a recorded warning does not establish an
+untouched test set. The explicit benchmark designation preserves the known
+selection history.
 See the [joint-classifier HPO guide](JOINT_CLASSIFIER_HPO.md)
 for the search space, ordinary scoring rules, hardware/budget guidance, and
 recommendations from the reports. Their results do not automatically replace
@@ -237,9 +241,9 @@ budget interpretation, artifacts and primary sources.
 
 ## Small, fixed scientific design
 
-Confirmation uses three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five two-class tasks and three methods (9 streams). CIFAR-100 has ten ten-class tasks and five methods (15 streams). Follow the saved **24-row checklist**, one fresh kernel per row. Every method in a block shares the seed and class order. A failed or unfavorable stream cannot be skipped.
+The benchmark plans three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five two-class tasks and three methods (9 streams). CIFAR-100 has ten ten-class tasks and five methods (15 streams). Once prepared, follow the saved **24-row checklist**, one fresh kernel per row. Every method in a block shares the seed and class order. A failed or unfavorable stream cannot be skipped.
 
-The primary comparison is **learned minus extra joint in final ensemble task-average test accuracy**. The registered ensemble uses `max_t=256`, `t_range_drop_rate=0.5`, and classifier/distillation-head coefficients of 0.5 each. Ordinary clean accuracy remains a separately labeled diagnostic. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons.
+The primary comparison is **learned minus extra joint in final ensemble task-average test accuracy**. The registered raw timestep ensemble uses `max_t=256`, `t_range_drop_rate=0.75` (64 retained timesteps), `clf_acc_coef=1.0` and `clf_distil_acc_coef=0.0`. It averages primary-head predictions over timesteps; the distillation head retains its training loss but contributes no inference vote. This keeps the endpoint on a supervised head at the first task and in the KD-disabled supplemental references. Ordinary clean accuracy remains a separately labeled diagnostic. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons.
 
 The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, backbone and classifier depth 6, CNN patchification, patch size 4, four heads, raw inference and no EMA. Joint classifier training uses noisy inputs, null conditioning and no null-row mask; all rows contribute to both classifier and denoising objectives. Common APIs own splitting, class-balanced generated replay, soft distillation, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. The maintained recipes use TMCL's published image policy: acquisition flips and four independently cropped/colored consolidation views. `noise_levels=[0]` disables diffusion noise in the semantic objective, not image augmentation or ensemble inference. CE uses its separate clean input. Inference uses all seen classes without task identity, gates or predictor. This does not test noise-dependent consolidation or reproduce TMCL's full view-invariance objective.
 
@@ -254,18 +258,18 @@ has no identity-gate or augmentation-only arm, so it cannot isolate every cause.
 | Joint batch / epochs per task | 128 / 50 | 128 / 50 |
 | Acquisition / consolidation updates per task | 200 / 400 | 1000 / 2000 |
 | Semantic batch / Adam learning rate | 32 / 0.0003 | Same |
-| Joint Adam / weight decay | Initial LR 0.005, cosine / 0 | Same |
+| Joint Adam / weight decay | Initial LR 0.001, cosine / 0 | Same |
 | Whole-stream cosine horizon | 49,950 updates | 116,150 updates |
 | Current / generated-old pool | All current rows; 4,000 generated rows per old class | All current rows; 400 generated rows per old class |
 | Replay sampling | 1,000 steps, eta 1, CFG scale 3 | Same |
 | Fixed validation probe | 8 examples per class | Same |
 | Recovery interval | 200 completed updates, plus native phase boundaries | Same |
 
-These user-selected settings are **not a measured convergence or runtime result**. With the maintained 20% validation split, expected ordinary updates are 46,950/86,150 per stream; learned and extra-joint total optimizer applications are 49,950/116,150. Semantic optimizers have their own clocks. The shared joint cosine horizon includes the maximum fixed extra-joint allowance and never restarts per task; extra-joint updates therefore advance later tasks farther along this global schedule. Each final-task training pool contains 40,000 rows with equal class counts. Measure replay usefulness, full-stream learning and cost in notebook 00. The [recipe rationale](HYPERPARAMETER_RATIONALE.md) records the settings and budget assumptions.
+These user-selected settings are **not a measured convergence or runtime result**. The approved LR reduction from 0.005 to 0.001 is a conservative choice, not a demonstrated optimum for this full recipe. With the maintained 20% validation split, expected ordinary updates are 46,950/86,150 per stream; learned and extra-joint total optimizer applications are 49,950/116,150. Semantic optimizers have their own clocks. The shared joint cosine horizon includes the maximum fixed extra-joint allowance and never restarts per task; extra-joint updates therefore advance later tasks farther along this global schedule. Each final-task training pool contains 40,000 rows with equal class counts. Measure replay usefulness, full-stream learning and cost in notebook 00. The [recipe rationale](HYPERPARAMETER_RATIONALE.md) records the settings and budget assumptions.
 
 ## Validation, test and metrics
 
-Development seed 17 uses only validation outcomes. The configured 20% validation split is excluded from training gradients; retained historical validation probes are disclosed observation access, not rehearsal data. Confirmation evaluates the untouched test split under the frozen procedure. Test outcomes cannot choose settings, stopping rules or seeds.
+Current development seed 17 selects on validation outcomes. The configured 20% validation split is excluded from training gradients; retained historical validation probes are disclosed observation access, not rehearsal data. The fixed benchmark evaluates the official test split with its known prior exposure from historical HPO. A freeze and fresh seeds do not remove that exposure or establish independent confirmation. After freezing, benchmark test outcomes must not choose settings, stopping rules, seeds or which streams are reported.
 
 For `R[i,j]`, accuracy on task `j` after learning task `i`, using all seen classes:
 
@@ -276,13 +280,13 @@ For `R[i,j]`, accuracy on task `j` after learning task `i`, using all seen class
 
 This local backward-transfer definition differs from TMCL's single-task-reference BT; the notebooks do not calculate the paper's FT. Do not compare those numbers directly.
 
-Compute each metric within a complete stream first. Report individual values, mean, sample SD (`ddof=1`) and actual independent-stream `n`. Accuracy uses percent; forgetting and accuracy differences use percentage points. The native primary paired 95% t interval is separate from SD. **Three pairs give limited precision**; tasks, images and gates do not increase independent `n`.
+Compute each metric within a complete stream first. Report individual values, mean, sample SD (`ddof=1`) and actual independent-stream `n`. Accuracy uses percent; forgetting and accuracy differences use percentage points. The native primary paired 95% t interval is separate from SD and describes run-to-run uncertainty under this fixed, test-informed recipe; it does not correct selection bias. **Three pairs give limited precision**; tasks, images and gates do not increase independent `n`.
 
 Phase changes require identical hashed validation examples and positive actual counts. Unavailable endpoints cannot yield numeric differences. Small-cohort CKA is descriptive; invalid two-example CKA stays unavailable. Replay agreement measures classifier self-consistency, and saved grids are qualitative. Sum only complete, disjoint active-task timers. Resumed committed segments are included; measured checkpoint writes and downtime are separate. Uncommitted lost work and interrupted unfinished write timers are unavailable, so these observations are not complete restart-inclusive wall time. Nested phase timers, notebook pauses, sampled RSS, allocator peaks and tensor payloads have distinct scopes.
 
 ## Freeze, interruption and rerun
 
-Finish all source and recipe changes before notebook 01. The configured campaign path is `results/thesis_route_one/minimum_v5_tf220/`. Keep an independent unchanged copy of `frozen_design.json`. Existing campaigns are preserved and cannot be resealed silently. Source or scientific-setting changes require a new campaign.
+Finish all source and recipe changes before notebook 01. The configured campaign path is `results/thesis_route_one/minimum_v5_tf220/`. Prepare with `phase="benchmark"` and the declared selection provenance; the bound `benchmark_selection.json` preserves the designation and reason alongside the planned 24 streams. Keep an independent unchanged copy of `frozen_design.json`. Existing campaigns are preserved and cannot be resealed silently. Source or scientific-setting changes require a new campaign.
 
 Checkpoint saving is sealed into the recipe. Each stream has its own `checkpoints/<run_id>/` directory. Native recovery preserves completed-task boundaries and the latest two intermediate progress snapshots. The notebook uses the native authenticated selector; it never reconstructs model state itself. After an interruption, restart the kernel and **Run All**: the same unfinished repeat resumes from its latest valid commit, and work after that commit is repeated. Before the first published commit, the same stream restarts while unpublished temporary evidence is retained. Damaged published evidence is reported, not overwritten.
 
@@ -294,7 +298,7 @@ Development checkpoint identities include the resolved recipe, inherited setting
 
 ## Compact final output
 
-Confirmation notebooks show a small scalar outcome table by default. Choose `SHOW_DIAGNOSTICS=True` before freezing if those training notebooks should also show saved validation, replay and learning plots. Their cell sources are frozen, so do not edit that flag during the campaign; later saved-only diagnostics remain available through notebook 10. Notebook 10 requires all 24 complete streams and displays one treatment summary plus the primary paired effect/interval. Its ZIP retains numeric source rows, exact source/configuration identities and interpretation limits.
+Benchmark training notebooks show a small scalar outcome table by default. Choose `SHOW_DIAGNOSTICS=True` before freezing if those training notebooks should also show saved validation, replay and learning plots. Their cell sources are frozen, so do not edit that flag during the campaign; later saved-only diagnostics remain available through notebook 10. Notebook 10 requires all 24 complete streams and displays one treatment summary plus the primary paired effect/interval. Its ZIP retains numeric source rows, exact source/configuration identities and interpretation limits.
 
 `DETAILS=True` adds extended diagnostic tables and figures; choose a separate `OUTPUT` to preserve previous exports. `PROGRESS=True` labels a partial saved-results snapshot and omits final paired inference. Identical exports are authenticated and reused. Collection never loads datasets, trains, predicts or samples new images. Write from the saved observations and preserve uncertainty, missing values and negative findings.
 

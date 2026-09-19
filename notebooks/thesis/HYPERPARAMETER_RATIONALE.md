@@ -1,22 +1,30 @@
 # Registered Route One recipe — TensorFlow 2.20
 
-## User-selected revision, 18 September 2026
+## User-selected revision, 19 September 2026
 
 The maintained CIFAR-10 and CIFAR-100 YAMLs now register the user's requested
-recipe. These are explicit experimental choices, not an HPO optimum or a claim
-of reproducing JDCL/TMCL. `dim=True` was clarified to integer width **128**.
+recipe for a **test-informed fixed benchmark**. Earlier official-test HPO
+results informed recipe discussion; new seeds and a freeze cannot make those
+test rows an independent confirmation set. These are explicit experimental
+choices, not an HPO optimum or a claim of reproducing JDCL/TMCL. `dim=True` was
+clarified to integer width **128**.
 
 | Component | Registered value |
 |---|---|
 | DiT architecture | Width 128, backbone depth 6, classifier depth 6, CNN patchification; existing patch 4, four heads and FFN ratio 2 retained |
 | Classifier training | Noisy images, null-only conditioning, `mask_by_nulls=false`; batch fraction 0 retains all rows for both objectives |
-| Joint optimization | Adam, initial LR 0.005, zero weight decay, one whole-stream cosine, batch 128, 50 epochs/task, no early stopping |
+| Joint optimization | Adam, initial LR 0.001, zero weight decay, one whole-stream cosine, batch 128, 50 epochs/task, no early stopping |
 | Cosine duration | 49,950 optimizer applications for CIFAR-10; 116,150 for CIFAR-100; same duration across each dataset's paired conditions |
-| Primary accuracy | Raw timestep ensemble: `max_t=256`, `t_range_drop_rate=0.5`, classifier/distillation coefficients 0.5 each |
+| Primary accuracy | Raw primary-head timestep ensemble: `max_t=256`, `t_range_drop_rate=0.75`, `clf_acc_coef=1.0`, `clf_distil_acc_coef=0.0` |
 | Replay | `match_current`: every old class receives the same number of generated rows as each permitted current real class; no old raw training rows |
 | Replay sampling | 1,000 reverse steps, eta 1, CFG scale 3 |
 | Distillation | Soft classifier KD, temperature 2, replay-only scope; classifier/noise KD coefficients 0.1 retained |
 | Semantic phases | Existing budgets, Adam 0.0003, batch 32, TMCL four-view augmentation, InfoNCE 0.2, alignment 0.1, CE/orthogonality 1 retained |
+
+The initial joint LR was reduced from 0.005 to 0.001 as an explicitly approved,
+conservative optimization choice. It has not been validated as optimal for this
+full recipe; source-model rates and historical HPO results use different models
+or training settings. The cosine durations and KD coefficients are unchanged.
 
 With the existing stratified 20% validation split, current classes provide
 4,000 real examples/class on CIFAR-10 and 400/class on CIFAR-100. The generated
@@ -37,17 +45,24 @@ batch, task schedule, epochs or phase allowance requires reviewing these
 explicit horizons. Arbitrary time-matched or extension budgets are not covered.
 
 `max_t` is an exclusive upper timestep bound, not a count of independent votes.
-The existing ensemble drops half of the 256 candidate timesteps using its
-seeded inverse-SNR selection and retains the default SNR weighting. Its two
-head coefficients apply to ensemble inference; ordinary clean metrics remain
-separate diagnostics. Classifier KD has no previous teacher at the first task;
-the requested inference mixture is still used. Fixed recipes do not prove that
-this mixture or the replay images are useful.
+The existing ensemble drops 75% of the 256 candidate timesteps using its
+seeded inverse-SNR selection, retaining 64 timesteps and the default SNR
+weighting. Only the primary classifier head contributes to inference; ordinary
+clean metrics remain separate diagnostics. The distillation head remains in
+training with its existing KD loss. It has no prior teacher at the first task,
+and KD is disabled throughout the supplemental offline/naive references, so
+giving it zero inference weight keeps the primary endpoint on a supervised head
+in every task and reference. Fixed recipes do not prove that timestep averaging
+or the replay images are useful.
 
-The default campaign is `minimum_v5_tf220`. No campaign was frozen and no full
-training was started by registering these settings. Preserve prior campaigns,
-results and HPO selection provenance. Validation/development is still required
-before freezing; a user-selected recipe does not undo earlier test exposure.
+The default campaign is `minimum_v5_tf220`. Registering these settings does not
+freeze a campaign or start training. Preserve prior campaigns,
+results and HPO selection provenance. Development can assess learning and cost;
+software checks alone do not establish either. The native `benchmark` phase
+records `test_informed=true` and `independent_confirmation=false` in the bound
+selection provenance; the strict `confirmation` phase remains separate. Future
+benchmark test outcomes must not alter this recipe, the seeds,
+stopping rules or the set of reported streams.
 
 ## Previous reduced recipe and source comparison (historical)
 

@@ -1389,14 +1389,14 @@ def _run_continual_tasks(
             new experiment. Recovery validates descriptor, schedule, topology, and optimizer
             state. Defaults to ``None``.
         experiment_phase (str): development evaluates validation only; legacy also evaluates
-            test; confirmation additionally authenticates the frozen manifest/run identity.
-            Defaults to ``'legacy'``.
+            test. Confirmation and test-informed benchmark additionally authenticate the
+            frozen manifest/run identity. Defaults to ``'legacy'``.
         experiment_manifest_path (str | None): Frozen experiment-manifest path required for
-            confirmation; None is unused in other phases. Defaults to ``None``.
+            confirmation or benchmark; None is unused in other phases. Defaults to ``None``.
         experiment_manifest_hash (str | None): Expected frozen-manifest digest required for
-            confirmation; None supplies no authentication digest. Defaults to ``None``.
+            confirmation or benchmark; None supplies no authentication digest. Defaults to ``None``.
         experiment_run_id (str | None): Unique planned condition/stream run identifier
-            required for confirmation; None is unused outside that mode. Defaults to
+            required for confirmation or benchmark; None is unused outside those modes. Defaults to
             ``None``.
         optimizer_steps_per_epoch (int | None): Optional requested fit-batch budget per
             epoch for each active phase; early stopping can shorten training. None normally
@@ -1534,34 +1534,36 @@ def _run_continual_tasks(
         )
 
     authenticated_manifest_hash = None
-    # Test evaluation is reachable only through a frozen externally verified
-    # confirmation manifest and one exact planned stream/run identity.
-    if str(experiment_phase).lower() == "confirmation":
-        # Confirmation requires the manifest path, trusted hash, and selected run ID.
+    # Frozen test-evaluated studies require their exact authenticated stream identity.
+    if str(experiment_phase).lower() in ("confirmation", "benchmark"):
+        # Both frozen modes require the manifest path, trusted hash, and run ID.
         if not all((
             experiment_manifest_path,
             experiment_manifest_hash,
             experiment_run_id,
         )):
             raise ValueError(
-                "confirmation requires experiment_manifest_path, "
+                f"{str(experiment_phase).lower()} requires experiment_manifest_path, "
                 "experiment_manifest_hash, and experiment_run_id."
             )
         from common.experiment import (
             materialize_run_plan,
             read_experiment_manifest,
-            validate_frozen_confirmation,
+            validate_frozen_experiment,
         )
 
         frozen_manifest = read_experiment_manifest(
             experiment_manifest_path,
             expected_hash=experiment_manifest_hash,
         )
-        frozen_manifest = validate_frozen_confirmation(
+        frozen_manifest = validate_frozen_experiment(
             frozen_manifest,
             expected_hash=experiment_manifest_hash,
         )
-        # Select only the frozen run whose ID matches the requested confirmation run.
+        # A benchmark cannot be relabeled as confirmation by the caller.
+        if frozen_manifest["phase"] != str(experiment_phase).lower():
+            raise ValueError("Requested experiment phase differs from the frozen manifest.")
+        # Select only the frozen run whose ID matches the requested study run.
         matching_runs = [
             run for run in materialize_run_plan(
                 frozen_manifest,
@@ -1580,11 +1582,11 @@ def _run_continual_tasks(
         or fingerprint_state(planned_stream["task_groups"]) \
         != fingerprint_state(original_task_groups):
             raise ValueError(
-                "Confirmation schedule differs from the frozen manifest run."
+                "Frozen study schedule differs from the frozen manifest run."
             )
-        # The confirmation seed must match the preregistered stream seed.
+        # The execution seed must match the declared frozen stream seed.
         if planned_stream["stream_seed"] != seed:
-            raise ValueError("Confirmation seed differs from the frozen manifest run.")
+            raise ValueError("Frozen study seed differs from the frozen manifest run.")
         authenticated_manifest_hash = frozen_manifest["manifest_hash"]
 
     dtype_policy = dtype_policy or tf.keras.mixed_precision.global_policy().name
@@ -1892,11 +1894,11 @@ def _run_continual_tasks(
     )
 
     experiment_phase = str(experiment_phase).lower()
-    # Reject phases outside legacy, development, and confirmation reporting.
-    if experiment_phase not in ("legacy", "development", "confirmation"):
+    # Restrict reporting to legacy, development, and the two frozen study modes.
+    if experiment_phase not in ("legacy", "development", "confirmation", "benchmark"):
         raise ValueError(
             "experiment_phase must be 'legacy', "
-            "'development', or 'confirmation'."
+            "'development', 'confirmation', or 'benchmark'."
         )
 
     replay_budget_mode = str(replay_budget_mode).lower()

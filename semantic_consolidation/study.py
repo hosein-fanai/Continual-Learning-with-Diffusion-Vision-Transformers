@@ -1,7 +1,7 @@
 """Prepare, run, and analyze paired route-one streams with common.experiment.
 
 A block is a complete seed/class-order stream. The test split is only evaluated
-for a frozen confirmation design. Development uses validation endpoints.
+for a frozen confirmation or test-informed benchmark design. Development uses validation endpoints.
 """
 
 from __future__ import annotations
@@ -80,17 +80,17 @@ def validate_planned_config(config: RouteConfig) -> None:
             manifest, allowing artifact destination relocation.
 
     Raises:
-        ValueError: If confirmation lacks a manifest or run identity, source or scientific
+        ValueError: If a frozen study lacks a manifest or run identity, source or scientific
             settings differ from the design.
         OSError: If the required manifest/source cannot be read.
     """
 
     continual = config.common.continually_learn
-    # Standalone development is permitted; confirmation always needs a frozen manifest.
+    # Standalone development is permitted; both frozen modes need their manifest.
     if not continual.experiment_manifest_path:
-        # Confirmation requires a frozen paired experiment manifest.
-        if continual.experiment_phase == "confirmation":
-            raise ValueError("Confirmation requires a frozen paired experiment manifest.")
+        # Frozen confirmation and benchmark runs cannot bypass planned identity.
+        if continual.experiment_phase in ("confirmation", "benchmark"):
+            raise ValueError("Frozen studies require a frozen paired experiment manifest.")
         return
     manifest = read_experiment_manifest(
         continual.experiment_manifest_path, expected_hash=continual.experiment_manifest_hash
@@ -132,7 +132,7 @@ def prepare_study(
         seeds (list[int]): At least two distinct integer full-stream seeds in [0, 2**32).
         conditions (dict[str, dict] | None): Optional mapping of condition names to nested
             common/route overrides; None selects the documented default controls.
-        phase (str): development for validation-only exploration or confirmation for an
+        phase (str): development for validation-only exploration; confirmation or benchmark for an
             authenticated frozen test design.
 
     Returns:
@@ -204,7 +204,7 @@ def prepare_study(
 
 
 def _read_study_manifest(manifest_path: Path, expected_hash: str | None) -> dict:
-    """Require a separately retained design digest before confirmation access.
+    """Require a separately retained design digest before frozen study access.
 
     A manifest's own digest detects corruption, but a modified design can be
     resealed. It cannot authenticate itself against the preregistered design.
@@ -214,22 +214,22 @@ def _read_study_manifest(manifest_path: Path, expected_hash: str | None) -> dict
         manifest_path (Path): Path to the paired experiment manifest; executable run files
             and completion artifacts reside alongside it.
         expected_hash (str | None): Optional independently retained manifest SHA-256;
-            required for confirmation access.
+            required for confirmation or benchmark access.
 
     Returns:
         manifest (dict): Authenticated experiment dict with current production-source
             verification.
 
     Raises:
-        ValueError: If manifest/source identity is invalid or confirmation lacks an
+        ValueError: If manifest/source identity is invalid or a frozen study lacks an
             independently retained expected hash.
         OSError: If manifest/source files cannot be read.
     """
 
     manifest = read_experiment_manifest(manifest_path, expected_hash=expected_hash)
-    # Confirmation requires an externally retained expected_hash (--expected-hash).
-    if manifest["phase"] == "confirmation" and expected_hash is None:
-        raise ValueError("Confirmation requires an externally retained expected_hash (--expected-hash).")
+    # Both frozen modes require an externally retained expected_hash (--expected-hash).
+    if manifest["phase"] in ("confirmation", "benchmark") and expected_hash is None:
+        raise ValueError("Frozen studies require an externally retained expected_hash (--expected-hash).")
     validate_study_source(manifest, "semantic_consolidation")
     return manifest
 
@@ -279,7 +279,7 @@ def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) ->
         manifest_path (str | Path): Path to the paired experiment manifest; executable run
             files and completion artifacts reside alongside it.
         expected_hash (str | None): Optional independently retained manifest SHA-256;
-            required for confirmation access.
+            required for confirmation or benchmark access.
 
     Returns:
         completed (dict): Mapping from run IDs to completed full-stream artifact/metric
@@ -351,7 +351,7 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
         manifest_path (str | Path): Path to the paired experiment manifest; executable run
             files and completion artifacts reside alongside it.
         expected_hash (str | None): Optional independently retained manifest SHA-256;
-            required for confirmation access.
+            required for confirmation or benchmark access.
 
     Returns:
         analysis (dict): Dict of paired stream statistics and evidence scope, also saved
@@ -378,7 +378,7 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
     verified_artifacts, scalar_only_runs = [], []
     for run_id, result in outputs.items():
         verified = validate_completed_artifact(
-            manifest_path.parent, result, required=manifest["phase"] == "confirmation",
+            manifest_path.parent, result, required=manifest["phase"] in ("confirmation", "benchmark"),
         )
         # Record exactly which run contents were checked beyond the summary index.
         if verified:
@@ -401,8 +401,8 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
         # Matrix-free outcomes retain exploratory compatibility only.
         else:
             # Ensemble endpoints always require their source matrix; legacy scalars cannot identify it.
-            if manifest["phase"] == "confirmation" or "ensemble" in expected_source:
-                raise ValueError("Confirmation or selected ensemble accuracy requires a complete saved accuracy matrix for every run.")
+            if manifest["phase"] in ("confirmation", "benchmark") or "ensemble" in expected_source:
+                raise ValueError("Frozen or selected ensemble accuracy requires a complete saved accuracy matrix for every run.")
             scalar_only_runs.append(run_id)
     rows = collect_final_stream_metrics(
         manifest, {run_id: result["metrics"][metric] for run_id, result in outputs.items()},
@@ -448,11 +448,11 @@ def main(argv: list[str] | None = None) -> None:
     prepare.add_argument("--config", type=Path, required=True)
     prepare.add_argument("--output", type=Path, required=True)
     prepare.add_argument("--seeds", type=int, nargs="+", default=[17, 29, 43])
-    prepare.add_argument("--phase", choices=["development", "confirmation"], default="development")
+    prepare.add_argument("--phase", choices=["development", "confirmation", "benchmark"], default="development")
     for name in ("run", "analyze"):
         command = sub.add_parser(name)
         command.add_argument("--manifest", type=Path, required=True)
-        command.add_argument("--expected-hash", help="Separately retained manifest SHA-256; required for confirmation")
+        command.add_argument("--expected-hash", help="Separately retained manifest SHA-256; required for confirmation or benchmark")
     args = parser.parse_args(argv)
     # Preparation freezes executable inputs without launching any model training.
     if args.command == "prepare":

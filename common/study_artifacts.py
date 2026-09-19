@@ -30,18 +30,21 @@ def source_files(root: str | Path = SOURCE_ROOT, *, additional_packages: tuple[s
     become executable source. Missing requested packages fail explicitly.
     """
     root = Path(root).resolve()
+    # Only registered optional routes may extend the shared source identity.
     if set(additional_packages) - set(OPTIONAL_SOURCE_PACKAGES):
         raise ValueError("Unknown optional source package.")
     files = {}
     excluded = {"tests", "__pycache__", "prepared", "results", ".tmp", ".audit"}
     for package in (*SOURCE_PACKAGES, *dict.fromkeys(additional_packages)):
         directory = root / package
+        # Missing source cannot be silently excluded from a frozen identity.
         if not directory.is_dir():
             raise ValueError(f"Missing required source package: {package}.")
         for parent, directories, names in os.walk(directory):
             directories[:] = sorted(name for name in directories if name not in excluded)
             for name in sorted(names):
                 path = Path(parent) / name
+                # Executable Python defines the package's source contribution.
                 if path.suffix == ".py":
                     files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return files
@@ -58,6 +61,7 @@ def source_fingerprint(root: str | Path = SOURCE_ROOT, *, additional_packages: t
     files = source_files(root, additional_packages=additional_packages)
     # Bind the shared dependency declaration used by local and hosted notebooks.
     requirements = root / "requirements.txt"
+    # Bind the dependency declaration when the checkout provides one.
     if requirements.exists():
         files[requirements.name] = hashlib.sha256(requirements.read_bytes()).hexdigest()
     encoded = json.dumps(files, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -78,8 +82,8 @@ def validate_study_source(manifest: Mapping, route: str) -> dict:
     """Check the executable source bound by native, allocation, or Section 11 designs.
 
     Legacy development manifests remain readable, with an explicit unverified
-    status. Legacy confirmation lacks the declared implementation contract and
-    must be prepared again; attaching a current hash to old outcomes is invalid.
+    status. Frozen confirmation and benchmark designs require the declared
+    implementation contract; attaching a current hash to old outcomes is invalid.
     """
     analysis = manifest["spec"]["analysis_spec"]
     native = analysis.get("native_route_study")
@@ -89,9 +93,9 @@ def validate_study_source(manifest: Mapping, route: str) -> dict:
     declaration = native or analysis.get("allocation_study") or analysis.get("section11")
     # Historical exploratory outcomes cannot acquire retrospective source provenance.
     if not isinstance(declaration, Mapping) or "source" not in declaration:
-        # Confirmation requires a source-bound design created before execution.
-        if manifest["phase"] == "confirmation":
-            raise ValueError("Legacy confirmation has no bound executable source; prepare a new source-bound design.")
+        # Both frozen study modes require source identity bound before execution.
+        if manifest["phase"] in ("confirmation", "benchmark"):
+            raise ValueError("Frozen study has no bound executable source; prepare a new source-bound design.")
         return {"verified": False, "reason": "legacy development manifest without executable source identity"}
     declared_files = declaration["source"].get("files", {})
     additional = tuple(package for package in OPTIONAL_SOURCE_PACKAGES

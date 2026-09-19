@@ -63,8 +63,8 @@ LIMITATIONS = ("Three full training streams are the independent replicates; task
     "With image augmentation enabled, learned versus extra joint compares the complete "
     "procedure, including different view policies and losses; the minimum design has no "
     "augmentation-only or identity-gate control. Independent test interpretation requires "
-    "that settings were selected without those test outcomes. The preparation guard rejects "
-    "recorded test-selected HPO metadata but cannot detect manually discarded provenance "
+    "that settings were selected without those test outcomes. Independent confirmation rejects "
+    "recorded test-selected HPO; frozen benchmarks disclose it and cannot support independent confirmation. The guard cannot detect manually discarded provenance "
     "or prior human test-informed choices; fresh seeds do not restore independence. "
     "Absence and nonfinite measurements remain unavailable; no favorable-run selection is allowed.")
 
@@ -725,7 +725,8 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
     text = [f"# Study context — {status}",
         "Research question: does learned temporary class modulation followed by semantic consolidation improve class-incremental retention and new-class learning beyond extra ordinary joint updates?",
         "Methods: Platform (native baseline) uses joint diffusion/classification, generated replay and classification/denoising distillation. Extra joint receives the acquisition-plus-consolidation update allowance. Learned adds trained gates and CE + InfoNCE semantic consolidation. Random uses random gates. CE only (native no_consolidation) retains acquisition and runs the replacement CE phase without the alignment gradient.",
-        f"Declared confirmation seeds: {record['seeds']}. Development seed 17 is separate. Revised final design: CIFAR-10, five two-class tasks, three methods, nine streams; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
+        f"Declared {record.get('phase', 'confirmation')} seeds: {record['seeds']}. Development seed 17 is separate. Revised final design: CIFAR-10, five two-class tasks, three methods, nine streams; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
+        ("Selection scope: TEST-INFORMED BENCHMARK, not independent confirmation. Earlier official-test HPO informed this recipe. Paired intervals describe variability across the declared run seeds conditional on this recipe and benchmark; they do not account for prior test-based selection. " + record.get("selection_provenance", {}).get("reason", "")) if record.get("phase") == "benchmark" else "Selection scope: the declared confirmation protocol requires test-independent selection.",
         "Inference: main efficacy uses the configured ordinary or timestep-ensemble held-out test matrix over every seen class, without task identity, gates or predictor. Each dataset's frozen predictor and coefficients are recorded below; per-stream tables identify the exact matrix source. Phase accuracy remains an ordinary clean-classifier validation diagnostic, and temporal diagnostics also use validation data; neither replaces the efficacy endpoint.",
         "Metrics: for A[i,j], accuracy on task j after training i, final accuracy averages the final row's learned tasks; incremental accuracy averages each learned-prefix row mean. Signed forgetting averages max(A[j:T-1,j]) - A[T-1,j] over old tasks, excluding the final row from the maximum. BWT averages A[T-1,j] - A[j,j] over old tasks. These native formulas are computed separately for each full stream before mean and sample SD (ddof=1). Accuracy is displayed as percent; forgetting, BWT and accuracy differences as percentage points. Negative forgetting and positive BWT indicate improvement. First-task old accuracy is unavailable.",
         "Repeated measurements: trajectory means/SD use one observation per stream at each task/cohort. Phase summaries first average the matched within-task before, after or after-minus-before observations within each stream. Temporal drift averages observed classes within task, then tasks within stream. n_observations and n preserve available cohort/task and independent-stream counts. Missing phases and n<2 SD remain unavailable.",
@@ -813,7 +814,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
         Raises:
             OSError: If image publication fails.
         """
-        prefix = "SYNTHETIC VALIDATION — " if "SYNTHETIC" in status else "PROGRESS — " if status != "FINAL CHAPTER EVIDENCE" else ""
+        prefix = "SYNTHETIC VALIDATION — " if "SYNTHETIC" in status else "PROGRESS — " if "PROGRESS" in status else "TEST-INFORMED BENCHMARK — " if "TEST-INFORMED" in status else ""
         fig.suptitle(prefix + caption.split(".")[0], fontsize=12)
         for suffix in ("png", "svg"):
             path = directory / f"{name}.{suffix}"
@@ -1019,7 +1020,7 @@ def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, re
                 ax.imshow(images[column].squeeze(), interpolation="nearest", cmap="gray")
                 original_class = run["class_order"][int(labels[column])]
                 ax.set_title(f"{run['dataset']} | seed {run['seed']}\nconditioning class {original_class}", fontsize=8)
-    prefix = "SYNTHETIC VALIDATION — " if "SYNTHETIC" in status else "PROGRESS — " if status != "FINAL CHAPTER EVIDENCE" else ""
+    prefix = "SYNTHETIC VALIDATION — " if "SYNTHETIC" in status else "PROGRESS — " if "PROGRESS" in status else "TEST-INFORMED BENCHMARK — " if "TEST-INFORMED" in status else ""
     fig.suptitle(prefix + "Saved generated replay — qualitative context", fontsize=11)
     for extension in ("png", "svg"):
         path = directory / f"F06_qualitative.{extension}"
@@ -1144,7 +1145,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
     _json(provenance / "cka_interpretation.json", {"policy": "Only actual aligned integer sample_count >2 and finite CKA with no unavailable reason can be shown; absent legacy counts remain unavailable.",
         "observations_csv": next((item["file"] for item in artifacts if item["data_table"] == "temporal_observations" and item["file"].endswith(".csv")), None)})
     shutil.copyfile(Path(__file__), provenance / "results_package.py")
-    for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json"):
+    for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json", "benchmark_selection.json"):
         source = Path(__file__).parent / name
         # Use existing evidence only when the corresponding artifact is present.
         if source.is_file():
@@ -1291,8 +1292,12 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_parent = Path(tempfile.mkdtemp(prefix=".results-package-", dir=destination.parent))
     try:
+        status = "PROGRESS ONLY — NOT FINAL CHAPTER RESULTS" if progress else "FINAL CHAPTER EVIDENCE"
+        # Final execution does not turn a test-informed benchmark into confirmation.
+        if record.get("phase") == "benchmark":
+            status += " — TEST-INFORMED BENCHMARK, NOT INDEPENDENT CONFIRMATION"
         staged = _write_package(staging_parent / destination.name, record, manifests, evidence, native,
-                                status="PROGRESS ONLY — NOT FINAL CHAPTER RESULTS" if progress else "FINAL CHAPTER EVIDENCE", details=details)
+                                status=status, details=details)
         _json(staged / "PACKAGE_IDENTITY.json", {"sha256": fingerprint, "identity": identity,
               "package_files": {path.relative_to(staged).as_posix(): _hash(path) for path in staged.rglob("*") if path.is_file()}})
         archive = staging_parent / "package.zip"

@@ -226,7 +226,7 @@ class PreparedRecipeTests(unittest.TestCase):
                         self.assertEqual(project.model.kwargs["clf_depth"], 6)
                         self.assertTrue(project.model.kwargs["patchify_with_cnn"])
                         self.assertEqual(project.optimizer.name, "adam")
-                        self.assertEqual(project.optimizer.initial_learning_rate, .005)
+                        self.assertEqual(project.optimizer.initial_learning_rate, .001)
                         self.assertEqual(project.optimizer.weight_decay, 0.)
                         self.assertEqual(project.optimizer.schedule, "cosine")
                         self.assertTrue(continual.use_ensemble_accuracy)
@@ -234,9 +234,9 @@ class PreparedRecipeTests(unittest.TestCase):
                         ensemble = continual.ensemble_accuracy_kwargs
                         self.assertEqual(ensemble["network_name"], "raw")
                         self.assertEqual(ensemble["max_t"], 256)
-                        self.assertEqual(ensemble["t_range_drop_rate"], .5)
-                        self.assertEqual(ensemble["clf_acc_coef"], .5)
-                        self.assertEqual(ensemble["clf_distil_acc_coef"], .5)
+                        self.assertEqual(ensemble["t_range_drop_rate"], .75)
+                        self.assertEqual(ensemble["clf_acc_coef"], 1.)
+                        self.assertEqual(ensemble["clf_distil_acc_coef"], 0.)
                         self.assertNotIn("distil_acc_coef", ensemble)
                         self.assertFalse(project.model.wrapper_kwargs["use_ema"])
                         self.assertEqual(project.model.wrapper_kwargs["test_network_name"], "raw")
@@ -321,7 +321,7 @@ class PreparedRecipeTests(unittest.TestCase):
 class NotebookContractTests(unittest.TestCase):
     """Structural checks do not execute training cells or claim useful learning."""
 
-    def test_joint_hpo_defaults_preserve_official_test_for_confirmation(self) -> None:
+    def test_joint_hpo_defaults_select_on_training_holdout(self) -> None:
         """Use training-only selection in new studies without altering old runs."""
         from IPython.core.inputtransformer2 import TransformerManager
         transformer = TransformerManager()

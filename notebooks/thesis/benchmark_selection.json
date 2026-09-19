@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "test_informed": true,
+  "independent_confirmation": false,
+  "reason": "Earlier CIFAR-10 v6/v12 and CIFAR-100 v12 HPO used official test data. Those results informed recipe discussions. New seeds and an internal validation split do not restore test independence.",
+  "user_approved_date": "2026-09-19",
+  "approved_changes": {
+    "joint_initial_learning_rate": 0.001,
+    "clf_acc_coef": 1.0,
+    "clf_distil_acc_coef": 0.0,
+    "semantic_learning_rate": 0.0003
+  },
+  "interpretation": "A fixed, reproducible benchmark of the declared TMCL-inspired adaptation. Paired intervals describe run-seed variability conditional on this recipe and benchmark, not uncertainty corrected for prior test-based selection.",
+  "representative_hpo_evidence": [
+    {
+      "path": "results/thesis_route_one/joint_classifier_hpo_v6/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_12-31-03 t0006/config.yaml",
+      "sha256": "3d807811adb01c6e2b463169e9f90de330ff69022c6a57f3b002d7985f098194",
+      "recorded_data_selection": {
+        "requested": {
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        },
+        "resolved": {
+          "drop_remainder": false,
+          "effective_validation_ratio": 0.0,
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        }
+      }
+    },
+    {
+      "path": "results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_23-06-00 t0010/config.yaml",
+      "sha256": "b133e8b5ef11c0061909250c67e94e02eee2757ea1bc44a18f4839cbf288aec8",
+      "recorded_data_selection": {
+        "requested": {
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        },
+        "resolved": {
+          "drop_remainder": false,
+          "effective_validation_ratio": 0.0,
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        }
+      }
+    },
+    {
+      "path": "results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar100/joint_dit_classifier/runs/2026-09-17_22-57-53 t0024/config.yaml",
+      "sha256": "f22de8cefe8b81b8c117b1396bef4d7f69063c47d92cac73f13cc415e2ce497e",
+      "recorded_data_selection": {
+        "requested": {
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        },
+        "resolved": {
+          "drop_remainder": false,
+          "effective_validation_ratio": 0.0,
+          "validation_ratio": 0.0,
+          "validation_source": "test"
+        }
+      }
+    }
+  ],
+  "validation_status": "Software validation is separate from scientific validation. No completed final-recipe learning or convergence result is asserted by freezing.",
+  "supplemental_references": "Notebooks 11/12 remain outside the 24-run campaign. Their cosine schedules follow their actual training budgets; final comparisons must use matching seeds and evaluation splits."
+}

@@ -9,10 +9,10 @@ specifications and incomplete or duplicated condition-by-block result cells.
 
 Manifests record the shared base configuration, condition overrides, resolved
 class/task schedules, seeds, analysis contrast, and execution plan. Canonical
-JSON and SHA-256 bind those values. Confirmation manifests require unchanged
-specifications; externally retained hashes authenticate frozen designs where
-the confirmation APIs require them. Internal hashes detect content changes
-but do not independently establish preregistration.
+JSON and SHA-256 bind those values. Confirmation and test-informed benchmark
+manifests require unchanged specifications and externally retained hashes.
+Benchmark results remain test-informed even when their execution is frozen.
+Internal hashes detect content changes but do not establish preregistration.
 
 Use ``create_paired_block_manifest`` and ``write_experiment_manifest``, expand
 the plan with ``materialize_run_plan``, execute each full stream, and collect
@@ -61,7 +61,8 @@ LONG_RESULT_FIELDS = (
 )
 """Canonical columns for run-level long-form result files."""
 
-_PHASES = frozenset(("development", "confirmation"))
+_PHASES = frozenset(("development", "confirmation", "benchmark"))
+_FROZEN_PHASES = frozenset(("confirmation", "benchmark"))
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INDEPENDENT_UNIT = "continual_stream_block"
 
@@ -424,7 +425,8 @@ def create_paired_block_manifest(
         seed (int): Experiment randomization seed in [0, 2**32). It controls
             condition execution order and supplies missing per-stream seeds.
         phase (str): Experiment phase. Default ``"development"`` allows exploratory
-            analysis; ``"confirmation"`` sets the frozen flag. Other values fail.
+            analysis. ``"confirmation"`` and explicit test-informed ``"benchmark"``
+            freeze execution; benchmark does not imply independent test selection.
         analysis_spec (Mapping[str, object] | None): Primary metric/contrast settings.
             Default None selects final_average_accuracy, the first two sorted
             conditions as A/B, and a two-sided 95% paired analysis.
@@ -447,9 +449,9 @@ def create_paired_block_manifest(
 
     seed = _validated_seed(seed)
 
-    # Keep exploratory development distinct from confirmatory testing.
+    # Keep development, confirmation, and test-informed benchmarking distinct.
     if phase not in _PHASES:
-        raise ValueError("phase must be 'development' or 'confirmation'.")
+        raise ValueError("phase must be 'development', 'confirmation', or 'benchmark'.")
 
     # At least two independent blocks are needed for run-level sample variance.
     if isinstance(continual_streams, (str, bytes)) \
@@ -502,7 +504,7 @@ def create_paired_block_manifest(
     manifest: dict[str, object] = {
         "schema_version": EXPERIMENT_SCHEMA_VERSION,
         "phase": phase,
-        "frozen": phase == "confirmation",
+        "frozen": phase in _FROZEN_PHASES,
         "spec": {
             "randomization_seed": seed,
             "independent_unit": _INDEPENDENT_UNIT,
@@ -565,12 +567,12 @@ def validate_experiment_manifest(
 
     phase = canonical["phase"]
 
-    # Preserve the declared development/confirmation distinction.
+    # Preserve the declared development, confirmation, or benchmark status.
     if phase not in _PHASES:
         raise ValueError("Manifest phase is invalid.")
 
-    # Confirmation is frozen while development remains explicitly mutable.
-    if canonical["frozen"] is not (phase == "confirmation"):
+    # Both test-evaluated study modes freeze execution; development stays mutable.
+    if canonical["frozen"] is not (phase in _FROZEN_PHASES):
         raise ValueError("Manifest frozen flag disagrees with its phase.")
 
     supplied_hash = canonical["manifest_hash"]
@@ -690,6 +692,35 @@ def validate_experiment_manifest(
             run_ids.add(run["run_id"])
 
     return canonical
+
+
+def validate_frozen_experiment(
+    manifest: Mapping[str, object],
+    *,
+    expected_hash: str,
+) -> dict[str, object]:
+    """Authenticate frozen confirmation or test-informed benchmark execution.
+
+    Args:
+        manifest (Mapping[str, object]): Candidate frozen experiment specification.
+        expected_hash (str): Separately retained lowercase SHA-256 digest.
+
+    Returns:
+        dict[str, object]: Validated frozen manifest retaining its original phase.
+            Benchmark authentication does not establish independent test selection.
+
+    Raises:
+        ValueError: If the digest, contents, phase, or frozen flag is invalid.
+        TypeError: If the manifest contains unsupported JSON data.
+    """
+    # Frozen execution must be anchored to a separately retained valid digest.
+    if not isinstance(expected_hash, str) or _HASH_PATTERN.fullmatch(expected_hash) is None:
+        raise ValueError("expected_hash must be a lowercase SHA-256 digest.")
+    validated = validate_experiment_manifest(manifest, expected_hash=expected_hash)
+    # Development cannot authorize either frozen test-evaluated study mode.
+    if validated["phase"] not in _FROZEN_PHASES or validated["frozen"] is not True:
+        raise ValueError("A frozen confirmation or benchmark manifest is required.")
+    return validated
 
 
 def validate_frozen_confirmation(
@@ -923,7 +954,7 @@ def collect_final_stream_metrics(
             not aggregated automatically into a final outcome.
         metric (str | None): Outcome name. Default None uses the manifest's primary
             metric. Development may explicitly name another nonempty metric;
-            confirmation must retain its frozen primary metric.
+            confirmation and benchmark must retain their frozen primary metric.
         expected_hash (str | None): Trusted external manifest digest. Default None
             checks internal identity only; supply it to bind collection externally.
 
@@ -973,10 +1004,10 @@ def collect_final_stream_metrics(
     if not isinstance(metric_name, str) or not metric_name.strip():
         raise ValueError("metric must be a nonempty string.")
 
-    # Confirmation outcomes must retain the preregistered primary metric.
-    if validated["phase"] == "confirmation" and metric_name != primary_metric:
+    # Frozen outcomes retain their declared primary metric in either study mode.
+    if validated["phase"] in _FROZEN_PHASES and metric_name != primary_metric:
         raise ValueError(
-            "A confirmation manifest cannot override its primary metric."
+            "A frozen manifest cannot override its primary metric."
         )
 
     rows: list[dict[str, object]] = []
@@ -1027,7 +1058,7 @@ def _normalize_result_row(row: Mapping[str, object]) -> dict[str, object]:
     or _HASH_PATTERN.fullmatch(manifest_hash) is None:
         raise ValueError("Result manifest_hash is invalid.")
 
-    # Keep development and confirmation outcomes distinguishable.
+    # Keep development, confirmation, and benchmark outcomes distinguishable.
     if normalized["phase"] not in _PHASES:
         raise ValueError("Result phase is invalid.")
 
@@ -1156,9 +1187,9 @@ def paired_run_statistics(
         manifest (Mapping[str, object] | None): Design against which selected run
             IDs, block IDs, conditions, phase, and hash are checked. Default None
             allows development inference from internally consistent rows alone.
-            Confirmation results require the frozen manifest and external hash.
+            Confirmation and benchmark results require the frozen manifest and external hash.
         expected_hash (str | None): Trusted digest for a supplied manifest. Default
-            None is allowed in development but not confirmation. A hash without a
+            None is allowed in development but not frozen study modes. A hash without a
             manifest is invalid.
 
     Returns:
@@ -1194,16 +1225,16 @@ def paired_run_statistics(
             expected_hash=expected_hash
         )
 
-        # A supplied confirmation design must be externally frozen up front.
-        if validated_manifest["phase"] == "confirmation":
-            # Confirmation inference requires an independently supplied hash.
+        # Both frozen study modes require external authentication before analysis.
+        if validated_manifest["phase"] in _FROZEN_PHASES:
+            # A manifest's own digest cannot independently authenticate its design.
             if expected_hash is None:
                 raise ValueError(
-                    "Confirmation statistics require a frozen "
+                    "Frozen statistics require a frozen "
                     "manifest and its expected_hash."
                 )
 
-            validated_manifest = validate_frozen_confirmation(
+            validated_manifest = validate_frozen_experiment(
                 validated_manifest,
                 expected_hash=expected_hash
             )
@@ -1217,8 +1248,9 @@ def paired_run_statistics(
 
             # Reversing the contrast or changing the outcome changes the hypothesis.
             if requested != frozen:
+                declaration = "preregistered" if validated_manifest["phase"] == "confirmation" else "declared"
                 raise ValueError(
-                    "Confirmation statistics must use the preregistered "
+                    f"Frozen statistics must use the {declaration} "
                     "condition_a, condition_b, and primary_metric."
                 )
 
@@ -1244,19 +1276,19 @@ def paired_run_statistics(
     selected_hash = next(iter(hashes))
     selected_phase = next(iter(phases))
 
-    # Confirmation inference must be anchored to an externally frozen design.
-    if selected_phase == "confirmation":
-        # Reject confirmation rows without their validated manifest credentials.
+    # Both frozen result types must remain anchored to their declared designs.
+    if selected_phase in _FROZEN_PHASES:
+        # Reject frozen rows without their validated manifest credentials.
         if validated_manifest is None or expected_hash is None:
             raise ValueError(
-                "Confirmation statistics require a frozen "
+                "Frozen statistics require a frozen "
                 "manifest and its expected_hash."
             )
 
-        # A development manifest cannot authorize confirmation inference.
-        if validated_manifest["phase"] != "confirmation" \
+        # A different study phase cannot authorize these frozen result rows.
+        if validated_manifest["phase"] != selected_phase \
         or validated_manifest["frozen"] is not True:
-            raise ValueError("Confirmation statistics require a frozen manifest.")
+            raise ValueError("Frozen statistics require a matching frozen manifest.")
 
     # Supplied manifests must describe the exact rows being analyzed.
     if validated_manifest is not None:
@@ -1384,6 +1416,7 @@ __all__ = [
     "read_long_results",
     "validate_confirmation_rerun",
     "validate_experiment_manifest",
+    "validate_frozen_experiment",
     "validate_frozen_confirmation",
     "write_experiment_manifest",
     "write_long_results"

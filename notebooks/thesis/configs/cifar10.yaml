@@ -1,4 +1,4 @@
-# User-selected TensorFlow 2.20 recipe. Validate in notebook 00 before freezing.
+# User-selected TensorFlow 2.20 recipe for a test-informed fixed benchmark.
 base_config: ../../../semantic_consolidation/configs/common_v1.yaml
 common:
   dataset:
@@ -26,7 +26,7 @@ common:
       test_cfg_scale: 3.0
   optimizer:
     name: adam
-    initial_learning_rate: 0.005
+    initial_learning_rate: 0.001
     weight_decay: 0.0
     schedule: cosine
     # 46,950 joint updates + the 3,000-update extra-joint allowance.
@@ -51,9 +51,9 @@ common:
     ensemble_accuracy_kwargs:
       network_name: raw
       max_t: 256
-      t_range_drop_rate: 0.5
-      clf_distil_acc_coef: 0.5
-      clf_acc_coef: 0.5
+      t_range_drop_rate: 0.75
+      clf_distil_acc_coef: 0.0
+      clf_acc_coef: 1.0
     # Use held-out route observations instead of revisiting old training rows.
     mechanistic_metrics: false
 route:
