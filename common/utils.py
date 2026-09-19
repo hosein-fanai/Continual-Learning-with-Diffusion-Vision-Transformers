@@ -258,16 +258,19 @@ def plot_history(
 
     A training metric such as ``"loss"`` and its ``"val_loss"`` counterpart
     share one subplot.  If both names occur in ``metrics``, the explicit
-    validation entry is skipped to avoid a duplicate subplot.
+    validation entry is skipped to avoid a duplicate subplot. Validation epochs
+    are multiples of ``len(training) / len(validation)`` when lengths differ.
 
     Args:
         history (Mapping[str, Sequence[float]]): Metric names mapped to
             per-epoch values, typically ``History.history``. Series may have
-            different lengths, but each training/validation pair must align.
+            different lengths; validation is assumed evenly spaced across its
+            training metric's full epoch count.
         range_ (tuple[int | None, ...]): Two or three arguments expanded into
             ``slice(*range_)``.  ``(0, None)`` plots all epochs, ``(5, 20)``
             plots zero-based entries 5--19, and ``(None, None, 2)`` plots every
-            other epoch.  CSV output is not sliced.
+            other epoch. Unequal-length validation series retain observations
+            within the displayed training epoch interval. CSV output is not sliced.
             Defaults to ``(0, None)``.
         metrics (Sequence[str] | None): Keys to plot; ``None`` considers every
             history key.
@@ -305,7 +308,7 @@ def plot_history(
     Raises:
         KeyError: If a requested metric is absent.
         ValueError: If a grid is insufficient, no metric remains to plot, a
-            selected metric range is empty, or metric lengths are incompatible.
+            selected metric range is empty.
     """
 
     import matplotlib
@@ -372,16 +375,21 @@ def plot_history(
         val_values = history.get("val_" + metric)
         # Align and plot a nonempty validation series when available.
         if val_values is not None and len(val_values) > 0:
-            selected_val_values = np.asarray(val_values)[range_]
-            # Keep training and validation epoch coordinates aligned.
-            if len(selected_val_values) != len(epochs):
-                raise ValueError(
-                    f"Training and validation lengths differ for {metric!r}."
-                )
+            validation_frequency = len(history[metric]) / len(val_values)
+            val_epochs = np.linspace(validation_frequency, len(history[metric]), len(val_values))
+            # Equal-length series retain identical slicing, including the step.
+            if validation_frequency == 1:
+                val_epochs = val_epochs[range_]
+                selected_val_values = np.asarray(val_values)[range_]
+            # Select sparse observations by epoch, not by their list positions.
+            else:
+                selected = (val_epochs > min(epochs) - 1) & (val_epochs <= max(epochs))
+                val_epochs = val_epochs[selected]
+                selected_val_values = np.asarray(val_values)[selected]
             min_ = min([min_, *selected_val_values])
             max_ = max([max_, *selected_val_values])
 
-            ax.plot(epochs, selected_val_values, label="Validation")
+            ax.plot(val_epochs, selected_val_values, label="Validation")
 
         ax.legend()
         ax.set_xlabel("epochs")
