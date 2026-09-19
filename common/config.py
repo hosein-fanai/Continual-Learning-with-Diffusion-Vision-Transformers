@@ -1379,11 +1379,20 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             input selector takes precedence.
             Defaults to ``'cond'``.
         clf_train_noisy_input_type (str): ``"noisy"`` uses the sampled diffusion
-            image and timestep. V1-only ``"clean"`` uses x0 and timestep zero for
+            image and timestep unless a classifier cap is supplied. V1-only
+            ``"clean"`` uses x0 and timestep zero for
             classifier rows. Positive clf_train_batch_fraction modifies those rows
             within one shared pass; otherwise clean inputs use a separate classifier
             pass. Class conditioning is selected independently. Defaults to ``"noisy"``.
             V2 retains its separate noising caps.
+        clf_train_noisified_max_timesteps (int | None): Exclusive classifier cap.
+            None preserves V1's sampled diffusion inputs and V2's clean inputs.
+            Zero selects clean images, -1 the full horizon, and a positive cap
+            samples [0, cap) independently of diffusion bounds. V1 applies this
+            only with clf_train_noisy_input_type="noisy". Defaults to None.
+        clf_test_noisified_max_timesteps (int | None): Equivalent classifier
+            evaluation cap. None preserves clean evaluation in both versions.
+            V1 ignores this with clf_train_noisy_input_type="clean". Defaults to None.
         clf_train_class_input_type (str | None): ``"null_class_only"`` uses
             uncond_labels and requires CFG; ``"all_classes"`` uses the original CFG
             labels. With batch partitioning disabled, noisy/all_classes reuses the
@@ -1436,6 +1445,8 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_train_noisy_input_type: str = field(default="noisy", kw_only=True)
     clf_train_class_input_type: str | None = field(default=None, kw_only=True)
     clf_train_batch_fraction: float = field(default=0.0, kw_only=True)
+    clf_train_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
+    clf_test_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -1478,8 +1489,6 @@ class DiffusionClassifierV2Config(DiffusionClassifierConfig):
     clf_loss_coef: float = 1.0
     clf_vars_embedding_ids: list[int] = field(default_factory=list)
     clf_vars_noise_part_ids: list[int] = field(default_factory=list)
-    clf_train_noisified_max_timesteps: int | None = None
-    clf_test_noisified_max_timesteps: int | None = None
 
 
 @dataclass

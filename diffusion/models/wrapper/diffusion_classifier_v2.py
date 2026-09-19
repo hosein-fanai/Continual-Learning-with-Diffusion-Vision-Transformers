@@ -64,8 +64,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
         clf_loss_coef: float = 1., 
         clf_vars_embedding_ids: list[int] = [], 
         clf_vars_noise_part_ids: list[int] = [], 
-        clf_train_noisified_max_timesteps: int | None = None, 
-        clf_test_noisified_max_timesteps: int | None = None, 
         **kwargs: object
     ) -> None:
         """Configure separate generator and classifier optimization.
@@ -154,8 +152,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         self.clf_vars_embedding_ids = self.network._handle_ids(
             self.clf_vars_embedding_ids, 
             depth=None, 
-            min_id=0,
-            max_id=4,
+            min_id=0, 
+            max_id=4
         )
         self.clf_vars_noise_part_ids = self.network._handle_ids(
             self.clf_vars_noise_part_ids, 
@@ -168,15 +166,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             *self.clf_vars_noise_part_ids
         ]))
 
-        self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
-                                                else int(self.clf_train_noisified_max_timesteps)
-        self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
-                                                else self.clf_train_noisified_max_timesteps
-        self.clf_test_noisified_max_timesteps = 0 if self.clf_test_noisified_max_timesteps is None \
-                                                else int(self.clf_test_noisified_max_timesteps)
-        self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
-                                                else self.clf_test_noisified_max_timesteps
-        
         object.__setattr__(self, "clf_trainable_variables", None)
         object.__setattr__(self, "gen_trainable_variables", None)
         object.__setattr__(self, "_active_trainable_variables", None)
@@ -202,37 +191,31 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         require(
             local_vars["clf_train_noisy_input_type"] == "noisy"
-            and local_vars["clf_train_class_input_type"] == "null_class_only",
+            and local_vars["clf_train_class_input_type"] == "null_class_only", 
             "V2 classifier inputs are controlled by its noising caps and null conditioning."
         )
 
     def _check_clfv2_assertions(self, local_vars: dict[str, object]) -> None:
-        """Validate variable selectors, classifier timestep caps, and CFG availability.
+        """Validate variable selectors and CFG after inherited cap validation.
 
         Embedding IDs must be None or within 0..4; a None item later expands to all
         groups. Main-depth IDs must be nonzero and within [-depth, depth], allowing
-        later negative-index resolution. Each non-None cap is converted with int
-        for validation, so fractional values truncate and booleans become zero/one.
-        Valid caps are None or integers in [-1, timesteps]: None/zero mean clean
-        input, -1 means the full horizon, and positive values are exclusive bounds.
-        This helper checks the converted values without storing normalization results.
+        later negative-index resolution. Shared classifier timestep caps have
+        already been validated and normalized by DiffusionClassifier.
 
         Args:
             local_vars (dict[str, object]): Constructor namespace containing both
-                clf_vars_*_ids iterables and both clf_*_noisified_max_timesteps
-                controls. The already initialized wrapper supplies network.depth,
-                timesteps, and use_cfg.
+                clf_vars_*_ids iterables. The already initialized wrapper supplies
+                network.depth and use_cfg.
 
         Returns:
             None: Valid configurations leave the namespace and wrapper unchanged.
 
         Raises:
-            AssertionError: An embedding/depth ID or normalized timestep cap is outside
+            AssertionError: An embedding/depth ID is outside
                 its accepted domain, or the raw network does not enable CFG.
             TypeError: A selector collection is not iterable, including a whole-argument
-                None, an ID cannot be compared numerically, or a cap cannot convert to int.
-            ValueError: Integer conversion of a supplied cap fails, such as a nonnumeric
-                string or NaN.
+                None, or an ID cannot be compared numerically.
         """
 
         for id_ in local_vars["clf_vars_embedding_ids"]:
@@ -245,18 +228,6 @@ class DiffusionClassifierV2(DiffusionClassifier):
             require(
                 -self.network.depth <= id_ <= self.network.depth and id_ != 0, 
                 "clf_vars_noise_part_ids items can only be in [-depth, 0) or [1, depth]."
-            )
-
-        for name in (
-            "clf_train_noisified_max_timesteps", 
-            "clf_test_noisified_max_timesteps"
-        ):
-            value = local_vars[name]
-            # Preserve None as the clean-input sentinel while integer-normalizing explicit caps.
-            value = None if value is None else int(value)
-            require(
-                value is None or -1 <= value <= self.timesteps,
-                f"{name} must be None or in [-1, timesteps]."
             )
 
         require(

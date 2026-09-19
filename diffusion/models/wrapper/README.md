@@ -412,11 +412,24 @@ progressive-fit stages map it lazily through the classifier's override of
 (x0, noise, t, x_t, cfg_labels, uncond_labels, classes, teacher_labels)
 ```
 
+V1 accepts `clf_train_noisified_max_timesteps` and
+`clf_test_noisified_max_timesteps` when `clf_train_noisy_input_type="noisy"`.
+Their default `None` preserves shared diffusion inputs in training and clean
+classifier inputs in evaluation. Explicit `0` selects clean images, `-1` uses
+the full horizon, and positive values sample `[0, cap)` independently of the
+diffusion bounds. With `clf_train_noisy_input_type="clean"`, both caps are ignored.
+Explicit caps add a classifier pass during full-batch training or replace only
+classifier rows when `clf_train_batch_fraction > 0`. CFG and timestep masks
+still select rows using the original diffusion inputs. Ensemble-loss replacement
+cannot be combined with explicit V1 caps because it performs its own noising.
+
 During training the teacher receives `(x_t, t, selected_labels)`, where
 `selected_labels` is the conditional or unconditional prepared branch selected
-by `clf_train_type`. During validation/evaluation it receives the same clean
-`x0`, zero timestep, and unconditional label used by the student's established
-classification path. If it provides `predict_class`, that method supplies the
+by the classifier input policy. With an explicit cap, the mapped batch caches
+the classifier image/time pair immediately after the seven diffusion tensors;
+teacher and student consume that same corruption. During validation/evaluation
+the teacher receives the same clean or capped input and unconditional label as
+the student. If it provides `predict_class`, that method supplies the
 target. The custom train/test steps consume the prepared tuple without noising
 or shifting it a second time. Array inputs, separate `x`/`y`, validation tuples,
 and already-prepared datasets are not automatically adapted by this path.

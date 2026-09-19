@@ -308,6 +308,59 @@ class DistillationControlTests(tf.test.TestCase):
                 clf_distil_scope="replay_only",
             )
 
+    def test_variable_metric_inputs_preserve_scopes_and_empty_masks(self) -> None:
+        """Variable-backed heads retain scoped counts in eager, graph, and XLA execution."""
+        # Int64 resources can reside with GPU metrics; TensorFlow pins int32 variables to CPU.
+        classes = tf.Variable([0, 1, 0], dtype=tf.int64)
+        primary = tf.Variable([[.8, .2], [.8, .2], [.1, .9]])
+        token = tf.Variable([[.1, .9], [.2, .8], [.9, .1]])
+        distil = tf.Variable([[.7, .3], [.1, .9], [.2, .8]])
+        masks = tuple(tf.constant(values, tf.bool) for values in (
+            [True, True, False], [False, True, True], [True, False, True],
+        ))
+
+        for mode in ("eager", "graph", "xla"):
+            with self.subTest(mode=mode):
+                wrapper = _DistillationHarness()
+                wrapper.ctr_acc_coef = 1.
+                wrapper.clf_distil_acc_coef = 1.
+                trackers = (
+                    wrapper.clf_loss_tracker, wrapper.clf_ctr_loss_tracker,
+                    wrapper.clf_distil_loss_tracker, wrapper.accuracy_tracker,
+                    wrapper.clf_ctr_accuracy_tracker, wrapper.clf_distil_acc_tracker,
+                    wrapper.total_accuracy_tracker,
+                )
+
+                def report(mask: tf.Tensor, token_mask: tf.Tensor,
+                           distil_mask: tf.Tensor) -> dict[str, tf.Tensor]:
+                    """Pass resource variables directly through every classifier metric path."""
+                    return wrapper.get_clf_results_dict(
+                        tf.constant(1.), classes, primary, clf_acc_mask=mask,
+                        clf_ctr_loss=tf.constant(2.), clf_ctr_preds=token,
+                        clf_distil_loss=tf.constant(3.), distil_classes=distil,
+                        use_ctr_loss=True, use_total_loss=False,
+                        clf_ctr_mask=token_mask, clf_distil_acc_mask=distil_mask,
+                    )
+
+                step = report if mode == "eager" else tf.function(report, jit_compile=mode == "xla")
+                results = step(*masks)
+                for name, expected in (
+                    ("classifier_accuracy", .5), ("clf_ctr_accuracy", 1.),
+                    ("clf_distil_acc", .5), ("total_accuracy", 1.),
+                    ("classifier_loss", 1.), ("clf_ctr_loss", 2.), ("clf_distil_loss", 3.),
+                ):
+                    self.assertAllClose(results[name], expected)
+                for tracker in trackers:
+                    self.assertAllClose(tracker.count, 2.)
+                    tracker.reset_state()
+
+                empty = tf.zeros_like(masks[0])
+                results = step(empty, empty, empty)
+                for value in results.values():
+                    self.assertAllClose(value, 0.)
+                for tracker in trackers:
+                    self.assertAllClose(tracker.count, 0.)
+
     def test_scoped_metrics_use_selected_example_counts(self) -> None:
         """Aggregate KD loss and accuracy over scoped rows, not batches.
 

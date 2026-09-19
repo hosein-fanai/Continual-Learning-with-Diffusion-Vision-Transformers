@@ -195,9 +195,12 @@ to its generator phase and keeps its required discriminator phase on ordinary
 `fit`; standalone classifiers, buffers, and VAEs do not accept the progressive
 selector.
 
-The V2 fields `clf_train_noisified_max_timesteps` and
-`clf_test_noisified_max_timesteps` select clean timestep 0 with `null`, the full
+The shared fields `clf_train_noisified_max_timesteps` and
+`clf_test_noisified_max_timesteps` select clean timestep 0 with `0`, the full
 horizon with `-1`, or an exclusive `[0, cap)` range with a positive integer.
+In V1 these caps apply only with `clf_train_noisy_input_type: noisy`; `null`
+preserves the existing diffusion inputs in training and clean inputs in evaluation.
+V1's `clean` input policy ignores both caps. V2 retains clean inputs for `null`.
 Classifier caps are independent of progressive generator intervals. Direct V2
 evaluation must select `generator`/`discriminator` or request both; shared
 reporting evaluates both phases.
