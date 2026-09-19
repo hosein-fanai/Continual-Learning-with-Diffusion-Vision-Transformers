@@ -49,7 +49,7 @@ Binder has a CPU build configuration for small checks. For other compatible
 hosted Jupyter services, set `RUNTIME = "hosted"` and select `CUDA` in the first cell.
 
 See the [hosted runtime guide](notebooks/thesis/README.md#hosted-runtimes) for
-provider setup, saved results, and the confirmation campaign's prerequisites.
+provider setup, saved results, and the test-informed benchmark campaign's prerequisites.
 
 ### Local environment
 
@@ -70,8 +70,8 @@ Notebook startup reads this same file and omits the CUDA extra for Colab/Kaggle
 managed libraries and Binder CPU use. Use the startup cell: direct `pip -r` cannot
 detect notebook providers and would include the CUDA extra. GPU use still requires a compatible
 NVIDIA driver on the host.
-See the [compatibility guide](compatibility_migration.md) for tested versions,
-supported paths, and checkpoint limitations.
+See the [container guide](.devcontainer/README.md) for the maintained runtime
+and the [common API guide](common/README.md) for supported checkpoint recovery.
 
 GPU memory growth is configured by the container. `common.utils.init()` is a
 compatibility entry point and does not impose a fixed memory cap.
@@ -207,7 +207,7 @@ use wrapper growth to refresh optimizer and EMA ownership. Classifier depth
 cannot grow from `clf_depth=0`. Class expansion uses the wrapper's existing
 reconstruction path. See the
 [convolution model guide](diffusion/models/convolution/README.md) for supported
-construction specifications and the [compatibility guide](compatibility_migration.md)
+construction specifications and the [diffusion guide](diffusion/README.md)
 for growth boundaries.
 
 ### Schedules

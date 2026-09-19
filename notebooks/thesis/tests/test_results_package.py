@@ -17,11 +17,12 @@ import pandas as pd
 from notebooks.thesis import results_package as package
 
 
-def synthetic_campaign(directory: Path) -> tuple[dict, dict, dict]:
-    """Construct 24 tiny scalar-only full-schedule fixtures; never train/predict.
+def synthetic_campaign(directory: Path, *, scope: str = "notebooks_02_09") -> tuple[dict, dict, dict]:
+    """Construct tiny scalar-only full-schedule fixtures; never train/predict.
 
     Args:
         directory (Path): Temporary artifact location owned by this test.
+        scope (str): Original 24-stream fixture or explicitly registered notebooks_03_09.
 
     Returns:
         result (tuple[dict, dict, dict]): Synthetic fixture or native artifact result used only
@@ -33,9 +34,15 @@ def synthetic_campaign(directory: Path) -> tuple[dict, dict, dict]:
     """
     directory = Path(directory)
     record = {"seeds": package.SEEDS, "studies": {}}
+    conditions_by_dataset = {"cifar10": list(package.METHODS)[:3], "cifar100": list(package.METHODS)}
+    # Reduced fixtures carry the explicit scope required for a final 21-stream export.
+    if scope == "notebooks_03_09":
+        conditions_by_dataset["cifar10"] = ["extra_joint", "learned"]
+        record.update(campaign_scope=scope, declared_conditions=conditions_by_dataset,
+                      declared_stream_count=21)
     manifests, outputs = {}, {}
-    for dataset, count, width, conditions in (("cifar10", 5, 2, list(package.METHODS)[:3]),
-                                              ("cifar100", 10, 10, list(package.METHODS))):
+    for dataset, count, width in (("cifar10", 5, 2), ("cifar100", 10, 10)):
+        conditions = conditions_by_dataset[dataset]
         entries, results = [], {}
         config = {"common": {"dataset": {"preprocess": "fixed-standardize", "name": dataset},
                              "continually_learn": {"replay_current_examples": None, "replay_old_examples": 1024}}, "route": {}}
@@ -396,12 +403,103 @@ class SavedPackageTests(unittest.TestCase):
             AssertionError: If the stated regression invariant fails.
         """
         package._check_final_design(self.record, self.manifests)
+        package._check_final_design({**self.record, "campaign_scope": "notebooks_02_09",
+                                     "declared_stream_count": 24}, self.manifests)
         with self.assertRaisesRegex(ValueError, "three-seed"):
             package._check_final_design({**self.record, "seeds": [1103, 2207]}, self.manifests)
         bad = deepcopy(self.manifests)
         bad["cifar100"]["_entries"][0]["stream"]["task_groups"] = [[0, 1]]
         with self.assertRaises(ValueError):
             package._check_final_design(self.record, bad)
+
+    def test_reduced_design_requires_explicit_scope_and_complete_paired_plan(self) -> None:
+        """Accept exactly 6+15 declared streams without accepting a truncated legacy design."""
+        record, manifests, _ = synthetic_campaign(self.directory / "reduced_guard", scope="notebooks_03_09")
+        package._check_final_design(record, manifests)
+        legacy = {key: value for key, value in record.items()
+                  if key not in ("campaign_scope", "declared_conditions", "declared_stream_count")}
+        for declaration in (legacy, {**legacy, "campaign_scope": "notebooks_02_09"}):
+            with self.subTest(declaration=declaration.get("campaign_scope")), self.assertRaisesRegex(ValueError, "9 cifar10"):
+                package._check_final_design(declaration, manifests)
+        for field in ("declared_conditions", "declared_stream_count"):
+            incomplete = deepcopy(record)
+            incomplete.pop(field)
+            with self.subTest(missing=field), self.assertRaisesRegex(ValueError, "21-stream"):
+                package._check_final_design(incomplete, manifests)
+        wrong_methods = deepcopy(record)
+        wrong_methods["declared_conditions"]["cifar100"].remove("baseline")
+        for invalid in (wrong_methods, {**record, "declared_stream_count": 24},
+                        {**record, "campaign_scope": "arbitrary_subset"}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                package._check_final_design(invalid, manifests)
+        for dataset in manifests:
+            incomplete = deepcopy(manifests)
+            incomplete[dataset]["_entries"].pop()
+            with self.subTest(dataset=dataset), self.assertRaisesRegex(ValueError, "streams"):
+                package._check_final_design(record, incomplete)
+
+    def test_reduced_complete_public_package_retains_both_primary_comparisons(self) -> None:
+        """Publish a complete synthetic 21-stream package with no invented CIFAR-10 Platform row."""
+        record, manifests, outputs = synthetic_campaign(self.directory / "reduced_complete", scope="notebooks_03_09")
+        record_path = self.directory / "reduced_complete" / "frozen_design.json"
+        package._json(record_path, record)
+        fake_workflow = types.ModuleType("notebooks.thesis.workflow")
+        fake_workflow._campaign = Mock(return_value=(record, manifests))
+        fake_workflow._outputs = Mock(side_effect=lambda path, manifest, complete: outputs[path.parent.name])
+        fake_workflow.analyze_campaign = Mock(return_value={})
+        destination = self.directory / "SYNTHETIC_REDUCED_PACKAGE"
+        with patch.dict("sys.modules", {"notebooks.thesis.workflow": fake_workflow}):
+            result = package.export_results_package(record_path, output_dir=destination)
+        summary = package._read(destination / "RESULT_SUMMARY.json")
+        self.assertEqual(summary["campaign_scope"], "notebooks_03_09")
+        self.assertEqual(summary["declared_stream_count"], 21)
+        self.assertEqual(summary["completed_streams"], 21)
+        self.assertEqual(summary["declared_conditions"], record["declared_conditions"])
+        rows = pd.DataFrame(summary["tables"]["main_results"])
+        self.assertEqual(set(rows.query("dataset == 'cifar10'").condition), {"extra_joint", "learned"})
+        self.assertEqual(set(rows.query("dataset == 'cifar100'").condition), set(package.METHODS))
+        self.assertTrue(rows.n.eq(3).all())
+        paired = pd.DataFrame(summary["tables"]["paired_individual"])
+        primary = paired.loc[paired.role.eq("primary")]
+        self.assertEqual(primary.groupby("dataset").size().to_dict(), {"cifar10": 3, "cifar100": 3})
+        self.assertTrue(primary.condition.eq("extra_joint").all())
+        self.assertFalse(paired.query("dataset == 'cifar10'").condition.eq("baseline").any())
+        context = (destination / "STUDY_CONTEXT.md").read_text(encoding="utf-8")
+        self.assertIn("Registered final design: 21 streams", context)
+        self.assertIn("2 methods, 6 streams", context)
+        self.assertIn("CIFAR-10 Platform is explicitly omitted", context)
+        self.assertIn("primary comparison remains learned minus extra joint on both datasets", context)
+        self.assertTrue(all(call.kwargs["complete"] for call in fake_workflow._outputs.call_args_list))
+        self.assertTrue(result["zip"].is_file())
+
+    def test_reduced_final_export_still_requires_every_declared_completion(self) -> None:
+        """One unfinished run on either dataset blocks publication before final statistics."""
+        record, manifests, outputs = synthetic_campaign(self.directory / "reduced_missing", scope="notebooks_03_09")
+        record_path = self.directory / "reduced_missing" / "frozen_design.json"
+        package._json(record_path, record)
+        fake_workflow = types.ModuleType("notebooks.thesis.workflow")
+        fake_workflow._campaign = Mock(return_value=(record, manifests))
+
+        def completed(path: Path, manifest: dict, *, complete: bool) -> dict:
+            """Model the authenticated workflow's requirement for all planned completion IDs."""
+            outcomes = incomplete[path.parent.name]
+            expected = {entry["run_id"] for entry in manifest["_entries"]}
+            # Final publication cannot turn a missing run into an omitted condition.
+            if complete and set(outcomes) != expected:
+                raise ValueError("finish every planned stream before analysis")
+            return outcomes
+
+        fake_workflow._outputs = Mock(side_effect=completed)
+        fake_workflow.analyze_campaign = Mock()
+        for dataset in manifests:
+            incomplete = deepcopy(outputs)
+            incomplete[dataset].pop(next(iter(incomplete[dataset])))
+            with self.subTest(dataset=dataset), patch.dict("sys.modules", {"notebooks.thesis.workflow": fake_workflow}), \
+                    patch.object(package, "_write_package") as writer:
+                with self.assertRaisesRegex(ValueError, "finish every planned"):
+                    package.export_results_package(record_path)
+                writer.assert_not_called()
+                fake_workflow.analyze_campaign.assert_not_called()
 
     def test_extraction_units_phase_n_memory_and_nonoverlapping_runtime(self) -> None:
         """Verify extraction units phase n memory and nonoverlapping runtime.

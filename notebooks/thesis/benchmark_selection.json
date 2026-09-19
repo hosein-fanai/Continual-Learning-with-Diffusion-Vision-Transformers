@@ -62,5 +62,5 @@
     }
   ],
   "validation_status": "Software validation is separate from scientific validation. No completed final-recipe learning or convergence result is asserted by freezing.",
-  "supplemental_references": "Notebooks 11/12 remain outside the 24-run campaign. Their cosine schedules follow their actual training budgets; final comparisons must use matching seeds and evaluation splits."
+  "supplemental_references": "Notebooks 11/12 remain outside the declared training campaign. Their cosine schedules follow their actual training budgets; final comparisons must use matching seeds and evaluation splits."
 }

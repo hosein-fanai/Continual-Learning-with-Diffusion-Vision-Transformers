@@ -345,6 +345,17 @@ These commands can launch substantial training: preparing a design alone does no
 run it. Three streams are exploratory, and tasks are never treated as independent
 replicates. The paired t interval assumes suitable independent stream differences.
 
+The [current thesis workflow](../notebooks/thesis/README.md) uses the separately
+declared **`benchmark`** phase because earlier official-test HPO informed its
+recipe. It retains the same frozen-source, external-hash, complete-matrix and
+artifact checks as confirmation, while preserving its test-informed selection
+history. Both `study run` and `study analyze` require `--expected-hash` for a
+frozen benchmark. This designation does not establish independent confirmation.
+Its registered primary endpoint uses raw-network timestep predictions with
+classifier weight 1.0, distillation-head weight 0.0 and uniform averaging over
+the 64 retained timesteps (`max_t=256`, `t_range_drop_rate=0.75`). These inference
+weights are separate from the retained classifier/noise distillation loss weights.
+
 After validation selection, use a **new** `prepare --phase confirmation` design
 for test evaluation and retain its manifest hash in a separate preregistration
 record. Both `study run` and `study analyze` require

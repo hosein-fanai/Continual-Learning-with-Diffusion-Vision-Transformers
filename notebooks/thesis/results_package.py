@@ -417,8 +417,39 @@ def aligned_phase_endpoints(before: dict, after: dict) -> bool:
     return True
 
 
+def _design_conditions(record: dict) -> dict[str, list[str]]:
+    """Resolve only the original 24-stream or explicitly registered 21-stream design.
+
+    Args:
+        record (dict): Frozen campaign record. Missing scope denotes the original design.
+
+    Returns:
+        conditions (dict[str, list[str]]): Exact ordered condition names for each dataset.
+
+    Raises:
+        ValueError: If the scope or its declared conditions/count is unsupported or inconsistent.
+    """
+    scope = record.get("campaign_scope", "notebooks_02_09")
+    conditions = {"cifar10": ["baseline", "extra_joint", "learned"], "cifar100": list(METHODS)}
+    # Omitting CIFAR-10 Platform requires an explicit, complete frozen declaration.
+    if scope == "notebooks_03_09":
+        conditions["cifar10"] = ["extra_joint", "learned"]
+        # A partial legacy campaign cannot acquire final status by losing its Platform runs.
+        if record.get("declared_conditions") != conditions or record.get("declared_stream_count") != 21:
+            raise ValueError("The 21-stream campaign requires its exact declared conditions and stream count.")
+    # Historical records without a scope retain the complete original design.
+    elif scope == "notebooks_02_09":
+        # Supplied metadata must agree even when older records omit these optional fields.
+        if record.get("declared_conditions", conditions) != conditions or record.get("declared_stream_count", 24) != 24:
+            raise ValueError("The original campaign requires all 24 declared streams and conditions.")
+    # Arbitrary condition subsets are not registered final designs.
+    else:
+        raise ValueError(f"Unsupported final campaign scope: {scope!r}.")
+    return conditions
+
+
 def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
-    """None; verifies all 24 declared three-seed full-class streams and exact within-seed pairing.
+    """Verify every declared three-seed full-class stream and exact within-seed pairing.
 
     Args:
         record (dict): Frozen design or completion record, as required by this operation;
@@ -426,8 +457,7 @@ def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
         manifests (dict[str, dict]): Dataset-name mapping to native paired study manifests.
 
     Returns:
-        validated (None): None; verifies all 24 declared three-seed full-class streams and exact
-            within-seed pairing.
+        validated (None): None; verifies the complete registered 24- or 21-stream design.
 
     Raises:
         ValueError: If seeds, methods, class schedules or stream counts differ.
@@ -436,8 +466,9 @@ def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
     # 3301].
     if record.get("seeds") != SEEDS or set(manifests) != {"cifar10", "cifar100"}:
         raise ValueError("Final chapter export requires the new three-seed campaign [1103, 2207, 3301]. Preserve older campaigns separately.")
-    for dataset, tasks, width, methods in (("cifar10", 5, 2, {"baseline", "extra_joint", "learned"}),
-                                           ("cifar100", 10, 10, set(METHODS))):
+    conditions = _design_conditions(record)
+    for dataset, tasks, width in (("cifar10", 5, 2), ("cifar100", 10, 10)):
+        methods = set(conditions[dataset])
         entries = materialize_run_plan(manifests[dataset])
         # Final chapter export requires the selected artifact the selected artifact streams.
         if len(entries) != len(methods) * 3:
@@ -722,10 +753,15 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
     Raises:
         KeyError: If required frozen design or evidence fields are missing.
     """
+    conditions = _design_conditions(record)
+    stream_count = sum(map(len, conditions.values())) * len(record["seeds"])
+    cifar10_design = f"{len(conditions['cifar10'])} methods, {len(conditions['cifar10']) * len(record['seeds'])} streams"
+    scope_note = ("CIFAR-10 Platform is explicitly omitted from this registered design; no Platform comparison is available for CIFAR-10. "
+                  if record.get("campaign_scope") == "notebooks_03_09" else "")
     text = [f"# Study context — {status}",
         "Research question: does learned temporary class modulation followed by semantic consolidation improve class-incremental retention and new-class learning beyond extra ordinary joint updates?",
         "Methods: Platform (native baseline) uses joint diffusion/classification, generated replay and classification/denoising distillation. Extra joint receives the acquisition-plus-consolidation update allowance. Learned adds trained gates and CE + InfoNCE semantic consolidation. Random uses random gates. CE only (native no_consolidation) retains acquisition and runs the replacement CE phase without the alignment gradient.",
-        f"Declared {record.get('phase', 'confirmation')} seeds: {record['seeds']}. Development seed 17 is separate. Revised final design: CIFAR-10, five two-class tasks, three methods, nine streams; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
+        f"Declared {record.get('phase', 'confirmation')} seeds: {record['seeds']}. Development seed 17 is separate. Registered final design: {stream_count} streams; CIFAR-10, five two-class tasks, {cifar10_design}; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. {scope_note}The primary comparison remains learned minus extra joint on both datasets. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
         ("Selection scope: TEST-INFORMED BENCHMARK, not independent confirmation. Earlier official-test HPO informed this recipe. Paired intervals describe variability across the declared run seeds conditional on this recipe and benchmark; they do not account for prior test-based selection. " + record.get("selection_provenance", {}).get("reason", "")) if record.get("phase") == "benchmark" else "Selection scope: the declared confirmation protocol requires test-independent selection.",
         "Inference: main efficacy uses the configured ordinary or timestep-ensemble held-out test matrix over every seen class, without task identity, gates or predictor. Each dataset's frozen predictor and coefficients are recorded below; per-stream tables identify the exact matrix source. Phase accuracy remains an ordinary clean-classifier validation diagnostic, and temporal diagnostics also use validation data; neither replaces the efficacy endpoint.",
         "Metrics: for A[i,j], accuracy on task j after training i, final accuracy averages the final row's learned tasks; incremental accuracy averages each learned-prefix row mean. Signed forgetting averages max(A[j:T-1,j]) - A[T-1,j] over old tasks, excluding the final row from the maximum. BWT averages A[T-1,j] - A[j,j] over old tasks. These native formulas are computed separately for each full stream before mean and sample SD (ddof=1). Accuracy is displayed as percent; forgetting, BWT and accuracy differences as percentage points. Negative forgetting and positive BWT indicate improvement. First-task old accuracy is unavailable.",
@@ -1178,7 +1214,10 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         "Draft the results chapter from these saved observations. Preserve negative/uncertain findings and missing values, distinguish test outcomes from validation diagnostics, and cite table/figure IDs. Mean ± SD is not a replacement for the native primary paired interval.\n\n"
         f"{LIMITATIONS}\n\n"
         "No models were trained, no test predictions or generated images were newly computed, and no checkpoint/dataset or large intermediate array is included. Missing entries are blank in CSV, unavailable in Markdown and null in JSON. Original run artifacts are read only.\n", encoding="utf-8")
+    conditions = _design_conditions(record)
     _json(directory / "RESULT_SUMMARY.json", {"status": status, "seeds": record["seeds"], "completed_streams": len(evidence["runs"]),
+        "campaign_scope": record.get("campaign_scope", "notebooks_02_09"), "declared_conditions": conditions,
+        "declared_stream_count": sum(map(len, conditions.values())) * len(record["seeds"]),
         "tables": {name: frame.to_dict("records") for name, frame in evidence["tables"].items()}, "native_primary_statistics": native,
         "limits": LIMITATIONS, "table_ids": table_index})
     _json(directory / "ARTIFACT_MANIFEST.json", {"status": status, "schema_version": 2, "artifacts": artifacts,
@@ -1189,7 +1228,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
 
 
 def export_results_package(record_path: str | Path, *, progress: bool=False, output_dir: str | Path | None=None, details: bool=False) -> dict:
-    """Authenticate saved results and publish the final 24-stream package or progress view.
+    """Authenticate saved results and publish the declared final package or progress view.
 
     Repeated exports reuse an existing identical input/exporter package. A new identity refuses
     to overwrite a package; select a new output_dir explicitly. Original completion artifacts
@@ -1199,7 +1238,7 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
         record_path (str | Path): Externally retained frozen_design.json; its identities and
             source hashes must still match.
         progress (bool): True labels an incomplete saved-results view and omits final paired
-            inference; False requires all 24 streams.
+            inference; False requires all streams in the registered 24- or 21-stream design.
         output_dir (str | Path | None): Separate package directory. None uses the default
             final or progress package directory beside the frozen campaign record. A sibling
             ZIP archive is also written; original run evidence is unchanged.

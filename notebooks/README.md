@@ -27,10 +27,20 @@ For controlled studies, the [common data pipeline](../common/README.md) and
 [semantic study API](../semantic_consolidation/README.md) provide explicit
 training/validation separation and confirmation protocols.
 
-The [thesis workflow](thesis/README.md) provides the maintained, reduced
-confirmation experiment and compact result collection. Its
-[validation record](thesis/VALIDATION.md) separates software checks from measured
-scientific results. Root notebooks were preserved during the latest repairs;
+The [thesis workflow](thesis/README.md) provides the approved fixed,
+test-informed benchmark through **notebooks 03–09 only**: three paired repeats
+per notebook, one next unfinished repeat per fresh-kernel launch, for **21 streams**.
+They use `results/thesis_route_one/minimum_v6_tf220_21streams/`. Notebook 01 can
+reproduce preparation but is unnecessary when the prepared campaign is supplied;
+notebook 10 provides optional saved-results collection. Notebook 02 remains the
+unchanged historical 24-stream entry point. Supplemental notebooks 11/12 are
+outside the current scope. The current plan includes no CIFAR-10 platform
+comparison. The
+[recipe rationale](thesis/HYPERPARAMETER_RATIONALE.md) distinguishes current settings,
+historical settings, and software checks from measured scientific results.
+Its primary endpoint is the raw primary-head timestep ensemble with uniform
+averaging; supplemental references have their own cosine training budgets.
+Root notebooks were preserved during the latest repairs;
 `hpo`, `old`, `legacy`, and filenames containing `copy` remain outside that review.
 
 The root `test.ipynb` is a historical Avalanche/PyTorch and legacy API scratchpad;

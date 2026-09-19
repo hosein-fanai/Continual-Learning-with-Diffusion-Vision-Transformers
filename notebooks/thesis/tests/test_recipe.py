@@ -171,6 +171,7 @@ class PreparedRecipeTests(unittest.TestCase):
             record, manifests = workflow._campaign(frozen)
             self.assertEqual(record["schema_version"], 2)
             self.assertEqual(record["seeds"], SEEDS)
+            self.assertEqual(record["campaign_version"], workflow.LEGACY_CAMPAIGN_VERSION)
             self.assertEqual(record["declared_stream_count"], 24)
             self.assertTrue({"init.py", "notebooks/init.py"} <= record["bound_files"].keys())
             shared_initializer = NOTEBOOKS.parent / "init.py"
@@ -412,12 +413,15 @@ class NotebookContractTests(unittest.TestCase):
                 tree = ast.parse("\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code"))
                 settings = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
                             for target in node.targets if isinstance(target, ast.Name)}
-                # Only freeze, confirmation, and collection share the frozen campaign.
+                # Freeze, training, and collection select their declared campaign generation.
                 if path.name in NOTEBOOK_NAMES[1:11]:
                     campaign = settings["CAMPAIGN"]
+                    # Notebook02 remains byte-for-byte the historical 24-stream entry point.
+                    expected_version = (workflow.LEGACY_CAMPAIGN_VERSION if path.name.startswith("02_")
+                                        else workflow.CAMPAIGN_VERSION)
                     self.assertTrue(any(isinstance(node, ast.Constant) and isinstance(node.value, str)
-                                        and (node.value == workflow.CAMPAIGN_VERSION or
-                                             node.value.endswith("/" + workflow.CAMPAIGN_VERSION))
+                                        and (node.value == expected_version or
+                                             node.value.endswith("/" + expected_version))
                                         for node in ast.walk(campaign)))
                 # Apply this case only when path.name.startswith('00_').
                 if path.name.startswith("00_"):
@@ -425,6 +429,12 @@ class NotebookContractTests(unittest.TestCase):
                 # Apply this case only when path.name.startswith('01_').
                 if path.name.startswith("01_"):
                     self.assertEqual(ast.literal_eval(settings["SEEDS"]), SEEDS)
+                    preparations = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                                    and isinstance(node.func, ast.Name) and node.func.id == "prepare_campaign"]
+                    self.assertEqual(len(preparations), 1)
+                    options = {keyword.arg: keyword.value for keyword in preparations[0].keywords}
+                    self.assertEqual(ast.literal_eval(options["scope"]), "notebooks_03_09")
+                    self.assertEqual(ast.literal_eval(options["phase"]), "benchmark")
                 # Apply this case only when path.name.startswith(('01_', '10_')).
                 if path.name.startswith(("01_", "10_")):
                     forbidden = {"train_model", "get_model", "get_datasets", "load_run", "load_development",

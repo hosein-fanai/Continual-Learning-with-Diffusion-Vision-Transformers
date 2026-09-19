@@ -159,11 +159,17 @@ see [Colab's runtime version guide](https://research.google.com/colaboratory/run
 
 ### Results and campaign prerequisites
 
-Notebook **00** can start a development experiment in a fresh session. Notebooks
-**11 and 12** can also start their reference runs independently. Notebook **01**
-prepares the fixed benchmark campaign; notebooks **02 through 09** require
-that campaign, and notebook **10** requires its completed streams. Restore the
-same campaign artifacts when moving those stages to another hosted runtime.
+The approved training plan uses **notebooks 03 through 09 only**, with three
+paired repeats per notebook: **21 complete streams**. Each launch selects one
+next unfinished repeat; use a fresh kernel for each row in the saved checklist.
+Notebook **01** reproduces preparation of that campaign and can be skipped when
+the prepared artifacts are supplied. Notebook **10** is optional saved-results
+collection after all 21 streams finish. Restore the same campaign artifacts when
+moving those stages to another hosted runtime.
+
+Notebook **00** remains optional development. Notebook **02** is the unchanged
+historical 24-stream CIFAR-10 platform entry point and is not required by this
+plan. Supplemental notebooks **11 and 12** remain outside the approved scope.
 Downloading the source alone does not recreate a frozen campaign or its results.
 
 Colab virtual-machine files are temporary. Preserve the whole relevant
@@ -181,9 +187,9 @@ must be prepared. Setup does not relax that provenance check.
 
 | Notebook | Purpose |
 |---|---|
-| [00 Development](00_Development.ipynb) | Seed 17, validation only. Check platform and learned on each dataset before freezing. |
-| [01 Freeze](01_Freeze_Experiment.ipynb) | Save the exact recipe, source identities and randomized execution checklist. No training. |
-| [02 CIFAR-10 platform](02_CIFAR10_platform.ipynb) | Ordinary joint diffusion/classification with generated replay and distillation. |
+| [00 Development](00_Development.ipynb) | Optional seed-17 validation development; outside the approved training plan. |
+| [01 Freeze](01_Freeze_Experiment.ipynb) | Reproduce the 21-stream preparation; skip when the prepared campaign is supplied. No training. |
+| [02 CIFAR-10 platform](02_CIFAR10_platform.ipynb) | Unchanged historical 24-stream entry point; not required for the current plan. |
 | [03 CIFAR-10 extra joint](03_CIFAR10_extra_joint.ipynb) | Extra ordinary updates matching the semantic optimizer-update allowance. |
 | [04 CIFAR-10 learned](04_CIFAR10_learned.ipynb) | Learned class modulation followed by semantic consolidation. |
 | [05 CIFAR-100 platform](05_CIFAR100_platform.ipynb) | Full 100-class platform reference. |
@@ -191,9 +197,9 @@ must be prepared. Setup does not relax that provenance check.
 | [07 CIFAR-100 learned](07_CIFAR100_learned.ipynb) | Full proposed procedure. |
 | [08 CIFAR-100 random](08_CIFAR100_random.ipynb) | Random gates; supporting mechanism comparison. |
 | [09 CIFAR-100 CE only](09_CIFAR100_ce_only.ipynb) | Acquisition plus replacement CE updates, without alignment gradients. |
-| [10 Collect](10_Collect_Thesis_Results.ipynb) | Authenticate saved outcomes and export the compact writing package. No new predictions. |
-| [11 Offline joint reference](11_Offline_Joint_Reference.ipynb) | Train on all classes together, with no replay, distillation or semantic phases. |
-| [12 Naive sequential reference](12_Naive_Sequential_Reference.ipynb) | Train the same DiT platform task by task using current-task examples only, with no CL retention mechanism. |
+| [10 Collect](10_Collect_Thesis_Results.ipynb) | Optional collection after all 21 streams: authenticate saved outcomes and export the writing package. No new predictions. |
+| [11 Offline joint reference](11_Offline_Joint_Reference.ipynb) | Supplemental, outside this plan: train on all classes together, with no replay, distillation or semantic phases. |
+| [12 Naive sequential reference](12_Naive_Sequential_Reference.ipynb) | Supplemental, outside this plan: train task by task using current examples only, with no retention mechanism. |
 | [13 CIFAR-10 joint HPO](13_CIFAR10_Joint_HPO.ipynb) | Tune ordinary all-class diffusion/classification with a learned class token, no distillation, and persistent TensorBoard/Optuna results. |
 | [14 CIFAR-100 joint HPO](14_CIFAR100_Joint_HPO.ipynb) | The same V1 search on CIFAR-100. |
 
@@ -210,16 +216,15 @@ instead uses native `phase="benchmark"` with bound selection provenance
 discard provenance, so absence of a recorded warning does not establish an
 untouched test set. The explicit benchmark designation preserves the known
 selection history.
-See the [joint-classifier HPO guide](JOINT_CLASSIFIER_HPO.md)
-for the search space, ordinary scoring rules, hardware/budget guidance, and
-recommendations from the reports. Their results do not automatically replace
-the continual-learning recipes.
+The code in [notebook 13](13_CIFAR10_Joint_HPO.ipynb) and
+[notebook 14](14_CIFAR100_Joint_HPO.ipynb) defines the maintained search settings
+and scoring procedure. Their results do not automatically replace the
+continual-learning recipes.
 
 ## Offline and naive reference benchmarks
 
 Notebooks **11 and 12** each support CIFAR-10 and CIFAR-100 through `DATASET`.
-They retain the shared DiT diffusion/classification objective, use matching seeds,
-class orders and train/validation partitions, and remove replay, distillation and
+They retain the shared DiT diffusion/classification objective and remove replay, distillation and
 semantic consolidation. Offline joint training sees every class from the start;
 naive sequential training retains the learned model while introducing one task at
 a time. The existing **platform**, **extra joint** and **CE-only** conditions are
@@ -228,22 +233,44 @@ different controls and do not implement these two references.
 These are empirical upper/lower reference comparisons, **not guaranteed maximum
 or minimum accuracy**. Offline training has no task-transition trajectory, so its
 forgetting, backward transfer and average incremental accuracy are unavailable.
-Both notebooks default to validation evaluation; optional test evaluation is
-explicitly labeled as a supplemental reference. Use a fresh kernel for each run.
+Both notebooks still default to **CIFAR-10, seed 17, validation evaluation**.
+These defaults do not register a separate fixed reference campaign or pair the
+references with the benchmark seeds automatically. Any comparison needs matching
+seeds, class orders, training partitions and evaluation splits. Optional test
+evaluation remains a supplemental reference and retains the known prior test
+exposure. Use a fresh kernel for each run.
+
+The references use Adam with initial LR **0.001**, zero weight decay, batch
+**128** and **50 epochs**. During `prepare_reference`, the cosine duration is
+resolved from the actual permitted training rows before optimizer creation,
+including every final partial batch; it replaces the inherited replay-platform
+horizon. With the default uncapped 20% validation split, offline training uses
+`50 × ceil(40000 / 128) = 15,650` updates on either dataset. Naive CIFAR-10 uses
+`5 × 50 × ceil(8000 / 128) = 15,750`; naive CIFAR-100 uses
+`10 × 50 × ceil(4000 / 128) = 16,000`. The prepared configuration and recorded
+`training_budget` are authoritative when data limits, splits or schedules change.
+These are equal nominal epochs per permitted current example, not equal compute
+with the replay methods. Both references use the same primary-head-only,
+uniform timestep averaging described below.
 
 Each run saves a separate directory under
 `results/thesis_route_one/reference_benchmarks`, including the resolved recipe,
 source provenance, final per-task accuracy, summary and native training outputs.
 Naive runs also save their task accuracy matrix and completed-task checkpoints.
-These additional runs are separate from the frozen 24-stream campaign and the
-notebook 10 collector. See [the reference protocol](BENCHMARK_REFERENCES.md) for
-budget interpretation, artifacts and primary sources.
+These additional runs are separate from the approved 21-stream campaign and the
+notebook 10 collector. The [native reference helper](reference_benchmarks.py)
+defines the actual data controls, resolved training budgets and saved artifacts.
 
 ## Small, fixed scientific design
 
-The benchmark plans three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five two-class tasks and three methods (9 streams). CIFAR-100 has ten ten-class tasks and five methods (15 streams). Once prepared, follow the saved **24-row checklist**, one fresh kernel per row. Every method in a block shares the seed and class order. A failed or unfavorable stream cannot be skipped.
+The benchmark plans three paired seeds: **1103, 2207, 3301**. CIFAR-10 has five two-class tasks and **extra joint/learned only** (6 streams). CIFAR-100 has ten ten-class tasks and **platform/extra joint/learned/random/CE only** (15 streams). Follow the saved **21-row checklist**, one fresh kernel per row. Each notebook 03–09 runs one next unfinished repeat per launch; three completed launches per notebook cover the plan. An interrupted launch resumes its unfinished repeat. Every method in a block shares the seed and class order. A failed or unfavorable stream cannot be skipped.
 
-The primary comparison is **learned minus extra joint in final ensemble task-average test accuracy**. The registered raw timestep ensemble uses `max_t=256`, `t_range_drop_rate=0.75` (64 retained timesteps), `clf_acc_coef=1.0` and `clf_distil_acc_coef=0.0`. It averages primary-head predictions over timesteps; the distillation head retains its training loss but contributes no inference vote. This keeps the endpoint on a supervised head at the first task and in the KD-disabled supplemental references. Ordinary clean accuracy remains a separately labeled diagnostic. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons.
+The primary learned-minus-extra-joint comparison is available on both datasets.
+This scope does **not** provide a CIFAR-10 platform comparison. The unchanged
+notebook 02 and earlier 24-stream artifacts remain historical; their runs cannot
+be silently pooled into this campaign.
+
+The primary comparison is **learned minus extra joint in final ensemble task-average test accuracy**. The registered raw timestep ensemble uses `max_t=256`, `t_range_drop_rate=0.75` (64 retained timesteps), `clf_acc_coef=1.0` and `clf_distil_acc_coef=0.0`. It averages primary-head predictions uniformly over the retained timesteps (`weighted=false`); inverse-SNR weighting is used only to select timesteps for removal. The distillation head retains its training loss in replay methods but contributes no inference vote. This keeps the endpoint on a supervised head at the first task and in the KD-disabled supplemental references. Ordinary clean accuracy remains a separately labeled diagnostic. Extra joint matches the number of additional optimizer updates. Different phases update different parameters and use different batches; this does not match examples, FLOPs or wall time. Random and CE-only are supporting comparisons.
 
 The common platform uses a float32, nonvariational DiTClassifier/V1, dimension 128, backbone and classifier depth 6, CNN patchification, patch size 4, four heads, raw inference and no EMA. Joint classifier training uses noisy inputs, null conditioning and no null-row mask; all rows contribute to both classifier and denoising objectives. Common APIs own splitting, class-balanced generated replay, soft distillation, losses and class growth. Acquisition freezes the backbone and learns class gates. Consolidation trains the classifier projection/head and temporary predictor against a frozen acquired target. The maintained recipes use TMCL's published image policy: acquisition flips and four independently cropped/colored consolidation views. `noise_levels=[0]` disables diffusion noise in the semantic objective, not image augmentation or ensemble inference. CE uses its separate clean input. Inference uses all seen classes without task identity, gates or predictor. This does not test noise-dependent consolidation or reproduce TMCL's full view-invariance objective.
 
@@ -286,7 +313,24 @@ Phase changes require identical hashed validation examples and positive actual c
 
 ## Freeze, interruption and rerun
 
-Finish all source and recipe changes before notebook 01. The configured campaign path is `results/thesis_route_one/minimum_v5_tf220/`. Prepare with `phase="benchmark"` and the declared selection provenance; the bound `benchmark_selection.json` preserves the designation and reason alongside the planned 24 streams. Keep an independent unchanged copy of `frozen_design.json`. Existing campaigns are preserved and cannot be resealed silently. Source or scientific-setting changes require a new campaign.
+The current campaign path is `results/thesis_route_one/minimum_v6_tf220_21streams/`.
+Notebook 01 reproduces preparation with `scope="notebooks_03_09"`,
+`phase="benchmark"` and the declared selection provenance. Skip preparation when
+this campaign has already been supplied; notebooks 03–09 consume its
+`frozen_design.json` directly. The bound `benchmark_selection.json` preserves
+the designation and reason alongside the 21 planned streams. Keep an independent
+unchanged copy of `frozen_design.json`. Existing campaigns are preserved and
+cannot be resealed silently. Source or scientific-setting changes require a new
+campaign.
+
+The historical 24-stream `minimum_v5_tf220` campaign retains its separate
+[documentation amendment](../../results/thesis_route_one/minimum_v5_tf220/documentation_amendments/001.json).
+That amendment preserves its original record and source/design ZIP,
+records the old and new document/design digests, and verifies that executable
+sources, configuration, manifests, notebook code cells and run identities are
+unchanged. Its verification receipt is separate from the original
+`freeze_validation.json`. It does not mark any stream complete or approve a
+different experiment.
 
 Checkpoint saving is sealed into the recipe. Each stream has its own `checkpoints/<run_id>/` directory. Native recovery preserves completed-task boundaries and the latest two intermediate progress snapshots. The notebook uses the native authenticated selector; it never reconstructs model state itself. After an interruption, restart the kernel and **Run All**: the same unfinished repeat resumes from its latest valid commit, and work after that commit is repeated. Before the first published commit, the same stream restarts while unpublished temporary evidence is retained. Damaged published evidence is reported, not overwritten.
 
@@ -298,8 +342,8 @@ Development checkpoint identities include the resolved recipe, inherited setting
 
 ## Compact final output
 
-Benchmark training notebooks show a small scalar outcome table by default. Choose `SHOW_DIAGNOSTICS=True` before freezing if those training notebooks should also show saved validation, replay and learning plots. Their cell sources are frozen, so do not edit that flag during the campaign; later saved-only diagnostics remain available through notebook 10. Notebook 10 requires all 24 complete streams and displays one treatment summary plus the primary paired effect/interval. Its ZIP retains numeric source rows, exact source/configuration identities and interpretation limits.
+Benchmark training notebooks show a small scalar outcome table by default. Choose `SHOW_DIAGNOSTICS=True` before freezing if those training notebooks should also show saved validation, replay and learning plots. Their cell sources are frozen, so do not edit that flag during the campaign; later saved-only diagnostics remain available through optional notebook 10. Its final collection requires all 21 complete streams and displays one treatment summary plus the primary paired effect/interval. The ZIP retains numeric source rows, exact source/configuration identities and interpretation limits. Collection is not an additional training run.
 
 `DETAILS=True` adds extended diagnostic tables and figures; choose a separate `OUTPUT` to preserve previous exports. `PROGRESS=True` labels a partial saved-results snapshot and omits final paired inference. Identical exports are authenticated and reused. Collection never loads datasets, trains, predicts or samples new images. Write from the saved observations and preserve uncertainty, missing values and negative findings.
 
-[VALIDATION.md](VALIDATION.md) records software checks and their limits. No synthetic fixture or successful software test is a thesis accuracy result.
+No synthetic fixture or successful software test is a thesis accuracy result.

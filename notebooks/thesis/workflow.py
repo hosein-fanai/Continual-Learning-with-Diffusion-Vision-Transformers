@@ -19,7 +19,6 @@ from typing import BinaryIO, TYPE_CHECKING
 # Import annotation-only types without changing the runtime backend.
 if TYPE_CHECKING:
     import pandas as pd
-    from semantic_consolidation.config import RouteConfig
     from common.dataloader import DatasetLoader
     import tensorflow as tf
 import re
@@ -34,7 +33,7 @@ from common.experiment import (
     collect_final_stream_metrics, materialize_run_plan, paired_run_statistics,
     read_experiment_manifest, read_long_results,
 )
-from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name, save_route_settings, validate_route_config
+from semantic_consolidation.config import RouteConfig, load_route_config, primary_accuracy_matrix_name, save_route_settings, validate_route_config
 from semantic_consolidation.study import (
     _completed_metrics, _read_study_manifest, analyze_study, prepare_study,
     validate_planned_config,
@@ -57,7 +56,117 @@ CONDITIONS = {
 }
 
 CONFIRMATION_SEEDS = [1103, 2207, 3301]
-CAMPAIGN_VERSION = "minimum_v5_tf220"
+LEGACY_CAMPAIGN_VERSION = "minimum_v5_tf220"
+CAMPAIGN_VERSION = "minimum_v6_tf220_21streams"
+CONDITION_NOTEBOOKS = {
+    ("cifar10", "baseline"): "02_CIFAR10_platform.ipynb",
+    ("cifar10", "extra_joint"): "03_CIFAR10_extra_joint.ipynb",
+    ("cifar10", "learned"): "04_CIFAR10_learned.ipynb",
+    ("cifar100", "baseline"): "05_CIFAR100_platform.ipynb",
+    ("cifar100", "extra_joint"): "06_CIFAR100_extra_joint.ipynb",
+    ("cifar100", "learned"): "07_CIFAR100_learned.ipynb",
+    ("cifar100", "random"): "08_CIFAR100_random.ipynb",
+    ("cifar100", "ce_only"): "09_CIFAR100_ce_only.ipynb",
+}
+
+
+def _scope_conditions(scope: str) -> dict:
+    """Return the fixed condition catalog for a supported notebook campaign scope.
+
+    Args:
+        scope (str): notebooks_02_09 for 24 streams or notebooks_03_09 for 21.
+
+    Returns:
+        conditions (dict): Independent dataset-to-condition override mappings.
+
+    Raises:
+        ValueError: If the scope is not one of the two fixed supported plans.
+    """
+    # Preserve the historical default while making the reduced scope explicit.
+    if scope not in ("notebooks_02_09", "notebooks_03_09"):
+        raise ValueError("Campaign scope must be notebooks_02_09 or notebooks_03_09.")
+    conditions = deepcopy(CONDITIONS)
+    # Notebook 02 remains available but is not planned in the reduced campaign.
+    if scope == "notebooks_03_09":
+        del conditions["cifar10"]["baseline"]
+    return conditions
+
+
+def _campaign_policies(manifests: dict, conditions: dict) -> tuple[dict, dict]:
+    """Derive inference and completion declarations from the native frozen design.
+
+    Args:
+        manifests (dict): Dataset names mapped to authenticated frozen manifests.
+        conditions (dict): Selected condition overrides from the fixed scope catalog.
+
+    Returns:
+        policies (tuple[dict, dict]): Inference settings and required completion
+            evidence; these declarations do not claim that any stream has completed.
+
+    Raises:
+        ValueError: If a native run plan or base configuration is invalid.
+        KeyError: If a required native setting or notebook mapping is absent.
+    """
+    inference = {}
+    for dataset, manifest in manifests.items():
+        config = RouteConfig(**deepcopy(manifest["spec"]["base_config"]))
+        config.common.continually_learn.experiment_phase = manifest["phase"]
+        inference[dataset] = {
+            "primary_metric": manifest["spec"]["analysis_spec"]["primary_metric"],
+            "accuracy_matrix": primary_accuracy_matrix_name(config),
+            "ensemble_accuracy_kwargs": deepcopy(config.common.continually_learn.ensemble_accuracy_kwargs),
+            "evaluate_on": "official_test_after_each_task",
+        }
+    notebooks = sorted(CONDITION_NOTEBOOKS[dataset, condition]
+                       for dataset, selected in conditions.items() for condition in selected)
+    completion = {
+        "required_streams": sum(len(materialize_run_plan(manifest)) for manifest in manifests.values()),
+        "evidence": "authenticated native completed-run records and complete task matrices",
+        "notebooks": notebooks,
+        "seeds_per_notebook": len(CONFIRMATION_SEEDS),
+    }
+    return inference, completion
+
+
+def _validate_campaign_scope(record: dict, manifests: dict) -> None:
+    """Reject scoped declarations that differ from their exact native run membership.
+
+    Args:
+        record (dict): Scoped frozen campaign with separately retained identities.
+        manifests (dict): Dataset names mapped to authenticated native manifests.
+
+    Returns:
+        validated (None): None; no source or experiment artifacts are modified.
+
+    Raises:
+        ValueError: If scope, streams, policy declarations or notebook bindings disagree.
+        KeyError: If required manifest settings or scoped fields are absent.
+    """
+    conditions = _scope_conditions(record["campaign_scope"])
+    version = CAMPAIGN_VERSION if record["campaign_scope"] == "notebooks_03_09" else LEGACY_CAMPAIGN_VERSION
+    declared = {dataset: list(selected) for dataset, selected in conditions.items()}
+    stream_count = sum(len(selected) for selected in conditions.values()) * len(CONFIRMATION_SEEDS)
+    # Scope metadata must describe the fixed approved notebook and seed selection.
+    if record.get("campaign_version") != version or record.get("declared_conditions") != declared \
+            or record.get("seeds") != CONFIRMATION_SEEDS or record.get("declared_stream_count") != stream_count:
+        raise ValueError("Frozen campaign scope declarations differ from the approved notebook plan.")
+    for dataset, manifest in manifests.items():
+        expected = {(condition, seed) for condition in conditions[dataset] for seed in CONFIRMATION_SEEDS}
+        plan = materialize_run_plan(manifest)
+        actual = {(entry["condition"], entry["stream"]["stream_seed"]) for entry in plan}
+        # A valid native manifest must also match this campaign's exact scope.
+        if manifest["spec"]["conditions"] != conditions[dataset] or actual != expected or len(plan) != len(expected) \
+                or manifest["spec"]["base_config"]["common"]["dataset"]["name"] != dataset:
+            raise ValueError(f"Native study membership differs from the declared campaign scope for {dataset}.")
+    inference, completion = _campaign_policies(manifests, conditions)
+    # Descriptive policy cannot silently diverge from the authenticated recipe.
+    if record.get("inference_policy") != inference or record.get("completion_policy") != completion:
+        raise ValueError("Frozen inference or completion policy differs from the native campaign design.")
+    bound_notebooks = {name for name in record["bound_files"] if name.endswith(".ipynb")}
+    expected_notebooks = {f"notebooks/thesis/{name}" for name in completion["notebooks"]}
+    # Bind exactly the notebooks needed to execute the declared streams.
+    if bound_notebooks != expected_notebooks:
+        raise ValueError("Frozen notebook bindings differ from the declared campaign scope.")
 
 
 def check_runtime() -> dict:
@@ -99,14 +208,9 @@ def campaign_checklist(record_path: str | Path, *, save: bool=True) -> pd.DataFr
     """
     import pandas as pd
     _, manifests = _campaign(record_path)
-    names = ["02_CIFAR10_platform.ipynb", "03_CIFAR10_extra_joint.ipynb", "04_CIFAR10_learned.ipynb",
-             "05_CIFAR100_platform.ipynb", "06_CIFAR100_extra_joint.ipynb", "07_CIFAR100_learned.ipynb",
-             "08_CIFAR100_random.ipynb", "09_CIFAR100_ce_only.ipynb"]
-    notebook_map = dict(zip(((dataset, condition) for dataset, conditions in CONDITIONS.items()
-                             for condition in conditions), names))
     rows = [{"dataset": dataset, "condition": entry["condition"],
              "seed": entry["stream"]["stream_seed"], "paired_stream": entry["block_id"],
-             "notebook": notebook_map[dataset, entry["condition"]], "run_id": entry["run_id"]}
+             "notebook": CONDITION_NOTEBOOKS[dataset, entry["condition"]], "run_id": entry["run_id"]}
             for dataset, manifest in manifests.items() for entry in materialize_run_plan(manifest)]
     table = pd.DataFrame(rows, index=pd.RangeIndex(1, len(rows) + 1, name="execution_step"))
     # Write the checklist only when requested.
@@ -194,6 +298,7 @@ def _write_new(path: Path, value: dict) -> None:
 def prepare_campaign(
     campaign_dir: str | Path, templates: dict[str, Path], seeds: list[int], *,
     phase: str = "confirmation", selection_provenance: dict | None = None,
+    scope: str = "notebooks_02_09",
 ) -> Path:
     """Freeze both studies without loading data or training.
 
@@ -211,6 +316,8 @@ def prepare_campaign(
             test-informed comparison. Both modes authenticate the complete frozen plan.
         selection_provenance (dict | None): Historical selection evidence. Benchmark mode
             requires test_informed=True, independent_confirmation=False and a reason.
+        scope (str): notebooks_02_09 preserves the 24-stream default. notebooks_03_09
+            declares 21 streams and excludes only the CIFAR10 baseline notebook.
 
     Returns:
         frozen_record (Path): Path to the new frozen_design.json binding both manifests, recipes
@@ -222,6 +329,7 @@ def prepare_campaign(
         OSError: If source binding or publication fails.
     """
     runtime = check_runtime()
+    conditions = _scope_conditions(scope)
     # A frozen campaign must declare its selection interpretation explicitly.
     if phase not in ("confirmation", "benchmark"):
         raise ValueError("A frozen campaign must be confirmation or benchmark.")
@@ -264,11 +372,11 @@ def prepare_campaign(
         elif config.common.dataset.validation_source != "split" or config.common.dataset.validation_ratio <= 0:
             raise ValueError("Benchmark probes still require a separate training-data validation split.")
     notebook_dir = Path(__file__).resolve().parent
-    notebooks = sorted(path for path in notebook_dir.glob("*.ipynb")
-                       if re.match(r"^0[2-9][ _-]", path.name))
-    # Expected the eight numbered training notebooks 02 through 09.
-    if len(notebooks) != 8:
-        raise ValueError("Expected the eight numbered training notebooks 02 through 09.")
+    notebooks = sorted(notebook_dir / CONDITION_NOTEBOOKS[dataset, condition]
+                       for dataset, selected in conditions.items() for condition in selected)
+    # Every selected condition must have its explicitly assigned training notebook.
+    if any(not path.is_file() for path in notebooks):
+        raise ValueError("A required training notebook is missing for the selected campaign scope.")
     # Bind recovery and extraction procedures along with the frozen scientific recipe.
     helpers = sorted(notebook_dir.glob("*.py"))
     rationale = [notebook_dir / name for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json", "benchmark_selection.json")
@@ -279,14 +387,21 @@ def prepare_campaign(
     fingerprints = {path.relative_to(source_root).as_posix(): _digest(path) for path in bound_files}
     # Each native preparation validates seeds, all conditions, and source identity.
     studies = {}
+    manifests = {}
     for name, config in configs.items():
         manifest_path = prepare_study(config, directory / name, seeds,
-                                      conditions=CONDITIONS[name], phase=phase)
+                                      conditions=conditions[name], phase=phase)
         manifest = read_experiment_manifest(manifest_path)
+        manifests[name] = manifest
         studies[name] = {"manifest_path": manifest_path.relative_to(directory).as_posix(),
                          "manifest_hash": manifest["manifest_hash"]}
+    inference, completion = _campaign_policies(manifests, conditions)
+    version = CAMPAIGN_VERSION if scope == "notebooks_03_09" else LEGACY_CAMPAIGN_VERSION
     record = {"schema_version": 2, "phase": phase, "seeds": list(seeds),
-              "campaign_version": CAMPAIGN_VERSION, "declared_stream_count": 24, "runtime": runtime,
+              "campaign_version": version, "campaign_scope": scope,
+              "declared_conditions": {name: list(selected) for name, selected in conditions.items()},
+              "declared_stream_count": completion["required_streams"], "runtime": runtime,
+              "inference_policy": inference, "completion_policy": completion,
               "studies": studies, "bound_files": fingerprints,
               "notebook_hash_scope": "Every cell type/source; execution outputs and metadata excluded."}
     # Retain the same disclosure at the campaign and native-study levels.
@@ -386,6 +501,16 @@ def _campaign(record_path: str | Path) -> tuple[dict, dict]:
             or provenance.get("independent_confirmation") is not False
         ):
             raise ValueError("A benchmark must retain its test-informed interpretation.")
+    # Historical records predate explicit scopes and retain their original validation.
+    if "campaign_scope" in record:
+        _validate_campaign_scope(record, manifests)
+    # Omitting new metadata cannot turn a reduced native plan into a legacy campaign.
+    elif record.get("campaign_version") == CAMPAIGN_VERSION or any(
+        manifest["spec"]["conditions"] != CONDITIONS[dataset]
+        or len(materialize_run_plan(manifest)) != len(CONDITIONS[dataset]) * len(CONFIRMATION_SEEDS)
+        for dataset, manifest in manifests.items()
+    ):
+        raise ValueError("An unscoped legacy campaign requires the full 24-stream notebook 02–09 plan.")
     return record, manifests
 
 
@@ -629,6 +754,9 @@ def load_run(record_path: str | Path, dataset: str, condition: str, repeat_index
     if dataset not in CONDITIONS or condition not in CONDITIONS[dataset]:
         raise ValueError("Unknown dataset/condition in this minimum campaign.")
     manifest = manifests[dataset]
+    # A known catalog condition can be deliberately absent from this frozen scope.
+    if condition not in manifest["spec"]["conditions"]:
+        raise ValueError(f"{dataset}/{condition} is not planned in this frozen campaign.")
     manifest_path = Path(record["studies"][dataset]["manifest_path"])
     outputs = _outputs(manifest_path, manifest)
     plan = materialize_run_plan(manifest)
