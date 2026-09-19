@@ -11,6 +11,7 @@ from tensorflow.keras import layers, models
 from typing import Any
 
 from common.argument_saver import ArgumentSaverLayer
+from common.runtime import derive_seed
 
 from diffusion.layers.adaptive_layer_normalization_zero import AdaLNZero
 
@@ -206,6 +207,8 @@ class BaseLayer(ArgumentSaverLayer):
         mlp_ratio: float | None = None, 
         mlp_activation_func: str | None = None, 
         mlp_output_dim: int | None = None, 
+        dropout_rate: float = 0.,
+        dropout_seed: int | None = None,
     ) -> models.Sequential | None:
         """Create an optional dense projection network.
 
@@ -219,19 +222,26 @@ class BaseLayer(ArgumentSaverLayer):
                 self.mlp_activation_func; unused when the resolved hidden ratio is None.
             mlp_output_dim (int | None): Final projection width. Defaults to ``None``, inheriting
                 self.mlp_output_dim; the MLP is disabled only if the resolved instance/call width is None.
+            dropout_rate (float): Dropout after the hidden activation and final projection.
+                Defaults to zero, which creates no dropout layers.
+            dropout_seed (int | None): Base seed for independent hidden/output dropout streams.
 
         Returns:
             tf.keras.Sequential | None:. A configured ratio produces
             ``Dense(hidden, activation) -> Dense(output)``; a ``None`` ratio
             produces one ``Dense(output)``; a ``None`` output width returns
             ``None``. The factory also records ``prev_output_dim`` and the
-            effective ``output_dim`` on this object.
+            effective ``output_dim`` on this object. A positive dropout rate
+            appends dropout after each dense layer's activation.
         """
 
         mlp_ratio = self.mlp_ratio if mlp_ratio is None else mlp_ratio
         mlp_activation_func = self.mlp_activation_func if mlp_activation_func is None \
                             else mlp_activation_func
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
+        # Reject invalid rates even when this factory would produce no layers.
+        if not 0. <= dropout_rate < 1.:
+            raise ValueError("dropout_rate must be in [0, 1).")
 
         # An absent input width is valid only when no projection is requested.
         if prev_output_dim is None:
@@ -260,12 +270,28 @@ class BaseLayer(ArgumentSaverLayer):
                     name=f"{mlp.name}__first_layer",
                     dtype=self.dtype_policy,
                 ))
+                # Regularize hidden activations only when explicitly enabled.
+                if dropout_rate > 0.:
+                    mlp.add(layers.Dropout(
+                        dropout_rate,
+                        seed=derive_seed(dropout_seed, "hidden"),
+                        dtype=self.dtype_policy,
+                        name=f"{mlp.name}__hidden_dropout",
+                    ))
 
             mlp.add(layers.Dense(
                 mlp_output_dim, 
                 dtype=self.dtype_policy, 
                 name=f"{mlp.name}__final_layer"
             ))
+            # Apply output dropout before the caller's condition gate and residual.
+            if dropout_rate > 0.:
+                mlp.add(layers.Dropout(
+                    dropout_rate,
+                    seed=derive_seed(dropout_seed, "output"),
+                    dtype=self.dtype_policy,
+                    name=f"{mlp.name}__output_dropout",
+                ))
         # Otherwise expose an identity transformation with unchanged width.
         else:
             self.output_dim = prev_output_dim

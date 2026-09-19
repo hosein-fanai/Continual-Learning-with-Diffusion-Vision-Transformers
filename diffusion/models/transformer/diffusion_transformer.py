@@ -141,7 +141,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         mha_value_dim: int | None = None, 
         mha_num_heads: int = 4, 
         vit_block_mlp_ratio: float = 4., 
-        vit_block_mlp_output_dims: dict[int, int] = {},
+        vit_block_mlp_output_dims: dict[int, int] = {}, 
+        vit_block_dropout_rate: float = 0., 
+        vit_block_attention_dropout_rate: float = 0., 
         ln_mlp_ratio: float | None = None, 
         ln_no_adaptation: bool = False, 
         drop_prob: float = 0., 
@@ -283,6 +285,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 implementation's default. Defaults to ``None``.
             mha_num_heads (int): Number of attention heads. Defaults to ``4``.
             vit_block_mlp_ratio (float): Transformer FFN hidden expansion. Defaults to ``4.0``.
+            vit_block_dropout_rate (float): Dropout after attention output projection and
+                both MLP dense layers in each transformer block. Defaults to ``0.0``.
+            vit_block_attention_dropout_rate (float): Independent dropout on attention
+                probabilities in each transformer block. Defaults to ``0.0``.
             vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN output widths, for
                 example ``{3: 128}``. Defaults to ``{}``.
             ln_mlp_ratio (float | None): Hidden expansion for adaptive layer normalization projections
@@ -529,10 +535,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 constraints required by this constructor are violated.
         """
 
-        require(local_vars["image_size"] % local_vars["patch_size"] == 0, \
-            "image_size must be divisible by patch_size.")
-        require(local_vars["num_classes"] is not None or local_vars["use_cfg"], \
-            "num_classes=None requires use_cfg=True.")
+        require(
+            local_vars["image_size"] % local_vars["patch_size"] == 0, 
+            "image_size must be divisible by patch_size."
+        )
+
+        require(
+            local_vars["num_classes"] is not None or local_vars["use_cfg"], 
+            "num_classes=None requires use_cfg=True."
+        )
+
         # Validate against the inferred patch width when cond_dim is omitted.
         effective_cond_dim = (
             local_vars["dim"]
@@ -542,25 +554,35 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         # Additive patch conditioning requires equal token and condition widths.
         if local_vars["patches_conds_merger_type"] == "add":
-            require(local_vars["dim"] == effective_cond_dim, \
-                "When patches_conds_merger_type is add, dim and cond_dim must be equal.")
+            require(
+                local_vars["dim"] == effective_cond_dim, 
+                "When patches_conds_merger_type is add, dim and cond_dim must be equal."
+            )
 
         # Split concatenated time/label conditions into two equal-width halves.
         if local_vars["conds_merger_type"] == "concat" and \
         local_vars["cond_type"] == "time_label":
-            require(effective_cond_dim % 2 == 0, \
-                "cond_dim must be even when time and label embeddings are concatenated.")
+            require(
+                effective_cond_dim % 2 == 0, 
+                "cond_dim must be even when time and label embeddings are concatenated."
+            )
 
         # Disable adaptive normalization when no condition tensor exists.
         if local_vars["cond_type"] is None:
-            require(local_vars["ln_no_adaptation"], \
-                "When cond_type is None, layer_norm cannot use adaptation.")
+            require(
+                local_vars["ln_no_adaptation"], 
+                "When cond_type is None, layer_norm cannot use adaptation."
+            )
 
-        require(local_vars["cls_token_type"] in (
-            vals:=(None, *get_args(TokenType))), \
-            f"cls_token_type can only be one of {vals}.")
-        require(local_vars["distil_token_type"] in vals, \
-            f"distil_token_type can only be one of {vals}.")
+        require(
+            local_vars["cls_token_type"] in (
+            vals:=(None, *get_args(TokenType))), 
+            f"cls_token_type can only be one of {vals}."
+        )
+        require(
+            local_vars["distil_token_type"] in vals, 
+            f"distil_token_type can only be one of {vals}."
+        )
 
         self._check_dict_assertions(
             local_vars, 
@@ -576,9 +598,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 "use_layer_norm", "ln_dim", 
                 "ln_mlp_ratio", "ln_no_adaptation", 
                 "mlp_output_dim", "mlp_ratio", 
-                "mlp_activation_func", 
+                "mlp_activation_func"
             )), 
-            check_values=False, 
+            check_values=False
         ); self.feature_handler_kwargs_allowed_vals = feature_handler_kwargs_allowed_vals
         self._check_dict_assertions(
             local_vars, 
@@ -1526,7 +1548,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         drop_per_sample: bool, 
         use_decoder: bool, 
         name_prefix: str, 
-        mha_query_dim: int | None = None
+        mha_query_dim: int | None = None, 
+        dropout_rate: float = 0., 
+        attention_dropout_rate: float = 0.
     ) -> VisionTransformerBlock | DiTDecoderBlock:
         """Create one encoder- or decoder-style transformer block.
 
@@ -1549,6 +1573,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ``VisionTransformerBlock``.
             name_prefix (str): Full generated Keras layer-name prefix.
             mha_query_dim (int | None): External query width when known. Defaults to ``None``.
+            dropout_rate (float): MLP and attention-output dropout. Defaults to zero.
+            attention_dropout_rate (float): Attention-probability dropout. Defaults to zero.
 
         Returns:
             VisionTransformerBlock | DiTDecoderBlock: A block mapping token and
@@ -1573,6 +1599,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "ln_no_adaptation": ln_no_adaptation, 
             "drop_prob": drop_prob, 
             "drop_per_sample": drop_per_sample, 
+            "dropout_rate": dropout_rate, 
+            "attention_dropout_rate": attention_dropout_rate, 
             "grid_size": self._get_current_grid_size(
                 i, 
                 layers_dicts, 
@@ -2193,6 +2221,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 ln_no_adaptation=self.ln_no_adaptation, 
                 drop_prob=self.drop_prob, 
                 drop_per_sample=self.drop_per_sample, 
+                dropout_rate=self.vit_block_dropout_rate, 
+                attention_dropout_rate=self.vit_block_attention_dropout_rate, 
                 use_decoder=key in self.use_decoder_ids, 
                 name_prefix=f"{self.name_prefix}depth_{key}_"
             )

@@ -6,6 +6,7 @@ mask only to the first self-attention branch, then cross-attention and the MLP.
 """
 
 import tensorflow as tf
+from tensorflow.keras import layers
 
 from typing import Any
 
@@ -30,6 +31,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
         **kwargs (Any): :class:`VisionTransformerBlock` constructor options such as
             ``dim``, ``query_dim``, ``num_heads``, ``key_dim``, ``value_dim``,
             ``mlp_ratio``, ``drop_prob``, ``drop_per_sample``,
+            ``dropout_rate``, ``attention_dropout_rate``,
             ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, and
             standard Keras layer options. ``gate_query_flag`` is ignored and
             fixed to false.
@@ -84,9 +86,17 @@ class DiTDecoderBlock(VisionTransformerBlock):
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
             output_shape=self.query_dim,
+            dropout=self.attention_dropout_rate,
+            seed=derive_seed(self.seed, "mha_attention_dropout_2"),
             name="mha_2",
             dtype=self.dtype_policy,
         )
+        self.mha_dropout2 = layers.Dropout(
+            self.dropout_rate,
+            seed=derive_seed(self.seed, "mha_output_dropout_2"),
+            dtype=self.dtype_policy,
+            name=f"{self.name}__mha_output_dropout_2",
+        ) if self.dropout_rate > 0. else None
         self.mha_drop_path2 = DropPath(
             drop_prob=self.drop_prob, 
             per_sample=self.drop_per_sample, 
@@ -137,6 +147,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             training=training
         )
         h = tf.cast(h, x.dtype)
+        h = self.mha_dropout2(h, training=training) if self.mha_dropout2 is not None else h
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -174,7 +185,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
                 boolean mask implements autoregressive attention.
                 Defaults to ``None``.
                 None leaves the attention branch unmasked; causal masking is not enabled automatically.
-            training (bool | tf.Tensor | None): Optional training flag.
+            training (bool | tf.Tensor | None): Optional flag controlling dropout and stochastic depth.
                 Defaults to ``None``. Keras resolves the surrounding call context; this flag is
                 forwarded to child layers.
 

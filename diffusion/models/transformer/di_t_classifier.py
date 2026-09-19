@@ -103,7 +103,9 @@ class DiTClassifier(DiffusionTransformer):
         clf_mha_value_dim: int | None = None, 
         clf_mha_num_heads: int | None = 4,
         clf_vit_block_mlp_ratio: float | None = 4.,
-        clf_vit_block_mlp_output_dims: dict[int, int] | None = {},
+        clf_vit_block_mlp_output_dims: dict[int, int] | None = {}, 
+        clf_vit_block_dropout_rate: float | None = 0., 
+        clf_vit_block_attention_dropout_rate: float | None = 0.,
         clf_ln_mlp_ratio: float | None = None, 
         clf_ln_no_adaptation: bool | None = False,
         clf_drop_prob: float | None = 0.,
@@ -203,6 +205,12 @@ class DiTClassifier(DiffusionTransformer):
                 when ``set_nones=True``. Defaults to ``4``.
             clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
                 ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
+            clf_vit_block_dropout_rate (float | None): Classifier-block MLP and
+                attention-output dropout. Defaults to zero; ``None`` inherits the
+                main rate with ``set_nones=True``. Independent of head ``dropout_rate``.
+            clf_vit_block_attention_dropout_rate (float | None): Classifier-block
+                attention-probability dropout. Defaults to zero; ``None`` inherits
+                the main rate with ``set_nones=True``.
             clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth output
                 widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
                 requests no overrides. Defaults to ``{}``.
@@ -602,6 +610,15 @@ class DiTClassifier(DiffusionTransformer):
                 ) in ("hard", "soft"), 
                 "classifier regularizer distil_type must be hard or soft."
             )
+
+        for name in (
+            "clf_vit_block_dropout_rate", 
+            "clf_vit_block_attention_dropout_rate"
+        ):
+            rate = getattr(self, name)
+            require(rate is not None and 0. <= rate < 1., (
+                f"{name} must be in [0, 1), or None with set_nones=True."
+            ))
 
         require(
             local_vars["clf_cross_attention_plug_type"] in (
@@ -1050,6 +1067,8 @@ class DiTClassifier(DiffusionTransformer):
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
                 drop_prob=self.clf_drop_prob, 
                 drop_per_sample=self.clf_drop_per_sample, 
+                dropout_rate=self.clf_vit_block_dropout_rate, 
+                attention_dropout_rate=self.clf_vit_block_attention_dropout_rate, 
                 use_decoder=key in self.clf_use_decoder_ids, 
                 name_prefix=f"{self.name_prefix}clf_depth_{key}_"
             )

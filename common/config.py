@@ -548,6 +548,10 @@ class DiffusionTransformerConfig(KwargsMixin):
             implementation's default. Defaults to ``None``.
         mha_num_heads (int): Number of attention heads. Defaults to ``4``.
         vit_block_mlp_ratio (float): Transformer FFN hidden expansion. Defaults to ``4.0``.
+        vit_block_dropout_rate (float): Transformer MLP and attention-output dropout
+            in ``[0, 1)``. Defaults to zero.
+        vit_block_attention_dropout_rate (float): Transformer attention-probability
+            dropout in ``[0, 1)``. Defaults to zero.
         vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN output widths,
             for example ``{3: 128}``. Defaults to a fresh ``{}`` for each instance.
         ln_mlp_ratio (float | None): Hidden-width ratio for adaptive layer-normalization
@@ -695,6 +699,8 @@ class DiffusionTransformerConfig(KwargsMixin):
     use_unpatchify: bool = True
     name_prefix: str = ""
     build: bool = True
+    vit_block_dropout_rate: float = 0.0
+    vit_block_attention_dropout_rate: float = 0.0
 
 
 @dataclass
@@ -782,6 +788,12 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             when ``set_nones=True``. Defaults to ``4``.
         clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
             ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
+        clf_vit_block_dropout_rate (float | None): Classifier-block MLP and
+            attention-output dropout. Defaults to zero; None inherits the main
+            rate when set_nones=True. Independent of head dropout_rate.
+        clf_vit_block_attention_dropout_rate (float | None): Classifier-block
+            attention-probability dropout. Defaults to zero; None inherits the
+            main rate when set_nones=True.
         clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth
             output widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
             requests no overrides. Defaults to a fresh ``{}`` for each instance.
@@ -889,6 +901,8 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     classifier_mlp_ratio: int | None = None
     classifier_mlp_activation_func: str = "tanh"
     dropout_rate: float = 0.0
+    clf_vit_block_dropout_rate: float | None = 0.0
+    clf_vit_block_attention_dropout_rate: float | None = 0.0
 
 
 @dataclass

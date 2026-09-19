@@ -707,6 +707,8 @@ class DiTDecoder(DiffusionTransformer):
                 ln_no_adaptation=self.ln_no_adaptation,
                 drop_prob=self.drop_prob,
                 drop_per_sample=self.drop_per_sample,
+                dropout_rate=self.vit_block_dropout_rate,
+                attention_dropout_rate=self.vit_block_attention_dropout_rate,
                 use_decoder=key in self.use_decoder_ids,
                 name_prefix=f"{self.name_prefix}depth_{key}_",
             )

@@ -1,4 +1,4 @@
-"""Preserve the parent's numerical policy inside TensorFlow 2.10 attention."""
+"""Retain float64 attention-scale precision with native Keras attention."""
 
 from __future__ import annotations
 
@@ -11,46 +11,26 @@ from common.keras_registry import register_canonical_keras_serializable
 
 @register_canonical_keras_serializable(package="continual_learning")
 class PolicyMultiHeadAttention(layers.MultiHeadAttention):
-    """Apply the configured dtype to projections and attention normalization.
+    """Correct float64 scaling while inheriting native Keras attention behavior.
 
-    Keras 2.10's attention factory omits dtype when constructing internal
-    projection, softmax and dropout layers. Their global-policy default can
-    silently change saved model precision when a config is restored. These
-    factory overrides preserve the standard attention equations, names and
-    weight topology while making its child policy explicit.
+    Keras 3 propagates dtype policies and manages seeded dropout itself. Only
+    the attention scaling constant needs a float64 correction. The registered
+    class name is retained for loading existing serialized configurations.
     """
 
-    def _get_common_kwargs_for_sublayer(self) -> dict[str, object]:
-        """Add the attention policy to Keras' projection-layer constructor options."""
-
-        options = super()._get_common_kwargs_for_sublayer()
-        options["dtype"] = self.dtype_policy
-
-        return options
-
     def _build_attention(self, rank: int) -> None:
-        """Keep attention-score normalization and dropout in the same compute policy."""
+        """Build native attention and preserve its float64 scaling constant."""
 
         super()._build_attention(rank)
         # Keras 3 casts a Python float through float32 before float64. Keep the
         # cached scale typed so the existing double-precision equation is exact.
-        if self.variable_dtype == "float64" and hasattr(self, "_inverse_sqrt_key_dim"):
+        if self.variable_dtype == "float64":
             self._inverse_sqrt_key_dim = np.float64(self._inverse_sqrt_key_dim)
-
-        self._softmax = layers.Softmax(
-            axis=self._softmax.axis, 
-            dtype=self.dtype_policy
-        )
-        self._dropout_layer = layers.Dropout(
-            rate=self._dropout, 
-            dtype=self.dtype_policy
-        )
 
 
 def run_self_tests() -> dict[str, str]:
     """Check analytical single-head attention and registered config reconstruction."""
 
-    import numpy as np
     import tensorflow as tf
 
     attention = PolicyMultiHeadAttention(num_heads=1, key_dim=2, use_bias=False,

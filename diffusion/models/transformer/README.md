@@ -9,9 +9,9 @@ sampling. Those responsibilities belong to the sibling
 
 The configured numerical policy is passed to child layers, so restoring a
 `float64` or mixed-precision model does not depend on the current global policy.
-`PolicyMultiHeadAttention` retains standard Keras attention equations and weight
-names while correcting TensorFlow 2.10's omission of dtype in its internal
-projection and normalization factories.
+Keras 3 attention propagates its dtype policy and manages seeded dropout natively.
+`PolicyMultiHeadAttention` only corrects rounding of the attention scaling constant
+in float64; its registered class name remains available for existing saved models.
 
 ## Public classes
 
@@ -355,6 +355,20 @@ The constructor uses `clf_cross_attention_plug_type="values"`,
 default to `{}`, except `clf_cls_token_regularizer_kwargs`, which defaults to
 `{"start": 0, "end": 1, "train_type": "normal", "distil_type": "hard"}`.
 These match the corresponding `DiffusionTransformer` Python defaults.
+
+Transformer-block dropout has two independent controls, each defaulting to zero:
+
+| Location | Main branch | Classifier branch |
+| --- | --- | --- |
+| MLP hidden/output and attention output projection | `vit_block_dropout_rate` | `clf_vit_block_dropout_rate` |
+| Softmax attention probabilities | `vit_block_attention_dropout_rate` | `clf_vit_block_attention_dropout_rate` |
+
+These rates apply to both encoder and decoder blocks, including newly added
+depths. `drop_prob` / `clf_drop_prob` control stochastic depth; the existing
+`DiTClassifier(dropout_rate=...)` controls dropout in the final classifier head.
+All dropout is disabled for `training=False`. See the
+[block documentation](../../layers/block/README.md#initialization-and-training)
+for the ViT/DiT source rationale and exact placement.
 
 `set_nones=False` disables main-branch inheritance by default. To inherit a
 supported setting, pass that classifier argument as `None` and enable

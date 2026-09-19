@@ -63,6 +63,11 @@ class VisionTransformerBlock(BaseLayer):
         grid_size (int | None): Optional square token-grid side retained as architecture
             metadata for later spatial reshapers. It does not alter attention.
             Defaults to ``None``.
+        dropout_rate (float): Dropout after attention's output projection and after
+            each MLP dense layer (after the hidden activation), before gates and
+            residual addition. Defaults to ``0.0``; valid range is ``[0, 1)``.
+        attention_dropout_rate (float): Independent dropout on softmax attention
+            probabilities. Defaults to ``0.0``; valid range is ``[0, 1)``.
         **kwargs (Any): Remaining :class:`BaseLayer`/Keras options. Supported layer
             keys include ``ln_mlp_ratio``, ``ln_no_adaptation``, and
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
@@ -96,6 +101,8 @@ class VisionTransformerBlock(BaseLayer):
         mlp (tf.keras.Sequential): Feed-forward branch with resolved mlp_output_dim.
         mha_drop_path (DropPath): Stochastic depth for attention residuals.
         mlp_drop_path (DropPath): Independent stochastic depth for feed-forward residuals.
+        mha_dropout (tf.keras.layers.Dropout | None): Optional attention-output
+            dropout, independent of the probability dropout inside ``mha``.
         output_dim (int): Final MLP width used by later architecture stages.
     """
 
@@ -113,6 +120,8 @@ class VisionTransformerBlock(BaseLayer):
         drop_per_sample: bool = True, 
         seed: int | None = None, 
         grid_size: int | None = None, 
+        dropout_rate: float = 0.,
+        attention_dropout_rate: float = 0.,
         **kwargs: Any
     ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
@@ -144,6 +153,10 @@ class VisionTransformerBlock(BaseLayer):
                 TensorFlow RNG state can still affect draws.
             grid_size (int | None): Spatial-grid metadata for later reshape stages. Defaults to ``None``,
                 leaving grid metadata unspecified; attention itself does not use it.
+            dropout_rate (float): MLP and attention-output dropout in ``[0, 1)``.
+                Defaults to zero, independently of stochastic depth ``drop_prob``.
+            attention_dropout_rate (float): Attention-probability dropout in
+                ``[0, 1)``. Defaults to zero, independently of output dropout.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
@@ -179,10 +192,18 @@ class VisionTransformerBlock(BaseLayer):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
-            output_shape=self.query_dim if self.gate_query_flag else self.dim,
+            output_shape=self.query_dim if self.gate_query_flag else self.dim, 
+            dropout=self.attention_dropout_rate, 
+            seed=derive_seed(self.seed, "mha_attention_dropout"), 
             dtype=self.dtype_policy, 
             name="mha"
         )
+        self.mha_dropout = layers.Dropout(
+            self.dropout_rate, 
+            seed=derive_seed(self.seed, "mha_output_dropout"), 
+            dtype=self.dtype_policy, 
+            name=f"{self.name}__mha_output_dropout"
+        ) if self.dropout_rate > 0. else None
         self.mha_residual_projector = layers.Dense(
             self.query_dim, 
             dtype=self.dtype_policy, 
@@ -202,7 +223,9 @@ class VisionTransformerBlock(BaseLayer):
             name=f"{self.name}__mlp_layer_norm"
         )
         self.mlp = self._create_mlp(
-            self.query_dim
+            self.query_dim, 
+            dropout_rate=self.dropout_rate, 
+            dropout_seed=derive_seed(self.seed, "mlp_dropout")
         )
         self.mlp_residual_projector = layers.Dense(
             self.mlp_output_dim, 
@@ -257,6 +280,10 @@ class VisionTransformerBlock(BaseLayer):
             training=training
         )
         h = tf.cast(h, x.dtype)
+        h = self.mha_dropout(
+            h, 
+            training=training
+        ) if self.mha_dropout is not None else h
         x = self.mha_residual_projector(
             x, 
             training=training
@@ -335,7 +362,7 @@ class VisionTransformerBlock(BaseLayer):
                 ``[batch, query_tokens, value_tokens]``.
                 Defaults to ``None``.
                 None leaves the attention branch unmasked; causal masking is not enabled automatically.
-            training (bool | tf.Tensor | None): Optional training flag. Stochastic depth runs only when
+            training (bool | tf.Tensor | None): Optional training flag. Dropout and stochastic depth run only when
                 this is true.
                 Defaults to ``None``. Keras resolves the surrounding call context; this flag is
                 forwarded to child layers.

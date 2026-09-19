@@ -92,6 +92,22 @@ the forced normalization keys.
 
 ## Initialization and training
 
+`dropout_rate=0.0` controls dropout after attention's output projection and
+after each MLP dense layer (after GELU for the hidden layer). The separate
+`attention_dropout_rate=0.0` drops softmax attention probabilities before
+weighting values. Both rates are in `[0, 1)` and act only during training.
+The decoder applies both settings to its self- and cross-attention branches,
+with independent seeded random streams.
+
+This separation follows the
+[official ViT implementation](https://github.com/google-research/vision_transformer/blob/main/vit_jax/models_vit.py).
+The [ViT paper, Appendix B.1](https://arxiv.org/pdf/2010.11929) places dropout
+after dense layers other than QKV projections, and also after patch/position
+embeddings. These block settings cover the block-local positions only.
+Zero defaults match the block dropout in the
+[original DiT implementation](https://github.com/facebookresearch/DiT/blob/main/models.py);
+DiT's classifier-free label dropout is a separate mechanism.
+
 Adaptive normalization projections and their gates are zero-initialized. With
 normal adaptation, each new residual branch therefore contributes zero at
 construction. `ln_no_adaptation=True` switches gates to scalar `1.0` and removes
