@@ -146,7 +146,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         vit_block_attention_dropout_rate: float = 0., 
         ln_mlp_ratio: float | None = None, 
         ln_no_adaptation: bool = False, 
-        drop_prob: float = 0., 
+        droppath_rate: float = 0.,
         drop_per_sample: bool = True, 
         local_mixer_ids: IdsType = [], 
         local_mixer_kwargs: dict = {}, 
@@ -295,7 +295,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 throughout the network. Defaults to ``None``.
             ln_no_adaptation (bool): Use ordinary layer normalization without a condition-dependent
                 affine/gate path. Defaults to ``False``.
-            drop_prob (float): Transformer residual-drop probability in ``[0, 1]``. Defaults to ``0.0``.
+            droppath_rate (float): Transformer residual-drop probability in ``[0, 1)``. Defaults to ``0.0``.
             drop_per_sample (bool): Apply residual dropping independently per sample instead of sharing
                 a decision across the batch. Defaults to ``True``.
             local_mixer_ids (list[int | None]): Depths with a depthwise spatial token mixer. ID handling
@@ -1544,7 +1544,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         mlp_output_dim: int, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
-        drop_prob: float, 
+        droppath_rate: float,
         drop_per_sample: bool, 
         use_decoder: bool, 
         name_prefix: str, 
@@ -1567,7 +1567,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             mlp_output_dim (int | None): Optional changed block output width.
             ln_mlp_ratio (float | None): Adaptive-normalization MLP expansion.
             ln_no_adaptation (bool): Disable condition adaptation.
-            drop_prob (float): Residual-drop probability.
+            droppath_rate (float): Residual-drop probability.
             drop_per_sample (bool): Whether dropping is sample-wise.
             use_decoder (bool): Create ``DiTDecoderBlock`` when true, otherwise
                 ``VisionTransformerBlock``.
@@ -1597,7 +1597,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "mlp_output_dim": mlp_output_dim, 
             "ln_mlp_ratio": ln_mlp_ratio, 
             "ln_no_adaptation": ln_no_adaptation, 
-            "drop_prob": drop_prob, 
+            "droppath_rate": droppath_rate,
             "drop_per_sample": drop_per_sample, 
             "dropout_rate": dropout_rate, 
             "attention_dropout_rate": attention_dropout_rate, 
@@ -2219,7 +2219,7 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 mlp_output_dim=self.vit_block_mlp_output_dims.get(key, None), 
                 ln_mlp_ratio=self.ln_mlp_ratio, 
                 ln_no_adaptation=self.ln_no_adaptation, 
-                drop_prob=self.drop_prob, 
+                droppath_rate=self.droppath_rate,
                 drop_per_sample=self.drop_per_sample, 
                 dropout_rate=self.vit_block_dropout_rate, 
                 attention_dropout_rate=self.vit_block_attention_dropout_rate, 
@@ -4324,7 +4324,7 @@ def run_self_tests() -> dict[str, str]:
         mha_value_dim=3, 
         mha_num_heads=2, 
         vit_block_mlp_output_dims={1: 6}, 
-        drop_prob=0.5, 
+        droppath_rate=0.5,
         drop_per_sample=False, 
         **{key: value for key, value in base.items() if key != "mha_num_heads"},
     )
@@ -4332,7 +4332,7 @@ def run_self_tests() -> dict[str, str]:
     assert attention_block.key_dim == 2
     assert attention_block.value_dim == 3
     assert attention_block.mlp_output_dim == 6
-    assert attention_block.drop_prob == 0.5
+    assert attention_block.droppath_rate == 0.5
     assert attention_block.drop_per_sample is False
     attention_training = explicit_attention(inputs, training=True)
     attention_evaluation = explicit_attention(inputs, training=False)

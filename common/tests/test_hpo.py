@@ -1041,7 +1041,7 @@ class HpoConfigTests(unittest.TestCase):
                 results_path="results/hpo",
                 class_num=4,
                 task_size=2,
-                model_overrides={"drop_prob": 0.1},
+                model_overrides={"droppath_rate": 0.1},
             )
 
     def test_feature_archive_signature_binds_dataset_shape_and_metadata(
@@ -2516,8 +2516,8 @@ class HpoConfigTests(unittest.TestCase):
                 class_order_mode="fixed",
                 task_order_mode="fixed",
             )
-            self.assertEqual(SEARCH_SPACE_VERSION, 13)
-            self.assertEqual(original["search_space_version"], 13)
+            self.assertEqual(SEARCH_SPACE_VERSION, 14)
+            self.assertEqual(original["search_space_version"], 14)
             self.assertEqual(original["training_semantics_version"], 3)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.

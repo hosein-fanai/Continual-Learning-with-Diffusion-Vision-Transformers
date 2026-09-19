@@ -21,7 +21,7 @@ block = VisionTransformerBlock(
     key_dim=32, 
     mlp_ratio=4, 
     mlp_output_dim=128, 
-    drop_prob=0.1, 
+    droppath_rate=0.1,
     ln_mlp_ratio=2, 
     name="encoder/block_1", 
     dtype="float32", 
@@ -111,5 +111,6 @@ DiT's classifier-free label dropout is a separate mechanism.
 Adaptive normalization projections and their gates are zero-initialized. With
 normal adaptation, each new residual branch therefore contributes zero at
 construction. `ln_no_adaptation=True` switches gates to scalar `1.0` and removes
-condition modulation. `drop_prob` is active only with `training=True`; use
+condition modulation. `droppath_rate=0.0` controls stochastic depth, dropping
+whole residual branches only with `training=True`; use
 `drop_per_sample=False` for one keep/drop decision shared by a whole batch.

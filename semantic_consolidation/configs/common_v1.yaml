@@ -30,9 +30,9 @@ model:
     clf_distil_token_type: new_weight
     classifier_mlp_ratio: 1
     classifier_mlp_activation_func: tanh
-    dropout_rate: 0.0
-    drop_prob: 0.0
-    clf_drop_prob: 0.0
+    classifier_dropout_rate: 0.0
+    droppath_rate: 0.0
+    clf_droppath_rate: 0.0
   wrapper_kwargs:
     use_ema: false
     test_network_name: raw

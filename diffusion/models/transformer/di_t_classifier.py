@@ -108,7 +108,7 @@ class DiTClassifier(DiffusionTransformer):
         clf_vit_block_attention_dropout_rate: float | None = 0.,
         clf_ln_mlp_ratio: float | None = None, 
         clf_ln_no_adaptation: bool | None = False,
-        clf_drop_prob: float | None = 0.,
+        clf_droppath_rate: float | None = 0.,
         clf_drop_per_sample: bool | None = True,
         clf_local_mixer_ids: IdsType = [], 
         clf_local_mixer_kwargs: dict | None = {},
@@ -129,7 +129,7 @@ class DiTClassifier(DiffusionTransformer):
         force_global_avg_pooling: bool = False, 
         classifier_mlp_ratio: int | None = None, 
         classifier_mlp_activation_func: str = "tanh", 
-        dropout_rate: float = 0., 
+        classifier_dropout_rate: float = 0.,
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -207,7 +207,7 @@ class DiTClassifier(DiffusionTransformer):
                 ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
             clf_vit_block_dropout_rate (float | None): Classifier-block MLP and
                 attention-output dropout. Defaults to zero; ``None`` inherits the
-                main rate with ``set_nones=True``. Independent of head ``dropout_rate``.
+                main rate with ``set_nones=True``. Independent of head ``classifier_dropout_rate``.
             clf_vit_block_attention_dropout_rate (float | None): Classifier-block
                 attention-probability dropout. Defaults to zero; ``None`` inherits
                 the main rate with ``set_nones=True``.
@@ -218,7 +218,7 @@ class DiTClassifier(DiffusionTransformer):
                 default remains None; it does not inherit ``ln_mlp_ratio``. Defaults to ``None``.
             clf_ln_no_adaptation (bool | None): Disable condition adaptation; ``None`` inherits the main
                 setting when ``set_nones=True``. Defaults to ``False``.
-            clf_drop_prob (float | None): Residual-drop probability; ``None`` inherits the main value
+            clf_droppath_rate (float | None): Residual-drop probability; ``None`` inherits the main value
                 when ``set_nones=True``. Defaults to ``0.0``.
             clf_drop_per_sample (bool | None): Drop residuals per sample; ``None`` inherits the main
                 value when ``set_nones=True``. Defaults to ``True``.
@@ -258,7 +258,7 @@ class DiTClassifier(DiffusionTransformer):
                 ratio`` units when non-None. Defaults to ``None``.
             classifier_mlp_activation_func (str | callable): Hidden classifier activation, default
                 ``"tanh"``. Defaults to ``'tanh'``.
-            dropout_rate (float): Classifier dropout rate; 0 omits dropout. Defaults to ``0.0``.
+            classifier_dropout_rate (float): Classifier dropout rate; 0 omits dropout. Defaults to ``0.0``.
             build (bool): Build symbolic inputs and variables immediately. Defaults to ``True``.
             **kwargs (object): All ``DiffusionTransformer`` constructor options
                 plus standard Keras model options. Main-branch class and
@@ -615,7 +615,10 @@ class DiTClassifier(DiffusionTransformer):
             "clf_vit_block_dropout_rate", 
             "clf_vit_block_attention_dropout_rate"
         ):
-            rate = getattr(self, name)
+            rate = local_vars[name]
+            # Resolve optional inheritance before classifier attributes are saved.
+            if rate is None and local_vars["set_nones"]:
+                rate = getattr(self, name.removeprefix("clf_"))
             require(rate is not None and 0. <= rate < 1., (
                 f"{name} must be in [0, 1), or None with set_nones=True."
             ))
@@ -1065,7 +1068,7 @@ class DiTClassifier(DiffusionTransformer):
                 mlp_output_dim=self.clf_vit_block_mlp_output_dims.get(key, None), 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                drop_prob=self.clf_drop_prob, 
+                droppath_rate=self.clf_droppath_rate,
                 drop_per_sample=self.clf_drop_per_sample, 
                 dropout_rate=self.clf_vit_block_dropout_rate, 
                 attention_dropout_rate=self.clf_vit_block_attention_dropout_rate, 
@@ -1212,9 +1215,9 @@ class DiTClassifier(DiffusionTransformer):
             ))
 
         # Add classifier dropout only for a nonzero rate.
-        if self.dropout_rate > 0.:
+        if self.classifier_dropout_rate > 0.:
             classifier.add(layers.Dropout(
-                self.dropout_rate, 
+                self.classifier_dropout_rate,
                 seed=derive_seed(
                     self.seed, 
                     "classifier_dropout", 
@@ -2479,7 +2482,7 @@ def run_self_tests() -> dict[str, str]:
     assert model.clf_mha_num_heads == model.mha_num_heads == 1
     assert model.clf_connection_kwargs == model.connection_kwargs
     assert model.clf_cross_attention_plug_type == model.cross_attention_plug_type
-    assert model.clf_drop_prob == model.drop_prob == 0.0
+    assert model.clf_droppath_rate == model.droppath_rate == 0.0
     assert model.clf_drop_per_sample == model.drop_per_sample is True
     assert model.clf_ln_mlp_ratio is None
     assert model.clf_reshaper_ids_dict == {}
@@ -2492,7 +2495,7 @@ def run_self_tests() -> dict[str, str]:
         vit_block_mlp_ratio=2.0, 
         vit_block_mlp_output_dims={1: 4}, 
         ln_no_adaptation=True, 
-        drop_prob=0.2, 
+        droppath_rate=0.2,
         drop_per_sample=False, 
         connection_kwargs={"connect_type": "add"}, 
         cross_attention_kwargs={"connect_type": "add"}, 
@@ -2509,7 +2512,7 @@ def run_self_tests() -> dict[str, str]:
         clf_cross_attention_kwargs=None,
         clf_cross_attention_plug_type=None,
         clf_ln_no_adaptation=None,
-        clf_drop_prob=None,
+        clf_droppath_rate=None,
         clf_drop_per_sample=None,
         clf_local_mixer_kwargs=None,
         clf_downsample_kwargs=None,
@@ -2523,7 +2526,7 @@ def run_self_tests() -> dict[str, str]:
     assert inherited.clf_vit_block_mlp_ratio == inherited.vit_block_mlp_ratio == 2.0
     assert inherited.clf_vit_block_mlp_output_dims == {1: 4}
     assert inherited.clf_ln_no_adaptation is inherited.ln_no_adaptation is True
-    assert inherited.clf_drop_prob == inherited.drop_prob == 0.2
+    assert inherited.clf_droppath_rate == inherited.droppath_rate == 0.2
     assert inherited.clf_drop_per_sample is inherited.drop_per_sample is False
     assert inherited.clf_local_mixer_kwargs == inherited.local_mixer_kwargs
     assert inherited.clf_downsample_kwargs == inherited.downsample_kwargs
@@ -2541,13 +2544,13 @@ def run_self_tests() -> dict[str, str]:
         build=False, 
         mha_num_heads=1, 
         vit_block_mlp_ratio=1.0, 
-        drop_prob=0.0, 
+        droppath_rate=0.0,
         drop_per_sample=True, 
         clf_mha_num_heads=2, 
         clf_vit_block_mlp_ratio=3.0, 
         clf_vit_block_mlp_output_dims={}, 
         clf_ln_no_adaptation=True, 
-        clf_drop_prob=0.25, 
+        clf_droppath_rate=0.25,
         clf_drop_per_sample=False, 
         clf_connection_kwargs={}, 
         clf_cross_attention_kwargs={}, 
@@ -2560,7 +2563,7 @@ def run_self_tests() -> dict[str, str]:
     assert overridden.clf_vit_block_mlp_ratio == 3.0
     assert overridden.clf_vit_block_mlp_output_dims == {}
     assert overridden.clf_ln_no_adaptation is True
-    assert overridden.clf_drop_prob == 0.25
+    assert overridden.clf_droppath_rate == 0.25
     assert overridden.clf_drop_per_sample is False
     assert overridden.clf_connection_kwargs == {}
     assert overridden.clf_cross_attention_kwargs == {}
@@ -2594,7 +2597,7 @@ def run_self_tests() -> dict[str, str]:
                 clf_cls_token_type=token_type, 
                 force_global_avg_pooling=force_pool, 
                 classifier_mlp_ratio=1, 
-                dropout_rate=0.25, 
+                classifier_dropout_rate=0.25,
             )
             candidate_output = candidate(inputs, training=False)
             assert candidate_output["classes"].shape == (2, 2)
@@ -2696,11 +2699,11 @@ def run_self_tests() -> dict[str, str]:
         clf_mha_value_dim=3, 
         clf_mha_num_heads=2, 
         clf_vit_block_mlp_output_dims={1: 4}, 
-        clf_drop_prob=0.5, 
+        clf_droppath_rate=0.5,
         clf_drop_per_sample=False, 
         classifier_mlp_ratio=2, 
         classifier_mlp_activation_func="relu", 
-        dropout_rate=0.25, 
+        classifier_dropout_rate=0.25,
     )
     explicit_block = explicit_classifier_block.clf_layers_dicts[0][
         explicit_classifier_block.VTB
@@ -2710,7 +2713,7 @@ def run_self_tests() -> dict[str, str]:
     assert explicit_block.key_dim == 2
     assert explicit_block.value_dim == 3
     assert explicit_block.mlp_output_dim == 4
-    assert explicit_block.drop_prob == 0.5
+    assert explicit_block.droppath_rate == 0.5
     assert explicit_block.drop_per_sample is False
     explicit_training_output = explicit_classifier_block(inputs, training=True)
     assert explicit_training_output["classes"].shape == (2, 2)

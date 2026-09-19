@@ -705,7 +705,7 @@ class DiTDecoder(DiffusionTransformer):
                 mlp_output_dim=self.vit_block_mlp_output_dims.get(key),
                 ln_mlp_ratio=self.ln_mlp_ratio,
                 ln_no_adaptation=self.ln_no_adaptation,
-                drop_prob=self.drop_prob,
+                droppath_rate=self.droppath_rate,
                 drop_per_sample=self.drop_per_sample,
                 dropout_rate=self.vit_block_dropout_rate,
                 attention_dropout_rate=self.vit_block_attention_dropout_rate,

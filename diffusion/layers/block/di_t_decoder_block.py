@@ -30,7 +30,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
     Args:
         **kwargs (Any): :class:`VisionTransformerBlock` constructor options such as
             ``dim``, ``query_dim``, ``num_heads``, ``key_dim``, ``value_dim``,
-            ``mlp_ratio``, ``drop_prob``, ``drop_per_sample``,
+            ``mlp_ratio``, ``droppath_rate``, ``drop_per_sample``,
             ``dropout_rate``, ``attention_dropout_rate``,
             ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, and
             standard Keras layer options. ``gate_query_flag`` is ignored and
@@ -98,7 +98,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             name=f"{self.name}__mha_output_dropout_2",
         ) if self.dropout_rate > 0. else None
         self.mha_drop_path2 = DropPath(
-            drop_prob=self.drop_prob, 
+            drop_prob=self.droppath_rate,
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path_2"),
             name=f"{self.name}__mha_drop_path_2",
@@ -263,7 +263,7 @@ def run_self_tests() -> dict[str, str]:
                 num_heads=2, 
                 mlp_ratio=mlp_ratio, 
                 mlp_output_dim=3, 
-                drop_prob=0.25, 
+                droppath_rate=0.25,
                 drop_per_sample=drop_per_sample, 
                 ln_no_adaptation=True
             )

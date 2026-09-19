@@ -19,7 +19,7 @@ from common.config import Config
 
 
 JOINT_CLASSIFIER_PROFILE = "joint_dit_classifier"
-JOINT_CLASSIFIER_PROFILE_VERSION = 12
+JOINT_CLASSIFIER_PROFILE_VERSION = 13
 
 JOINT_CLASSIFIER_SEARCH_SPACE = {
     "learning_rate": {"low": 1e-5, "high": 5e-3, "log": True}, 
@@ -31,8 +31,8 @@ JOINT_CLASSIFIER_SEARCH_SPACE = {
     "depth": [2, 3, 4, 5, 6, 7], 
     "clf_depth": [1, 2, 3, 4, 5], 
     "clf_cond_type": ["time_label", "time", "label", None], 
-    "dropout_rate": [0.0, 0.15, 0.25], 
-    "clf_drop_prob": [0.0, 0.15, 0.25], 
+    "classifier_dropout_rate": [0.0, 0.15, 0.25],
+    "clf_droppath_rate": [0.0, 0.15, 0.25],
     "feature_aggregation": ["last", "all"], 
     "classifier_mlp_ratio": [1, 2, 4],
     "clf_train_batch_fraction": [0.0, 0.25, 0.5],
@@ -254,8 +254,8 @@ def build_joint_classifier_config(
         "clf_depth": categorical("clf_depth"), 
         "clf_cond_type": clf_cond_type, 
         "clf_ln_no_adaptation": clf_cond_type is None, 
-        "dropout_rate": categorical("dropout_rate"), 
-        "clf_drop_prob": categorical("clf_drop_prob"), 
+        "classifier_dropout_rate": categorical("classifier_dropout_rate"),
+        "clf_droppath_rate": categorical("clf_droppath_rate"),
         "aggregate_from_noises": False,
         "feature_aggregation_ids_dict": {1: [None] if feature_aggregation == "all" else [-1]}, 
         "clf_dim": dim if feature_aggregation == "all" else None, 
@@ -274,7 +274,7 @@ def build_joint_classifier_config(
         "vit_block_mlp_ratio": 4.0, 
         "clf_vit_block_mlp_ratio": 4.0, 
         "clf_mha_num_heads": 4, 
-        "drop_prob": 0.0, 
+        "droppath_rate": 0.0,
         "cond_type": "time_label", 
         "ln_no_adaptation": False, 
         "patches_pos_embed_type": "2d_sincos", 

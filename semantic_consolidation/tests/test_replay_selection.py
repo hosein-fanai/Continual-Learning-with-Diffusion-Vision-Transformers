@@ -213,8 +213,8 @@ class ActualNetworkReplayTests(unittest.TestCase):
                 "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1,
                 "mha_num_heads": 1, "vit_block_mlp_ratio": 1.,
                 "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1.,
-                "classifier_mlp_ratio": 1, "dropout_rate": 0., "drop_prob": 0.,
-                "clf_drop_prob": 0., "compile_args": {"run_eagerly": True},
+                "classifier_mlp_ratio": 1, "classifier_dropout_rate": 0., "droppath_rate": 0.,
+                "clf_droppath_rate": 0., "compile_args": {"run_eagerly": True},
             },
             wrapper_kwargs={
                 "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1.,

@@ -55,7 +55,7 @@ class VisionTransformerBlock(BaseLayer):
             otherwise size it to ``dim``. External-query attention normally
             needs the former, while decoder self-attention uses the latter.
             Defaults to ``True``.
-        drop_prob (float): Stochastic-depth probability in ``[0, 1)`` for each branch.
+        droppath_rate (float): Stochastic-depth probability in ``[0, 1)`` for each branch.
             Defaults to ``0.0``.
         drop_per_sample (bool): Use independent path masks per example when true, or
             one path decision for the full batch when false.
@@ -116,7 +116,7 @@ class VisionTransformerBlock(BaseLayer):
         query_dim: int | None = None, 
         num_heads: int = 4, 
         gate_query_flag: bool = True, 
-        drop_prob: float = 0., 
+        droppath_rate: float = 0.,
         drop_per_sample: bool = True, 
         seed: int | None = None, 
         grid_size: int | None = None, 
@@ -142,7 +142,7 @@ class VisionTransformerBlock(BaseLayer):
                 Defaults to ``4``.
             gate_query_flag (bool): Whether the attention gate uses query width.
                 Defaults to ``True``.
-            drop_prob (float): Stochastic-depth probability in ``[0, 1)``.
+            droppath_rate (float): Stochastic-depth probability in ``[0, 1)``.
                 Defaults to ``0.0``.
             drop_per_sample (bool): Whether each example receives its own path mask.
                 Defaults to ``True``.
@@ -154,7 +154,7 @@ class VisionTransformerBlock(BaseLayer):
             grid_size (int | None): Spatial-grid metadata for later reshape stages. Defaults to ``None``,
                 leaving grid metadata unspecified; attention itself does not use it.
             dropout_rate (float): MLP and attention-output dropout in ``[0, 1)``.
-                Defaults to zero, independently of stochastic depth ``drop_prob``.
+                Defaults to zero, independently of stochastic depth ``droppath_rate``.
             attention_dropout_rate (float): Attention-probability dropout in
                 ``[0, 1)``. Defaults to zero, independently of output dropout.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
@@ -210,7 +210,7 @@ class VisionTransformerBlock(BaseLayer):
             name="mha_residual_projector"
         ) if self.query_dim != self.dim else None
         self.mha_drop_path = DropPath(
-            drop_prob=self.drop_prob, 
+            drop_prob=self.droppath_rate,
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path"), 
             dtype=self.dtype_policy, 
@@ -233,7 +233,7 @@ class VisionTransformerBlock(BaseLayer):
             name="mlp_residual_projector"
         ) if self.mlp_output_dim != self.query_dim else None
         self.mlp_drop_path = DropPath(
-            drop_prob=self.drop_prob, 
+            drop_prob=self.droppath_rate,
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mlp_drop_path"),
             dtype=self.dtype_policy, 
@@ -414,7 +414,7 @@ def run_self_tests() -> dict[str, str]:
     x = tf.random.normal((2, 3, 4))
     condition = tf.random.normal((2, 5))
 
-    identity = VisionTransformerBlock(dim=4, num_heads=2, drop_prob=0.0)
+    identity = VisionTransformerBlock(dim=4, num_heads=2, droppath_rate=0.0)
     for training in (None, False, True):
         output = identity((x, condition), training=training)
         assert output.shape == x.shape and output.dtype == tf.float32
@@ -438,7 +438,7 @@ def run_self_tests() -> dict[str, str]:
                     query_dim=6, 
                     num_heads=2, 
                     gate_query_flag=gate_query_flag, 
-                    drop_prob=0.25, 
+                    droppath_rate=0.25,
                     drop_per_sample=drop_per_sample, 
                     mlp_ratio=mlp_ratio, 
                     mlp_output_dim=3, 
@@ -494,7 +494,7 @@ def run_self_tests() -> dict[str, str]:
     stochastic = VisionTransformerBlock(
         dim=4, 
         num_heads=2, 
-        drop_prob=0.5, 
+        droppath_rate=0.5,
         drop_per_sample=False, 
         ln_no_adaptation=True, 
         mlp_activation_func="relu", 
@@ -512,7 +512,7 @@ def run_self_tests() -> dict[str, str]:
 
     for invalid_probability in (-0.1, 1.0):
         try:
-            VisionTransformerBlock(dim=4, drop_prob=invalid_probability)
+            VisionTransformerBlock(dim=4, droppath_rate=invalid_probability)
         except ValueError:
             pass
         # This invalid case should already have raised: Invalid stochastic-depth

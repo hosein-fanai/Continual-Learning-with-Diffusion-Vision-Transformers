@@ -116,7 +116,7 @@ class TransformerDropoutTests(unittest.TestCase):
             **self.options, clf_depth=1, clf_mha_num_heads=2,
             vit_block_dropout_rate=.1, vit_block_attention_dropout_rate=.2,
             clf_vit_block_dropout_rate=.3, clf_vit_block_attention_dropout_rate=.4,
-            dropout_rate=.5,
+            classifier_dropout_rate=.5,
         )
         network.add_depths({"network": "vision_transformer_block",
                             "classifier": "vision_transformer_block"})

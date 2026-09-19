@@ -130,8 +130,13 @@ def validate_extensions(project: object, values: Mapping) -> None:
         if replay.strategy == "mir":
             wrapper = project.model.wrapper_kwargs or asdict(project.model.diffusion_classifier)
             # Dropout random draws cannot be restored by copying model variables.
-            if any(float(raw.get(name, 0.) or 0.) > 0 for name in ("dropout_rate", "drop_prob", "clf_drop_prob")):
-                raise ValueError("Reversible MIR requires zero dropout_rate, drop_prob and clf_drop_prob.")
+            if any(float(raw.get(name, 0.) or 0.) > 0 for name in (
+                "classifier_dropout_rate", "droppath_rate", "clf_droppath_rate"
+            )):
+                raise ValueError(
+                    "Reversible MIR requires zero classifier_dropout_rate, "
+                    "droppath_rate and clf_droppath_rate."
+                )
             # The inherited train step must consume the already prepared virtual batch.
             if not wrapper.get("map_preprocess", False) and not any(
                 float(wrapper.get(name, 0.) or 0.) > 0 for name in ("noise_distil_loss_coef", "clf_distil_loss_coef")

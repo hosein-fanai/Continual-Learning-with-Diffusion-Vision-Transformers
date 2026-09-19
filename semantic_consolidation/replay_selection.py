@@ -889,7 +889,10 @@ def virtual_update_interference(
     if layers is None:
         layers = wrapper.network._flatten_layers(include_self=False, recursive=True)
     for layer in layers:
-        for name in ("rate", "drop_prob", "dropout_rate", "dropout", "recurrent_dropout"):
+        for name in (
+            "rate", "drop_prob", "droppath_rate", "clf_droppath_rate",
+            "dropout_rate", "classifier_dropout_rate", "dropout", "recurrent_dropout"
+        ):
             value = getattr(layer, name, 0.)
             # Active dropout/stochastic depth would advance unrestorable legacy RNG.
             if isinstance(value, (int, float)) and value > 0:

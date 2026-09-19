@@ -36,7 +36,7 @@ class TransformerSummaryTests(unittest.TestCase):
             patchify_with_cnn=True, image_size=32, channels=3,
             depth=0, cond_type=None, ln_no_adaptation=True,
             dim=128, clf_depth=6, clf_cond_type=None,
-            clf_ln_no_adaptation=True, clf_drop_prob=0.3, dropout_rate=0.3,
+            clf_ln_no_adaptation=True, clf_droppath_rate=0.3, classifier_dropout_rate=0.3,
         )
         wrapper = DiffusionClassifier(
             network=network, clf_train_noisy_input_type="clean",

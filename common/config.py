@@ -559,7 +559,7 @@ class DiffusionTransformerConfig(KwargsMixin):
             disables condition adaptation entirely. Defaults to ``None``.
         ln_no_adaptation (bool): Use ordinary layer normalization without a
             condition-dependent affine/gate path. Defaults to ``False``.
-        drop_prob (float): Transformer residual-drop probability in ``[0, 1]``. Defaults to
+        droppath_rate (float): Transformer residual-drop probability in ``[0, 1)``. Defaults to
             ``0.0``.
         drop_per_sample (bool): Apply residual dropping independently per sample instead of
             sharing a decision across the batch. Defaults to ``True``.
@@ -677,7 +677,7 @@ class DiffusionTransformerConfig(KwargsMixin):
     vit_block_mlp_output_dims: dict[int, int] = field(default_factory=dict)
     ln_mlp_ratio: float | None = None
     ln_no_adaptation: bool = False
-    drop_prob: float = 0.0
+    droppath_rate: float = 0.0
     drop_per_sample: bool = True
     local_mixer_ids: list[int | None] = field(default_factory=list)
     local_mixer_kwargs: dict = field(default_factory=dict)
@@ -790,7 +790,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
         clf_vit_block_dropout_rate (float | None): Classifier-block MLP and
             attention-output dropout. Defaults to zero; None inherits the main
-            rate when set_nones=True. Independent of head dropout_rate.
+            rate when set_nones=True. Independent of head classifier_dropout_rate.
         clf_vit_block_attention_dropout_rate (float | None): Classifier-block
             attention-probability dropout. Defaults to zero; None inherits the
             main rate when set_nones=True.
@@ -802,7 +802,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             ``None``.
         clf_ln_no_adaptation (bool | None): Disable condition adaptation; ``None`` inherits
             the main setting when ``set_nones=True``. Defaults to ``False``.
-        clf_drop_prob (float | None): Residual-drop probability; ``None`` inherits the main
+        clf_droppath_rate (float | None): Residual-drop probability; ``None`` inherits the main
             value when ``set_nones=True``. Defaults to ``0.0``.
         clf_drop_per_sample (bool | None): Drop residuals per sample; ``None`` inherits the
             main value when ``set_nones=True``. Defaults to ``True``.
@@ -848,7 +848,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
             ``final_width * ratio`` units when non-None. Defaults to ``None``.
         classifier_mlp_activation_func (str): Hidden classifier activation. Defaults to
             ``'tanh'``.
-        dropout_rate (float): Classifier dropout rate; 0 omits dropout. Defaults to ``0.0``.
+        classifier_dropout_rate (float): Classifier dropout rate; 0 omits dropout. Defaults to ``0.0``.
     """
 
     aggregate_from_noises: bool = False
@@ -882,7 +882,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     clf_vit_block_mlp_output_dims: dict[int, int] | None = field(default_factory=dict)
     clf_ln_mlp_ratio: float | None = None
     clf_ln_no_adaptation: bool | None = False
-    clf_drop_prob: float | None = 0.0
+    clf_droppath_rate: float | None = 0.0
     clf_drop_per_sample: bool | None = True
     clf_local_mixer_ids: list[int | None] = field(default_factory=list)
     clf_local_mixer_kwargs: dict | None = field(default_factory=dict)
@@ -900,7 +900,7 @@ class DiTClassifierConfig(DiffusionTransformerConfig):
     force_global_avg_pooling: bool = False
     classifier_mlp_ratio: int | None = None
     classifier_mlp_activation_func: str = "tanh"
-    dropout_rate: float = 0.0
+    classifier_dropout_rate: float = 0.0
     clf_vit_block_dropout_rate: float | None = 0.0
     clf_vit_block_attention_dropout_rate: float | None = 0.0
 

@@ -76,8 +76,8 @@ _DIFFUSION_HPO_MODELS = _DIFFUSION_MODELS | {
 _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
     _DIFFUSION_CLASSIFIER_STUDY
 }
-# Version 13 adds global gradient clipping when per-variable clipping is disabled.
-SEARCH_SPACE_VERSION = 13
+# Version 14 names transformer stochastic depth and classifier-head dropout explicitly.
+SEARCH_SPACE_VERSION = 14
 TRAINING_SEMANTICS_VERSION = 3
 """Version 3 adds isolated, paired seeded final diffusion evaluation.
 
@@ -110,7 +110,7 @@ _DIT = {
         "2 through 6 plain blocks; standalone compact U-DiT uses 9 stages"
     ),
     "mlp_ratio": "2 or 4",
-    "drop_prob": "0, 0.05, or 0.1",
+    "droppath_rate": "0, 0.05, or 0.1",
     "patchify_with_cnn": "boolean", 
     "patch_position_embedding": "fixed 2D sinusoidal",
     "normalization_adaptation": "fixed enabled",
@@ -1459,8 +1459,8 @@ def _suggest_dit(
         "vit_block_mlp_ratio": trial.suggest_categorical(
             "mlp_ratio", [2., 4.]
         ), 
-        "drop_prob": trial.suggest_categorical(
-            "drop_prob", [0., 0.05, 0.1]
+        "droppath_rate": trial.suggest_categorical(
+            "droppath_rate", [0., 0.05, 0.1]
         ), 
         "patches_pos_embed_type": "2d_sincos",
         "ln_no_adaptation": False,
@@ -1805,14 +1805,14 @@ def _suggest_joint(
             "classifier_only_cls_token": classifier_only_cls_token, 
             "clf_depth": clf_depth,
             "clf_ln_no_adaptation": False,
-            "clf_drop_prob": trial.suggest_categorical(
-                "clf_drop_prob", [0., 0.05, 0.1]
+            "clf_droppath_rate": trial.suggest_categorical(
+                "clf_droppath_rate", [0., 0.05, 0.1]
             ), 
             "classifier_mlp_ratio": trial.suggest_categorical(
                 "classifier_mlp_ratio", [None, 1]
             ), 
-            "dropout_rate": trial.suggest_categorical(
-                "dropout_rate", [0., 0.05, 0.1]
+            "classifier_dropout_rate": trial.suggest_categorical(
+                "classifier_dropout_rate", [0., 0.05, 0.1]
             )
         })
 

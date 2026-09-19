@@ -331,6 +331,9 @@ from diffusion.models.transformer.di_t_classifier import DiTClassifier
 network = DiTClassifier(
     depth=4, 
     clf_depth=2, 
+    classifier_dropout_rate=0.3,
+    droppath_rate=0.1,
+    clf_droppath_rate=0.2,
     feature_aggregation_ids_dict={1: [2, 4]}, 
     feature_aggregation_kwargs={
         "connect_type": "concat", 
@@ -351,21 +354,26 @@ ID collections empty. The terminal connection defaults to `{-1: (-1,)}`.
 The constructor uses `clf_cross_attention_plug_type="values"`,
 `clf_mha_num_heads=4`, `clf_vit_block_mlp_ratio=4.0`,
 `clf_vit_block_mlp_output_dims={}`, `clf_ln_no_adaptation=False`,
-`clf_drop_prob=0.0`, and `clf_drop_per_sample=True`. Classifier component kwargs
+`clf_droppath_rate=0.0`, and `clf_drop_per_sample=True`. Classifier component kwargs
 default to `{}`, except `clf_cls_token_regularizer_kwargs`, which defaults to
 `{"start": 0, "end": 1, "train_type": "normal", "distil_type": "hard"}`.
 These match the corresponding `DiffusionTransformer` Python defaults.
 
-Transformer-block dropout has two independent controls, each defaulting to zero:
+Dropout and stochastic depth have independent controls, each defaulting to zero:
 
 | Location | Main branch | Classifier branch |
 | --- | --- | --- |
 | MLP hidden/output and attention output projection | `vit_block_dropout_rate` | `clf_vit_block_dropout_rate` |
 | Softmax attention probabilities | `vit_block_attention_dropout_rate` | `clf_vit_block_attention_dropout_rate` |
+| Whole residual branches (stochastic depth) | `droppath_rate` | `clf_droppath_rate` |
+| Final classifier head | — | `classifier_dropout_rate` |
 
-These rates apply to both encoder and decoder blocks, including newly added
-depths. `drop_prob` / `clf_drop_prob` control stochastic depth; the existing
-`DiTClassifier(dropout_rate=...)` controls dropout in the final classifier head.
+The block settings apply to both encoder and decoder blocks, including newly
+added depths. `DiTClassifier(classifier_dropout_rate=...)` controls dropout in
+the final classifier head, independently of feature and attention dropout in
+its transformer blocks. The example above configures head dropout and each
+branch's stochastic depth while leaving block feature and attention dropout
+at zero.
 All dropout is disabled for `training=False`. See the
 [block documentation](../../layers/block/README.md#initialization-and-training)
 for the ViT/DiT source rationale and exact placement.
@@ -376,6 +384,15 @@ supported setting, pass that classifier argument as `None` and enable
 Key/value widths and `clf_ln_mlp_ratio` remain `None` unless explicitly set,
 and classifier IDs, width inference, and condition/token modes retain their
 classifier-specific behavior.
+
+### Configuration names
+
+Public constructors, `get_config()`, and YAML configurations use
+`droppath_rate`, `clf_droppath_rate`, and `classifier_dropout_rate`. Use these
+names in nested `encoder_kwargs` and `decoder_kwargs` where applicable.
+
+Optuna study schemas use the new names starting with version 14 and profile
+version 13; use a new study with the updated schema.
 
 ## Encoder-decoder denoiser API
 

@@ -41,7 +41,7 @@ def _make_wrapper() -> tf.keras.Model:
         "clf_vit_block_ids": [], "clf_cls_token_type": None,
         "feature_aggregation_ids_dict": {1: [1]},
         "force_global_avg_pooling": True, "classifier_mlp_ratio": 1,
-        "dropout_rate": 0.2, "build": True,
+        "classifier_dropout_rate": 0.2, "build": True,
     }
     config.model.wrapper_kwargs = {
         "use_ema": False, "test_network_name": "raw", "test_steps": 2,

@@ -396,7 +396,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
-        model = self._classifier(dropout_rate=0.5)
+        model = self._classifier(classifier_dropout_rate=0.5)
         full = model(self.inputs, full_return=True, training=False)
         dropout = next(layer for layer in model.classifier.layers
                        if isinstance(layer, tf.keras.layers.Dropout))
@@ -452,7 +452,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         for composite, temperature in itertools.product((False, True), (1.0, 2.0)):
             with self.subTest(composite=composite, temperature=temperature):
                 kwargs = dict(self.config, clf_depth=2, clf_mha_num_heads=1,
-                              clf_distil_token_type="new_weight", dropout_rate=0.5,
+                              clf_distil_token_type="new_weight", classifier_dropout_rate=0.5,
                               clf_cls_token_regularizer_ids=[0, 1],
                               feature_aggregation_ids_dict={1: [0]})
                 # The composite owns a decoder but shares the classifier heads.

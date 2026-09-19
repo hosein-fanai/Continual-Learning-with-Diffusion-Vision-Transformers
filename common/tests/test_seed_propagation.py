@@ -211,7 +211,7 @@ class SeedPropagationTests(TestCase):
             dim=4,
             num_heads=1,
             mlp_ratio=1.0,
-            drop_prob=0.25,
+            droppath_rate=0.25,
             seed=67,
         )
         self.assertEqual(

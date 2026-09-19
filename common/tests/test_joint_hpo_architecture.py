@@ -51,8 +51,8 @@ class JointHpoArchitectureTests(unittest.TestCase):
             "clf_cond_type": [condition],
             "patch_size": [patch], "dim": [dim], "mha_num_heads": [heads],
             "depth": [depth], "clf_depth": [clf_depth],
-            "classifier_mlp_ratio": [mlp], "dropout_rate": [dropout],
-            "clf_drop_prob": [drop_path],
+            "classifier_mlp_ratio": [mlp], "classifier_dropout_rate": [dropout],
+            "clf_droppath_rate": [drop_path],
         }
         config = build_joint_classifier_config(
             _FirstTrial(), dataset_name="cifar10" if classes == 10 else "cifar100",
@@ -117,7 +117,7 @@ class JointHpoArchitectureTests(unittest.TestCase):
             block = stage.get(network.VTB)
             if block is not None:
                 self.assertEqual(block.num_heads, 4)
-                self.assertEqual(block.drop_prob, config.model.kwargs["clf_drop_prob"])
+                self.assertEqual(block.droppath_rate, config.model.kwargs["clf_droppath_rate"])
         self.assertEqual(sum(network.VTB in stage for stage in network.clf_layers_dicts),
                          network.clf_depth)
         dense = [layer for layer in network.classifier.layers
@@ -127,7 +127,7 @@ class JointHpoArchitectureTests(unittest.TestCase):
         self.assertEqual(dense[0].units, network.dim * network.classifier_mlp_ratio)
         self.assertEqual(any(isinstance(layer, tf.keras.layers.Dropout)
                              for layer in network.classifier.layers),
-                         network.dropout_rate > 0)
+                         network.classifier_dropout_rate > 0)
         np.testing.assert_allclose(network.predict_class(inputs, training=False),
                                    result["classes"], rtol=1e-5, atol=1e-6)
         np.testing.assert_allclose(network.predict_noise(inputs, training=False),

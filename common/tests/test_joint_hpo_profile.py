@@ -65,7 +65,7 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
         self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
         self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
-        self.assertEqual(config.hpo["profile_version"], 12)
+        self.assertEqual(config.hpo["profile_version"], 13)
         self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
         self.assertTrue(config.training.use_valset)
         self.assertTrue(config.reporting.run_valset_eval)
@@ -110,14 +110,14 @@ class JointClassifierProfileTests(unittest.TestCase):
                     self.assertNotIn(option, config.model.wrapper_kwargs)
 
     def test_dropout_and_drop_path_retain_independent_middle_choices(self):
-        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["dropout_rate"], [0.0, 0.15, 0.25])
-        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_drop_prob"], [0.0, 0.15, 0.25])
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["classifier_dropout_rate"], [0.0, 0.15, 0.25])
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_droppath_rate"], [0.0, 0.15, 0.25])
         for dropout in (0.0, 0.15, 0.25):
             for drop_path in (0.0, 0.15, 0.25):
                 with self.subTest(dropout=dropout, drop_path=drop_path):
-                    config = self.make_config({"dropout_rate": [dropout], "clf_drop_prob": [drop_path]})
-                    self.assertEqual(config.model.kwargs["dropout_rate"], dropout)
-                    self.assertEqual(config.model.kwargs["clf_drop_prob"], drop_path)
+                    config = self.make_config({"classifier_dropout_rate": [dropout], "clf_droppath_rate": [drop_path]})
+                    self.assertEqual(config.model.kwargs["classifier_dropout_rate"], dropout)
+                    self.assertEqual(config.model.kwargs["clf_droppath_rate"], drop_path)
 
     def test_classifier_input_search_has_the_requested_independent_choices(self) -> None:
         """Retain the user's two conditioning choices and reject removed None samples."""
@@ -231,7 +231,7 @@ class JointClassifierProfileTests(unittest.TestCase):
     def test_requested_edges_preserve_full_classifier_weight_and_epoch_budget(self):
         config = self.make_config({
             "mha_num_heads": [6], "dim": [256], "depth": [7], "clf_depth": [5],
-            "clf_cond_type": [None], "dropout_rate": [0.25], "clf_drop_prob": [0.25],
+            "clf_cond_type": [None], "classifier_dropout_rate": [0.25], "clf_droppath_rate": [0.25],
             "classifier_mlp_ratio": [4],
         })
         self.assertTrue(config.model.kwargs["clf_ln_no_adaptation"])
