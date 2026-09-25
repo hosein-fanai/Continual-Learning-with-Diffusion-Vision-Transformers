@@ -90,6 +90,7 @@ def prepare_notebook(
 
     root = _set_paths(root)
 
+    import init
     from notebooks.thesis.bootstrap import prepare_runtime
 
 
