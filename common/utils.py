@@ -269,7 +269,8 @@ def plot_history(
         range_ (tuple[int | None, ...]): Two or three arguments expanded into
             ``slice(*range_)``.  ``(0, None)`` plots all epochs, ``(5, 20)``
             plots zero-based entries 5--19, and ``(None, None, 2)`` plots every
-            other epoch. Unequal-length validation series retain observations
+            other epoch. A metric whose length is at most the start index is
+            plotted in full. Unequal-length validation series retain observations
             within the displayed training epoch interval. CSV output is not sliced.
             Defaults to ``(0, None)``.
         metrics (Sequence[str] | None): Keys to plot; ``None`` considers every
@@ -358,10 +359,13 @@ def plot_history(
 
     for i, metric in enumerate(plotted_metrics):
         ax = axes[i]
-        epochs = range(1, len(history[metric])+1)[range_]
-        show_metric_x_ticks = show_all_x_ticks and len(epochs) <= 50
+        metric_range = range_
+        if range_.start is not None and range_.start >= len(history[metric]):
+            metric_range = slice(None)
 
-        values = np.asarray(history[metric])[range_]
+        epochs = range(1, len(history[metric])+1)[metric_range]
+        show_metric_x_ticks = show_all_x_ticks and len(epochs) <= 50
+        values = np.asarray(history[metric])[metric_range]
         min_ = min(values)
         max_ = max(values)
 
@@ -376,16 +380,22 @@ def plot_history(
         # Align and plot a nonempty validation series when available.
         if val_values is not None and len(val_values) > 0:
             validation_frequency = len(history[metric]) / len(val_values)
-            val_epochs = np.linspace(validation_frequency, len(history[metric]), len(val_values))
+            val_epochs = np.linspace(
+                validation_frequency, 
+                len(history[metric]), 
+                len(val_values)
+            )
+
             # Equal-length series retain identical slicing, including the step.
             if validation_frequency == 1:
-                val_epochs = val_epochs[range_]
-                selected_val_values = np.asarray(val_values)[range_]
+                val_epochs = val_epochs[metric_range]
+                selected_val_values = np.asarray(val_values)[metric_range]
             # Select sparse observations by epoch, not by their list positions.
             else:
                 selected = (val_epochs > min(epochs) - 1) & (val_epochs <= max(epochs))
                 val_epochs = val_epochs[selected]
                 selected_val_values = np.asarray(val_values)[selected]
+            
             min_ = min([min_, *selected_val_values])
             max_ = max([max_, *selected_val_values])
 
@@ -430,7 +440,8 @@ def plot_history(
     if csv_path:
         # Preserve unequal generator/discriminator history lengths with NaN.
         history_df = pd.DataFrame({
-            name: pd.Series(values) for name, values in history.items()
+            name: pd.Series(values) 
+            for name, values in history.items()
         })
         history_df.insert(0, "epoch", range(1, len(history_df) + 1))
         history_df.to_csv(csv_path, index=False)
