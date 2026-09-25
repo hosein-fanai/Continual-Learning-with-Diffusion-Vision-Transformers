@@ -620,7 +620,7 @@ def plot_images(
 
     col = min(col, len(imgs))
     row = max(row, -(len(imgs) // -col))
-    fig, axes = plt.subplots(row, col, figsize=(20, 6))
+    fig, axes = plt.subplots(row, col, figsize=(20, max(6, 2 * row)))
     axes = np.atleast_1d(axes).ravel()
 
     for i in range(len(imgs)):
