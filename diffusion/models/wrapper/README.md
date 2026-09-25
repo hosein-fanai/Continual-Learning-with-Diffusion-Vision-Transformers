@@ -361,9 +361,9 @@ contribute their teacher-mask weight, and empty eligible batches contribute zero
 weight. The differentiated per-batch KD objective is unchanged; `total_loss`
 continues to aggregate complete batch objectives.
 
-Distillation-token loss is enabled only when the wrapped classifier has a
-distillation token, `teacher_network` is supplied, and
-`clf_distil_loss_coef > 0`. Teacher-trained classifier regularizers also enable the
+Classifier distillation is enabled when `teacher_network` is supplied and
+`clf_distil_loss_coef > 0`. It uses the distillation-token head when present,
+otherwise the primary classifier head. Teacher-trained classifier regularizers also enable the
 same inherited `map_preprocess` path when `ctr_loss_coef > 0` and their
 `train_type` is `distil` or `both`. Pass a
 compatible raw classifier, or another wrapper whose `.network` is that
@@ -446,7 +446,7 @@ teacher-to-student direction. Its positive `clf_distil_temperature` defaults to
 `1.0`; other values soften teacher and student distributions consistently and
 scale the KL term by the temperature squared. The scalar optimization objective adds
 `clf_distil_loss_coef * clf_distil_loss` to the existing diffusion and classifier
-terms. The coefficient defaults to `0.0`; at zero, distillation-token loss and
+terms. The coefficient defaults to `0.0`; at zero, classifier distillation loss and
 its metrics are disabled. Teacher mapping remains enabled only when a
 classifier regularizer independently requests it.
 

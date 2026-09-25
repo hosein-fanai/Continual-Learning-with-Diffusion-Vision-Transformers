@@ -2103,15 +2103,6 @@ def _run_continual_tasks(
     and getattr(generative_model, "ema_network", None) is None:
         raise ValueError("snapshot_network_name='ema' requires EMA to be enabled.")
 
-    # Require an independent student head for continual self-distillation.
-    if use_distillation \
-    and isinstance(generative_model, DiffusionClassifier) \
-    and float(tf.keras.backend.get_value(generative_model.clf_distil_loss_coef)) > 0. \
-    and getattr(generative_model.network, "distil_token", None) is None:
-        raise ValueError(
-            "use_distillation requires the diffusion classifier to have a "
-            "distil_token."
-        )
     # A distilled run must actually enable at least one teacher loss.
     if use_distillation and not _has_positive_distillation_objective(generative_model):
         raise ValueError("use_distillation requires a positive distillation objective.")

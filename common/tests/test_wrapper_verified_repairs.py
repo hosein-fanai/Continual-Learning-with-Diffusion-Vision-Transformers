@@ -96,7 +96,8 @@ def _dataset(tensors: tuple[tf.Tensor, ...], batch: int = 2) -> tf.data.Dataset:
 
 def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
              scope: str = "old_classes", auxiliary: str | None = None,
-             convolution: bool = False, eager: bool = True) -> DiffusionClassifier:
+             convolution: bool = False, eager: bool = True,
+             distil: bool = True) -> DiffusionClassifier:
     """Compile the actual V1/V2 update path with a frozen two-class teacher.
 
     Args:
@@ -107,6 +108,7 @@ def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
         auxiliary (str | None): Optional auxiliary token training mode.
         convolution (bool): Select UNet instead of transformer for both student and teacher.
         eager (bool): Whether Keras custom training runs eagerly.
+        distil (bool): Enable a separate student distillation head.
 
     Returns:
         model (DiffusionClassifier): SGD-compiled float32 wrapper with a frozen two-class teacher, raw inference, and soft KD enabled.
@@ -115,7 +117,7 @@ def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
         ValueError: If a distillation or architecture option is invalid.
     """
 
-    raw = _network(classes, auxiliary=auxiliary, convolution=convolution)
+    raw = _network(classes, distil=distil, auxiliary=auxiliary, convolution=convolution)
     teacher = _network(2, distil=False, convolution=convolution)
     # Select the advertised joint or alternating wrapper without altering either implementation.
     wrapper_class = DiffusionClassifier if version == 1 else DiffusionClassifierV2
@@ -283,6 +285,141 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             self.assertEqual(calls.call_count, 1)
             self.assertTrue(np.isfinite(result["clf_distil_loss"]))
             self.assertAlmostEqual(float(model.network.distil_classifier.weights[-1][1]), .09999, places=6)
+
+    def test_kd_uses_main_head_without_token_and_prefers_distil_head_with_token(self) -> None:
+        """Both graph training and evaluation use the available head's same-pass logits.
+
+        Returns:
+            result (None): KD updates only the selected head and leaves the teacher frozen.
+        """
+
+        data = _dataset((tf.zeros((2, 4, 4, 1)), tf.constant([0, 1])))
+        teacher_probs = tf.constant([.0001, .9999])
+        expected_loss = tf.reduce_sum(teacher_probs * (
+            tf.math.log(teacher_probs) - tf.nn.log_softmax([120., 0.])))
+        for version in (1, 2):
+            for distil in (False, True):
+                with self.subTest(version=version, distil=distil):
+                    model = _wrapper(version=version, classes=2, eager=False, distil=distil)
+                    self.assertTrue(model.use_clf_distil_loss)
+                    self.assertEqual(dict(model.use_logits_instead), {"return_logits": True})
+                    _constant_head(model.network.classifier, [-4., 4.])
+                    head = model.network.distil_classifier if distil else model.network.classifier
+                    _constant_head(head, [120., 0.])
+                    teacher_before = [value.numpy().copy() for value in model.teacher_network.weights]
+                    options = {"test_part": "discriminator"} if version == 2 else {}
+                    result = model.evaluate(x=data, verbose=0, return_dict=True, **options)
+                    self.assertAlmostEqual(result["clf_distil_loss"], float(expected_loss), places=4)
+                    self.assertEqual(model.evaluate_ensemble_accuracy(
+                        data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.), .5)
+                    fit = model.fit if version == 1 else model.fit_discriminator
+                    history = fit(x=data, epochs=1, verbose=0)
+                    self.assertTrue(np.isfinite(history.history["clf_distil_loss"][0]))
+                    np.testing.assert_allclose(head.weights[-1], [119.90001, .09999], atol=2e-6)
+                    if distil:
+                        np.testing.assert_array_equal(model.network.classifier.weights[-1], [-4., 4.])
+                    for before, after in zip(teacher_before, model.teacher_network.weights):
+                        np.testing.assert_array_equal(before, after)
+
+    def test_main_head_kd_requires_teacher_unless_attachment_is_deferred(self) -> None:
+        """A missing distillation token does not bypass the classifier teacher contract.
+
+        Returns:
+            result (None): Deferred attachment activates KD and removal disables it.
+        """
+
+        for wrapper_class in (DiffusionClassifier, DiffusionClassifierV2):
+            options = dict(use_ema=False, test_steps=2, clf_distil_loss_coef=1.,
+                           clf_distil_type="soft")
+            with self.assertRaisesRegex(AssertionError, "teacher_network"):
+                wrapper_class(network=_network(2, distil=False), **options)
+            model = wrapper_class(network=_network(2, distil=False), defer_teacher=True, **options)
+            self.assertFalse(model.use_clf_distil_loss)
+            self.assertEqual(dict(model.use_logits_instead), {})
+            model.set_teacher_network(_network(2, distil=False))
+            self.assertTrue(model.use_clf_distil_loss)
+            self.assertEqual(dict(model.use_logits_instead), {"return_logits": True})
+            model.set_teacher_network(None)
+            self.assertFalse(model.use_clf_distil_loss)
+            self.assertEqual(dict(model.use_logits_instead), {})
+
+    def test_direct_kd_selects_original_head_before_ensemble_ce(self) -> None:
+        """Direct helper calls keep probabilities and optional logits on the selected KD head."""
+
+        labels = tf.constant([0, 1])
+        teacher = tf.constant([[.8, .2], [.1, .9]])
+        primary_logits = (tf.constant([[2., -1.], [-1., 1.]]),
+                          tf.constant([[-2., 1.], [3., -1.]]))
+        distil_logits = (tf.constant([[-1., 2.], [1., -2.]]),
+                         tf.constant([[1., -3.], [-2., 2.]]))
+        primary_probs = tuple(tf.nn.softmax(value) for value in primary_logits)
+        distil_probs = tuple(tf.nn.softmax(value) for value in distil_logits)
+        ensemble_probs = tf.constant([[.4, .6], [.7, .3]])
+        for distil in (False, True):
+            model = _wrapper(classes=2, scope="current_and_replay", distil=distil)
+            for kind in ("hard", "soft"):
+                model.clf_distil_type = kind
+                for branch, index in (("cond", 0), ("uncond", 1)):
+                    for with_logits in (False, True):
+                        for ensemble in (False, True):
+                            with self.subTest(distil=distil, kind=kind, branch=branch,
+                                              logits=with_logits, ensemble=ensemble):
+                                model.ensemble_loss_fn = SimpleNamespace(
+                                    ensemble_predict_batched=lambda *args, **kwargs: ensemble_probs
+                                ) if ensemble else None
+                                metadata = [dict(class_logits=main, distil_logits=kd)
+                                            for main, kd in zip(primary_logits, distil_logits)]
+                                actual = model.compute_clf_kl_ctr_distil_loss(
+                                    labels, primary_probs[0], [], [],
+                                    classes_pred_u=primary_probs[1],
+                                    distil_classes_c=distil_probs[0] if distil else None,
+                                    distil_classes_u=distil_probs[1] if distil else None,
+                                    clf_train_type=branch, teacher_labels=teacher,
+                                    x0=tf.zeros((2, 4, 4, 1)),
+                                    logits_c=metadata[0] if with_logits else None,
+                                    logits_u=metadata[1] if with_logits else None,
+                                )
+                                probabilities = (distil_probs if distil else primary_probs)[index]
+                                logits = (distil_logits if distil else primary_logits)[index]
+                                expected, _ = model.compute_clf_distil_loss(
+                                    teacher, probabilities, classes=labels,
+                                    student_logits=logits if with_logits else None,
+                                )
+                                np.testing.assert_allclose(actual[4], expected, rtol=1e-6)
+                                np.testing.assert_array_equal(actual[7], probabilities)
+                                np.testing.assert_array_equal(
+                                    actual[5], ensemble_probs if ensemble else primary_probs[index])
+
+    def test_ensemble_validates_each_coefficient_before_folding(self) -> None:
+        """Head weights retain validation and scalar ownership through fallback inference."""
+
+        data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
+        for distil in (False, True):
+            model = _wrapper(classes=2, distil=distil)
+            _constant_head(model.network.classifier, [4., -4.])
+            if distil:
+                _constant_head(model.network.distil_classifier, [-4., 4.])
+            invalid = [(-1., 2.), (2., -1.), (np.nan, 1.), (1., np.inf), (0., 0.)]
+            if not distil:
+                invalid.append((1e308, 1e308))
+            for primary, kd in invalid:
+                with self.subTest(distil=distil, primary=primary, kd=kd):
+                    with self.assertRaises(ValueError):
+                        model.evaluate_ensemble_accuracy(
+                            data, max_t=1, verbose=False,
+                            clf_acc_coef=primary, clf_distil_acc_coef=kd)
+            for coefficient in (np.array(.5), tf.Variable(.5)):
+                for primary in (False, True):
+                    with self.subTest(distil=distil, scalar=type(coefficient), primary=primary):
+                        accuracy = model.evaluate_ensemble_accuracy(
+                            data, max_t=1, verbose=False,
+                            clf_acc_coef=coefficient if primary else .25,
+                            clf_distil_acc_coef=.25 if primary else coefficient)
+                        self.assertEqual(float(coefficient), .5)
+                        self.assertEqual(accuracy, float(not distil or primary))
+            self.assertEqual(model.evaluate_ensemble_accuracy(
+                data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.),
+                float(not distil))
 
     def test_auxiliary_logits_cache_reconstructs_with_teacher_and_weights(self) -> None:
         """Auxiliary-only soft KD keeps its renamed metadata through real updates and reconstruction.

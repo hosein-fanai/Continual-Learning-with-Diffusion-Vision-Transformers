@@ -1395,7 +1395,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
             classes_pred = class_outputs[0]
             clf_regs_list = class_outputs[3]
             clf_z_vals_list = class_outputs[4]
-            distil_classes = class_outputs[5] if self.use_clf_distil_loss else None
+            distil_classes = class_outputs[
+                5 if getattr(self.network, "distil_token", None) is not None else 0
+            ] if self.use_clf_distil_loss else None
             logits = class_outputs[-1] if self.use_logits_instead else None
 
             outputs = self.compute_clf_kl_ctr_distil_loss(
@@ -1498,7 +1500,9 @@ class DiffusionClassifierV2(DiffusionClassifier):
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
         clf_z_vals_list = class_outputs[4]
-        distil_classes = class_outputs[5] if self.use_clf_distil_loss else None
+        distil_classes = class_outputs[
+            5 if getattr(self.network, "distil_token", None) is not None else 0
+        ] if self.use_clf_distil_loss else None
         logits = class_outputs[-1] if self.use_logits_instead else None
 
         outputs = self.compute_clf_kl_ctr_distil_loss(

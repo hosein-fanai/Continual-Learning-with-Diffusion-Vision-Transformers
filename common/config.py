@@ -1431,9 +1431,9 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             Defaults to ``0.0``.
         clf_loss_coef (float): Scalar multiplier for classifier cross-entropy. Defaults to
             ``0.0086``.
-        clf_distil_loss_coef (float): Multiplier for the distillation-token objective; zero
-            disables it. Positive values require a distillation head and teacher targets,
-            except while defer_teacher allows the initial teacher-free continual task.
+        clf_distil_loss_coef (float): Multiplier for classifier distillation; zero disables
+            it. Uses the distillation-token head when present, otherwise the primary head.
+            Requires teacher targets, except during a deferred teacher-free initial task.
             Defaults to ``0.0``.
         clf_acc_coef (float): Primary-head coefficient used only for the wrapper's
             ``total_accuracy`` prediction. Defaults to ``0.5``.

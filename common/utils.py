@@ -373,7 +373,8 @@ def plot_history(
         ax.plot(
             epochs, 
             values, 
-            label="Training" if not metric.startswith("val_") else "Validation"
+            label="Training" if not metric.startswith("val_") else "Validation", 
+            marker="o" if len(values) == 1 else None
         )
 
         val_values = history.get("val_" + metric)
@@ -399,7 +400,12 @@ def plot_history(
             min_ = min([min_, *selected_val_values])
             max_ = max([max_, *selected_val_values])
 
-            ax.plot(val_epochs, selected_val_values, label="Validation")
+            ax.plot(
+                val_epochs, 
+                selected_val_values, 
+                label="Validation",
+                marker="o" if len(selected_val_values) == 1 else None
+            )
 
         ax.legend()
         ax.set_xlabel("epochs")
@@ -425,7 +431,7 @@ def plot_history(
     if plot_path:
         fig.savefig(
             plot_path, 
-            dpi=200,
+            dpi=500, 
             bbox_inches="tight"
         )
 

@@ -56,9 +56,9 @@ class DiffusionClassifier(DiffusionModel):
             exposes no classifier reshaper metadata.
         use_clf_ctr_loss (bool | None): True only when classifier regularizer
             depths exist and ``ctr_loss_coef > 0``; None when unsupported.
-        use_clf_distil_loss (bool): True only when a teacher, a student
-            distillation token, and a positive ``clf_distil_loss_coef`` are all
-            present.
+        use_clf_distil_loss (bool): True when a teacher and a positive
+            ``clf_distil_loss_coef`` are present. Uses the primary classifier
+            head when the student has no distillation token.
         use_clf_distil_ctr_loss (bool): Whether classifier regularizers use their
             frozen teacher target in ``"distil"`` or ``"both"`` mode.
     """
@@ -165,9 +165,9 @@ class DiffusionClassifier(DiffusionModel):
             clf_loss_coef (float): Scalar multiplier for classifier
                 cross-entropy, default ``8.6e-3``.
                 Defaults to ``0.0086``.
-            clf_distil_loss_coef (float): Multiplier for the distillation-token
-                objective. A positive value enables dataset mapping when the
-                teacher and token are present.
+            clf_distil_loss_coef (float): Multiplier for classifier distillation.
+                Uses the distillation-token head when present, otherwise the
+                primary head. A positive value enables mapping with a teacher.
                 Defaults to ``0.0``.
             clf_acc_coef (float): Primary-head coefficient used only for the
                 wrapper's ``total_accuracy`` prediction.
@@ -355,10 +355,8 @@ class DiffusionClassifier(DiffusionModel):
             "'replay_only', or 'current_and_replay'."
         )
 
-        # A positive token objective requires targets from a teacher network.
-        if (local_vars["clf_distil_loss_coef"] > 0. and
-        getattr(self.network, "distil_token", None) is not None
-        ) or (local_vars["kwargs"].get("ctr_loss_coef", 0.) > 0. and(
+        # A positive classifier distillation objective requires teacher targets.
+        if local_vars["clf_distil_loss_coef"] > 0. or (local_vars["kwargs"].get("ctr_loss_coef", 0.) > 0. and(
         getattr(self.network, "clf_cls_token_regularizer_kwargs", None
         ) or getattr(self.network, "cls_token_regularizer_kwargs", {})
         ).get("train_type", "normal") in ("distil", "both")
@@ -448,8 +446,7 @@ class DiffusionClassifier(DiffusionModel):
         ) if getattr(self.network, "clf_cls_token_regularizer_ids", None) is not None else None
         self.use_clf_distil_loss = bool(
             self.teacher_network is not None and 
-            self.clf_distil_loss_coef > 0. and 
-            getattr(self.network, "distil_token", None) is not None
+            self.clf_distil_loss_coef > 0.
         )
 
         regularizer_kwargs = getattr(
@@ -1053,10 +1050,10 @@ class DiffusionClassifier(DiffusionModel):
             else:
                 logits_c, logits_u = ({}, {})
 
-            # The transformer appends one independent distillation-head pair.
+            # The forward pass appends the selected distillation predictions.
             if self.use_clf_distil_loss:
                 distil_classes_c, distil_classes_u = forward_outputs[7]
-            # Disabled independent distillation has no associated head predictions.
+            # Disabled distillation has no associated predictions.
             else:
                 distil_classes_c = None
                 distil_classes_u = None
@@ -1093,7 +1090,9 @@ class DiffusionClassifier(DiffusionModel):
                 classes_pred_c = class_outputs[0]
                 clf_regs_list_c = class_outputs[3]
                 clf_z_vals_list_c = class_outputs[4]
-                distil_classes_c = class_outputs[5] if self.use_clf_distil_loss else None
+                distil_classes_c = class_outputs[
+                    5 if getattr(self.network, "distil_token", None) is not None else 0
+                ] if self.use_clf_distil_loss else None
                 logits_c = class_outputs[-1] if self.use_logits_instead else {}
 
             (loss2, clf_loss, kl_loss2, 
@@ -1265,7 +1264,9 @@ class DiffusionClassifier(DiffusionModel):
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
         clf_z_vals_list = class_outputs[4]
-        distil_classes = class_outputs[5] if self.use_clf_distil_loss else None
+        distil_classes = class_outputs[
+            5 if getattr(self.network, "distil_token", None) is not None else 0
+        ] if self.use_clf_distil_loss else None
         logits = class_outputs[-1] if self.use_logits_instead else None
 
         (loss2, clf_loss, kl_loss2, 
@@ -1473,7 +1474,7 @@ class DiffusionClassifier(DiffusionModel):
             "ctr_acc_coef",
             self.ctr_acc_coef if self.use_clf_ctr_loss else 0.
         )
-        # Include default distillation-head weight only when its teacher objective is active.
+        # Include default distillation weight only when its teacher objective is active.
         kwargs.setdefault(
             "clf_distil_acc_coef", 
             self.clf_distil_acc_coef if self.use_clf_distil_loss else 0.
@@ -1485,6 +1486,12 @@ class DiffusionClassifier(DiffusionModel):
             self, 
             **kwargs
         )
+        # Fold validated scalar weights when both predictions use the primary head.
+        if getattr(self.network, "distil_token", None) is None:
+            ensemble_accuracy.clf_acc_coef += ensemble_accuracy.clf_distil_acc_coef
+            if not np.isfinite(ensemble_accuracy.clf_acc_coef):
+                raise ValueError("Combined primary-head accuracy coefficient must be finite.")
+            ensemble_accuracy.clf_distil_acc_coef = 0.
         accuracy_value = ensemble_accuracy.evaluate(
             dataset, 
             verbose=verbose
@@ -1545,8 +1552,7 @@ class DiffusionClassifier(DiffusionModel):
             {}
         ) if regularizer_kwargs is None else regularizer_kwargs
         needs_class_teacher = bool(
-            self.clf_distil_loss_coef > 0. and
-            getattr(self.network, "distil_token", None) is not None
+            self.clf_distil_loss_coef > 0.
         ) or bool(
             self.ctr_loss_coef > 0. and
             regularizer_kwargs.get("train_type", "normal") in (
@@ -1813,9 +1819,10 @@ class DiffusionClassifier(DiffusionModel):
 
         # Frozen targets use primary probabilities and need no student distillation head.
         if self.use_clf_distil_loss and network_name != "teacher":
+            distil_key = "distil_classes" if getattr(self.network, "distil_token", None) is not None else "classes"
             outputs += ((
-                output_dict_c["distil_classes"], 
-                output_dict_u.get("distil_classes")
+                output_dict_c[distil_key],
+                output_dict_u.get(distil_key)
             ),)
 
         # Append only logits metadata, preserving every existing probability tuple position.
@@ -1909,7 +1916,7 @@ class DiffusionClassifier(DiffusionModel):
             teacher_labels (tf.Tensor): Frozen teacher probabilities [B, teacher_width] on
                 the common leading
                 class-ID support; teacher_width may differ from student_width.
-            distil_classes (tf.Tensor): Student distillation-head probabilities [B,
+            distil_classes (tf.Tensor): Selected student-head probabilities [B,
                 student_width], returned
                 unchanged alongside the policy-variable-dtype scalar loss.
             clf_distil_type (Literal["hard", "soft"] | None): Loss mode;
@@ -2239,7 +2246,7 @@ class DiffusionClassifier(DiffusionModel):
             clf_regs_list_c (list[tf.Tensor | None] | None): Conditional
                 classifier token predictions.
             distil_classes_c (tf.Tensor | None): Conditional distillation-head
-                probabilities.
+                probabilities; uses primary probabilities when no token exists.
                 Defaults to ``None``.
             logits_c (dict[str, object] | None): Same-pass conditional classifier
                 logits metadata; None supports direct probability-only helper calls.
@@ -2252,7 +2259,7 @@ class DiffusionClassifier(DiffusionModel):
                 predictions.
                 Defaults to ``None``.
             distil_classes_u (tf.Tensor | None): Unconditional distillation-head
-                probabilities.
+                probabilities; uses primary probabilities when no token exists.
                 Defaults to ``None``.
             logits_u (dict[str, object] | None): Corresponding null-label metadata.
             clf_loss_mask (tf.Tensor | None): Float per-example mask ``[B]``;
@@ -2267,8 +2274,8 @@ class DiffusionClassifier(DiffusionModel):
             ctr_train_type (TrainType | None): Classifier token-loss branch; None inherits
                 self.ctr_train_type.
                 Defaults to ``None``.
-            teacher_labels (tf.Tensor | None): Frozen teacher probabilities required by an
-                active independent KD head
+            teacher_labels (tf.Tensor | None): Frozen teacher probabilities required by
+                active classifier KD
                 or token regularizers in distil/both mode; ignored without those losses.
                 Defaults to ``None``.
             x0 (tf.Tensor | None): Clean images required by ensemble loss.
@@ -2296,6 +2303,10 @@ class DiffusionClassifier(DiffusionModel):
         # Omitted metadata supports direct probability-based helper callers.
         logits_c = {} if logits_c is None else logits_c
         logits_u = {} if logits_u is None else logits_u
+
+        # Keep KD on the original head probabilities even when CE uses an ensemble.
+        if getattr(self.network, "distil_token", None) is None:
+            distil_classes_c, distil_classes_u = classes_pred_c, classes_pred_u
 
         # Select primary probabilities from the conditional or explicit null branch.
         clf_loss, classes_pred = self.compute_clf_loss(
@@ -2325,7 +2336,7 @@ class DiffusionClassifier(DiffusionModel):
                 "clf_regs_logits_list"
             )
         ) if self.use_clf_ctr_loss else (0., 0.)
-        # Compute independent-head KD only when an active teacher objective exists. Distil the same
+        # Compute classifier KD only when an active teacher objective exists. Distil the same
         # conditional or null branch used by primary classification.
         clf_distil_loss, distil_classes = self.compute_clf_distil_loss(
             teacher_labels, 
@@ -2341,7 +2352,8 @@ class DiffusionClassifier(DiffusionModel):
             ) if training is True else None, 
             x0=x0,
             student_logits=(logits_c if clf_train_type == "cond" else logits_u).get(
-                "distil_logits"
+                "distil_logits" if getattr(self.network, "distil_token", None) is not None
+                else "class_logits"
             )
         ) if self.use_clf_distil_loss else (0., None)
 
@@ -2677,7 +2689,7 @@ class DiffusionClassifier(DiffusionModel):
                 ctr_component = clf_ctr_preds
                 total_preds += ctr_component * self.ctr_acc_coef
 
-            # Add independent distillation-head predictions when weighted in.
+            # Add the selected distillation predictions when weighted in.
             if use_clf_distil_loss and self.clf_distil_acc_coef > 0.:
                 require(
                     distil_classes is not None, 
@@ -2698,7 +2710,7 @@ class DiffusionClassifier(DiffusionModel):
                 self.total_accuracy_tracker.result()
             })
 
-        # Track the independent distillation objective and prediction accuracy.
+        # Track the distillation objective and prediction accuracy.
         if use_clf_distil_loss:
             require(
                 clf_distil_loss is not None and distil_classes is not None, 

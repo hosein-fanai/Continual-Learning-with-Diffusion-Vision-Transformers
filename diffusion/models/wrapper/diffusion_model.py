@@ -113,6 +113,7 @@ class DiffusionModel(ArgumentSaverModel):
         test_eta: float = 0., 
         noise_loss_coef: float = 1., 
         show_separate_noise_losses: bool = False, 
+        noise_distil_loss_coef: float = 0., 
         image_loss_coef: float = 0., 
         kl_loss_coef: float = 0., 
         ctr_loss_coef: float = 0., 
@@ -128,7 +129,6 @@ class DiffusionModel(ArgumentSaverModel):
         map_preprocess: bool = False, 
         map_num_parallel_calls: int | None = 1, 
         seen_classes: dict[object, int] = {}, 
-        noise_distil_loss_coef: float = 0., 
         seed: int | None = None, 
         **kwargs: object
     ) -> None:
@@ -244,16 +244,17 @@ class DiffusionModel(ArgumentSaverModel):
             defer_teacher (bool): Permit a positive teacher objective to start
                 without a teacher so continual learning can attach one later.
                 Defaults to ``False``.
+            resize_method (str): Interpolation method passed to tf.image.resize when the
+                active resolution
+                differs from image_size; TensorFlow validates supported names.
+                Defaults to ``'area'``.
             seed (int | None): Default TensorFlow random seed for noising,
                 label dropout, latent draws, and sampling; per-call seeds override.
                 Defaults to ``None``.
             **kwargs (object): Standard ``tf.keras.Model`` keys: ``name`` (str),
                 ``trainable`` (bool), ``dtype`` (dtype name/policy), and
                 ``dynamic`` (bool).
-            resize_method (str): Interpolation method passed to tf.image.resize when the
-                active resolution
-                differs from image_size; TensorFlow validates supported names.
-                Defaults to ``'area'``.
+            
 
         Returns:
             None: Schedule tensors, active bounds/resolution, loss flags, and
