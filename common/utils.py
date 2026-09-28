@@ -587,6 +587,7 @@ def plot_images(
     has_null_label: bool = False,
     show_images: bool = True, 
     save_path: str | os.PathLike[str] | None = None,
+    titles: Sequence[str] | None = None,
 ) -> None:
     """Display or save a grayscale batch as a labeled subplot grid.
 
@@ -608,15 +609,18 @@ def plot_images(
             least one of ``show_images`` or ``save_path`` must be enabled.
             Defaults to ``None``, skipping figure-file output.
 
+        titles (Sequence[str] | None): Optional title for each image, overriding
+            sample-index titles. Defaults to ``None``.
+
     Returns:
         None.
 
     Raises:
         ValueError: If neither display nor saving is requested or ``imgs`` has
-            an invalid shape.
+            an invalid shape or the title count differs from the image count.
 
     Note:
-        Titles are sample indices starting at 0, or -1 with ``has_null_label``;
+        Default titles are sample indices starting at 0, or -1 with ``has_null_label``;
         class IDs are not inferred from image content or sampling labels.
     """
 
@@ -638,6 +642,10 @@ def plot_images(
             "1, 3, or 4 channels."
         )
 
+    # Custom labels must identify every image in the grid.
+    if titles is not None and len(titles) != len(imgs):
+        raise ValueError("titles must contain one title per image.")
+
     col = min(col, len(imgs))
     row = max(row, -(len(imgs) // -col))
     fig, axes = plt.subplots(row, col, figsize=(20, max(6, 2 * row)))
@@ -648,7 +656,9 @@ def plot_images(
         image = imgs[i, :, :, 0] if imgs.shape[-1] == 1 else imgs[i]
         # Use a grayscale colormap for one-channel images and native colors otherwise.
         axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None)
-        axes[i].set_title(f"{i - int(has_null_label)}")
+        axes[i].set_title(
+            titles[i] if titles is not None else f"{i - int(has_null_label)}"
+        )
         axes[i].axis("off")
 
     for j in range(len(imgs), len(axes)):
@@ -670,6 +680,104 @@ def plot_images(
     # Release the file-only figure without opening a window.
     else:
         plt.close(fig)
+
+
+def plot_noisy_images(
+    scheduler_name: str, 
+    timesteps: int, 
+    interval: int, 
+    imgs: object, 
+    show_images: bool = True, 
+    save_path: str | os.PathLike[str] | None = None, 
+    col: int = 10, 
+    seed: int = 42
+) -> None:
+    """Plot one image through diffusion, reading left to right and top to bottom.
+
+    Every panel uses the same source image and Gaussian draw. The first panel
+    in reading order is t=0 and the last is t=timesteps-1. With 1000 timesteps,
+    interval=10, and col=10, the grid has 100 panels: t=0 at the top left and
+    t=999 at the bottom right. Including both endpoints gives gaps of 10 or 11
+    timesteps. Timestep zero follows the schedule and need not be clean.
+
+    Args:
+        scheduler_name (str): Family accepted by ``diffusion.schedulers``.
+        timesteps (int): Total number of schedule entries, at least two.
+        interval (int): Positive nominal spacing. The panel count is
+            ``max(2, ceil(timesteps / interval))``; integer timesteps are
+            evenly spaced over the full inclusive range, retaining both ends.
+        imgs (numpy.ndarray | tf.Tensor): A single ``[1, H, W, C]`` image in
+            model space, normally ``[-1, 1]``, with 1, 3, or 4 channels.
+        show_images (bool): Display the grid; defaults to ``True``.
+        save_path (str | os.PathLike | None): Optional grid image destination;
+            defaults to ``None``. Required when ``show_images`` is false.
+        seed (int): Stateless Gaussian seed, default 42. Repeated calls reuse
+            the same noise without advancing a training model's random stream.
+        col (int): Positive maximum columns per row; defaults to 10.
+            A partially filled final row occupies its leftmost cells.
+
+    Returns:
+        None: The existing image grid helper displays or saves the result.
+
+    Raises:
+        ValueError: The schedule, interval, column count, image, or output is invalid.
+        TypeError: Timestep count, interval, or column count is not an integer.
+    """
+
+    import tensorflow as tf
+
+    from functools import partial
+
+    from types import SimpleNamespace
+
+    from diffusion.models.wrapper.diffusion_model import DiffusionModel
+
+
+    # Reject empty or backwards timestep selections before generating noise.
+    if interval <= 0:
+        raise ValueError("interval must be a positive integer.")
+    # Require a usable row width for the timestep grid.
+    if col <= 0:
+        raise ValueError("col must be a positive integer.")
+
+    steps = range(0, timesteps, interval)
+    imgs = np.asarray(imgs)
+
+    # Each grid follows exactly one source image through the entire schedule.
+    if imgs.ndim != 4 or len(imgs) != 1 or imgs.shape[-1] not in (1, 3, 4):
+        raise ValueError(
+            "imgs must contain one [1, H, W, C] image with 1, 3, or 4 channels."
+        )
+
+    # Supply only the state used by the existing forward-process methods.
+    process = SimpleNamespace(
+        dtype_policy=tf.keras.mixed_precision.Policy("float32"), 
+        compute_dtype="float32", 
+        modify_first_t=False, 
+        _init_config={}
+    )
+    DiffusionModel.load_schedules(process, scheduler_name, timesteps)
+    process.get_noise_and_signal_rates = partial(
+        DiffusionModel.get_noise_and_signal_rates, 
+        process
+    )
+    
+    steps = np.linspace(0, timesteps - 1, max(2, len(steps)), dtype=np.int32)
+    images = tf.convert_to_tensor(imgs, dtype=tf.float32)
+    noise = tf.random.stateless_normal(tf.shape(images), seed=[seed, 0])
+    noisy_images = DiffusionModel.q_sample(
+        process, 
+        tf.repeat(images, len(steps), axis=0), 
+        tf.constant(steps, dtype=tf.int32), 
+        tf.repeat(noise, len(steps), axis=0)
+    )
+    plot_images(
+        DiffusionModel.postprocess(process, noisy_images).numpy(), 
+        col=col, 
+        show_images=show_images, 
+        save_path=save_path, 
+        titles=[f"t={step}" for step in steps]
+    )
 
 
 def save_samples(

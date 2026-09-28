@@ -30,7 +30,7 @@ ComputeType: TypeAlias = Literal[
     "chunked", 
     "batched"
 ]
-"""Memory-oriented chunked evaluation or single-call batched evaluation."""
+"""Create noisy timestep replicas in chunks or in one batched block."""
 
 
 class EnsembleAccuracy(metrics.Metric):
@@ -40,9 +40,9 @@ class EnsembleAccuracy(metrics.Metric):
     integer timesteps from ``0`` through ``max_t - 1``, obtains unconditional class
     predictions, optionally combines their primary, classifier-regularizer,
     and distillation heads, averages them, and delegates accuracy tracking to
-    ``SparseCategoricalAccuracy``. ``"batched"`` evaluates all replicas in one
-    network call; ``"chunked"`` performs smaller calls and has lower peak
-    memory use while computing the same aggregate.
+    ``SparseCategoricalAccuracy``. ``"batched"`` creates all timestep replicas
+    together; ``"chunked"`` creates smaller timestep groups. Both limit
+    classifier calls with ``prediction_batch_size``, including CFG conditions.
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
@@ -67,6 +67,8 @@ class EnsembleAccuracy(metrics.Metric):
         t_range_drop_rate (float): Fraction of individual timesteps to drop,
             preferentially removing low-SNR steps; at least one step is retained.
         t_chunk_size (int): Positive maximum timesteps per chunked call.
+        prediction_batch_size (int | None): Maximum images per classifier call,
+            including class-conditioned replicas. None disables this limit.
         clf_acc_coef (float): Primary probability coefficient; weights are not divided
             by their sum when combining heads.
         clf_distil_acc_coef (float): Independent distillation-head coefficient.
@@ -103,6 +105,7 @@ class EnsembleAccuracy(metrics.Metric):
         separate_probas: bool = False, 
         seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
+        prediction_batch_size: int | None = 32,
         **kwargs: Any
     ) -> None:
         """Bind a classifier wrapper and initialize the accuracy tracker.
@@ -148,6 +151,15 @@ class EnsembleAccuracy(metrics.Metric):
                 Defaults to ``None``.
             name (str | None): Keras metric name. None delegates automatic naming to Keras.
                 Defaults to ``'ensemble_accuracy'``.
+            prediction_batch_size (int | None): Positive maximum images passed to
+                each classifier call, after timestep and CFG expansion. Replicas
+                for separate conditions are gathered only as needed. Defaults to
+                ``32``; ``None`` restores an uncapped call per timestep block.
+                Smaller values reduce inference activation memory at the cost of
+                more calls. Noising uses the original timestep blocks, preserving
+                selection and noise streams. Deterministic inference scores are
+                preserved up to rounding; internal variational sampling or
+                batch-dependent training can change with the call grouping.
             **kwargs (Any): Keras Metric options, empty by default. dtype defaults to the
                 wrapper
                 policy variable dtype, or the global policy variable dtype when absent;
@@ -159,7 +171,8 @@ class EnsembleAccuracy(metrics.Metric):
 
         Raises:
             ValueError: Network/compute selection is unsupported, timestep bounds are
-                not positive integers, max_t exceeds the wrapper horizon, the drop
+                not positive integers, the prediction batch limit is invalid, max_t
+                exceeds the wrapper horizon, the drop
                 rate is nonfinite or outside [0, 1], head
                 coefficients are negative/nonfinite or all zero, CFG is disabled,
                 separate conditioning lacks its required label vocabulary, or the seed is
@@ -185,11 +198,20 @@ class EnsembleAccuracy(metrics.Metric):
                 f"network_name must be {get_args(NetworkName)}."
             )
         for key, value in (("max_t", max_t), ("t_chunk_size", t_chunk_size)):
+            # Reject nonpositive or nonintegral timestep grouping limits.
             if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
                 raise ValueError(f"{key} must be a positive integer.")
+        # An explicit prediction cap must bound at least one expanded image.
+        if prediction_batch_size is not None and (
+            isinstance(prediction_batch_size, bool)
+            or not isinstance(prediction_batch_size, Integral)
+            or prediction_batch_size <= 0
+        ):
+            raise ValueError("prediction_batch_size must be a positive integer or None.")
         # Keep the ensemble horizon within the wrapper's trained horizon.
         if max_t > diffusion_clf.timesteps:
             raise ValueError("max_t cannot exceed diffusion_clf.timesteps.")
+        # Dropping must be a finite fraction of the available horizon.
         if not np.isfinite(t_range_drop_rate) or not 0. <= t_range_drop_rate <= 1.:
             raise ValueError("t_range_drop_rate must be finite and in [0, 1].")
         for key, value in (
@@ -197,6 +219,7 @@ class EnsembleAccuracy(metrics.Metric):
             ("clf_distil_acc_coef", clf_distil_acc_coef), 
             ("ctr_acc_coef", ctr_acc_coef)
         ):
+            # Every contributing head needs a finite nonnegative coefficient.
             if not np.isfinite(value) or value < 0.:
                 raise ValueError(f"{key} must be finite and nonnegative.")
         # Require at least one prediction head to contribute to the ensemble.
@@ -218,6 +241,9 @@ class EnsembleAccuracy(metrics.Metric):
         self.max_t = int(max_t)
         self.t_range_drop_rate = float(t_range_drop_rate)
         self.t_chunk_size = int(t_chunk_size)
+        self.prediction_batch_size = (
+            None if prediction_batch_size is None else int(prediction_batch_size)
+        )
         self.clf_acc_coef = float(clf_acc_coef)
         self.clf_distil_acc_coef = float(clf_distil_acc_coef)
         self.ctr_acc_coef = float(ctr_acc_coef)
@@ -241,7 +267,7 @@ class EnsembleAccuracy(metrics.Metric):
         # Use bounded-memory prediction when timesteps should be chunked.
         if self.compute_type == "chunked":
             self.ensemble_predict = self.ensemble_predict_chunked
-        # Use one vectorized prediction when all timesteps fit in one batch.
+        # Create one vectorized timestep block when all replicas fit in memory.
         elif self.compute_type == "batched":
             self.ensemble_predict = self.ensemble_predict_batched
         # Reject unknown ensemble-computation strategies.
@@ -289,6 +315,10 @@ class EnsembleAccuracy(metrics.Metric):
             ValueError: If a positively weighted optional head is unavailable.
         """
 
+        # Bound classifier activations unless the caller requests legacy grouping.
+        if self.prediction_batch_size is not None:
+            return self._predict_classes_bounded(inputs, training=training)
+
         batch_size = tf.shape(inputs[0])[0]
         num_labels = self.network.num_classes + 1
         if self.separate_probas:
@@ -301,6 +331,123 @@ class EnsembleAccuracy(metrics.Metric):
                     [batch_size]
                 )
             )
+
+        total_pred = self._predict_class_scores(inputs, training=training)
+
+        # The null row scores every class; real label j scores class j - 1.
+        if self.separate_probas:
+            total_pred = tf.reshape(total_pred, (
+                batch_size, num_labels, self.network.num_classes
+            ))
+            total_pred = (
+                total_pred[:, 0, :] + tf.linalg.diag_part(total_pred[:, 1:, :])
+            )
+
+        return total_pred
+
+    def _predict_classes_bounded(
+        self,
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        training: bool | tf.Tensor | None = None,
+    ) -> tf.Tensor:
+        """Gather bounded classifier inputs and retain only required scores.
+
+        Virtual row IDs preserve the uncapped image/timestep/condition order.
+        Null scores and conditional diagonals accumulate directly into [N, C],
+        avoiding expanded image storage and an [N, C + 1, C] score tensor.
+        Sequential iterations also bound concurrent activations in graph mode.
+
+        Args:
+            inputs: Noisy images, timesteps, and unconditional labels.
+            training: Mode forwarded to the classifier.
+
+        Returns:
+            Coefficient-weighted scores shaped [N, num_classes].
+        """
+
+        batch_size = tf.shape(inputs[0])[0]
+        num_classes = self.network.num_classes
+        num_conditions = num_classes + 1 if self.separate_probas else 1
+        num_rows = batch_size * num_conditions
+        total_pred = tf.zeros((batch_size, num_classes), dtype=self.dtype)
+
+        def predict_block(
+            start: tf.Tensor,
+            accumulated: tf.Tensor,
+        ) -> tuple[tf.Tensor, tf.Tensor]:
+            """Add one bounded block's scores to the running prediction.
+
+            Args:
+                start: First virtual expanded row to classify.
+                accumulated: Scores already collected for the original rows.
+
+            Returns:
+                Next virtual row offset and the updated [N, C] scores.
+            """
+
+            stop = tf.minimum(start + self.prediction_batch_size, num_rows)
+            ids = tf.range(start, stop)
+            rows = ids // num_conditions
+            labels = (
+                tf.cast(ids % num_conditions, inputs[2].dtype)
+                if self.separate_probas else tf.gather(inputs[2], rows)
+            )
+            scores = self._predict_class_scores(
+                (tf.gather(inputs[0], rows), tf.gather(inputs[1], rows), labels),
+                training=training,
+            )
+            # Each null vector and class-conditioned diagonal contributes once.
+            if self.separate_probas:
+                conditions = ids % num_conditions
+                nulls = conditions == 0
+                accumulated = tf.tensor_scatter_nd_add(
+                    accumulated,
+                    tf.boolean_mask(rows, nulls)[:, None],
+                    tf.boolean_mask(scores, nulls),
+                )
+                class_ids = tf.boolean_mask(conditions, ~nulls) - 1
+                diagonal = tf.gather(
+                    tf.boolean_mask(scores, ~nulls), class_ids,
+                    axis=1, batch_dims=1,
+                )
+                accumulated = tf.tensor_scatter_nd_add(
+                    accumulated,
+                    tf.stack((tf.boolean_mask(rows, ~nulls), class_ids), axis=1),
+                    diagonal,
+                )
+            # Ordinary prediction has exactly one score vector per input row.
+            else:
+                accumulated = tf.tensor_scatter_nd_update(
+                    accumulated, rows[:, None], scores,
+                )
+            return stop, accumulated
+
+        _, total_pred = tf.while_loop(
+            lambda start, _: start < num_rows,
+            predict_block,
+            (tf.constant(0, tf.int32), total_pred),
+            parallel_iterations=1,
+        )
+        return total_pred
+
+    def _predict_class_scores(
+        self,
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
+        training: bool | tf.Tensor | None = None,
+    ) -> tf.Tensor:
+        """Combine primary and optional heads for one classifier call.
+
+        Args:
+            inputs: Noisy images, timesteps, and conditioning labels.
+            training: Mode forwarded to the classifier.
+
+        Returns:
+            Coefficient-weighted scores shaped [batch, num_classes].
+
+        Raises:
+            TypeError: The classifier full-return structure is unsupported.
+            ValueError: A positively weighted optional head is unavailable.
+        """
 
         outputs = self.network.predict_class(
             inputs, 
@@ -359,19 +506,6 @@ class EnsembleAccuracy(metrics.Metric):
                 self.dtype
             ) * self.clf_distil_acc_coef
 
-        # Combine each class-conditioned diagonal with the null-condition score for every class.
-        if self.separate_probas:
-            total_pred = tf.reshape(total_pred, (
-                    batch_size, 
-                    num_labels, 
-                    self.network.num_classes
-            ))
-            # The null row scores every class; real label j scores class j - 1.
-            total_pred = (
-                total_pred[:, 0, :] + 
-                tf.linalg.diag_part(total_pred[:, 1:, :])
-            )
-
         return total_pred
 
     def _get_softmax_log_snr(self) -> tf.Tensor:
@@ -420,6 +554,7 @@ class EnsembleAccuracy(metrics.Metric):
         """
 
         drop_count = min(int(self.max_t * self.t_range_drop_rate), self.max_t - 1)
+        # Preserve all timesteps without querying the schedule or consuming RNG.
         if drop_count == 0:
             return tf.range(self.max_t, dtype=tf.int32)
 
@@ -431,8 +566,10 @@ class EnsembleAccuracy(metrics.Metric):
             "maxval": 1., 
             "dtype": nsr.dtype
         }
+        # Unseeded selection advances the ordinary random stream.
         if selection_seed is None:
             uniform = tf.random.uniform(**uniform_kwargs)
+        # An explicit seed fixes the selected subset across computation modes.
         else:
             uniform = tf.random.stateless_uniform(
                 seed=tf.constant((selection_seed, 0), dtype=tf.int32), 
@@ -606,7 +743,7 @@ class EnsembleAccuracy(metrics.Metric):
         x: tf.Tensor, 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
-        """Average predictions for all examples and retained timesteps in one call.
+        """Average predictions after creating all retained timestep replicas.
 
         The returned mean is in metric dtype and need not sum to one when head
         coefficients do not sum to one. With separate_probas=True a final softmax
@@ -685,7 +822,8 @@ class EnsembleAccuracy(metrics.Metric):
 
         Returns:
             tf.Tensor: Metric-dtype scores [B, num_classes]. Only B*t_chunk_size
-            noisy replicas are built at a time (the final chunk may be shorter). With
+            noisy replicas are built at a time (the final chunk may be shorter).
+            Classifier calls are further limited by prediction_batch_size. With
             separate_probas=True a final softmax normalizes the combined conditional
             scores; otherwise the coefficient-weighted timestep mean is returned.
         """
@@ -701,39 +839,42 @@ class EnsembleAccuracy(metrics.Metric):
             dtype=self.dtype
         )
         for start in range(0, num_timesteps, self.t_chunk_size):
-            chunk_t = min(self.t_chunk_size, num_timesteps - start)
-            ts_chunk = timestep_list[start: start + chunk_t]
-            t_rep = tf.tile(ts_chunk, multiples=[batch_size])
-            uncond_labels = tf.zeros(
-                (batch_size * chunk_t,), 
-                dtype=tf.int32
-            )
+            # Graph execution must finish the previous prediction before building
+            # the next block's replicas and classifier activations.
+            with tf.control_dependencies([pred_sum]):
+                chunk_t = min(self.t_chunk_size, num_timesteps - start)
+                ts_chunk = timestep_list[start: start + chunk_t]
+                t_rep = tf.tile(ts_chunk, multiples=[batch_size])
+                uncond_labels = tf.zeros(
+                    (batch_size * chunk_t,),
+                    dtype=tf.int32
+                )
 
-            x_rep = self._noisify_timestep_block(
-                x, 
-                timesteps=ts_chunk
-            )
-            x_rep = tf.reshape(
-                x_rep, 
-                tf.concat(([-1], tf.shape(x)[1:]), axis=0)
-            )
+                x_rep = self._noisify_timestep_block(
+                    x,
+                    timesteps=ts_chunk
+                )
+                x_rep = tf.reshape(
+                    x_rep,
+                    tf.concat(([-1], tf.shape(x)[1:]), axis=0)
+                )
 
-            cls_pred = self._predict_classes(
-                (x_rep, t_rep, uncond_labels), 
-                training=training
-            )
-            cls_pred = tf.reshape(
-                cls_pred, 
-                (batch_size, chunk_t, num_classes)
-            )
+                cls_pred = self._predict_classes(
+                    (x_rep, t_rep, uncond_labels),
+                    training=training
+                )
+                cls_pred = tf.reshape(
+                    cls_pred,
+                    (batch_size, chunk_t, num_classes)
+                )
 
-            chunk_weights = tf.reshape(
-                weights[start: start + chunk_t], 
-                (1, chunk_t, 1)
-            )
-            cls_pred = cls_pred * chunk_weights
+                chunk_weights = tf.reshape(
+                    weights[start: start + chunk_t],
+                    (1, chunk_t, 1)
+                )
+                cls_pred = cls_pred * chunk_weights
 
-            pred_sum += tf.reduce_sum(cls_pred, axis=1)
+                pred_sum += tf.reduce_sum(cls_pred, axis=1)
 
         total_pred = pred_sum / tf.reduce_sum(weights)
 
@@ -1272,10 +1413,12 @@ def run_self_tests() -> dict[str, str]:
         compute_type="batched",
         **separate_kwargs
     ).ensemble_predict(images)
+    assert [len(labels) for labels in conditioned_calls] == [32, 12]
     np.testing.assert_array_equal(
-        conditioned_calls.pop(),
+        np.concatenate(conditioned_calls),
         np.tile(np.arange(11, dtype=np.uint8), 4)
     )
+    conditioned_calls.clear()
     separate_chunked = EnsembleAccuracy(
         conditioned_wrapper,
         compute_type="chunked",

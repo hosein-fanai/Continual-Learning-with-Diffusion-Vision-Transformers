@@ -102,6 +102,8 @@ class EnsembleTimestepDropTests(unittest.TestCase):
                     with self.subTest(mode=mode, weighted=weighted, separate=separate):
                         metric = self.make_metric(
                             compute_type=mode, weighted=weighted, separate_probas=separate,
+                            # Isolate timestep grouping from classifier batch limits.
+                            prediction_batch_size=None,
                         )
                         selected = metric._select_timesteps().numpy()
                         self.noise_calls.clear()

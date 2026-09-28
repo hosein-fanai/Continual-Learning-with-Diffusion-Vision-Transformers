@@ -211,6 +211,90 @@ save_schedule_plots(
 )
 ```
 
+## Noisy image grids
+
+Each grid follows **one source image** through 100 noise levels, arranged in
+10 rows and 10 columns. Read **left to right, then top to bottom**: the top-left
+panel is `t=0`, and the bottom-right panel is `t=999`. All panels retain the same
+source image and Gaussian noise draw, so changes show the scheduler's effect.
+
+The six grids compare two datasets across three schedulers: `clipped_cosine`,
+`linear`, and standard cosine (`squaredcos_cap_v2` in the scheduler API).
+For each dataset, all three use the same source image and Gaussian draw.
+Every grid uses 1,000 schedule entries, `interval=10`, `col=10`, and seed 42.
+The 100 integer timesteps are evenly spaced from 0 to 999 inclusive. Their
+gaps are 10 or 11 steps: exactly 10-step gaps cannot include both endpoints
+in a 100-panel grid. Each panel is labeled with its actual timestep. The
+first panel follows its scheduler at zero; it is not forced to be clean.
+
+The sources are the first class-filtered test image in dataset order for
+CIFAR-10 horse (class 7, RGB, 32 by 32 pixels) and MNIST digit 3 (grayscale,
+28 by 28 pixels). The existing loaders apply `fixed-standardize`
+(`2 * pixels / 255 - 1`). The existing diffusion `postprocess` maps noisy
+values back to `[0, 1]` and clips them for display. These are forward-noised
+real dataset images; no trained model is used. The table has one row per
+dataset and one column per scheduler. Click any grid for full size.
+
+<table>
+<thead>
+<tr>
+<th width="33%">Clipped cosine<br><code>clipped_cosine</code></th>
+<th width="33%">Linear<br><code>linear</code></th>
+<th width="33%">Cosine<br><code>squaredcos_cap_v2</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td valign="top"><strong>CIFAR-10: horse</strong><br><a href="cifar10_horse_clipped_cosine_noisy.png"><img src="cifar10_horse_clipped_cosine_noisy.png" alt="One CIFAR-10 horse under clipped cosine, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+<td valign="top"><strong>CIFAR-10: horse</strong><br><a href="cifar10_horse_linear_noisy.png"><img src="cifar10_horse_linear_noisy.png" alt="The same CIFAR-10 horse and noise draw under linear, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+<td valign="top"><strong>CIFAR-10: horse</strong><br><a href="cifar10_horse_cosine_noisy.png"><img src="cifar10_horse_cosine_noisy.png" alt="The same CIFAR-10 horse and noise draw under cosine, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+</tr>
+<tr>
+<td valign="top"><strong>MNIST: digit 3</strong><br><a href="mnist_3_clipped_cosine_noisy.png"><img src="mnist_3_clipped_cosine_noisy.png" alt="One MNIST digit 3 under clipped cosine, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+<td valign="top"><strong>MNIST: digit 3</strong><br><a href="mnist_3_linear_noisy.png"><img src="mnist_3_linear_noisy.png" alt="The same MNIST digit 3 and noise draw under linear, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+<td valign="top"><strong>MNIST: digit 3</strong><br><a href="mnist_3_cosine_noisy.png"><img src="mnist_3_cosine_noisy.png" alt="The same MNIST digit 3 and noise draw under cosine, with 100 panels from t=0 at top left to t=999 at bottom right." width="100%"></a></td>
+</tr>
+</tbody>
+</table>
+
+Regenerate all six grids from the repository root using the existing dataset
+loaders and plotting helper:
+
+```python
+from common.dataloader import load_cifar10, load_mnist
+from common.utils import plot_noisy_images
+
+for name, loader, class_id in (
+    ("cifar10_horse", load_cifar10, 7),
+    ("mnist_3", load_mnist, 3),
+):
+    _, _, _, _, images, _ = loader(
+        indices=[class_id],
+        validation_ratio=0.0,
+        preprocess="fixed-standardize",
+        verbose=0,
+    )
+    images = images[:1]
+    # The MNIST loader returns grayscale images without a channel axis.
+    if images.ndim == 3:
+        images = images[..., None]
+    for scheduler_name, suffix in (
+        ("clipped_cosine", "_clipped_cosine"),
+        ("linear", "_linear"),
+        ("squaredcos_cap_v2", "_cosine"),
+    ):
+        plot_noisy_images(
+            scheduler_name=scheduler_name,
+            timesteps=1000,
+            interval=10,
+            imgs=images,
+            show_images=False,
+            save_path=f"diffusion/{name}{suffix}_noisy.png",
+            seed=42,
+            col=10,
+        )
+```
+
 ## Ensemble classifier accuracy
 
 `EnsembleAccuracy` averages unconditional classifier predictions across

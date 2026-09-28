@@ -1424,6 +1424,8 @@ class DiffusionClassifier(DiffusionModel):
                 coefficients default to their wrapper values only while those losses
                 are active, otherwise zero. Compute mode, weighting, chunk size, and
                 separate_probas retain EnsembleAccuracy constructor defaults.
+                prediction_batch_size defaults to 32 and caps each classifier
+                call including CFG replicas; None disables this inference limit.
 
         Returns:
             float: Sparse categorical accuracy across the full dataset.
