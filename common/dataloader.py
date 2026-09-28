@@ -579,7 +579,7 @@ def load_mnist(
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
-        "./data/mnist_xception_gavgpooled_features_train_val_test"
+        "./files/data/mnist_xception_gavgpooled_features_train_val_test"
     ), 
     return_features: bool = False, 
     onehot_labels: bool = False, 
@@ -609,7 +609,7 @@ def load_mnist(
             raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
-            ``"./data/mnist_xception_gavgpooled_features_train_val_test"``.
+            ``"./files/data/mnist_xception_gavgpooled_features_train_val_test"``.
             Ignored for raw images; feature mode requires a dataset-identifying
             path and uses its optional metadata sidecar to reconstruct labels.
         return_features (bool): Defaults to ``False`` for images. ``True``
@@ -652,7 +652,7 @@ def load_fmnist(
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
-        "./data/fmnist_xception_gavgpooled_features_train_val_test"
+        "./files/data/fmnist_xception_gavgpooled_features_train_val_test"
     ), 
     return_features: bool = False, 
     onehot_labels: bool = False, 
@@ -682,7 +682,7 @@ def load_fmnist(
             raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
-            ``"./data/fmnist_xception_gavgpooled_features_train_val_test"``.
+            ``"./files/data/fmnist_xception_gavgpooled_features_train_val_test"``.
             Ignored for raw images; feature mode requires a dataset-identifying
             path and uses its optional metadata sidecar to reconstruct labels.
         return_features (bool): Defaults to ``False`` for images. ``True``
@@ -725,7 +725,7 @@ def load_cifar10(
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
-        "./data/cifar10_xception_gavgpooled_features_train_val_test"
+        "./files/data/cifar10_xception_gavgpooled_features_train_val_test"
     ), 
     return_features: bool = False, 
     onehot_labels: bool = False, 
@@ -755,7 +755,7 @@ def load_cifar10(
             raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
-            ``"./data/cifar10_xception_gavgpooled_features_train_val_test"``.
+            ``"./files/data/cifar10_xception_gavgpooled_features_train_val_test"``.
             Ignored for raw images; feature mode requires a dataset-identifying
             path and uses its optional metadata sidecar to reconstruct labels.
         return_features (bool): Defaults to ``False`` for images. ``True``
@@ -800,7 +800,7 @@ def load_cifar100(
     validation_ratio: float = 0.2, 
     preprocess: str | None = None, 
     features_path: str | None = (
-        "./data/cifar100_xception_gavgpooled_features_train_val_test"
+        "./files/data/cifar100_xception_gavgpooled_features_train_val_test"
     ), 
     return_features: bool = False, 
     onehot_labels: bool = False, 
@@ -830,7 +830,7 @@ def load_cifar100(
             raw uint8 pixel units and reject saved features. Values are not clipped.
         features_path (str | None): Base path without ``.npy`` for a saved
             train/validation/test feature archive. Defaults to
-            ``"./data/cifar100_xception_gavgpooled_features_train_val_test"``.
+            ``"./files/data/cifar100_xception_gavgpooled_features_train_val_test"``.
             Ignored for raw images; feature mode requires a dataset-identifying
             path and uses its optional metadata sidecar to reconstruct labels.
         return_features (bool): Defaults to ``False`` for images. ``True``

@@ -195,7 +195,7 @@ it does not change the individual head parameters. Predictive entropy is
 reported descriptively and is not calibrated epistemic uncertainty.
 
 ```bash
-python -m semantic_consolidation.evaluate --config results/run/config.yaml --split validation
+python -m semantic_consolidation.evaluate --config files/results/run/config.yaml --split validation
 ```
 
 Validation inference can explore explicit settings. Test access binds saved

@@ -137,7 +137,7 @@ def _resolve_training_options(
         kwargs (Mapping[str, object]): Direct options when config is None. Image
             switches ``show_images``/``report_every_epoch`` default True and
             ``save_gifs``/``save_weights`` default False. ``results_path`` defaults
-            to ``"./results"`` and ``project_tag`` to ``""``. Early stopping uses
+            to ``"./files/results"`` and ``project_tag`` to ``""``. Early stopping uses
             ``patience=0``, ``monitor=None``, ``monitor_mode="auto"``.
             Plateau reduction uses ``reduce_lr_patience=0`` (disabled),
             ``reduce_lr_factor=0.5`` and ``min_learning_rate=1e-6``.
@@ -180,7 +180,7 @@ def _resolve_training_options(
         return {
             "show_images": kwargs.get("show_images", True),
             "save_gifs": kwargs.get("save_gifs", False),
-            "results_path": kwargs.get("results_path", "./results"),
+            "results_path": kwargs.get("results_path", "./files/results"),
             "project_tag": kwargs.get("project_tag", ""),
             "report_every_epoch": kwargs.get("report_every_epoch", True),
             "patience": kwargs.get("patience", 0),
@@ -296,7 +296,7 @@ def _resolve_reporting_options(
         config (Config | None): Typed reporting/dataset/training settings. None
             selects direct mode; a supplied Config takes precedence over kwargs.
         kwargs (Mapping[str, object]): Direct report options. Defaults are
-            ``results_path="./results"``, ``save_history_plot=False``,
+            ``results_path="./files/results"``, ``save_history_plot=False``,
             ``save_csv=False``, ``show_history_plot=True``,
             ``plot_without_20percent=True``, ``run_trainset_eval=True``,
             ``run_valset_eval=True``, ``evaluate_ensemble_accuracy=False``, and
@@ -320,7 +320,7 @@ def _resolve_reporting_options(
     # Preserve the interactive defaults used by direct notebook calls.
     if config is None:
         return {
-            "results_path": kwargs.get("results_path", "./results"),
+            "results_path": kwargs.get("results_path", "./files/results"),
             "save_history_plot": kwargs.get("save_history_plot", False),
             "save_csv": kwargs.get("save_csv", False),
             "show_history_plot": kwargs.get("show_history_plot", True),

@@ -171,8 +171,8 @@ class RouteCheckpointStateTests(unittest.TestCase):
         """
         config = load_route_config(_CONFIGS / "smoke.yaml")
         config.common.continually_learn.save_task_checkpoints = True
-        config.common.continually_learn.checkpoint_dir = "results/task_checkpoints"
-        config.common.continually_learn.resume_from = "results/task_checkpoints"
+        config.common.continually_learn.checkpoint_dir = "files/results/task_checkpoints"
+        config.common.continually_learn.resume_from = "files/results/task_checkpoints"
         validate_route_config(config)
         for filename in ("extensions_smoke.yaml", "section11_smoke.yaml"):
             configured = load_route_config(_CONFIGS / filename)

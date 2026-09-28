@@ -12,10 +12,10 @@ contain:
 - generated image grids; and
 - progressive denoising GIFs under `gifs/` or still images under `images/`.
 
-HPO studies live under `results/hpo/<task>/<model>/<dataset>/` with a resumable
+HPO studies live under `files/results/hpo/<task>/<model>/<dataset>/` with a resumable
 `study.db`, `trials.csv`, and the exact input YAML for every trial. Individual
 runs are stored in that study's `runs/` directory. TensorBoard logs use compact
-dataset-specific paths under `results/hpo/_tb/`; the parameter-value sequence
+dataset-specific paths under `files/results/hpo/_tb/`; the parameter-value sequence
 in each custom event filename follows alphabetical parameter-name order, while
 the event text summary and resolved `config.yaml` retain the complete mapping.
 Every successful HPO run also contains `objectives.csv` and an animated
@@ -44,7 +44,7 @@ no CIFAR-10 platform comparison can be reported from this plan.
 This is a **test-informed benchmark** because earlier official-test HPO informed
 the recipe. The current joint LR is 0.001 with cosine decay; primary timestep
 ensemble weights are classifier 1.0 and distillation head 0.0. See the
-[thesis recipe and interpretation](../notebooks/thesis/HYPERPARAMETER_RATIONALE.md)
+[thesis recipe and interpretation](../../notebooks/thesis/HYPERPARAMETER_RATIONALE.md)
 for the complete settings and separate reference cosine durations.
 
 The previous `minimum_v5_tf220` 24-run design remains a historical record and

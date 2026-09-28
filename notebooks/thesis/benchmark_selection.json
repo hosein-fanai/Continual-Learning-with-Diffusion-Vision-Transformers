@@ -13,7 +13,7 @@
   "interpretation": "A fixed, reproducible benchmark of the declared TMCL-inspired adaptation. Paired intervals describe run-seed variability conditional on this recipe and benchmark, not uncertainty corrected for prior test-based selection.",
   "representative_hpo_evidence": [
     {
-      "path": "results/thesis_route_one/joint_classifier_hpo_v6/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_12-31-03 t0006/config.yaml",
+      "path": "files/results/thesis_route_one/joint_classifier_hpo_v6/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_12-31-03 t0006/config.yaml",
       "sha256": "3d807811adb01c6e2b463169e9f90de330ff69022c6a57f3b002d7985f098194",
       "recorded_data_selection": {
         "requested": {
@@ -29,7 +29,7 @@
       }
     },
     {
-      "path": "results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_23-06-00 t0010/config.yaml",
+      "path": "files/results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar10/joint_dit_classifier/runs/2026-09-17_23-06-00 t0010/config.yaml",
       "sha256": "b133e8b5ef11c0061909250c67e94e02eee2757ea1bc44a18f4839cbf288aec8",
       "recorded_data_selection": {
         "requested": {
@@ -45,7 +45,7 @@
       }
     },
     {
-      "path": "results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar100/joint_dit_classifier/runs/2026-09-17_22-57-53 t0024/config.yaml",
+      "path": "files/results/thesis_route_one/joint_classifier_hpo_v12/joint/dit_classifier/cifar100/joint_dit_classifier/runs/2026-09-17_22-57-53 t0024/config.yaml",
       "sha256": "f22de8cefe8b81b8c117b1396bef4d7f69063c47d92cac73f13cc415e2ce497e",
       "recorded_data_selection": {
         "requested": {

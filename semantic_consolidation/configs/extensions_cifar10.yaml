@@ -60,4 +60,4 @@ common:
   continually_learn:
     replay_candidate_multiplier: 2
   training:
-    results_path: ./results/semantic_consolidation_extensions_cifar10
+    results_path: ./files/results/semantic_consolidation_extensions_cifar10

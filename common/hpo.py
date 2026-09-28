@@ -3152,7 +3152,7 @@ def _build_trial_config(
             ``'fixed'``.
         feature_archive_path (str | pathlib.Path | None): Base path of the safe
             continual-CIFAR VAE feature archive. None uses the family's conventional
-            data/<dataset>_xception_gavgpooled_features_train_val_test_safe base when
+            files/data/<dataset>_xception_gavgpooled_features_train_val_test_safe base when
             needed; otherwise no feature archive is used. Defaults to ``None``.
         model_overrides (Mapping[str, object] | None): Immutable raw-model controls outside
             sampled template keys, such as bottleneck routes. None adds no overrides.
@@ -3752,7 +3752,7 @@ def _build_trial_config(
             # Point dense VAE replay at the dataset's saved feature archive.
             if return_features:
                 features_path = str(feature_archive_path or (
-                    Path("data")
+                    Path("files") / "data"
                     / (
                         f"{dataset_name}_xception_gavgpooled_features_"
                         "train_val_test_safe"
@@ -4458,7 +4458,7 @@ def run_hpo(
     n_trials: int = 30, 
     epochs: int = 30, 
     seed: int = 42, 
-    results_path: str = "results/hpo", 
+    results_path: str = "files/results/hpo",
     timeout: float | None = None,
     use_ensemble_accuracy: bool = False,
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
@@ -4526,7 +4526,7 @@ def run_hpo(
             Defaults to ``42``.
         results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``. Defaults
-            to ``'results/hpo'``.
+            to ``'files/results/hpo'``.
         timeout (float | None): Study optimization wall-time limit in seconds. None imposes
             no time limit. Optuna checks the limit between trials, so a running fit is not
             interrupted immediately. Defaults to ``None``.
@@ -4601,7 +4601,7 @@ def run_hpo(
             ``'fixed'``.
         feature_archive_path (str | pathlib.Path | None): Base path without '.npy' of a safe
             continual CIFAR VAE feature bundle. None resolves to
-            data/<dataset>_xception_gavgpooled_features_train_val_test_safe for that
+            files/data/<dataset>_xception_gavgpooled_features_train_val_test_safe for that
             task/family and is otherwise unused. Supplying an archive for another family is
             rejected. Defaults to ``None``.
         model_overrides (Mapping[str, object] | None): Immutable raw-model controls outside
@@ -4811,7 +4811,7 @@ def run_hpo(
         )
     # Use the standard safe feature archive for continual CIFAR VAE studies.
     if uses_feature_archive and feature_archive_path is None:
-        feature_archive_path = Path("data") / (
+        feature_archive_path = Path("files") / "data" / (
             f"{dataset_name.lower()}_xception_gavgpooled_features_"
             "train_val_test_safe"
         )

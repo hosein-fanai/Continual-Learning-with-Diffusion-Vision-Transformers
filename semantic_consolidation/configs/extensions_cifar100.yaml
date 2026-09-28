@@ -9,7 +9,7 @@ common:
     task_size: 10
     replay_candidate_multiplier: 2
   training:
-    results_path: ./results/semantic_consolidation_extensions_cifar100
+    results_path: ./files/results/semantic_consolidation_extensions_cifar100
 route:
   image_augmentation: tmcl
   augmentation_views: 4

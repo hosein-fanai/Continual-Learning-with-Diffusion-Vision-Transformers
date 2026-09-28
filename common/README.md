@@ -13,7 +13,7 @@ Use a `Config` for new experiments and `main` when all stages are needed:
 from common.config import load_config
 from common.train import main
 
-config = load_config("configs/default.yaml")
+config = load_config("files/configs/default.yaml")
 run = main(config)
 
 model = run["model"]
@@ -524,7 +524,7 @@ study = run_hpo(
     dataset_name="CIFAR10",
     n_trials=30,
     epochs=50,
-    results_path="results/hpo",
+    results_path="files/results/hpo",
 )
 ```
 
@@ -573,7 +573,7 @@ study = run_hpo(
         "average_forgetting",
     ],
     search_space_overrides={"wrapper_name": ["diffusion_classifier_v2"]},
-    results_path="results/distilled_v2_hpo",
+    results_path="files/results/distilled_v2_hpo",
 )
 ```
 

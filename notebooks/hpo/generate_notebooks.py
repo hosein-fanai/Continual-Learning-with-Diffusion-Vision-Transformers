@@ -6,7 +6,7 @@ Python source and markdown. They do not execute the generated experiments.
 The main function verifies NOTEBOOKS against common.hpo.SEARCH_SPACES and
 writes one notebook per entry, replacing existing files at those paths.
 
-Generated experiments use CIFAR10, 30 trials, seed 42, and results/hpo by
+Generated experiments use CIFAR10, 30 trials, seed 42, and files/results/hpo by
 default. Each setup cell exposes these values for editing. The result cell
 displays a Pareto set for multiple objectives or the best value/parameters for
 a single objective. Direct script execution writes notebooks; importing this
@@ -242,7 +242,7 @@ def make_notebook(task: str, model: str,
 
     The overview is followed by setup, search-space inspection, run_hpo invocation,
     and results. Setup fixes DATASET='CIFAR10', N_TRIALS=30, SEED=42, and
-    RESULTS_PATH='results/hpo', leaving them visible for subsequent notebook edits.
+    RESULTS_PATH='files/results/hpo', leaving them visible for subsequent notebook edits.
     The supplied epochs is written into setup. No validation or training occurs
     while building; search-space keys are resolved only when cells are executed.
 
@@ -261,7 +261,7 @@ def make_notebook(task: str, model: str,
     setup = f'''"""Configuration-driven HPO experiment using the shared task/model APIs.
 
 TASK and MODEL select a constrained search space; DATASET names the input
-dataset. The setup defaults to CIFAR10, 30 trials, seed 42, and results/hpo;
+dataset. The setup defaults to CIFAR10, 30 trials, seed 42, and files/results/hpo;
 EPOCHS is supplied by the notebook generator. Edit these visible constants
 before executing the study. The run cell constructs and trains trial models
 through Config, may download data, and writes configured study/report artifacts.
@@ -279,7 +279,7 @@ DATASET = "CIFAR10"
 N_TRIALS = 30
 EPOCHS = {epochs}
 SEED = 42
-RESULTS_PATH = "results/hpo"
+RESULTS_PATH = "files/results/hpo"
 '''
     inspect_space = '''# Inspect the constrained, task-specific search space before running.
 SEARCH_SPACES[TASK][MODEL]

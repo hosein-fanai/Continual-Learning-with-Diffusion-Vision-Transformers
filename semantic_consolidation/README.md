@@ -123,7 +123,7 @@ Outputs and data paths retain the project's repository-working-directory convent
 base_config: common_v1.yaml
 common:
   training:
-    results_path: ./results/my_semantic_experiment
+    results_path: ./files/results/my_semantic_experiment
 route:
   condition: learned
   acquisition_steps: 100
@@ -246,9 +246,9 @@ For comparisons, materialize all five from one template with paired seeds,
 class orders, data/replay settings and declared budgets:
 
 ```powershell
-python -m semantic_consolidation.controls --config semantic_consolidation/configs/cifar10.yaml --output results/route_controls --seeds 17 29 43
-python -m semantic_consolidation.study run --manifest results/route_controls/manifest.json
-python -m semantic_consolidation.study analyze --manifest results/route_controls/manifest.json
+python -m semantic_consolidation.controls --config semantic_consolidation/configs/cifar10.yaml --output files/results/route_controls --seeds 17 29 43
+python -m semantic_consolidation.study run --manifest files/results/route_controls/manifest.json
+python -m semantic_consolidation.study analyze --manifest files/results/route_controls/manifest.json
 ```
 
 Preparation does not train. Add `--timing-records <matching-pilot>/route_metrics.json`
@@ -292,7 +292,7 @@ conditions = {
     "clean_uniform": {"route": {"condition": "learned", "noise_levels": [0],
                                  "reliability": "uniform"}},
 }
-manifest = prepare_study(template, "results/noise_controls", [17, 29, 43],
+manifest = prepare_study(template, "files/results/noise_controls", [17, 29, 43],
                          conditions=conditions, phase="development")
 ```
 
@@ -327,9 +327,9 @@ Create paired streams with saved class permutations and randomized condition
 execution order using the existing `common.experiment` machinery:
 
 ```powershell
-python -m semantic_consolidation.study prepare --config semantic_consolidation/configs/cifar10.yaml --output results/route_paired_dev --seeds 17 29 43
-python -m semantic_consolidation.study run --manifest results/route_paired_dev/manifest.json
-python -m semantic_consolidation.study analyze --manifest results/route_paired_dev/manifest.json
+python -m semantic_consolidation.study prepare --config semantic_consolidation/configs/cifar10.yaml --output files/results/route_paired_dev --seeds 17 29 43
+python -m semantic_consolidation.study run --manifest files/results/route_paired_dev/manifest.json
+python -m semantic_consolidation.study analyze --manifest files/results/route_paired_dev/manifest.json
 ```
 
 The default comparison has learned, random, and extra-joint conditions, and the
@@ -402,7 +402,7 @@ Each run writes to the common timestamped results directory:
 import tensorflow as tf
 from semantic_consolidation.runner import load_inference_model
 
-model = load_inference_model("results/.../config.yaml")
+model = load_inference_model("files/results/.../config.yaml")
 # images: float32 NHWC pixels in [-1, 1], with the configured geometry.
 times = tf.zeros((tf.shape(images)[0],), dtype=tf.int32)
 probabilities = model.network.predict_class(
@@ -421,13 +421,13 @@ Enable the existing common task checkpoints in a standalone route configuration:
 common:
   continually_learn:
     save_task_checkpoints: true
-    checkpoint_dir: results/route_checkpoints
+    checkpoint_dir: files/results/route_checkpoints
 route:
   checkpoint_interval: 200
 ```
 
 After an interruption, run the same original route configuration with
-`common.continually_learn.resume_from: results/route_checkpoints`. Common selects
+`common.continually_learn.resume_from: files/results/route_checkpoints`. Common selects
 the newest valid completed task or active-fit snapshot and authenticates the
 settings, data, source and schedule. The default `checkpoint_interval: 0` keeps
 completed-task recovery. A positive interval also commits completed optimizer

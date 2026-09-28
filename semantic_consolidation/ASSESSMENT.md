@@ -4,7 +4,7 @@
 
 The selected route is consistent with the adaptation described in the thesis
 method draft; it is not an implementation-equivalent reproduction of TMCL or
-JDCL. The read-only manuscript check used `thesis/thesis_chapter_3.docx`,
+JDCL. The read-only manuscript check used `files/thesis/thesis_chapter_3.docx`,
 especially body paragraphs 87-91 (counting table paragraphs). These distinguish
 the independent acquired target and projection/head update scope from TMCL.
 The draft still contains unresolved protocol decisions; it supplies no measured

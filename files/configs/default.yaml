@@ -18,7 +18,7 @@ optimizer:
 training:
   task: classification
   epochs: 20
-  results_path: ./results
+  results_path: ./files/results
   save_weights: true
   seed: 42
   dtype_policy: float32

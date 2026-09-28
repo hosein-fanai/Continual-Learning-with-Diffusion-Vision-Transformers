@@ -79,7 +79,7 @@ training:
   save_gifs: false
   report_every_epoch: false
   save_weights: true
-  results_path: ./results/semantic_consolidation
+  results_path: ./files/results/semantic_consolidation
 
 continually_learn:
   class_num: 10

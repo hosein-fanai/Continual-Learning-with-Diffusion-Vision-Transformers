@@ -81,7 +81,7 @@ artifacts = ImageGenerator(
 ```
 
 The saving constructor immediately creates
-`results/YYYY-MM-DD_HH-MM-SS project_tag/images` and `.../gifs`. GIF mode asks
+`files/results/YYYY-MM-DD_HH-MM-SS project_tag/images` and `.../gifs`. GIF mode asks
 `sample` for both noisy-state and predicted-clean frame sequences. Filenames
 record the one-based epoch, sampling steps, guidance scale, and eta.
 With the example interval, artifact filenames contain `epoch-5`, `epoch-10`,

@@ -47,8 +47,8 @@ config = Config(
     model={"name": "unet", "kwargs": {"widths": [32, 64, 96]}}, 
     training={"task": "generation", "epochs": 50}
 )
-save_config(config, "results/resolved-config.yaml")
-config = load_config("results/resolved-config.yaml")
+save_config(config, "files/results/resolved-config.yaml")
+config = load_config("files/results/resolved-config.yaml")
 ```
 
 `save_config` keeps its full-output behavior by default. Pass `shorten=True` to
@@ -275,7 +275,7 @@ model:
 
 Here both branches use eight attention heads. Omitting `clf_mha_num_heads`
 keeps its default of four even with `set_nones: true`. See the
-[classifier defaults](../diffusion/models/transformer/README.md#classifier-example-and-clf_-defaults)
+[classifier defaults](../../diffusion/models/transformer/README.md#classifier-example-and-clf_-defaults)
 for component defaults and settings that do not inherit.
 Older saved classifier configs with `null` inheritance placeholders need
 `set_nones: true` to retain their previous behavior.
@@ -283,7 +283,7 @@ Older saved classifier configs with `null` inheritance placeholders need
 The YAML files under `old/` record experiments from earlier API revisions and
 contain legacy key names. They are archival records, not CLI examples or HPO
 bases. New studies generate current YAML files below
-`results/hpo/<task>/<model>/<dataset>/configs/` and reload every one before
+`files/results/hpo/<task>/<model>/<dataset>/configs/` and reload every one before
 training.
 
 The YAML examples are experiment inputs, not an additional default layer:
@@ -304,4 +304,4 @@ rewrites the final constructor mapping. The supported progressive-depth API
 preserves built layers and their weights under native Keras 3; classifier growth
 from `clf_depth=0` remains unsupported. Raw post-build `add_class()` is also
 unsupported; class expansion uses the wrapper's reconstruction path. See the
-[compatibility guide](../compatibility_migration.md).
+[compatibility guide](../../compatibility_migration.md).

@@ -123,13 +123,13 @@ The commands above retrieve the current token instead of saving one in this file
 Run this in a separate PowerShell terminal:
 
 ~~~powershell
-docker exec -it -w /workspace tf_env_220 tensorboard --logdir=/workspace/results --host=0.0.0.0 --port=6006
+docker exec -it -w /workspace tf_env_220 tensorboard --logdir=/workspace/files/results --host=0.0.0.0 --port=6006
 ~~~
 
 Open [TensorBoard](http://127.0.0.1:6006). Leave that terminal open while using
 TensorBoard; **Ctrl+C** stops this TensorBoard process.
 
-The project's default result trees sit under `results`. Ordinary training must
+The project's default result trees sit under `files/results`. Ordinary training must
 enable `training.tensorboard` to write TensorBoard logs. If you configured a
 different `training.tensorboard_path` or result directory, change `--logdir` to
 the matching path inside the container.
@@ -137,15 +137,15 @@ the matching path inside the container.
 For HPO-only logs, use this alternative instead of the command above:
 
 ~~~powershell
-docker exec -it -w /workspace tf_env_220 tensorboard --logdir=/workspace/results/hpo/_tb --host=0.0.0.0 --port=6006
+docker exec -it -w /workspace tf_env_220 tensorboard --logdir=/workspace/files/results/hpo/_tb --host=0.0.0.0 --port=6006
 ~~~
 
 Start only one TensorBoard process on port 6006 at a time. Port publishing makes
 the service reachable after you start it. TensorBoard launched with `docker exec`
 must be started again after the container restarts.
 
-Repository references: [results layout](results/README.md),
-[default configuration](configs/default.yaml), and
+Repository references: [results layout](files/results/README.md),
+[default configuration](files/configs/default.yaml), and
 [training log configuration](common/train.py).
 [TensorBoard guide](https://www.tensorflow.org/tensorboard/get_started)
 
@@ -262,7 +262,7 @@ Keep Python assertions enabled when running these tests.
 For example, serve result files through a temporary HTTP server:
 
 ~~~powershell
-docker exec -it -w /workspace tf_env_220 /usr/bin/python -m http.server 8080 --bind 0.0.0.0 --directory /workspace/results
+docker exec -it -w /workspace tf_env_220 /usr/bin/python -m http.server 8080 --bind 0.0.0.0 --directory /workspace/files/results
 ~~~
 
 Open [the result file server](http://127.0.0.1:8080). **Ctrl+C** stops it.

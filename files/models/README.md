@@ -13,7 +13,7 @@ same constructor configuration:
 ```python
 network = DiffusionTransformer(...)
 model = DiffusionModel(network, ...)
-model.load_weights("models/DiT/model.weights.h5")
+model.load_weights("files/models/DiT/model.weights.h5")
 ```
 
 Keras weights do not encode every Python constructor choice. Treat the nearby

@@ -597,7 +597,7 @@ class TrainReportingTests(unittest.TestCase):
             unittest runner.
         """
 
-        concrete_path = "results/2026-09-05_12-00-00"
+        concrete_path = "files/results/2026-09-05_12-00-00"
         history = {"loss": [1.0]}
         model = object()
 
@@ -643,7 +643,7 @@ class TrainReportingTests(unittest.TestCase):
         ) as report_mock:
             result = main(
                 task="classification",
-                results_path="results",
+                results_path="files/results",
                 trainset_len=1,
             )
 

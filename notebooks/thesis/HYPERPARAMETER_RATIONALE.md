@@ -100,7 +100,7 @@ typed defaults for other model options do not override the explicit thesis
 `model.wrapper_kwargs` or `continually_learn.ensemble_accuracy_kwargs`.
 
 The current campaign is `minimum_v6_tf220_21streams`. Its prepared
-[`frozen_design.json`](../../results/thesis_route_one/minimum_v6_tf220_21streams/frozen_design.json)
+[`frozen_design.json`](../../files/results/thesis_route_one/minimum_v6_tf220_21streams/frozen_design.json)
 binds two native manifests and 21 run configurations with seeds 1103, 2207 and
 3301. The user selected notebooks **03–09 only** before starting these runs:
 CIFAR-10 extra-joint and learned (six streams), and all five CIFAR-100 conditions
@@ -127,7 +127,7 @@ Implementation references: [CIFAR-10 recipe](configs/cifar10.yaml),
 [CIFAR-100 recipe](configs/cifar100.yaml),
 [reference budget resolution](reference_benchmarks.py), and
 [timestep selection and averaging](../../diffusion/metrics/ensemble_accuracy.py).
-The [saved freeze validation](../../results/thesis_route_one/minimum_v6_tf220_21streams/freeze_validation.json)
+The [saved freeze validation](../../files/results/thesis_route_one/minimum_v6_tf220_21streams/freeze_validation.json)
 records bounded software checks, not completed thesis experiments or convergence.
 
 ## Previous reduced recipe and source comparison (historical)

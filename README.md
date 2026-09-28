@@ -16,8 +16,8 @@ The root CLI loads a YAML configuration without training by default, or runs
 the configured experiment with `--train`:
 
 ```powershell
-python . configs/default.yaml
-python . --train configs/default.yaml
+python . files/configs/default.yaml
+python . --train files/configs/default.yaml
 ```
 
 Use `python . --help` for the complete command contract. The repository root
@@ -269,7 +269,7 @@ format.
 from common.config import load_config
 from common.train import main
 
-config = load_config("configs/default.yaml")
+config = load_config("files/configs/default.yaml")
 result = main(config)
 print(result["results_path"])
 ```
@@ -299,7 +299,7 @@ study = run_hpo(
     dataset_name="CIFAR10",
     n_trials=30,
     epochs=50,
-    results_path="results/hpo",
+    results_path="files/results/hpo",
     fit_method="fit_progressively",
     fit_kwargs={
         "stage_tasks": "timesteps_only",
@@ -443,7 +443,7 @@ from common.learner import continually_learn
 accuracies = continually_learn(
     class_num=10, 
     load_dataset_fn=load_cifar10, 
-    tuned_model_path="models/hyperas/cifar10_cnn_model_00.h5", 
+    tuned_model_path="files/models/hyperas/cifar10_cnn_model_00.h5",
     use_buffer=True, 
     buffer_kwargs={
         "maxlen": 10_000,
@@ -503,17 +503,30 @@ objectives, supported configurations, controls, and claim boundaries.
 
 ## Directory guide
 
+Project artifacts live under `files/`: `configs/`, `data/`, `gifs/`, `models/`,
+`others/`, `results/`, and `thesis/`. Run command examples from the repository
+root. Nested source directories such as `diffusion/models/`,
+`semantic_consolidation/configs/`, and `notebooks/thesis/` keep their locations.
+Archived snapshots and dated provenance records retain their original paths;
+for artifacts moved from these seven root directories, prepend `files/` when
+locating them in the current checkout. Frozen campaigns also bind source-file hashes,
+so reproducing them requires their matching archived source; the folder move
+does not revalidate them against the current code.
+
 - [`common/`](common/README.md): configuration, datasets, continual learner,
   replay buffer, losses, callbacks, plotting, and the training pipeline.
 - [`autoencoder/`](autoencoder/README.md): VAE and VAE-classifier models.
 - [`diffusion/`](diffusion/README.md): schedules, models, layers, metrics, and
   callbacks.
-- [`configs/`](configs/README.md): YAML configuration examples and schema use.
-- [`data/`](data/README.md): pre-extracted CIFAR feature arrays.
-- [`models/`](models/README.md): checkpoints and legacy model artifacts; this
+- [`files/configs/`](files/configs/README.md): YAML configuration examples and schema use.
+- [`files/data/`](files/data/README.md): pre-extracted CIFAR feature arrays.
+- [`files/gifs/`](files/gifs/): saved animations.
+- [`files/models/`](files/models/README.md): checkpoints and legacy model artifacts; this
   is not the `diffusion.models` source package.
 - [`notebooks/`](notebooks/README.md): exploratory, archived, and HPO experiments.
-- [`results/`](results/README.md): generated run artifacts and reports.
+- [`files/others/`](files/others/): supporting research notes and reports.
+- [`files/results/`](files/results/README.md): generated run artifacts and reports.
+- [`files/thesis/`](files/thesis/): thesis drafts, references, and source documents.
 - [`semantic_consolidation/`](semantic_consolidation/README.md): semantic modulation experiments.
 
 Maintained Python sources require module, class, and callable docstrings,

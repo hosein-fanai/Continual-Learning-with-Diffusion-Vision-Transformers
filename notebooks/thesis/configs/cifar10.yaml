@@ -37,7 +37,7 @@ common:
     verbose: 1
     # Seeded runs; nondeterministic GPU kernels are allowed.
     deterministic_ops: false
-    results_path: ./results/thesis_route_one/development/cifar10
+    results_path: ./files/results/thesis_route_one/development/cifar10
   continually_learn:
     save_task_checkpoints: true  # Dedicated per-stream locators are set at runtime.
     class_num: 10

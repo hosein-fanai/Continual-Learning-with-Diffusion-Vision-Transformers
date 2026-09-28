@@ -37,7 +37,7 @@ class JointClassifierProfileTests(unittest.TestCase):
     def make_config(self, overrides=None, **kwargs):
         return build_joint_classifier_config(
             _Trial(), dataset_name="cifar10", epochs=50, seed=17,
-            results_path="results/profile-test", search_space_overrides=overrides,
+            results_path="files/results/profile-test", search_space_overrides=overrides,
             **kwargs,
         )
 
@@ -265,7 +265,7 @@ class JointClassifierProfileTests(unittest.TestCase):
         inputs = deepcopy((overrides, ensemble_options))
         config = build_joint_classifier_config(
             _Trial(), dataset_name="CIFAR100", epochs=50, seed=17,
-            results_path="results/profile-test", dtype_policy="float32",
+            results_path="files/results/profile-test", dtype_policy="float32",
             validation_source="test", validation_ratio=0.0,
             search_space_overrides=overrides, ensemble_accuracy_kwargs=ensemble_options,
         )

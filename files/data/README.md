@@ -14,16 +14,16 @@ through the explicit compatibility path:
 ```python
 from common.utils import load_samples, save_samples
 
-base = "data/cifar10_xception_gavgpooled_features_train_val_test"
+base = "files/data/cifar10_xception_gavgpooled_features_train_val_test"
 legacy_bundle = load_samples(base, ".npy", allow_pickle=True)
 save_samples(
     legacy_bundle,
-    "data/cifar10_xception_gavgpooled_features_train_val_test_safe",
+    "files/data/cifar10_xception_gavgpooled_features_train_val_test_safe",
     ".npy",
 )
 
 train_features, val_features, test_features = load_samples(
-    "data/cifar10_xception_gavgpooled_features_train_val_test_safe", ".npy"
+    "files/data/cifar10_xception_gavgpooled_features_train_val_test_safe", ".npy"
 )
 ```
 

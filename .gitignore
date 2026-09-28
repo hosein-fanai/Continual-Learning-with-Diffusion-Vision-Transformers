@@ -2,20 +2,14 @@ __pycache__
 .ipynb_checkpoints
 .vscode
 .agents
-.tmp
 
 old
-tmp
 
-allocation_study
-gist_memory
-
-data
-results
-reports
-gifs
-others
-/thesis
+/files/data/*
+/files/results/*
+/files/gifs/
+/files/others/
+/files/thesis/
 
 *.tf
 
@@ -24,5 +18,5 @@ AGENTS.md
 cifar10_cnn_model_00.h5
 cifar100_dnn_model_00.h5
 
-!data/README.md
-!results/README.md
+!/files/data/README.md
+!/files/results/README.md

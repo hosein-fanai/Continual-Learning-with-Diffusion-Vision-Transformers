@@ -61,7 +61,7 @@ class ReplayConfigTests(unittest.TestCase):
             Config().continually_learn.buffer_kwargs["strategy"],
             "fifo",
         )
-        default_path = Path(__file__).parents[2] / "configs" / "default.yaml"
+        default_path = Path(__file__).parents[2] / "files" / "configs" / "default.yaml"
         loaded_config = load_config(default_path)
         loaded = loaded_config.continually_learn
         self.assertEqual(

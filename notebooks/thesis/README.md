@@ -173,7 +173,7 @@ plan. Supplemental notebooks **11 and 12** remain outside the approved scope.
 Downloading the source alone does not recreate a frozen campaign or its results.
 
 Colab virtual-machine files are temporary. Preserve the whole relevant
-`results/thesis_route_one/` campaign or development directory, including
+`files/results/thesis_route_one/` campaign or development directory, including
 checkpoints and `frozen_design.json`, outside the runtime before deleting it.
 Keeping only the notebook in Drive does not save the VM's other files. See the
 [Colab FAQ](https://research.google.com/colaboratory/faq.html).
@@ -254,7 +254,7 @@ with the replay methods. Both references use the same primary-head-only,
 uniform timestep averaging described below.
 
 Each run saves a separate directory under
-`results/thesis_route_one/reference_benchmarks`, including the resolved recipe,
+`files/results/thesis_route_one/reference_benchmarks`, including the resolved recipe,
 source provenance, final per-task accuracy, summary and native training outputs.
 Naive runs also save their task accuracy matrix and completed-task checkpoints.
 These additional runs are separate from the approved 21-stream campaign and the
@@ -313,7 +313,7 @@ Phase changes require identical hashed validation examples and positive actual c
 
 ## Freeze, interruption and rerun
 
-The current campaign path is `results/thesis_route_one/minimum_v6_tf220_21streams/`.
+The current campaign path is `files/results/thesis_route_one/minimum_v6_tf220_21streams/`.
 Notebook 01 reproduces preparation with `scope="notebooks_03_09"`,
 `phase="benchmark"` and the declared selection provenance. Skip preparation when
 this campaign has already been supplied; notebooks 03–09 consume its
@@ -324,7 +324,7 @@ cannot be resealed silently. Source or scientific-setting changes require a new
 campaign.
 
 The historical 24-stream `minimum_v5_tf220` campaign retains its separate
-[documentation amendment](../../results/thesis_route_one/minimum_v5_tf220/documentation_amendments/001.json).
+[documentation amendment](../../files/results/thesis_route_one/minimum_v5_tf220/documentation_amendments/001.json).
 That amendment preserves its original record and source/design ZIP,
 records the old and new document/design digests, and verifies that executable
 sources, configuration, manifests, notebook code cells and run identities are

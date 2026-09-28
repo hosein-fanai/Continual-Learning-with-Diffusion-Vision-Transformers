@@ -101,7 +101,7 @@ def configure_reference(
     config.training.task = 'joint' if benchmark == 'offline_joint' else 'continual'
     config.training.fit_method = 'fit'
     config.training.project_tag = f'{benchmark}-{dataset}-seed-{seed}'
-    config.training.results_path = str(results_root or './results/thesis_route_one/reference_benchmarks')
+    config.training.results_path = str(results_root or './files/results/thesis_route_one/reference_benchmarks')
     config.training.report_every_epoch = config.training.show_images = config.training.save_gifs = False
     config.training.use_valset = True
     config.training.patience = 0

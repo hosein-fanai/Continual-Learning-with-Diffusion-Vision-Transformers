@@ -22,7 +22,7 @@ from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
 
 
-models_path = "./models"
+models_path = "./files/models"
 hyperas_path = os.path.join(models_path, "hyperas")
 
 best_score = -float("inf")
@@ -860,7 +860,7 @@ def save_logs(
     """Format one hyperparameter-search record and write and/or print it.
 
     Args:
-        model_name (str): Filename stem under ``./models/hyperas/logs``.
+        model_name (str): Filename stem under ``./files/models/hyperas/logs``.
         i (int): Optimization iteration number included when both search-space
             values and names are nonempty.
         search_space (Sequence[object] | None): Selected hyperparameter values.
@@ -908,7 +908,7 @@ def save_logs(
 
     # Append the message to the configured log file when requested.
     if where_to == "file" or where_to == "both":
-        with open(f"./models/hyperas/logs/{model_name}.txt", "at") as f: 
+        with open(f"./files/models/hyperas/logs/{model_name}.txt", "at") as f:
             f.write(txt)
 
     # Print the message to standard output when requested.

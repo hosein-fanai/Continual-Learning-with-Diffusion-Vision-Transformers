@@ -2226,7 +2226,7 @@ class TrainingConfig:
             callbacks are skipped for no-EMA and VAE/swap models. Defaults to ``True``.
         results_path (str | os.PathLike[str] | None): Base artifact directory passed to the
             image callback. ``None`` is supported only by display-only runs whose runtime
-            saving options are all disabled. Defaults to ``'./results'``.
+            saving options are all disabled. Defaults to ``'./files/results'``.
         save_weights (bool): Save final wrapper weights and record their path. Dynamic
             diffusion weights require a paired updated config file; training writes it even
             if ordinary config saving was disabled. Defaults to ``True``.
@@ -2294,7 +2294,7 @@ class TrainingConfig:
     use_valset: bool = True
     show_images: bool = False
     save_gifs: bool = True
-    results_path: str | os.PathLike[str] | None = "./results"
+    results_path: str | os.PathLike[str] | None = "./files/results"
     save_weights: bool = True
     task: str = "legacy"
     seed: int | None = None
@@ -2481,7 +2481,7 @@ def load_config(
 
     Args:
         path (str | os.PathLike | None): YAML file path. ``None`` returns ``Config()``
-            and does not read ``configs/default.yaml``. A YAML file may omit
+            and does not read ``files/configs/default.yaml``. A YAML file may omit
             sections/fields to receive dataclass defaults, but its root must be a
             mapping. Defaults to ``None``.
 

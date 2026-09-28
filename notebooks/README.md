@@ -30,7 +30,7 @@ training/validation separation and confirmation protocols.
 The [thesis workflow](thesis/README.md) provides the approved fixed,
 test-informed benchmark through **notebooks 03–09 only**: three paired repeats
 per notebook, one next unfinished repeat per fresh-kernel launch, for **21 streams**.
-They use `results/thesis_route_one/minimum_v6_tf220_21streams/`. Notebook 01 can
+They use `files/results/thesis_route_one/minimum_v6_tf220_21streams/`. Notebook 01 can
 reproduce preparation but is unnecessary when the prepared campaign is supplied;
 notebook 10 provides optional saved-results collection. Notebook 02 remains the
 unchanged historical 24-stream entry point. Supplemental notebooks 11/12 are

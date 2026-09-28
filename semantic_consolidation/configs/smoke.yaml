@@ -23,7 +23,7 @@ common:
       test_steps: 2
   training:
     epochs: 1
-    results_path: ./results/semantic_consolidation_smoke
+    results_path: ./files/results/semantic_consolidation_smoke
   continually_learn:
     class_num: 4
     class_order: [2, 0, 3, 1]

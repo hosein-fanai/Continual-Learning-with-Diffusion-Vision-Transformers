@@ -101,7 +101,7 @@ it is outside the 24 supported notebooks and the generator's output matrix.
 
 5. The final cell displays the trial table and either the best single-objective
    trial or the Pareto-optimal joint trials. Study artifacts are written below
-   `results/hpo/<task>/<model>/<dataset>/` by default.
+   `files/results/hpo/<task>/<model>/<dataset>/` by default.
 
 Each successful trial saves its resolved YAML config, final model weights,
 history and evaluation CSV files, plots, available trajectory GIFs, and
@@ -109,7 +109,7 @@ TensorBoard events. The
 TensorBoard event suffix lists every sampled value in alphabetical parameter
 name order; the complete name-to-value mapping is also stored in the trial
 config and TensorBoard text summary. Compact logs live below
-`results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
+`files/results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
 gives a study-level table.
 
 Optuna feedback comes from the post-training validation evaluation of the same

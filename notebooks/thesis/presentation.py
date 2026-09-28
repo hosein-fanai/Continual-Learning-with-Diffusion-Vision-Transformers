@@ -54,7 +54,7 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
         bundle (dict): Dictionary returned by common.model.get_model, with the live model and
             native continual results.
         output_dir (str | Path | None): Separate directory for saved view artifacts. None uses
-            results/thesis_route_one/notebook_views/<run-name> below the repository root.
+            files/results/thesis_route_one/notebook_views/<run-name> below the repository root.
         details (bool): True includes saved diagnostic figures and extended views; False keeps
             the compact scalar presentation.
 
@@ -75,7 +75,7 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     project, result_details = config.common, bundle["continual_details"]
     run = Path(project.training.results_path).resolve()
     views = (Path(output_dir).resolve() if output_dir is not None else
-             Path(__file__).resolve().parents[2] / "results/thesis_route_one/notebook_views" / run.name)
+             Path(__file__).resolve().parents[2] / "files/results/thesis_route_one/notebook_views" / run.name)
     # Notebook views must be separate from original run artifacts.
     if views == run or run in views.parents or views in run.parents:
         raise ValueError("Notebook views must be separate from original run artifacts.")
