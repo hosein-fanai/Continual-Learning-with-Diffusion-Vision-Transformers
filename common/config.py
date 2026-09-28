@@ -1306,6 +1306,13 @@ class DiffusionModelConfig(KwargsMixin):
             ``None``.
         defer_teacher (bool): Permit a positive teacher objective to start without a teacher
             so continual learning can attach one later. Defaults to ``False``.
+        trainable_teacher (bool): Compile an attached runtime teacher independently
+            and enable fit_teacher. The matching wrapper handles noise prediction,
+            or noise plus classes for classifiers. Defaults to ``False``.
+        teacher_training (str): When trainable_teacher is true, continually fit the
+            teacher before each task with ``"each_task"`` (default), or only before
+            the first task with ``"first_task"``. Explicit fit_teacher calls are
+            independent of this schedule.
     """
 
     use_ema: bool = True
@@ -1338,6 +1345,8 @@ class DiffusionModelConfig(KwargsMixin):
     seen_classes: dict[object, int] = field(default_factory=dict)
     seed: int | None = None
     defer_teacher: bool = False
+    trainable_teacher: bool = False
+    teacher_training: str = "each_task"
 
 
 @dataclass
@@ -1762,6 +1771,15 @@ class ModelConfig:
             families; a classifier-only model family selects itself. Defaults to ``None``.
         classifier_kwargs (dict): Target-classifier architecture arguments. Defaults to a
             fresh ``{}`` for each instance.
+        conv_base_name (str): Default ImageNet backbone for a ``pretrained`` model
+            or external classifier. Supports Xception and EfficientNetV2B0/B1/B2/B3,
+            EfficientNetV2S/M/L (case-insensitive). The matching ``kwargs`` or
+            ``classifier_kwargs`` entry takes precedence. Inputs must be raw RGB
+            pixels in [0, 255]; standalone pretrained models use
+            ``dataset.preprocess=None``. External classifiers share the replay
+            pipeline's coordinates; ``preprocess=""`` explicitly retains raw
+            pixels even when the primary family defaults to normalization.
+            Defaults to ``"Xception"``.
         diffusion_transformer (DiffusionTransformerConfig): Typed DiffusionTransformer
             settings for the matching generic name, or for legacy with_classifier=False.
             Nonempty generic kwargs take precedence. Defaults to a fresh
@@ -1819,6 +1837,7 @@ class ModelConfig:
     wrapper_kwargs: dict = field(default_factory=dict)
     classifier_name: str | None = None
     classifier_kwargs: dict = field(default_factory=dict)
+    conv_base_name: str = "Xception"
 
     diffusion_transformer: DiffusionTransformerConfig = field(
         default_factory=DiffusionTransformerConfig

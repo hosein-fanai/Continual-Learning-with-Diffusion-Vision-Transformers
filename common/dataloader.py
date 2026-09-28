@@ -1330,7 +1330,7 @@ def get_datasets(
         ``"standardize"``, ``sigmoid`` uses ``"min-max"``, and linear/``None``
         uses ``"normalize"``. The returned continual loader receives the same
         recorded setting. Direct pretrained calls default to raw images because
-        Xception owns their rescaling; non-VAE direct families retain
+        the selected backbone owns their rescaling; non-VAE direct families retain
         standardization. Conditional VAEs also record ``onehot_labels=True``.
         Continual mode loads and sizes the selected training pool for optimizer
         setup, then defers task-specific dataset creation to the learner.

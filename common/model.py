@@ -15,24 +15,24 @@ from tensorflow.keras import losses
 
 from copy import deepcopy
 
+from numbers import Integral
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from common.config import (
-    Config,
-    normalize_training_task,
-    resolve_continual_schedule
-)
+from common.config import Config, normalize_training_task, resolve_continual_schedule
 from common.dataloader import get_dataset_spec, _resolve_dataset_options
 from common.keras_compat import register_optimizer_variables
-from common.runtime import (
-    configure_runtime, 
-    derive_seed, 
-    effective_seed
-)
+from common.runtime import configure_runtime, derive_seed
 
 
 _CLASSIFIER_MODELS = {"cnn", "dnn", "pretrained", "hp-tuned"}
+_PRETRAINED_CONV_BASES = {
+    name.lower(): name for name in (
+        "Xception", "EfficientNetV2B0", "EfficientNetV2B1", 
+        "EfficientNetV2B2", "EfficientNetV2B3", "EfficientNetV2S", 
+        "EfficientNetV2M", "EfficientNetV2L"
+    )
+}
 _DIFFUSION_MODELS = {
     "diffusion_transformer", "dit_classifier", "dit_decoder", 
     "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
@@ -391,7 +391,8 @@ def _get_classifier_model(
     use_loaded_opt: bool = False, 
     verbose: bool | int = 1, 
     architecture_kwargs: Mapping[str, object] | None = None, 
-    seed: int | None = None
+    seed: int | None = None, 
+    conv_base_name: str = "Xception"
 ) -> Any:
     """Build and compile one of four legacy image/feature classifiers.
 
@@ -399,7 +400,7 @@ def _get_classifier_model(
         class_num (int): Positive output class count and final softmax width.
         model_type (str): Case-insensitive ``"pretrained"``, ``"hp-tuned"``,
             ``"CNN"``, or ``"DNN"`` selection. ``pretrained`` resizes
-            ``32x32x3`` images and uses Xception; ``CNN`` consumes
+            raw ``32x32x3`` RGB images in [0, 255]; ``CNN`` consumes
             ``32x32x3`` images; ``DNN``
             consumes 2,048-element feature vectors; ``hp-tuned`` clones a saved
             model's architecture except for its original output layer.
@@ -410,13 +411,15 @@ def _get_classifier_model(
         dropout_rate (float): Fraction dropped before the final classifier;
             normally in ``[0, 1)``.
             Defaults to ``0.0``.
-        num_last_not_frozen (int | None): For Xception, the number of trailing
-            layers left trainable. Earlier layers are frozen; ``0`` freezes the
-            complete convolutional base and ``None`` leaves the base trainable.
+        num_last_not_frozen (int | None): Number of trailing base layers eligible
+            for training. Earlier layers and all BatchNormalization layers are
+            frozen; ``0`` freezes the complete base and ``None`` enables every
+            non-BatchNormalization layer. Oversized tails enable the whole base
+            except BatchNormalization. Recompile after changing trainability.
             Defaults to ``3``.
         resize (tuple[int, int]): ``(height, width)`` used to resize images and
-            define Xception's input size.  Xception imposes its own minimum-size
-            requirements.
+            define the base's input size. Minimum dimension: 71 for Xception,
+            32 for EfficientNetV2.
             Defaults to ``(299, 299)``.
         compile_args (Mapping[str, object] | None): Overrides or extends defaults
             ``{"optimizer": "adam", "loss":
@@ -450,6 +453,11 @@ def _get_classifier_model(
         seed (int | None): Optional experiment seed used to derive independent
             dropout streams for each constructed classifier branch.
             Defaults to ``None``, leaving dropout seeds unspecified.
+        conv_base_name (str): Case-insensitive ImageNet backbone for
+            ``pretrained``: Xception (default), EfficientNetV2B0/B1/B2/B3,
+            EfficientNetV2S/M/L. Xception rescales pixels externally;
+            EfficientNetV2 retains its built-in preprocessing. Ignored for
+            other model types. Weights may be downloaded by Keras.
 
     Returns:
         tf.keras.Sequential: A built, compiled classifier mapping a batch of
@@ -458,11 +466,14 @@ def _get_classifier_model(
 
     Raises:
         TypeError: If ``architecture_kwargs`` contains an unsupported key.
-        ValueError: If a fine-tuning depth is negative, an hp-tuned model path
-            or optimizer is unavailable, CNN filter/depth lengths differ, or a
-            pooling/model option is unsupported.
+        ValueError: If a pretrained backbone, fine-tuning depth, or resize is
+            invalid, an hp-tuned model path or optimizer is unavailable, CNN
+            filter/depth lengths differ, or a pooling/model option is unsupported.
 
     Note:
+        Fit a fresh pretrained head with ``num_last_not_frozen=0`` before
+        unfreezing a tail; keep BatchNormalization frozen and recompile with
+        a fresh low-learning-rate optimizer (for example Adam(1e-5)).
         ``hp-tuned`` preserves every loaded non-output layer and its weights,
         while replacing the saved output head with a freshly initialized head
         of width ``class_num``.
@@ -474,21 +485,42 @@ def _get_classifier_model(
     class_num = int(class_num)
     model_type = str(model_type).lower()
     dropout_rate = float(dropout_rate)
-    # Preserve None as the explicit all-trainable Xception setting.
+
+    # Reject lossy coercion of layer counts, which changes the experiment.
     if num_last_not_frozen is not None:
+        # A fractional, boolean, or text count is not a layer selection.
+        if model_type == "pretrained" and (
+            isinstance(num_last_not_frozen, bool)
+            or not isinstance(num_last_not_frozen, Integral)
+        ):
+            raise ValueError("num_last_not_frozen must be a nonnegative integer or None.")
         num_last_not_frozen = int(num_last_not_frozen)
         # A negative tail would silently freeze the complete pretrained base.
         if num_last_not_frozen < 0:
             raise ValueError("num_last_not_frozen must be nonnegative or None.")
 
+    # Other classifier modes retain their historical unused-option coercion.
+    if model_type == "pretrained":
+        try:
+            resize = tuple(resize)
+        except TypeError as error:
+            raise ValueError("resize must contain two positive integers.") from error
+        # Keep image geometry integral before constructing application weights.
+        if len(resize) != 2 or any(
+            isinstance(size, bool) or not isinstance(size, Integral) or size <= 0
+            for size in resize
+        ):
+            raise ValueError("resize must contain two positive integers.")
+
     resize = tuple(int(size) for size in resize)
 
     compile_args = {
-        **get_compile_args(),
+        **get_compile_args(), 
         **(compile_args or {})
     }
     architecture_kwargs = dict(architecture_kwargs or {})
     stable_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
+
     # Keep custom local architectures separate from saved/pretrained models.
     if architecture_kwargs and model_type in ("pretrained", "hp-tuned"):
         raise ValueError(
@@ -498,36 +530,70 @@ def _get_classifier_model(
     if model_type == "hp-tuned" and not model_path:
         raise ValueError("model_path is required for an hp-tuned classifier.")
 
-    # Build an ImageNet Xception transfer-learning classifier.
+    # Only resolve known application constructors with a defined pixel contract.
     if model_type == "pretrained":
-        conv_base = applications.Xception(
-            include_top=False, 
-            input_shape=(resize[0], resize[1], 3)
+        canonical_name = _PRETRAINED_CONV_BASES.get(
+            conv_base_name.lower() 
+            if isinstance(conv_base_name, str) 
+            else None
         )
-        # Keep all pretrained layers trainable for None; otherwise freeze the earlier layers.
+
+        # Reject unknown names without evaluating arbitrary attributes.
+        if canonical_name is None:
+            raise ValueError(
+                f"Unsupported conv_base_name {conv_base_name!r}; choose from "
+                + ", ".join(_PRETRAINED_CONV_BASES.values()) + "."
+            )
+
+        minimum_size = 71 if canonical_name == "Xception" else 32
+
+        # Validate the selected application's spatial requirement up front.
+        if min(resize) < minimum_size:
+            raise ValueError(
+                f"{canonical_name} requires resize dimensions >= {minimum_size}."
+            )
+
+        base_kwargs = {} if canonical_name == "Xception" else {
+            "include_preprocessing": True
+        }
+        conv_base = getattr(applications, canonical_name)(
+            include_top=False, 
+            weights="imagenet", 
+            input_shape=(resize[0], resize[1], 3), 
+            **base_kwargs
+        )
+        # Frozen BN uses its pretrained statistics even during model.fit().
         frozen_layers = 0 if num_last_not_frozen is None else (
             len(conv_base.layers) - num_last_not_frozen
         )
-        for layer in conv_base.layers[:max(0, frozen_layers)]:
-            layer.trainable = False
+        for index, layer in enumerate(conv_base.layers):
+            layer.trainable = index >= max(0, frozen_layers) and not isinstance(
+                layer, layers.BatchNormalization
+            )
 
-        model = models.Sequential([
-            layers.Resizing(
-                resize[0],
-                resize[1],
-                input_shape=(32, 32, 3), 
-                name="resize"
-            ), 
-            layers.Rescaling(
-                scale=1. / 127.5, 
-                offset=-1., 
+        preprocessing = [
+            layers.Input(shape=(32, 32, 3)), 
+            layers.Resizing(resize[0], resize[1], name="resize")
+        ]
+        # EfficientNetV2 already owns its input scaling inside the base.
+        if canonical_name == "Xception":
+            preprocessing.append(layers.Rescaling(
+                scale=1. / 127.5,
+                offset=-1.,
                 name="xception_preprocess"
-            ), 
+            ))
+        model = models.Sequential([
+            *preprocessing,
             conv_base, 
             layers.GlobalAveragePooling2D(), 
             layers.Dropout(
                 dropout_rate, 
-                seed=derive_seed(seed, "classifier", "pretrained", "dropout")
+                seed=derive_seed(
+                    seed, 
+                    "classifier", 
+                    "pretrained", 
+                    "dropout"
+                )
             ), 
             layers.Dense(
                 class_num, 
@@ -738,6 +804,10 @@ def get_model(
         ``classifier_kwargs`` default to empty mappings and are copied before
         use. ``wrapper_name=None`` infers the appropriate diffusion wrapper.
         ``classifier_name=None`` selects DNN for VAE replay and CNN otherwise.
+        ``conv_base_name="Xception"`` selects the ImageNet backbone for pretrained
+        classifiers; EfficientNetV2B0/B1/B2/B3/S/M/L are also supported. Config mode
+        uses ``model.conv_base_name`` unless the matching model/classifier keyword
+        mapping overrides it. Direct top-level settings override ``model_kwargs``.
         ``onehot_labels=False`` selects sparse classifier loss; conditioned
         VAEs require their separate one-hot conditioning inputs.
         ``loss_function="mse"`` selects mean squared error.
@@ -820,7 +890,7 @@ def get_model(
   
     legacy_keys = {
         "class_num", "model_type", "model_path", "dropout_rate", 
-        "num_last_not_frozen", "resize", "compile_args", 
+        "num_last_not_frozen", "resize", "compile_args", "conv_base_name",
         "use_loaded_opt", "verbose", "architecture_kwargs", "seed", 
         "dtype_policy", "deterministic_ops"
     }
@@ -917,6 +987,9 @@ def get_model(
             # Forward documented classifier shortcuts into model options.
             if key in kwargs:
                 model_kwargs[key] = kwargs[key]
+        # A backbone shortcut targets classifiers, never the raw replay network.
+        if "conv_base_name" in kwargs and model_name in _CLASSIFIER_MODELS:
+            model_kwargs["conv_base_name"] = kwargs["conv_base_name"]
     # Resolve model settings from typed project configuration.
     else:
         dataset_name = config.dataset.name
@@ -1110,7 +1183,13 @@ def get_model(
         model_path = options.pop("model_path", "")
         dropout_rate = options.pop("dropout_rate", 0.)
         num_last_not_frozen = options.pop("num_last_not_frozen", 3)
-        resize = tuple(options.pop("resize", (299, 299)))
+        resize = options.pop("resize", (299, 299))
+        conv_base_name = options.pop(
+            "conv_base_name",
+            config.model.conv_base_name if config is not None else kwargs.get(
+                "conv_base_name", "Xception"
+            ),
+        )
         architecture_kwargs = deepcopy(
             options.pop("architecture_kwargs", {}) or {}
         )
@@ -1135,10 +1214,10 @@ def get_model(
                 "input_shape": image_shape, 
                 **architecture_kwargs
             }
-        # Enforce the three-channel input contract of pretrained Xception.
+        # Enforce the three-channel input contract of ImageNet backbones.
         elif name == "pretrained" and image_shape[-1] != 3:
             raise ValueError(
-                "The pretrained Xception classifier requires three-channel inputs."
+                "The pretrained classifier requires three-channel inputs."
             )
 
         # Choose categorical cross-entropy for one-hot targets and sparse loss for IDs.
@@ -1160,7 +1239,8 @@ def get_model(
             model_type=name,
             model_path=model_path, 
             dropout_rate=dropout_rate, 
-            num_last_not_frozen=num_last_not_frozen, 
+            num_last_not_frozen=num_last_not_frozen,
+            conv_base_name=conv_base_name,
             resize=resize, 
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 

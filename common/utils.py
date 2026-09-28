@@ -550,7 +550,10 @@ def create_gif(
         print(f"GIF saved to '{output_path}'.")
 
 
-def show_img(x: object, y: Sequence[object] | None = None) -> None:
+def show_img(
+    x: object, 
+    y: Sequence[object] | None = None
+) -> None:
     """Display one image without axes and optionally add a label title.
 
     Args:

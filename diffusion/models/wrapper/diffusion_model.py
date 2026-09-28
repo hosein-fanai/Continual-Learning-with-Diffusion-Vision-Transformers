@@ -86,8 +86,12 @@ class DiffusionModel(ArgumentSaverModel):
             zero-based classifier targets in dynamic-class mode. It is the same
             dictionary stored in ``_init_config``, so newly observed labels are
             reflected immediately in wrapper configuration.
-        teacher_network (tf.keras.Model | None): Independent frozen raw teacher,
-            installed at runtime and omitted from tracked student weights/configuration.
+        teacher_network (tf.keras.Model | None): Independent raw teacher, frozen
+            outside fit_teacher and excluded from student weights/config.
+        trainable_teacher (bool): Enable separately compiled teacher training through
+            fit_teacher. Ordinary student fitting never optimizes teacher weights.
+        teacher_training (str): Continual learning trains the teacher before each task
+            with "each_task", or only before the first task with "first_task".
         use_noise_distil_loss (bool): Positive noise-teaching coefficient with an
             attached compatible teacher; deferred teacher-free tasks leave it false.
         seed (int | None): Validated default random seed; None supplies no wrapper seed.
@@ -102,6 +106,8 @@ class DiffusionModel(ArgumentSaverModel):
         teacher_network: tf.keras.Model | None = None, 
         use_ema: bool = True, 
         defer_teacher: bool = False, 
+        trainable_teacher: bool = False, 
+        teacher_training: Literal["each_task", "first_task"] = "each_task", 
         test_network_name: NetworkName = "ema", 
         ema_decay: float = 0.999, 
         scheduler_name: SchedulerName = "clipped_cosine", 
@@ -129,7 +135,7 @@ class DiffusionModel(ArgumentSaverModel):
         map_preprocess: bool = False, 
         map_num_parallel_calls: int | None = 1, 
         seen_classes: dict[object, int] = {}, 
-        seed: int | None = None, 
+        seed: int | None = None,
         **kwargs: object
     ) -> None:
         """Initialize diffusion state and an optional EMA network.
@@ -237,10 +243,18 @@ class DiffusionModel(ArgumentSaverModel):
                 teacher's noise prediction on the same noisy inputs.
                 Defaults to ``0.0``.
             teacher_network (tf.keras.Model | None): Independent raw diffusion network or
-                wrapper whose raw network is frozen
-                in place. None installs no teacher. An attached teacher forces deferred
+                wrapper whose raw network is frozen outside fit_teacher.
+                None installs no teacher. An attached teacher forces deferred
                 reconstruction because runtime teacher objects are not serialized.
                 Defaults to ``None``.
+            trainable_teacher (bool): Enable fit_teacher and compile an independent
+                teacher optimizer with the student's compile settings. Defaults to False.
+                The teacher reuses this wrapper family's supervised training and growth
+                logic, without EMA, auxiliary losses, or another distillation teacher.
+            teacher_training (str): With trainable_teacher=True, continual learning
+                fits the teacher before every task ("each_task", default), or only
+                before the first task ("first_task"). Explicit fit_teacher calls
+                always train the teacher regardless of this scheduling option.
             defer_teacher (bool): Permit a positive teacher objective to start
                 without a teacher so continual learning can attach one later.
                 Defaults to ``False``.
@@ -274,8 +288,10 @@ class DiffusionModel(ArgumentSaverModel):
         self._check_assertions(locals())
         self._save_init_args(
             locals(), 
-            exclude=("self", "kwargs", "__class__", "network")
+            exclude=("self", "kwargs", "__class__", "network", "teacher_network")
         )
+        # A trainable teacher must never join the student's tracked variables.
+        object.__setattr__(self, "teacher_network", teacher_network)
         # Public Sequential replacement keeps the wrapper's tracked state stable
         # when a task boundary reconstructs its raw and EMA networks.
         self._network_holder = models.Sequential(name=f"{self.name}__raw")
@@ -373,7 +389,8 @@ class DiffusionModel(ArgumentSaverModel):
         self._preprocess_training = None
         self._map_preprocess_without_teacher = bool(self.map_preprocess)
 
-        # An installed runtime teacher makes teacher-free configuration reconstruction permissible.
+        # An installed runtime teacher makes teacher-free
+        # configuration reconstruction permissible.
         if self.teacher_network is not None:
             self.defer_teacher = True
             self._init_config["defer_teacher"] = True
@@ -458,6 +475,11 @@ class DiffusionModel(ArgumentSaverModel):
             "p_uncond must be in the range of [0., 1.]."
         )
 
+        require(
+            local_vars["teacher_training"] in ("each_task", "first_task"), 
+            "teacher_training must be 'each_task' or 'first_task'."
+        )
+
         # A positive noise-teaching objective needs a current or deferred teacher.
         if local_vars["noise_distil_loss_coef"] > 0.:
             require(
@@ -467,11 +489,15 @@ class DiffusionModel(ArgumentSaverModel):
                 "is positive unless defer_teacher=True."
             )
 
-        require(local_vars["kl_train_type"] in get_args(TrainType), \
-            f"kl_train_type can be one of {TrainType}.")
+        require(
+            local_vars["kl_train_type"] in get_args(TrainType), 
+            f"kl_train_type can be one of {TrainType}."
+        )
 
-        require(local_vars["ctr_train_type"] in get_args(TrainType), \
-            f"ctr_train_type can be one of {TrainType}.")
+        require(
+            local_vars["ctr_train_type"] in get_args(TrainType), 
+            f"ctr_train_type can be one of {TrainType}."
+        )
 
         # Unconditional auxiliary objectives require a CFG prediction path.
         if local_vars["kl_train_type"] == "uncond" or \
@@ -1121,6 +1147,58 @@ class DiffusionModel(ArgumentSaverModel):
             dtype=stable_dtype
         )
 
+    def _compile_teacher(self) -> None:
+        """Reuse this wrapper's training protocol with an independent teacher optimizer.
+
+        Cached teacher state owns its vocabulary and progressive topology. Recompiling
+        retains that state while resetting its optimizer, just like ordinary compile.
+        Runtime teacher objects stay outside the student's weights and configuration.
+        """
+
+        teacher = getattr(self, "_teacher_model", None)
+        # A newly attached raw teacher needs its own training state.
+        if teacher is None or teacher.network is not self.teacher_network:
+            options = dict(self._init_config)
+            options.update(
+                network=self.teacher_network,
+                teacher_network=None,
+                trainable_teacher=False,
+                defer_teacher=False,
+                use_ema=False,
+                test_network_name="raw",
+                swap_noise_image=False,
+                dtype=self.dtype_policy,
+                noise_loss_coef=options.get("noise_loss_coef", 1.) or 1.,
+                noise_distil_loss_coef=0.,
+                image_loss_coef=0.,
+                kl_loss_coef=0.,
+                ctr_loss_coef=0.,
+                seen_classes=dict(getattr(
+                    self.teacher_network,
+                    "_diffusion_seen_classes",
+                    {}
+                ))
+            )
+
+            # Classifier wrappers also train their supervised class prediction head.
+            if "clf_loss_coef" in options:
+                options["clf_loss_coef"] = options["clf_loss_coef"] or 1.
+                options["clf_distil_loss_coef"] = 0.
+
+            teacher = type(self)(**options)
+            object.__setattr__(self, "_teacher_model", teacher)
+
+        teacher.set_current_resolution(self._current_resolution)
+        compile_config = tf.keras.utils.deserialize_keras_object(
+            self.get_compile_config()
+        )
+        teacher.network.trainable = True
+        try:
+            teacher.compile(**compile_config)
+        finally:
+            # V2 selects its optimizer variable groups at compile time, then stays frozen.
+            teacher.network.trainable = False
+
     @property
     def network(self) -> models.Model:
         """Return the current raw network from its replaceable Keras container."""
@@ -1271,7 +1349,9 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None: Configures the compiled prediction loss and optimizer, installs sparse
             cross-entropy, and resets the diffusion/auxiliary metric trackers created
-            during construction, including currently disabled objectives.
+            during construction, including currently disabled objectives. With
+            trainable_teacher=True, an attached teacher also receives an independent
+            optimizer and the same compile settings.
         """
 
         self._requested_jit_compile = kwargs.get("jit_compile", "auto")
@@ -1284,6 +1364,10 @@ class DiffusionModel(ArgumentSaverModel):
         # All subclass metric state is created by its constructor before this lock.
         if not self.built:
             self.build(())
+
+        # Teacher compilation uses fresh optimizer state, separate from the student.
+        if self.trainable_teacher and self.teacher_network is not None:
+            self._compile_teacher()
 
     def fit(
         self, 
@@ -2250,6 +2334,88 @@ class DiffusionModel(ArgumentSaverModel):
 
         return history
 
+    def fit_teacher(
+        self,
+        x: object | None = None,
+        y: object | None = None,
+        fit_method: Literal[
+            "fit",
+            "fit_progressively",
+            "fit_generator",
+            "fit_discriminator",
+            "fit_generator_progressively"
+        ] = "fit",
+        **kwargs: object
+    ) -> callbacks.History | dict[str, list]:
+        """Fit only the teacher using its matching wrapper's existing fit method.
+
+        DiffusionModel trains noise prediction; DiffusionClassifier inherits this
+        method and trains noise plus classes. Constructor noising,
+        CFG, classifier-input and loss settings are reused, excluding distillation,
+        EMA and auxiliary image/KL/token losses. Zero supervised coefficients use
+        one so a distillation-only student can still train a supervised teacher.
+
+        Args:
+            x (object | None): Clean images or a finite (images, labels) dataset.
+            y (object | None): Optional separate sparse labels, as in fit.
+            fit_method (str): fit (default), or fit_progressively for the existing
+                depth/timestep/resolution curriculum. Fixed and dynamic class counts
+                use that method's normal label discovery and optimizer growth.
+                V2 also accepts its existing fit_generator, fit_discriminator, and
+                fit_generator_progressively methods for phase-specific delegation.
+            **kwargs (object): Passed unchanged to the selected teacher fit method.
+                V2's ordinary fit uses its existing gen_kwargs/clf_kwargs instead
+                of separate x/y. Teacher and student must share label-ID meanings
+                for subsequent distillation, as with any runtime teacher.
+
+        Returns:
+            callbacks.History | dict[str, list]: The delegated teacher history
+            (a mapping for V2). Cached optimizer/vocabulary state survives repeated
+            calls. Student weights and optimizer are unchanged.
+
+        Raises:
+            ValueError: Teacher training is disabled, no teacher is attached, the
+                student has not been compiled, or fit_method is unsupported.
+        """
+
+        # Explicit opt-in preserves the existing frozen-teacher behavior.
+        if not self.trainable_teacher or self.teacher_network is None:
+            raise ValueError("fit_teacher requires trainable_teacher=True and teacher_network.")
+        # Compilation establishes the independent teacher's loss and optimizer settings.
+        if not self.compiled:
+            raise ValueError("Call compile before fit_teacher.")
+        # Delegate only to supported training entry points on this wrapper family.
+        if fit_method not in (
+            "fit", "fit_progressively",
+            "fit_generator", "fit_discriminator",
+            "fit_generator_progressively"
+        ) or not callable(getattr(self, fit_method, None)):
+            raise ValueError("fit_method must name a supported wrapper training method.")
+
+        teacher = getattr(self, "_teacher_model", None)
+
+        # A teacher may be attached or replaced after the student was compiled.
+        if teacher is None or teacher.network is not self.teacher_network:
+            self._compile_teacher()
+            teacher = self._teacher_model
+        # Omit absent inputs so specialized fit signatures retain their own defaults.
+        if x is not None:
+            kwargs["x"] = x
+        # Separate targets are optional for batched datasets and two-phase V2 fits.
+        if y is not None:
+            kwargs["y"] = y
+
+        teacher.set_current_resolution(self._current_resolution)
+        teacher.network.trainable = True
+
+        try:
+            return getattr(teacher, fit_method)(**kwargs)
+        finally:
+            # Keep wrapper/raw resolution aligned after a progressive fit or failure.
+            teacher.set_current_resolution(self._current_resolution)
+            # Class discovery can replace the raw network, even before a fit failure.
+            self.set_teacher_network(teacher)
+
     def set_timestep_bounds(
         self, 
         min_timesteps: int | None = 0, 
@@ -2385,13 +2551,14 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         teacher_network: tf.keras.Model | None
     ) -> None:
-        """Attach or clear an independent frozen runtime teacher and retrace model steps.
+        """Attach or clear an independent runtime teacher and retrace model steps.
 
         A supplied wrapper is unwrapped to its raw network while retaining schedule,
         timestep-zero, and epsilon/image-target metadata. An external raw teacher
         without this metadata requires the caller to ensure a matching forward
-        process. The attached object is frozen in place, synchronized to the active
-        resolution when supported, and excluded from the student's tracked tree.
+        process. It remains frozen outside explicit fit_teacher calls. The teacher
+        is synchronized to the active resolution when supported and excluded from
+        the student's tracked tree.
 
         Args:
             teacher_network (tf.keras.Model | None): Independent raw teacher or wrapper.
@@ -2448,6 +2615,16 @@ class DiffusionModel(ArgumentSaverModel):
                 "swap_noise_image", 
                 getattr(raw_teacher, "_diffusion_swap_noise_image", False)
             )
+            # Retain the teacher's own label ordering when it resumes training.
+            object.__setattr__(
+                raw_teacher,
+                "_diffusion_seen_classes",
+                dict(getattr(
+                    teacher_network,
+                    "seen_classes",
+                    {}
+                ))
+            )
             teacher_network = raw_teacher
 
         # A teacher must be independent of both live student branches.
@@ -2491,8 +2668,13 @@ class DiffusionModel(ArgumentSaverModel):
                         f"teacher_network {name} must match the student."
                     )
 
+        cached_teacher = getattr(self, "_teacher_model", None)
+        # Replacing or clearing a teacher must release its old training state.
+        if cached_teacher is not None and cached_teacher.network is not teacher_network:
+            object.__setattr__(self, "_teacher_model", None)
+
         object.__setattr__(self, "teacher_network", teacher_network)
-        # Freeze an attached teacher independently of the tracked student graph.
+        # Only fit_teacher temporarily enables teacher gradients.
         if self.teacher_network is not None:
             self.teacher_network.trainable = False
             # Keep resolution-aware teachers synchronized with the current student image size.
@@ -2503,8 +2685,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         DiffusionModel._refresh_loss_flags(self)
 
-        # Precompute active noise-teacher targets in mapped datasets; otherwise restore the
-        # configured route.
+        # Precompute active noise-teacher targets in mapped datasets;
+        # otherwise restore the configured route.
         self.map_preprocess = True if self.use_noise_distil_loss \
                             else self._map_preprocess_without_teacher
         self.train_function = None
@@ -2553,6 +2735,12 @@ class DiffusionModel(ArgumentSaverModel):
         teacher_network._diffusion_scheduler_name = self.scheduler_name
         teacher_network._diffusion_modify_first_t = self.modify_first_t
         teacher_network._diffusion_swap_noise_image = self.swap_noise_image
+        teacher_network.dynamic_num_classes = source_network.dynamic_num_classes
+        object.__setattr__(
+            teacher_network,
+            "_diffusion_seen_classes",
+            dict(self.seen_classes)
+        )
         teacher_network.trainable = False
 
         return teacher_network

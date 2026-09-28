@@ -61,6 +61,13 @@ class DiffusionClassifier(DiffusionModel):
             head when the student has no distillation token.
         use_clf_distil_ctr_loss (bool): Whether classifier regularizers use their
             frozen teacher target in ``"distil"`` or ``"both"`` mode.
+
+    ``fit_teacher`` is inherited from DiffusionModel and delegates to a cached
+    DiffusionClassifier's fit (or fit_progressively), training both noise and
+    classes with these constructor settings. Set trainable_teacher=True through
+    kwargs to enable its separate compilation and optimizer. The inherited
+    teacher_training option schedules continual teacher fitting on each task or
+    only the first task.
     """
 
     def __init__(
@@ -1489,6 +1496,7 @@ class DiffusionClassifier(DiffusionModel):
         # Fold validated scalar weights when both predictions use the primary head.
         if getattr(self.network, "distil_token", None) is None:
             ensemble_accuracy.clf_acc_coef += ensemble_accuracy.clf_distil_acc_coef
+            # Folding finite inputs can still overflow their combined coefficient.
             if not np.isfinite(ensemble_accuracy.clf_acc_coef):
                 raise ValueError("Combined primary-head accuracy coefficient must be finite.")
             ensemble_accuracy.clf_distil_acc_coef = 0.
@@ -1500,10 +1508,10 @@ class DiffusionClassifier(DiffusionModel):
         return float(accuracy_value)
 
     def set_teacher_network(self, teacher_network: tf.keras.Model | None) -> None:
-        """Install a frozen diffusion teacher and refresh classifier-specific objectives.
+        """Install a diffusion teacher and refresh classifier-specific objectives.
 
-        Base attachment unwraps raw teacher weights, rejects student aliases, freezes
-        the object, and resets execution caches. Once classifier coefficients exist,
+        Base attachment unwraps raw teacher weights, rejects student aliases, applies
+        a frozen inference state, and resets execution caches. Once classifier coefficients exist,
         this override validates predict_class and forward-process compatibility for
         teacher-dependent classifier/token objectives. Runtime teachers are not saved
         in the student's normal serialized configuration.

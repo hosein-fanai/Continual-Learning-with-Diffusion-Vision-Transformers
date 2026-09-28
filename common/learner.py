@@ -30,6 +30,7 @@ from __future__ import annotations
 import tensorflow as tf
 
 import numpy as np
+import yaml
 
 from copy import deepcopy
 from pathlib import Path
@@ -163,12 +164,15 @@ def _optimizer_iteration_metrics(
 
     Returns:
         dict[str, int]: Counters keyed as ``<role>_<attribute>``, where role is
-        ``classifier`` or ``replay`` and attribute is an available ``optimizer``,
+        ``classifier``, ``replay``, or ``teacher`` and attribute is an available ``optimizer``,
         ``gen_optimizer``, or ``clf_optimizer``. Missing counters contribute no entry.
     """
 
     counters = {}
-    for role, model in (("classifier", classifier), ("replay", generative_model)):
+    for role, model in (
+        ("classifier", classifier), ("replay", generative_model),
+        ("teacher", getattr(generative_model, "_teacher_model", None)),
+    ):
         # An absent classifier or generator has no optimizer counters to record.
         if model is None:
             continue
@@ -1684,7 +1688,7 @@ def _run_continual_tasks(
                 fixed_step_epochs = epochs
                 # Progressive stages create separate fit iterators and own
                 # their epoch budgets instead of using the outer value.
-                if "progressively" in fit_method:
+                if "progressively" in phase_fit_kwargs.get("fit_method", fit_method):
                     stage_epochs = int(phase_fit_kwargs.get("stage_epochs", 1))
                     final_epochs = phase_fit_kwargs.get("final_epochs")
                     # Use the stage epoch budget for an omitted final budget; otherwise use
@@ -2074,6 +2078,17 @@ def _run_continual_tasks(
     if use_distillation and not isinstance(generative_model, DiffusionModel):
         raise ValueError("use_distillation requires a diffusion generative_model.")
 
+    trainable_teacher = isinstance(generative_model, DiffusionModel) and generative_model.trainable_teacher
+    persistent_teacher = trainable_teacher and generative_model.teacher_training == "each_task"
+    # Opt-in teacher training can start from an independent copy of the initial student.
+    if trainable_teacher:
+        # Explicit teachers retain their own architecture and initial weights.
+        if generative_model.teacher_network is None:
+            generative_model.set_teacher_network(generative_model.snapshot_teacher_network("raw"))
+        # A runtime teacher can have been attached after the student's compile call.
+        if getattr(generative_model, "_teacher_model", None) is None:
+            generative_model._compile_teacher()
+
     scored_replay_selection = replay_selection in {
         "confidence",
         "surprise",
@@ -2243,7 +2258,35 @@ def _run_continual_tasks(
             if teacher is not None:
                 objects["teacher"] = teacher
 
+            teacher_model = getattr(generative_model, "_teacher_model", None)
+            # Persistent teachers keep their own optimizer and wrapper state across tasks.
+            if trainable_teacher and teacher_model is not None:
+                objects["teacher_model"] = teacher_model
+                for name in ("optimizer", "gen_optimizer", "clf_optimizer"):
+                    optimizer = getattr(teacher_model, name, None)
+                    # V2 exposes phase optimizers in addition to its ordinary optimizer.
+                    if optimizer is not None:
+                        objects[f"teacher_{name}"] = optimizer
+
         return objects
+
+
+    def _teacher_training_state() -> dict[str, object]:
+        """Describe the cached teacher using the project's safe YAML configuration format.
+
+        Returns:
+            state (dict[str, object]): Constructor and compile settings and resolution.
+                YAML preserves integer vocabulary/routing keys; TensorFlow owns weights
+                and optimizer slots.
+        """
+
+        teacher_model = generative_model._teacher_model
+
+        return {
+            "config": yaml.safe_dump(teacher_model.get_config(), sort_keys=False), 
+            "compile_config": teacher_model.get_compile_config(), 
+            "current_resolution": teacher_model.current_resolution[0]
+        }
 
 
     def _prepare_optimizer_slots() -> None:
@@ -2293,6 +2336,21 @@ def _run_continual_tasks(
                 optimizer_variables.append(
                     (replay_optimizer, generative_model.trainable_variables)
                 )
+
+        teacher_model = getattr(generative_model, "_teacher_model", None)
+        # Teacher weights are frozen between fits, but their optimizer still needs slots.
+        if trainable_teacher and teacher_model is not None:
+            teacher_model.network.trainable = True
+            try:
+                teacher_model._register_optimizer_variables()
+                # V2 owns separate generator and classification variable selections.
+                if isinstance(teacher_model, DiffusionClassifierV2):
+                    optimizer_variables.extend([
+                        (teacher_model.gen_optimizer, teacher_model.gen_trainable_variables or []),
+                        (teacher_model.clf_optimizer, teacher_model.clf_trainable_variables or []),
+                    ])
+            finally:
+                teacher_model.network.trainable = False
 
         prepared = set()
         for optimizer, variables in optimizer_variables:
@@ -2563,6 +2621,7 @@ def _run_continual_tasks(
         "ensemble_accuracies": [],
         "histories": [],
         "generative_histories": [],
+        "teacher_histories": [],
         "classifier_evaluations": [],
         "generative_evaluations": [],
         "ordinary_accuracy_matrix": [],
@@ -2577,6 +2636,7 @@ def _run_continual_tasks(
     ensemble_acc_list = task_state["ensemble_accuracies"]
     histories = task_state["histories"]
     generative_histories = task_state["generative_histories"]
+    teacher_histories = task_state["teacher_histories"]
     classifier_evaluations_list = task_state["classifier_evaluations"]
     generative_evaluations_list = task_state["generative_evaluations"]
     ordinary_accuracy_matrix = task_state["ordinary_accuracy_matrix"]
@@ -2685,10 +2745,22 @@ def _run_continual_tasks(
                 # slot group so its saved object graph can be consumed exactly.
                 _prepare_optimizer_slots()
 
-        # Persisted teachers represent the completed student and therefore
-        # have the same topology as the restored model.
-        # Recreate its object graph before loading the saved teacher weights.
-        if use_distillation and start_task_index > 0:
+        teacher_state = saved.get("teacher_training_state")
+        # A student snapshot cannot substitute for missing persistent teacher state.
+        if persistent_teacher and not isinstance(teacher_state, dict):
+            raise ValueError("Checkpoint is missing persistent teacher training state.")
+        # Independently trained teachers retain their own topology and class vocabulary.
+        if trainable_teacher and teacher_state is not None:
+            restored_teacher = type(generative_model).from_config(yaml.safe_load(teacher_state["config"]))
+            restored_teacher.network.trainable = True
+            restored_teacher.compile(**tf.keras.utils.deserialize_keras_object(
+                teacher_state["compile_config"]
+            ))
+            restored_teacher.set_current_resolution(teacher_state["current_resolution"])
+            generative_model.set_teacher_network(restored_teacher)
+            object.__setattr__(generative_model, "_teacher_model", restored_teacher)
+        # Frozen snapshot teachers share the completed student's reconstructed topology.
+        elif use_distillation and start_task_index > 0:
             restored_teacher = generative_model.snapshot_teacher_network(
                 network_name=snapshot_network_name
             )
@@ -2784,6 +2856,9 @@ def _run_continual_tasks(
                     "optimizer_learning_rates": optimizer_learning_rate_state(initial_trackables),
                     "model_task_state": model_task_hooks[1](), "restart_task_index": 0,
                 }
+                # Initial fit recovery also needs the independent teacher's constructor state.
+                if trainable_teacher and getattr(generative_model, "_teacher_model", None) is not None:
+                    initial_state["teacher_training_state"] = _teacher_training_state()
                 initial_root = Path(checkpoint_dir) / ".initial"
                 # An interrupted initial commit is never silently replaced.
                 if initial_root.exists():
@@ -2873,9 +2948,11 @@ def _run_continual_tasks(
                 "teacher_scoring": 0.,
                 "classifier_fit": 0.,
                 "generator_fit": 0.,
+                "teacher_fit": 0.,
             }
         }
         task_mechanistic = {}
+        teacher_history = None
         new_classes = internal_task_groups[task_index]
         task_seed = derive_seed(seed, "task", task_index)
         task_seeds.append(task_seed)
@@ -2987,6 +3064,9 @@ def _run_continual_tasks(
                     network_name=snapshot_network_name
                 )
             )
+            # Keep previous-task diagnostics independent of the teacher about to be trained.
+            if persistent_teacher and use_distillation:
+                previous_teacher = generative_model._teacher_model.snapshot_teacher_network("raw")
 
         # Expand diffusion vocabularies from the task schedule before subsampling training
         # rows.
@@ -3674,6 +3754,35 @@ def _run_continual_tasks(
             else:
                 generative_fit_method = fit_method
 
+            # The constructor selects a one-time warmup or training before every student task.
+            if trainable_teacher and (persistent_teacher or task_index == 0):
+                teacher = generative_model._teacher_model
+                # Discover scheduled classes before sampling can omit a class and reorder logits.
+                teacher.network.trainable = True
+                try:
+                    teacher._check_new_labels(
+                        y=np.asarray(seen_classes), verbose=verbose,
+                        original_labels=dict(enumerate(class_order[:seen_class_num])),
+                    )
+                finally:
+                    generative_model.set_teacher_network(teacher)
+                teacher_started = time.perf_counter()
+                teacher_history = _train_task_model(
+                    generative_model,
+                    _task_dataset(generative_x, generative_y, training=True),
+                    _task_dataset(
+                        _prepare_diffusion_x(x_val, diffusion_data_min, diffusion_data_range),
+                        generative_y_val,
+                    ) if x_val is not None else None,
+                    task_callbacks=_phase_callbacks(
+                        "val_loss" if generative_valset is not None else "loss",
+                        default_mode="min", include_generative=True,
+                    ),
+                    fit_method="fit_teacher",
+                    fit_kwargs={**dict(fit_kwargs or {}), "fit_method": fit_method},
+                )
+                task_resource["seconds"]["teacher_fit"] = time.perf_counter() - teacher_started
+
             fit_started = time.perf_counter()
             # Monitor validation loss when available and training loss otherwise.
             active_model_fit_started = fit_started
@@ -3955,6 +4064,7 @@ def _run_continual_tasks(
 
         histories.append(history)
         generative_histories.append(generative_history)
+        teacher_histories.append(teacher_history)
         classifier_evaluations_list.append(classifier_evaluations)
         generative_evaluations_list.append(generative_evaluations)
         task_resource_metrics.append(task_resource)
@@ -3968,7 +4078,7 @@ def _run_continual_tasks(
         # teacher that was consumed during this task. It is immediately valid
         # for the next task and has a restorable topology.
         # Create it before saving so teacher weights exist in the checkpoint.
-        if use_distillation:
+        if use_distillation and not persistent_teacher:
             completed_teacher = generative_model.snapshot_teacher_network(
                 network_name=snapshot_network_name
             )
@@ -3994,6 +4104,9 @@ def _run_continual_tasks(
                 "trackable_topology": trackable_topology,
                 "trackable_topology_fingerprint": fingerprint_state(trackable_topology)
             }
+            # A retained teacher can differ from the student in vocabulary and depth.
+            if trainable_teacher and getattr(generative_model, "_teacher_model", None) is not None:
+                checkpoint_state["teacher_training_state"] = _teacher_training_state()
             checkpoint_state["callback_states"] = callback_recovery_state(list(callbacks_list or []))
             checkpoint_state["generative_callback_states"] = callback_recovery_state(list(generative_callbacks_list or []))
             checkpoint_state["optimizer_learning_rates"] = optimizer_learning_rate_state(checkpoint_trackables)

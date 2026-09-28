@@ -137,11 +137,124 @@ from common.model import get_model
 classifier = get_model(10, model_type="CNN")
 ```
 
+Pretrained classifiers accept raw RGB pixels in `[0, 255]`. Select an ImageNet
+backbone with `conv_base_name` (case-insensitive): `Xception` (default),
+`EfficientNetV2B0`, `EfficientNetV2B1`, `EfficientNetV2B2`, `EfficientNetV2B3`,
+`EfficientNetV2S`, `EfficientNetV2M`, or `EfficientNetV2L`. Other names raise
+`ValueError` before a model or weights download is started.
+
+```python
+# Legacy keyword API: train the new head with a frozen base first.
+classifier = get_model(
+    10, model_type="pretrained", conv_base_name="EfficientNetV2L",
+    num_last_not_frozen=0, resize=(299, 299),
+)
+
+# Config API; get_model(config) uses the same selector.
+config = Config(
+    dataset={"name": "cifar10", "preprocess": None},
+    model={
+        "name": "pretrained", "conv_base_name": "EfficientNetV2L",
+        "kwargs": {"num_last_not_frozen": 0, "resize": [299, 299]},
+    },
+    training={"task": "classification"},
+)
+```
+
+The equivalent YAML field is `model.conv_base_name`. A `conv_base_name` inside
+`model.kwargs` overrides that default for the main classifier;
+`model.classifier_kwargs` overrides it for an external pretrained classifier.
+Direct calls also accept `model_kwargs={"conv_base_name": "EfficientNetV2L"}`;
+a direct top-level `conv_base_name` takes precedence for the main classifier.
+Input resizing stays at `(299, 299)` unless specified. Each dimension must be
+at least 71 for Xception or 32 for EfficientNetV2. ImageNet weights are downloaded
+by Keras when they are absent from its cache.
+
+Xception's `[-1, 1]` rescaling is in the classifier; EfficientNetV2 keeps its
+[built-in preprocessing](https://keras.io/api/applications/efficientnet_v2/efficientnet_v2_models/).
+For standalone pretrained models, keep loader preprocessing disabled (`None`)
+to avoid scaling pixels twice. An external classifier shares its replay pipeline's
+pixel coordinates; `None` can select automatic normalization for a generative
+family, so that pipeline must explicitly supply raw pixels (`preprocess=""`).
+Changing the backbone does not convert replay coordinates.
+`num_last_not_frozen=0` freezes the base; a positive integer enables the final
+N layers except BatchNormalization, and `None` enables all non-BatchNormalization
+layers. BatchNormalization remains frozen to preserve pretrained statistics.
+After fitting the fresh head, unfreeze the desired tail, keep BatchNormalization
+frozen, and recompile with a fresh low-rate optimizer such as `Adam(1e-5)`.
+The CIFAR-10/100 legacy fine-tuning sections demonstrate this
+[two-stage workflow](https://keras.io/guides/transfer_learning/). Use smaller
+batches for larger backbones. The separate `extract_features` utility retains
+its 2,048-wide Xception feature contract.
+
 An `hp-tuned` classifier preserves all learned non-output-layer weights and
 creates a fresh output head of the requested width. With `use_loaded_opt=True`,
 it reconstructs a fresh optimizer from the saved optimizer configuration; slot
 variables and iteration state are deliberately not reused across the changed
 head, and uncompiled saved models are rejected.
+
+## Training a diffusion teacher
+
+An attached teacher stays frozen by default. Set `trainable_teacher=True` on
+`DiffusionModel` or `DiffusionClassifier` to enable separate teacher training:
+
+```python
+student = DiffusionClassifier(
+    network=student_network,
+    teacher_network=teacher_network,
+    trainable_teacher=True,
+    # Other diffusion/classifier constructor settings apply to teacher training.
+)
+student.compile(optimizer="adam", loss="mse")
+history = student.fit_teacher(trainset, epochs=10, validation_data=valset)
+```
+
+`compile` creates an independent teacher optimizer with the same configuration.
+`fit_teacher` delegates to a cached matching wrapper's existing `fit`: noise
+prediction for `DiffusionModel`, noise and classes for `DiffusionClassifier`.
+It reuses the constructor's noising, CFG, classifier-input, masking, and positive
+supervised loss coefficients. A zero supervised coefficient becomes one for
+teacher training, so a distillation-only student can train its own teacher.
+Teacher training disables EMA, distillation, and auxiliary image/KL/token losses.
+Student weights and optimizer state are unchanged.
+
+Fixed class counts and dynamic class discovery use the existing fit behavior.
+Repeated calls retain the teacher's vocabulary and optimizer state; new classes
+replace its raw network while updating `student.teacher_network`. Supplied teacher
+wrappers and snapshots preserve their label mapping. Teacher and student must
+use consistent class-ID meanings when subsequently distilling predictions.
+
+For depth, timestep, or resolution curricula, pass `fit_method="fit_progressively"`
+and its existing arguments, such as `stage_tasks="depths_only"`, `depths=[...]`,
+`stage_epochs=1`, and `final_epochs=1`. No separate growth implementation is used.
+V2's ordinary teacher fitting takes its existing `gen_kwargs` and `clf_kwargs`.
+
+Both initialization options are inherited through `DiffusionModelConfig`,
+`DiffusionClassifierConfig`, and `DiffusionClassifierV2Config`, and are accepted in
+`wrapper_kwargs` by the direct model factory. The teacher object remains a runtime
+argument excluded from the student's config and weights.
+
+Continual learning uses `fit_teacher` before the student phase when
+`trainable_teacher=True`. Choose the schedule when constructing the wrapper:
+
+- `teacher_training="each_task"` (default): train the same teacher on each task's
+  current/replay training pool, retaining its optimizer and vocabulary across tasks.
+- `teacher_training="first_task"`: train the initial teacher only on task one;
+  subsequent distilled tasks use frozen snapshots of the completed student.
+
+The teacher phase reuses the configured epochs, callbacks, validation data, and
+ordinary/progressive fit arguments. Without an explicit teacher, continual learning
+starts from an independent copy of the initial raw student. Teacher weights are
+frozen outside `fit_teacher`; ordinary student fitting never optimizes them.
+Task details include `teacher_histories` and teacher timing/update counts.
+Task checkpoints preserve a continuing teacher's topology, vocabulary, and optimizer.
+An explicit `student.fit_teacher(...)` always trains the attached teacher; the
+schedule controls automatic continual training only.
+
+The shared trainer also accepts `fit_method="fit_teacher"` with
+`save_weights=False`; continual task checkpoints own teacher persistence. Its `fit_kwargs` can
+select `fit_method="fit_progressively"` with the existing curriculum arguments.
+For V2 it reuses the generator/classifier phase dispatch.
 
 ## Training and reporting
 
@@ -252,8 +365,9 @@ dataset class IDs. These previews are independent of `training.verbose`; the
 extra null image is not added to replay training.
 
 For a diffusion classifier with an active distillation token and positive
-teacher loss, set `continually_learn.use_distillation=True`. Task one may start
-teacher-free; each following task snapshots the completed
+teacher loss, set `continually_learn.use_distillation=True`. With the default
+`trainable_teacher=False`, task one may start teacher-free; each following task
+snapshots the completed
 `snapshot_network_name` student (`"raw"` or `"ema"`) before its class head
 expands and uses that frozen snapshot as the teacher. EMA selection requires an
 EMA-enabled wrapper. An explicit `teacher_network` is optional and, when

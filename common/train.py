@@ -569,7 +569,12 @@ def _fit_control_callbacks(options: Mapping[str, object], valset: object,
     return selected
 
 
-def _fit_with_callback_cleanup(model: tf.keras.Model, **fit_kwargs: object) -> object:
+def _fit_with_callback_cleanup(
+    model: tf.keras.Model, 
+    method_name: str = "fit", 
+    teacher: bool = False, 
+    **fit_kwargs: object
+) -> object:
     """Close TensorBoard writers after divergence/OOM, preserving the fit error.
 
     Keras does not invoke callback ``on_train_end`` when a fit raises. Only
@@ -577,11 +582,16 @@ def _fit_with_callback_cleanup(model: tf.keras.Model, **fit_kwargs: object) -> o
     weights or invoking unrelated successful-fit hooks would be misleading.
     V2's nested phase callbacks are included, with shared instances deduplicated.
     Successful fits retain Keras's normal return value and callback lifecycle.
+    method_name selects the existing fit entry point; teacher delegates it through
+    fit_teacher without changing the selected model's training protocol.
     """
     from common.callbacks.hpo_guard import TrainingDiverged
 
     try:
-        return model.fit(**fit_kwargs)
+        # Teacher training shares the same phase dispatch and callback cleanup.
+        if teacher:
+            return model.fit_teacher(fit_method=method_name, **fit_kwargs)
+        return getattr(model, method_name)(**fit_kwargs)
     except (TrainingDiverged, tf.errors.ResourceExhaustedError) as error:
         closed: set[int] = set()
         for group in (fit_kwargs, fit_kwargs.get("gen_kwargs"), fit_kwargs.get("clf_kwargs")):
@@ -733,6 +743,17 @@ def train_model(
     fit_method = training_options["fit_method"]
     fit_kwargs = training_options["fit_kwargs"]
     is_continual = isinstance(model, dict)
+    teacher_fit = fit_method == "fit_teacher"
+    # The inner selector uses the same ordinary/progressive dispatch as student fitting.
+    if teacher_fit:
+        fit_kwargs = dict(fit_kwargs)
+        fit_method = fit_kwargs.pop("fit_method", "fit")
+        # Teacher fitting requires a diffusion wrapper with its explicit opt-in enabled.
+        if is_continual or not isinstance(model, DiffusionModel):
+            raise ValueError("fit_teacher requires a diffusion wrapper.")
+        # A teacher can have a different topology; student artifact settings cannot save it.
+        if save_weights:
+            raise ValueError("fit_teacher requires save_weights=False; save the teacher explicitly.")
 
     # Ordinary training must not save untouched weights after an empty fit budget.
     if not is_continual and fit_method == "fit":
@@ -1357,10 +1378,12 @@ def train_model(
         for name in _PROGRESSIVE_FIT_KEYS:
             discriminator_kwargs.pop(name, None)
 
-        generator_history = model.fit_generator_progressively(
+        generator_history = _fit_with_callback_cleanup(
+            model, method_name="fit_generator_progressively", teacher=teacher_fit,
             **fit_call_kwargs
         ).history
-        discriminator_history = model.fit_discriminator(
+        discriminator_history = _fit_with_callback_cleanup(
+            model, method_name="fit_discriminator", teacher=teacher_fit,
             x=trainset,
             epochs=epochs,
             validation_data=valset,
@@ -1436,13 +1459,13 @@ def train_model(
             )
         # Progressive methods own their stage and final epoch budgets.
         elif progressive_fit:
-            trained = method(
-                **fit_call_kwargs
+            trained = _fit_with_callback_cleanup(
+                model, method_name=fit_method, teacher=teacher_fit, **fit_call_kwargs
             )
         # Adapt shared arguments to other Keras-like training methods.
         else:
-            trained = method(
-                **standard_fit_kwargs
+            trained = _fit_with_callback_cleanup(
+                model, method_name=fit_method, teacher=teacher_fit, **standard_fit_kwargs
             )
 
         history = getattr(trained, "history", trained)
@@ -1452,13 +1475,13 @@ def train_model(
         if separate_phase_callbacks:
             classifier_fit_kwargs["callbacks"] = classifier_callbacks
         history = _fit_with_callback_cleanup(
-            model,
+            model, teacher=teacher_fit,
             gen_kwargs=standard_fit_kwargs,
             clf_kwargs=classifier_fit_kwargs,
         )
     # Use ordinary Keras fit for remaining model families.
     else:
-        history = _fit_with_callback_cleanup(model, **standard_fit_kwargs).history
+        history = _fit_with_callback_cleanup(model, teacher=teacher_fit, **standard_fit_kwargs).history
 
     # Persist final trained weights when requested.
     if save_weights:
