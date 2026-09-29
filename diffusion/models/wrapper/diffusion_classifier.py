@@ -66,8 +66,9 @@ class DiffusionClassifier(DiffusionModel):
     DiffusionClassifier's fit (or fit_progressively), training both noise and
     classes with these constructor settings. Set trainable_teacher=True through
     kwargs to enable its separate compilation and optimizer. The inherited
-    teacher_training option schedules continual teacher fitting on each task or
-    only the first task.
+    teacher_training option schedules native continual teacher fitting on each
+    task or only the first task. Built, compiled ordinary Keras classifier teachers
+    instead use their own optimizer, loss and metrics for explicit fit_teacher calls.
     """
 
     def __init__(
@@ -97,6 +98,7 @@ class DiffusionClassifier(DiffusionModel):
         teacher_classifier_from_logits: bool = False, 
         previous_teacher_clf_loss_weight: float = 1., 
         current_teacher_clf_loss_weight: float = 1., 
+        teacher_classifier_input_range: Literal["diffusion", "pixels"] = "diffusion", 
         **kwargs: object
     ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
@@ -211,6 +213,13 @@ class DiffusionClassifier(DiffusionModel):
                 teacher's scores as logits and convert them to probabilities. False
                 requires normalized probabilities. Native predict_class teachers
                 already return probabilities and ignore this option. Defaults to False.
+            teacher_classifier_input_range (Literal["diffusion", "pixels"]): Input
+                coordinates expected by ordinary image classifier teachers during
+                distillation. "diffusion" passes clean x0 unchanged; "pixels"
+                converts [-1,1] to [0,255] without clipping. Native predict_class
+                teachers ignore this setting. It does not transform fit_teacher
+                inputs: provide training and validation data in the classifier's
+                own coordinates. Defaults to "diffusion".
             **kwargs (object): Arguments forwarded to ``DiffusionModel``.  Required in
                 normal use is ``network=DiTClassifier(...)``; supported wrapper
                 keys include EMA/scheduler/CFG settings, all four diffusion loss
@@ -361,6 +370,10 @@ class DiffusionClassifier(DiffusionModel):
         require(
             isinstance(local_vars["teacher_classifier_from_logits"], bool), 
             "teacher_classifier_from_logits must be a bool."
+        )
+        require(
+            local_vars["teacher_classifier_input_range"] in ("diffusion", "pixels"), 
+            "teacher_classifier_input_range must be 'diffusion' or 'pixels'."
         )
         require(
             local_vars["clf_distil_type"] in ("hard", "soft"), 
@@ -894,7 +907,12 @@ class DiffusionClassifier(DiffusionModel):
             if clean_images is None:
                 raise ValueError("An image-only teacher requires clean_images (x0).")
 
-            teacher_labels = teacher(clean_images, training=False)
+            teacher_images = clean_images
+            # Application classifiers may own preprocessing for byte-scale pixels.
+            if self.teacher_classifier_input_range == "pixels":
+                teacher_images = (tf.cast(clean_images, tf.float32) + 1.) * 127.5
+
+            teacher_labels = teacher(teacher_images, training=False)
             # Freeze layers a subclassed Keras teacher may have built on its first call.
             teacher.trainable = False
             # Dense floating scores are the only supported callable classifier output.
@@ -2100,8 +2118,17 @@ class DiffusionClassifier(DiffusionModel):
 
         return float(accuracy_value)
 
+    def _uses_keras_teacher_fit(self, teacher: tf.keras.Model | None) -> bool:
+        """Identify ordinary Keras image classifiers without native diffusion methods."""
+
+        return (
+            isinstance(teacher, tf.keras.Model)
+            and not callable(getattr(teacher, "predict_class", None))
+            and not self._teacher_uses_native_noise_api(teacher)
+        )
+
     def set_teacher_network(self, teacher_network: tf.keras.Model | None) -> None:
-        """Install a diffusion teacher and refresh classifier-specific objectives.
+        """Install a native or image-only teacher and refresh classifier objectives.
 
         Base attachment unwraps raw teacher weights, rejects student aliases, applies
         a frozen inference state, and resets execution caches. Once classifier coefficients exist,

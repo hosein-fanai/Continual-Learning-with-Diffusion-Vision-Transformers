@@ -196,10 +196,11 @@ it reconstructs a fresh optimizer from the saved optimizer configuration; slot
 variables and iteration state are deliberately not reused across the changed
 head, and uncompiled saved models are rejected.
 
-## Training a diffusion teacher
+## Training a teacher
 
-An attached teacher stays frozen by default. Set `trainable_teacher=True` on
-`DiffusionModel` or `DiffusionClassifier` to enable separate teacher training:
+An attached teacher stays frozen by default. For a native diffusion teacher,
+set `trainable_teacher=True` on `DiffusionModel` or `DiffusionClassifier`
+to enable separate teacher training:
 
 ```python
 student = DiffusionClassifier(
@@ -237,8 +238,73 @@ Both initialization options are inherited through `DiffusionModelConfig`,
 `wrapper_kwargs` by the direct model factory. The teacher object remains a runtime
 argument excluded from the student's config and weights.
 
-Continual learning uses `fit_teacher` before the student phase when
-`trainable_teacher=True`. Choose the schedule when constructing the wrapper:
+### Training an image classifier teacher
+
+`DiffusionClassifier` and `DiffusionClassifierV2` also accept a built, compiled
+ordinary Keras classifier for explicit `fit_teacher` calls. For example, keep
+the existing student network and compile settings, and construct the teacher
+with the model factory:
+
+```python
+from common.model import get_model
+from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
+
+teacher = get_model(
+    10, 
+    model_type="pretrained", 
+    conv_base_name="EfficientNetV2L", 
+    num_last_not_frozen=20, 
+    dropout_rate=0.50
+)
+student = DiffusionClassifier(
+    network=student_network, 
+    teacher_network=teacher, 
+    trainable_teacher=True, 
+    teacher_classifier_input_range="pixels", 
+    clf_distil_type="soft", 
+    clf_distil_loss_coef=8.6e-3
+)
+student.compile(optimizer="adam", loss="mse")
+teacher_history = student.fit_teacher(
+    x_train, y_train, 
+    batch_size=BATCH_SIZE, 
+    epochs=EPOCHS, 
+    validation_data=(x_val, y_val), 
+    callbacks=callbacks_list
+).history
+```
+
+Here `x_train` and `x_val` contain raw `[0, 255]` pixels. The factory includes
+resizing and EfficientNetV2 preprocessing. During subsequent student fitting,
+`teacher_classifier_input_range="pixels"` converts the student's clean
+`[-1, 1]` images to `[0, 255]` before teacher inference; the default
+`"diffusion"` leaves inference images unchanged. This option does not transform
+`fit_teacher` training or validation data. Datasets are also accepted and must
+already use the teacher's input range and target encoding.
+
+Compile the student before calling `fit_teacher`. Its compile call preserves
+the classifier's existing optimizer, loss, and metrics rather than replacing
+them with the student's diffusion training settings. `fit_teacher` forwards
+Keras fit arguments, including validation data and callbacks, unchanged and
+returns its `History`. Only `fit_method="fit"` is supported for an ordinary
+classifier, including in V2.
+
+Fitting restores the classifier's original nested fine-tuning settings, so the
+selected last layers train while BatchNormalization stays frozen. The teacher
+is frozen again after success or failure. Repeated calls retain its optimizer
+state; student weights and optimizer state are unchanged. No custom subclass
+or manual input adapter is required. Teacher and student output columns must
+use the same class meanings.
+
+### Automatic continual teacher training
+
+Automatic `common.learner` orchestration requires a native diffusion teacher
+when `trainable_teacher=True`; ordinary classifier teachers are supported by
+the explicit `fit_teacher` workflow above, not this automatic task lifecycle.
+For native teachers, continual learning uses `fit_teacher` before the student
+phase when `trainable_teacher=True`. Choose the schedule when constructing the
+wrapper:
 
 - `teacher_training="each_task"` (default): train the same teacher on each task's
   current/replay training pool, retaining its optimizer and vocabulary across tasks.

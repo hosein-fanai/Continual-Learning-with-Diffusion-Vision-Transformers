@@ -2204,6 +2204,12 @@ def _run_continual_tasks(
         object.__setattr__(generative_model, "_current_teacher_model", None)
     # Opt-in teacher training can start from an independent copy of the initial student.
     if trainable_teacher:
+        # Automatic growth and recovery require the native teacher wrapper protocol.
+        if generative_model._uses_keras_teacher_fit(generative_model.teacher_network):
+            raise ValueError(
+                "Automatic continual teacher training requires a native diffusion teacher; "
+                "fit a Keras classifier with fit_teacher directly, then use trainable_teacher=False."
+            )
         # Explicit teachers retain their own architecture and initial weights.
         if generative_model.teacher_network is None:
             generative_model.set_teacher_network(generative_model.snapshot_teacher_network("raw"))

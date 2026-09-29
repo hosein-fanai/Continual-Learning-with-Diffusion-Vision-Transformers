@@ -360,8 +360,8 @@ class CallableTeacherTests(unittest.TestCase):
                     model.prep_inputs_map(self.images, self.labels)
                 self.assertEqual(int(model.optimizer.iterations), 0)
 
-    def test_generic_teachers_cannot_opt_into_repository_teacher_training(self) -> None:
-        """Reject fit_teacher configuration for unrelated Keras architectures."""
+    def test_uncompiled_classifiers_and_generic_noise_teachers_cannot_train(self) -> None:
+        """Require compiled classifiers and retain native-only noise-teacher fitting."""
 
         for classifier in (False, True):
             with self.subTest(classifier=classifier):

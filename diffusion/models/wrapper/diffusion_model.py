@@ -34,7 +34,12 @@ from . import (
 
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
-from common.keras_compat import compute_compiled_loss, register_optimizer_variables, variable_path
+from common.keras_compat import (
+    compute_compiled_loss, 
+    optimizer_iterations, 
+    register_optimizer_variables, 
+    variable_path
+)
 from common.runtime import derive_seed, effective_seed
 from common.random import SeedStream
 from common.validation import require
@@ -258,10 +263,14 @@ class DiffusionModel(ArgumentSaverModel):
                 None installs no teacher. An attached teacher forces deferred
                 reconstruction because runtime teacher objects are not serialized.
                 Defaults to ``None``.
-            trainable_teacher (bool): Enable fit_teacher and compile an independent
-                teacher optimizer with the student's compile settings. Defaults to False.
-                The teacher reuses this wrapper family's supervised training and growth
-                logic, without EMA, auxiliary losses, or another distillation teacher.
+            trainable_teacher (bool): Enable fit_teacher. Native teachers receive an
+                independent optimizer with the student's compile settings and reuse
+                this wrapper family's supervised training and growth logic, without
+                EMA, auxiliary losses, or another distillation teacher. Classifier
+                wrappers also accept built, compiled Keras image classifiers; these
+                retain their own optimizer, loss, metrics, and fine-tuning layer
+                selection. Their direct fit_teacher calls accept inputs in the
+                classifier's own coordinates. Defaults to False.
             teacher_training (str): With trainable_teacher=True, continual learning
                 fits the teacher before every task ("each_task", default), or only
                 before the first task ("first_task"). Explicit fit_teacher calls
@@ -1236,13 +1245,34 @@ class DiffusionModel(ArgumentSaverModel):
             dtype=stable_dtype
         )
 
+    def _uses_keras_teacher_fit(self, teacher: tf.keras.Model | None) -> bool:
+        """Let classifier wrappers opt into ordinary compiled image-teacher fitting."""
+
+        return False
+
     def _compile_teacher(self) -> None:
         """Reuse this wrapper's training protocol with an independent teacher optimizer.
 
         Cached teacher state owns its vocabulary and progressive topology. Recompiling
         retains that state while resetting its optimizer, just like ordinary compile.
         Runtime teacher objects stay outside the student's weights and configuration.
+        Ordinary Keras classifiers keep their own existing compilation and optimizer.
         """
+
+        # A compiled image classifier owns a different objective from diffusion MSE.
+        if self._uses_keras_teacher_fit(self.teacher_network):
+            teacher = self.teacher_network
+            teacher_counter = optimizer_iterations(teacher.optimizer)
+            # V2 phase optimizers and loss-scale wrappers must not share update state.
+            if any(
+                teacher.optimizer is getattr(self, name, None) or (
+                    teacher_counter is not None
+                    and teacher_counter is optimizer_iterations(getattr(self, name, None))
+                )
+                for name in ("optimizer", "gen_optimizer", "clf_optimizer")
+            ):
+                raise ValueError("Teacher and student must use independent optimizers.")
+            return
 
         teacher = getattr(self, "_teacher_model", None)
         # A newly attached raw teacher needs its own training state.
@@ -1708,7 +1738,8 @@ class DiffusionModel(ArgumentSaverModel):
             cross-entropy, and resets the diffusion/auxiliary metric trackers created
             during construction, including currently disabled objectives. With
             trainable_teacher=True, an attached teacher also receives an independent
-            optimizer and the same compile settings.
+            optimizer and the same compile settings. Ordinary Keras classifier
+            teachers retain their own existing compilation and optimizer state.
         """
 
         self._requested_jit_compile = kwargs.get("jit_compile", "auto")
@@ -2704,7 +2735,7 @@ class DiffusionModel(ArgumentSaverModel):
         ] = "fit", 
         **kwargs: object
     ) -> callbacks.History | dict[str, list]:
-        """Fit only the teacher using its matching wrapper's existing fit method.
+        """Fit only the teacher through its native wrapper or compiled Keras model.
 
         DiffusionModel trains noise prediction; DiffusionClassifier inherits this
         method and trains noise plus classes. Constructor noising,
@@ -2712,8 +2743,22 @@ class DiffusionModel(ArgumentSaverModel):
         EMA and auxiliary image/KL/token losses. Zero supervised coefficients use
         one so a distillation-only student can still train a supervised teacher.
 
+        A built, compiled ordinary Keras classifier uses only fit_method="fit".
+        Its own optimizer, loss and metrics are retained across student compile
+        and repeated teacher fits. The layer trainability recorded at attachment
+        is restored for each fit, including frozen backbone and BatchNormalization
+        layers; the teacher is frozen again even if fitting fails. Inputs,
+        validation data, sample weights and callbacks pass through unchanged, so
+        supply the classifier's own input range and output-column label IDs.
+        For get_model(..., model_type="pretrained"), use raw [0,255] images and
+        set teacher_classifier_input_range="pixels" for subsequent distillation.
+        Ordinary classifiers do not support automatic continual teacher training
+        or the native progressive/generator/discriminator fit methods.
+
         Args:
             x (object | None): Clean images or a finite (images, labels) dataset.
+                Native teachers use diffusion coordinates; ordinary Keras teachers
+                receive x unchanged in their own expected coordinates.
             y (object | None): Optional separate sparse labels, as in fit.
             fit_method (str): fit (default), or fit_progressively for the existing
                 depth/timestep/resolution curriculum. Fixed and dynamic class counts
@@ -2741,6 +2786,26 @@ class DiffusionModel(ArgumentSaverModel):
         # Compilation establishes the independent teacher's loss and optimizer settings.
         if not self.compiled:
             raise ValueError("Call compile before fit_teacher.")
+
+        # Ordinary image classifiers train directly with their existing compile state.
+        if self._uses_keras_teacher_fit(self.teacher_network):
+            # Progressive and phase-specific methods require a native diffusion teacher.
+            if fit_method != "fit":
+                raise ValueError("A Keras classifier teacher supports only fit_method='fit'.")
+
+            self._compile_teacher()
+            teacher, layer_states = self._keras_teacher_fit_state
+            try:
+                for layer, trainable in layer_states:
+                    layer.trainable = trainable
+                teacher.make_train_function(force=True)
+
+                return teacher.fit(x=x, y=y, **kwargs)
+            finally:
+                # Freeze before validation and discard student traces containing old targets.
+                teacher.trainable = False
+                self.set_teacher_network(teacher)
+
         # Delegate only to supported training entry points on this wrapper family.
         if fit_method not in (
             "fit", "fit_progressively", 
@@ -3142,16 +3207,27 @@ class DiffusionModel(ArgumentSaverModel):
         # An attached teacher must support inference through its model call.
         if teacher_network is not None and not callable(teacher_network):
             raise TypeError("teacher_network must be a callable model.")
-        # Training requires the native serialization and diffusion-wrapper protocol.
+
+        keras_teacher = self._uses_keras_teacher_fit(teacher_network)
+
+        # Native diffusion training and ordinary classifier fitting have distinct contracts.
         if teacher_network is not None and self.trainable_teacher and (
             not isinstance(teacher_network, ArgumentSaverModel)
             or not native_noise_api
-        ):
+        ) and not keras_teacher:
             raise ValueError(
                 "trainable_teacher=True requires a native diffusion teacher "
-                "supporting the wrapper training protocol; callable teachers "
-                "are supported only as frozen teachers."
+                "or a compiled Keras image classifier on a classifier wrapper."
             )
+
+        # Capture a known topology and objective before freezing a fine-tuned classifier.
+        if teacher_network is not None and self.trainable_teacher and keras_teacher:
+            # An unbuilt model cannot supply a complete layer trainability snapshot.
+            if not teacher_network.built or not getattr(teacher_network, "compiled", False):
+                raise ValueError("A trainable Keras classifier teacher must be built and compiled.")
+            # Class probabilities cannot also serve as diffusion noise targets.
+            if needs_noise_teacher:
+                raise ValueError("A Keras classifier teacher requires its noise loss weight to be zero.")
 
         # Missing teachers are allowed only through the explicit deferred lifecycle.
         if teacher_network is None and self.current_teacher_network is None \
@@ -3191,6 +3267,28 @@ class DiffusionModel(ArgumentSaverModel):
         # Replacing or clearing a teacher must release its old training state.
         if cached_teacher is not None and cached_teacher.network is not teacher_network:
             object.__setattr__(self, "_teacher_model", None)
+
+        state = getattr(self, "_keras_teacher_fit_state", None)
+        # Reattaching the same frozen model must preserve its original fine-tuning mask.
+        if self.trainable_teacher and keras_teacher:
+            # A replacement teacher owns a new optimizer and layer selection.
+            if state is None or state[0] is not teacher_network:
+                layer_states = []
+
+                def remember(layer: tf.keras.layers.Layer) -> None:
+                    """Record parents before children so nested trainability restores exactly."""
+
+                    layer_states.append((layer, layer.trainable))
+                    for child in layer._flatten_layers(include_self=False, recursive=False):
+                        remember(child)
+
+                remember(teacher_network)
+                object.__setattr__(
+                    self, "_keras_teacher_fit_state", (teacher_network, tuple(layer_states))
+                )
+        # Clearing or replacing the classifier releases its untracked training state.
+        else:
+            object.__setattr__(self, "_keras_teacher_fit_state", None)
 
         object.__setattr__(self, "teacher_network", teacher_network)
         self.previous_teacher_noise_distil_loss_tracker.reset_state()

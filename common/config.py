@@ -1313,10 +1313,12 @@ class DiffusionModelConfig(KwargsMixin):
             ``None``.
         defer_teacher (bool): Permit a positive teacher objective to start without a teacher
             so continual learning can attach one later. Defaults to ``False``.
-        trainable_teacher (bool): Compile an attached runtime teacher independently
-            and enable fit_teacher. The matching wrapper handles noise prediction,
-            or noise plus classes for classifiers. Ordinary callable teachers are
-            inference-only and do not support True. Defaults to ``False``.
+        trainable_teacher (bool): Enable fit_teacher. Native teachers are compiled
+            independently through a matching diffusion wrapper. Classifier wrappers
+            also support built, compiled Keras image classifiers for direct fitting,
+            preserving their own optimizer, loss, metrics and fine-tuning layer
+            selection. Automatic continual teacher training still requires a native
+            diffusion teacher. Defaults to ``False``.
         previous_teacher_noise_loss_weight (float): Weight of the previous teacher's
             independently normalized noise KD loss. Defaults to 1.0.
         current_teacher_noise_loss_weight (float): Weight of the current teacher's
@@ -1411,6 +1413,11 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             x0 with training=False, independently of student noising in V1 and V2.
             Native predict_class teachers retain their probability interface and
             shared teacher/student input selection. Defaults to ``False``.
+        teacher_classifier_input_range (str): Ordinary image teachers receive clean
+            student images unchanged with "diffusion", or converted from [-1,1]
+            to [0,255] with "pixels". Native teachers ignore this option.
+            fit_teacher always accepts data in the classifier's own coordinates.
+            Defaults to "diffusion".
         mask_by_nulls (bool | None): Select only examples whose post-dropout CFG label is
             null ID 0 for classifier loss and accuracy when True; False leaves this mask
             disabled. None lets the model factory use network.use_cfg. This row filter
@@ -1503,6 +1510,7 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_train_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
     clf_test_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
     teacher_classifier_from_logits: bool = field(default=False, kw_only=True)
+    teacher_classifier_input_range: str = field(default="diffusion", kw_only=True)
     previous_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
     current_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
 

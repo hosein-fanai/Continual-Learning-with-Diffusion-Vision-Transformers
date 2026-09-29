@@ -397,7 +397,12 @@ gradients through its probabilities.
 A teacher without callable `predict_class` is called as
 `teacher(clean_x0, training=False)` in both V1 and V2. It receives clean images
 even when the student classifier uses noised images; timesteps and condition
-labels are not passed. Its single output must have shape `[batch, classes]`.
+labels are not passed. `teacher_classifier_input_range="diffusion"` (the
+default) passes clean `[-1, 1]` images unchanged. Use
+`teacher_classifier_input_range="pixels"` for a classifier that expects
+`[0, 255]`, such as `get_model(..., model_type="pretrained")`; the wrapper
+converts only its inference inputs. Native diffusion teachers are unaffected.
+Its single output must have shape `[batch, classes]`.
 By default this output contains class probabilities. Set
 `teacher_classifier_from_logits=True` when it contains logits so the wrapper
 applies softmax before constructing distillation targets. For a trained Keras
@@ -414,12 +419,32 @@ model = DiffusionClassifier(
 )
 ```
 
-Ordinary callable teachers remain frozen and do not support
-`trainable_teacher=True` or `fit_teacher`. A plain single-output teacher cannot
-supply both classification and noise distillation targets simultaneously;
-use a compatible native multi-output teacher for that combination.
-`teacher_noise_input_type` and `teacher_classifier_from_logits` are serialized
-configuration fields; the attached teacher remains a runtime-only object.
+A built, compiled image-only Keras classifier can also be trained through
+`DiffusionClassifier.fit_teacher` or `DiffusionClassifierV2.fit_teacher`.
+Attach it with `teacher_network=classifier` and `trainable_teacher=True`,
+compile the student, then call `student.fit_teacher(...)`. The classifier
+retains its own optimizer, classification loss, and metrics. Only
+`fit_method="fit"` is supported for these teachers; arrays or datasets,
+validation arguments, and callbacks are forwarded to its Keras fit method.
+Supply training and validation images in the classifier's own input range:
+`teacher_classifier_input_range` controls distillation inference only.
+See the [EfficientNetV2L example](../../../common/README.md#training-an-image-classifier-teacher).
+
+The classifier's original nested layer trainability is restored during fitting,
+including a selected fine-tuning tail and frozen BatchNormalization layers.
+It is frozen again after fitting, including when fitting raises an error.
+Repeated fits retain its optimizer state, and student weights and optimizer
+state are unchanged. Automatic `common.learner` trainable-teacher orchestration
+still requires a native diffusion teacher; ordinary classifier teachers use
+explicit notebook or script calls to `fit_teacher`.
+
+Other ordinary callables and callable epsilon teachers remain inference-only.
+A plain single-output teacher cannot supply both classification and noise
+distillation targets simultaneously; use a compatible native multi-output
+teacher for that combination. `teacher_noise_input_type`,
+`teacher_classifier_from_logits`, and `teacher_classifier_input_range` are
+serialized configuration fields; the attached teacher remains a runtime-only
+object.
 
 Continual learning can instead construct the teacher automatically. With
 `defer_teacher=True`, task one is allowed to run without a teacher;
