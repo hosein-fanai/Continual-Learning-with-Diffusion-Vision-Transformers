@@ -94,6 +94,9 @@ class DiffusionClassifier(DiffusionModel):
             "replay_only", 
             "current_and_replay"
         ] = "current_and_replay", 
+        teacher_classifier_from_logits: bool = False, 
+        previous_teacher_clf_loss_weight: float = 1., 
+        current_teacher_clf_loss_weight: float = 1., 
         **kwargs: object
     ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
@@ -195,8 +198,19 @@ class DiffusionClassifier(DiffusionModel):
                 Teacher-target exposure. old_classes selects targets below the frozen
                 teacher width; replay_only uses the explicit third dataset tensor;
                 current_and_replay includes every classifier-selected row. Classifier
-                timestep/null masks still intersect these scopes.
+                timestep/null masks still intersect these scopes. In dual-teacher mode
+                these historical scopes apply only to the previous teacher; the current
+                teacher follows dual_teacher_scope and classifier row masks.
                 Defaults to ``'current_and_replay'``.
+            previous_teacher_clf_loss_weight (float): Multiplier for previous-task
+                classifier KD, before the common clf_distil_loss_coef. Defaults to 1.
+            current_teacher_clf_loss_weight (float): Multiplier for current-task
+                classifier KD. Zero disables this teacher's classifier objective.
+                Defaults to 1.
+            teacher_classifier_from_logits (bool): Interpret an image-only callable
+                teacher's scores as logits and convert them to probabilities. False
+                requires normalized probabilities. Native predict_class teachers
+                already return probabilities and ignore this option. Defaults to False.
             **kwargs (object): Arguments forwarded to ``DiffusionModel``.  Required in
                 normal use is ``network=DiTClassifier(...)``; supported wrapper
                 keys include EMA/scheduler/CFG settings, all four diffusion loss
@@ -265,7 +279,13 @@ class DiffusionClassifier(DiffusionModel):
         )
 
         self._init_config.pop("teacher_network", None)
+        self._init_config.pop("current_teacher_network", None)
         self.set_teacher_network(self.teacher_network)
+        self.set_current_teacher_network(
+            self.current_teacher_network, 
+            class_ids=self.current_teacher_class_ids, 
+            task_class_ids=self.current_teacher_task_class_ids
+        )
 
     def _check_clf_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate classifier training choices after base initialization.
@@ -336,7 +356,9 @@ class DiffusionClassifier(DiffusionModel):
         for name in (
             "clf_loss_coef", "clf_distil_loss_coef", 
             "clf_acc_coef", "ctr_acc_coef", 
-            "clf_distil_acc_coef"
+            "clf_distil_acc_coef", 
+            "previous_teacher_clf_loss_weight",
+            "current_teacher_clf_loss_weight"
         ):
             value = local_vars[name]
             require(
@@ -344,6 +366,10 @@ class DiffusionClassifier(DiffusionModel):
                 f"{name} must be finite and nonnegative."
             )
 
+        require(
+            isinstance(local_vars["teacher_classifier_from_logits"], bool), 
+            "teacher_classifier_from_logits must be a bool."
+        )
         require(
             local_vars["clf_distil_type"] in ("hard", "soft"), 
             "clf_distil_type must be either 'hard' or 'soft'."
@@ -362,14 +388,18 @@ class DiffusionClassifier(DiffusionModel):
             "'replay_only', or 'current_and_replay'."
         )
 
-        # A positive classifier distillation objective requires teacher targets.
-        if local_vars["clf_distil_loss_coef"] > 0. or (local_vars["kwargs"].get("ctr_loss_coef", 0.) > 0. and(
+        # Only enabled teacher roles require targets for a positive classifier objective.
+        if (local_vars["previous_teacher_clf_loss_weight"] > 0. or 
+        local_vars["current_teacher_clf_loss_weight"] > 0.) and (
+        local_vars["clf_distil_loss_coef"] > 0. or (
+        local_vars["kwargs"].get("ctr_loss_coef", 0.) > 0. and(
         getattr(self.network, "clf_cls_token_regularizer_kwargs", None
         ) or getattr(self.network, "cls_token_regularizer_kwargs", {})
         ).get("train_type", "normal") in ("distil", "both")
-        ):
+        )):
             require(
-                self.teacher_network is not None or self.defer_teacher, 
+                self.teacher_network is not None
+                or self.current_teacher_network is not None or self.defer_teacher, 
                 "teacher_network is required for distillation "
                 "training unless defer_teacher=True."
             )
@@ -418,8 +448,8 @@ class DiffusionClassifier(DiffusionModel):
         or local_vars["clf_test_noisified_max_timesteps"] is not None:
             require(
                 not local_vars["use_ensemble_loss_instead"], 
-                "Explicit clean/null classifier inputs or noising caps cannot replace "
-                "their prediction with an ensemble."
+                "Explicit clean/null classifier inputs or noising caps "
+                "cannot replace their prediction with an ensemble."
             )
 
     def _refresh_loss_flags(self) -> None:
@@ -452,7 +482,7 @@ class DiffusionClassifier(DiffusionModel):
             len(self.network.clf_cls_token_regularizer_ids) > 0
         ) if getattr(self.network, "clf_cls_token_regularizer_ids", None) is not None else None
         self.use_clf_distil_loss = bool(
-            self.teacher_network is not None and 
+            bool(self._classifier_teacher_specs()) and
             self.clf_distil_loss_coef > 0.
         )
 
@@ -467,7 +497,7 @@ class DiffusionClassifier(DiffusionModel):
             {}
         ) if regularizer_kwargs is None else regularizer_kwargs
         self.use_clf_distil_ctr_loss = bool(
-            self.teacher_network is not None and
+            bool(self._classifier_teacher_specs()) and
             self.ctr_loss_coef > 0. and
             regularizer_kwargs.get("train_type", "normal") in (
                 "distil", "both"
@@ -491,31 +521,276 @@ class DiffusionClassifier(DiffusionModel):
             self.use_clf_distil_ctr_loss and
             regularizer_kwargs.get("distil_type", "hard") == "soft"
         ):
-            for method in (self.network.call, self.network.predict_class):
-                parameters = inspect.signature(method).parameters
-                # Reject custom probability-only implementations before an optimizer update.
-                if "return_logits" not in parameters:
-                    raise ValueError(
-                        "Soft classifier KD requires same-pass return_logits support."
-                    )
-
+            self._require_student_classifier_logits()
             self.use_logits_instead = {"return_logits": True}
         # Hard distillation and ordinary classification keep the probability-only API.
         else:
             self.use_logits_instead = {}
 
+    def _require_student_classifier_logits(self) -> None:
+        """Validate same-pass student logits without changing attachment state."""
+
+        for method in (self.network.call, self.network.predict_class):
+            parameters = inspect.signature(method).parameters
+
+            # Soft targets require the exact logits from the stochastic student pass.
+            if "return_logits" not in parameters:
+                raise ValueError(
+                    "Soft classifier KD requires same-pass return_logits support."
+                )
+
+    def _classifier_teacher_specs(self) -> tuple[dict[str, object], ...]:
+        """Return frozen class teachers in stable previous/current role order."""
+
+        specs = []
+        # The previous teacher retains the shared leading vocabulary.
+        if self.teacher_network is not None and self.previous_teacher_clf_loss_weight > 0.:
+            taught = getattr(self.teacher_network, "_diffusion_task_class_ids", None)
+            # Snapshot mappings identify trained columns even with fixed full-width heads.
+            if taught is None:
+                mapping = getattr(self.teacher_network, "_diffusion_seen_classes", {})
+                taught = tuple(mapping.values()) if mapping else None
+            
+            specs.append(dict(
+                role="previous", 
+                network=self.teacher_network,      
+                weight=self.previous_teacher_clf_loss_weight,
+                class_ids=None, 
+                task_class_ids=taught
+            ))
+
+        # A current teacher can expose a task-local head with arbitrary student IDs.
+        if self.current_teacher_network is not None and self.current_teacher_clf_loss_weight > 0.:
+            specs.append(dict(
+                role="current", 
+                network=self.current_teacher_network,
+                weight=self.current_teacher_clf_loss_weight,
+                class_ids=self.current_teacher_class_ids,
+                task_class_ids=self.current_teacher_task_class_ids
+            ))
+
+        return tuple(specs)
+
     def _predict_teacher_labels(
         self, 
         x_t: tf.Tensor, 
         t: tf.Tensor, 
-        labels: tf.Tensor
+        labels: tf.Tensor,
+        clean_images: tf.Tensor | None = None
+    ) -> tf.Tensor | tuple[tf.Tensor, ...]:
+        """Prepare independent class targets without changing either teacher object."""
+
+        # Preserve the legacy tensor target and prediction API for a single previous teacher.
+        if self.current_teacher_network is None:
+            return self._predict_single_teacher_labels(x_t, t, labels, clean_images)
+
+        predictions = []
+        for spec in self._classifier_teacher_specs():
+            teacher = spec["network"]
+            teacher_conditions = self._remap_teacher_conditions(labels, spec["class_ids"])
+            limit = getattr(teacher, "num_labels", None)
+
+            # Unknown conditional IDs use the native null condition before embedding lookup.
+            if limit is not None:
+                teacher_conditions = tf.where(
+                    teacher_conditions < tf.cast(limit, teacher_conditions.dtype), 
+                    teacher_conditions, tf.zeros_like(teacher_conditions)
+                )
+
+            predictions.append(self._predict_single_teacher_labels(
+                x_t, 
+                t, 
+                teacher_conditions, 
+                clean_images, 
+                teacher_network=teacher
+            ))
+
+        return tuple(predictions)
+
+    def _classifier_teacher_support(
+        self, 
+        probabilities: tf.Tensor, 
+        spec: dict[str, object], 
+        student_width: tf.Tensor | int
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Restrict teacher columns while retaining fixed class-axis widths for XLA."""
+
+        ids = tf.range(tf.shape(probabilities)[1], dtype=tf.int32) \
+            if spec["class_ids"] is None else tf.constant(spec["class_ids"], tf.int32)
+        tf.debugging.assert_equal(
+            tf.size(ids), 
+            tf.shape(probabilities)[1], 
+            message="Teacher class_ids must match its output width."
+        )
+        teacher_width = probabilities.shape[-1] if probabilities.shape.rank is not None else None
+        static_student_width = tf.get_static_value(student_width)
+
+        # Declared head widths permit constant gathers, avoiding XLA's dynamic mask bounds.
+        if teacher_width is not None and static_student_width is not None:
+            source_ids = tuple(range(int(teacher_width))) if spec["class_ids"] is None \
+                        else tuple(spec["class_ids"])
+            taught = None if spec["task_class_ids"] is None else set(spec["task_class_ids"])
+            columns = tuple(index for index, class_id in enumerate(source_ids)
+                    if class_id < int(static_student_width)
+                    and (taught is None or class_id in taught))
+            ids = tf.constant(tuple(source_ids[index] for index in columns), tf.int32)
+            selected = tf.gather(probabilities, tf.constant(columns, tf.int32), axis=1)
+        # Unknown callable head widths retain the ordinary graph-mode dynamic vocabulary path.
+        else:
+            valid = ids < tf.cast(student_width, tf.int32)
+            # Warm-start teachers retain a full head, but only newly taught columns are targets.
+            if spec["task_class_ids"] is not None:
+                taught_ids = tf.constant(spec["task_class_ids"], tf.int32)
+                valid = tf.logical_and(valid, tf.reduce_any(ids[:, None] == taught_ids[None, :], axis=1))
+
+            ids = tf.boolean_mask(ids, valid)
+            selected = tf.boolean_mask(probabilities, valid, axis=1)
+
+        tf.debugging.assert_positive(
+            tf.size(ids), 
+            message="Teacher and student need shared class support."
+        )
+        selected = tf.math.divide_no_nan(selected, tf.reduce_sum(selected, axis=1, keepdims=True))
+
+        return selected, ids
+
+    def _classifier_teacher_mask(
+        self, 
+        classes: tf.Tensor | None, 
+        replay_mask: tf.Tensor | None,
+        support: tf.Tensor, 
+        batch_size: tf.Tensor, 
+        scope: str, 
+        role: str = "previous"
+    ) -> tf.Tensor:
+        """Apply past-teacher scopes without suppressing independently trained current targets."""
+        
+        # Historical old/replay scopes belong to the previous-task retention objective.
+        scope = scope if role == "previous" else "current_and_replay"
+        mask = tf.ones((batch_size,), tf.bool)
+
+        # Task-local supervision and explicit old_classes scopes use the actual mapped support.
+        if self.dual_teacher_scope == "task" or scope == "old_classes":
+            # Class membership is undefined without the original undropped targets.
+            if classes is None:
+
+                raise ValueError("Dual task-scoped distillation requires classes.")
+            mask = tf.reduce_any(
+                tf.cast(tf.reshape(classes, (-1, 1)), tf.int32) == support[None, :], 
+                axis=1
+            )
+
+        # Replay scopes retain their explicit provenance contract.
+        if scope == "replay_only":
+            # Class labels alone cannot establish whether an example came from replay.
+            if replay_mask is None:
+                raise ValueError("replay_mask is required for replay_only distillation.")
+            
+            mask = tf.logical_and(mask, tf.cast(tf.reshape(replay_mask, (-1,)), tf.bool))
+        
+        return mask
+
+    def _compute_dual_classifier_distillation(
+        self, 
+        targets: tuple[tf.Tensor, ...], 
+        student: tf.Tensor,
+        loss_type: str, 
+        temperature: float, 
+        scope: str,
+        mask: tf.Tensor | None, 
+        classes: tf.Tensor | None,
+        replay_mask: tf.Tensor | None, 
+        student_logits: tf.Tensor | None,
+        allocator: Callable | None, 
+        x0: tf.Tensor | None, 
+        update_metrics: bool
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Sum independent mapped CE/KL terms; never average targets before hard KD."""
+
+        specs = self._classifier_teacher_specs()
+        # Reject stale mapped batches after a role was attached or removed.
+        if len(targets) != len(specs):
+            raise ValueError(
+                "Mapped classifier targets do not match the attached teacher roles."
+            )
+
+        total = tf.zeros((), dtype=self.dtype_policy.variable_dtype)
+        static_width = student.shape[-1] if student.shape.rank is not None else None
+        width = int(static_width) if static_width is not None else tf.shape(student)[1]
+        for probabilities, spec in zip(targets, specs):
+            probabilities, support = self._classifier_teacher_support(probabilities, spec, width)
+            teacher_mask = self._classifier_teacher_mask(
+                classes, 
+                replay_mask, 
+                support, 
+                tf.shape(student)[0], 
+                scope, 
+                role=spec["role"]
+            )
+            weights = tf.cast(teacher_mask, self.dtype_policy.variable_dtype)
+            # Preserve fractional classifier masks in each independently normalized objective.
+            if mask is not None:
+                weights *= tf.cast(mask, weights.dtype)
+
+            mass = tf.reduce_sum(probabilities, axis=1)
+            tf.debugging.assert_positive(
+                tf.where(weights > 0., mass, tf.ones_like(mass)), 
+                message="Teacher probabilities need positive mass on taught classes for eligible rows."
+            )
+            static_support = tf.get_static_value(support)
+            # A constant full-width permutation keeps target padding and its gradient XLA-safe.
+            if static_width is not None and static_support is not None:
+                support_ids = tuple(int(class_id) for class_id in static_support)
+                remaining = tuple(class_id for class_id in range(int(static_width))
+                                  if class_id not in support_ids)
+                order = tf.constant(support_ids + remaining, tf.int32)
+            # Runtime-width heads continue to use the existing ordinary graph permutation.
+            else:
+                remaining = tf.boolean_mask(tf.range(width), tf.logical_not(
+                            tf.reduce_any(tf.range(width)[:, None] == support[None, :], axis=1)))
+                order = tf.concat((support, remaining), axis=0)
+
+            # Reordering all student columns preserves its full softmax denominator.
+            loss, _ = self.compute_clf_distil_loss(
+                probabilities, 
+                tf.gather(student, order, axis=1), 
+                clf_distil_type=loss_type, 
+                clf_distil_temperature=temperature, 
+                clf_distil_scope="current_and_replay", 
+                clf_distil_loss_mask=weights, 
+                classes=classes, 
+                replay_mask=replay_mask, 
+                kd_loss_allocator=allocator, 
+                x0=x0, 
+                student_logits=tf.gather(student_logits, order, axis=1)
+                            if student_logits is not None else None, 
+                teacher_loss_weight=1.
+            )
+            total += tf.cast(spec["weight"], total.dtype) * loss
+
+            # Separate population-weighted trackers make the sum invariant to batch partitioning.
+            if update_metrics:
+                tracker = getattr(self, spec["role"] + "_teacher_clf_loss_tracker")
+                tracker.update_state(loss, sample_weight=tf.reduce_sum(weights))
+
+        return total, student
+
+    def _predict_single_teacher_labels(
+        self, 
+        x_t: tf.Tensor, 
+        t: tf.Tensor, 
+        labels: tf.Tensor, 
+        clean_images: tf.Tensor | None = None, 
+        teacher_network: tf.keras.Model | None = None
     ) -> tf.Tensor:
         """Return frozen teacher probabilities for one prepared batch.
 
         Args:
             x_t (tf.Tensor): Clean or noisified teacher images.
             t (tf.Tensor): Per-example timestep IDs.
-            labels (tf.Tensor): Condition IDs supplied to the teacher.
+            labels (tf.Tensor): Condition IDs supplied to a native teacher.
+            clean_images (tf.Tensor | None): Original preprocessed images, required
+                for an image-only callable teacher and never diffusion-corrupted.
 
         Returns:
             tf.Tensor: Stopped-gradient probabilities [B, teacher_class_count], retaining
@@ -523,11 +798,71 @@ class DiffusionClassifier(DiffusionModel):
             or wider than the student's current class count.
         """
 
-        teacher_labels = self.teacher_network.predict_class(
-            (x_t, t, labels), 
-            max_encoder_num=None,
-            training=False
-        )
+        teacher = self.teacher_network if teacher_network is None else teacher_network
+        # Native classifiers keep their timestep and condition-aware contract.
+        if callable(getattr(teacher, "predict_class", None)):
+            teacher_labels = teacher.predict_class(
+                (x_t, t, labels), 
+                max_encoder_num=None, 
+                training=False
+            )
+        # An ordinary classifier always sees the original clean image batch.
+        else:
+            # Never silently substitute a noisy batch when a caller omits x0.
+            if clean_images is None:
+                raise ValueError("An image-only teacher requires clean_images (x0).")
+
+            teacher_labels = teacher(clean_images, training=False)
+            # Freeze layers a subclassed Keras teacher may have built on its first call.
+            teacher.trainable = False
+            # Dense floating scores are the only supported callable classifier output.
+            if not tf.is_tensor(teacher_labels) or isinstance(
+                teacher_labels, (tf.RaggedTensor, tf.SparseTensor)
+            ) or not tf.as_dtype(teacher_labels.dtype).is_floating:
+                raise ValueError("An image-only teacher must return one floating class-score tensor.")
+
+            tf.debugging.assert_rank(
+                teacher_labels, 
+                2,
+                message="Teacher class scores must have shape [batch, classes]."
+            )
+            tf.debugging.assert_equal(
+                tf.shape(teacher_labels)[0], 
+                tf.shape(clean_images)[0],
+                message="Teacher class scores must preserve the image batch size."
+            )
+            tf.debugging.assert_positive(
+                tf.shape(teacher_labels)[1], 
+                message="Teacher class scores need at least one class."
+            )
+
+            # Softmax and probability checks need more range than mixed-precision inference.
+            if teacher_labels.dtype in (tf.float16, tf.bfloat16):
+                teacher_labels = tf.cast(teacher_labels, tf.float32)
+
+            tf.debugging.assert_all_finite(teacher_labels, "Teacher class scores must be finite.")
+            # Convert raw class scores exactly once, before the shared KD loss.
+            if self.teacher_classifier_from_logits:
+                teacher_labels = tf.nn.softmax(teacher_labels, axis=-1)
+            # Probability teachers must supply an actual distribution per image.
+            else:
+                tf.debugging.assert_non_negative(
+                    teacher_labels, 
+                    message="Teacher probabilities must be nonnegative; " 
+                    "use teacher_classifier_from_logits=True for logits."
+                )
+                tf.debugging.assert_near(
+                    tf.reduce_sum(teacher_labels, axis=-1), 
+                    tf.ones(
+                        tf.shape(teacher_labels)[0], 
+                        dtype=teacher_labels.dtype
+                    ), 
+                    atol=1e-3, 
+                    rtol=1e-3, 
+                    message="Teacher probabilities must sum to one; " 
+                    "use teacher_classifier_from_logits=True for logits."
+                )
+        
         tf.debugging.assert_rank(
             teacher_labels, 
             2, 
@@ -694,6 +1029,29 @@ class DiffusionClassifier(DiffusionModel):
         Raises:
             ValueError: If the configured scope lacks required metadata.
         """
+
+        # Nested targets may represent disjoint, non-prefix vocabularies.
+        if isinstance(teacher_labels, (tuple, list)):
+            masks = []
+            specs = self._classifier_teacher_specs()
+            for probabilities, spec in zip(teacher_labels, specs):
+                width = tf.cast(self.network.num_classes, tf.int32)
+                _, support = self._classifier_teacher_support(probabilities, spec, width)
+                masks.append(self._classifier_teacher_mask(
+                    classes, 
+                    replay_mask, 
+                    support, 
+                    tf.shape(classes)[0], 
+                    self.clf_distil_scope, 
+                    role=spec["role"]
+                ))
+
+            scope_mask = tf.reduce_any(tf.stack(masks), axis=0)
+            # Metric eligibility intersects the same classifier mask as the objective.
+            if classifier_mask is not None:
+                scope_mask = tf.logical_and(scope_mask, tf.cast(classifier_mask, tf.bool))
+            
+            return scope_mask
 
         scope_mask = None
         # Select targets represented by the frozen teacher vocabulary.
@@ -865,6 +1223,10 @@ class DiffusionClassifier(DiffusionModel):
             dtype=stable_dtype,
             name="clf_distil_loss"
         )
+        self.previous_teacher_clf_loss_tracker = metrics.Mean(
+            dtype=stable_dtype, name="previous_teacher_clf_loss")
+        self.current_teacher_clf_loss_tracker = metrics.Mean(
+            dtype=stable_dtype, name="current_teacher_clf_loss")
         self.total_accuracy_tracker = metrics.SparseCategoricalAccuracy(
             dtype=stable_dtype,
             name="total_accuracy"
@@ -882,6 +1244,107 @@ class DiffusionClassifier(DiffusionModel):
             dtype=stable_dtype,
             name="clf_distil_acc"
         )
+
+    def _reset_classifier_teacher_metrics(self) -> None:
+        """Start fresh role populations after a successful teacher replacement."""
+
+        for name in ("previous_teacher_clf_loss_tracker", "current_teacher_clf_loss_tracker"):
+            tracker = getattr(self, name, None)
+            # Constructor attachment may precede classifier metric creation.
+            if tracker is not None:
+                tracker.reset_state()
+
+    def _validate_classifier_teacher_candidate(
+        self, 
+        teacher_network: tf.keras.Model | None, 
+        role: str
+    ) -> None:
+        """Validate class capabilities before replacing or freezing either live teacher.
+
+        A supplied wrapper is inspected through its raw network while its scheduler
+        metadata remains available. Disabled roles do not require class outputs.
+        Failed validation leaves the current attachments, metrics, and traces intact.
+        """
+
+        # Base initialization defers classifier-specific validation until its settings exist.
+        if not hasattr(self, "clf_distil_loss_coef"):
+            return
+
+        regularizer = getattr(self.network, "clf_cls_token_regularizer_kwargs", None)
+        # Shared token settings apply only when the classifier has no dedicated settings.
+        if regularizer is None:
+            regularizer = getattr(self.network, "cls_token_regularizer_kwargs", {})
+
+        needs_classes = bool(self.clf_distil_loss_coef > 0.) or bool(
+            self.ctr_loss_coef > 0. and 
+            regularizer.get("train_type", "normal") in ("distil", "both")
+        )
+        # Zero role weights fully disable class KD even when its shared coefficient is positive.
+        if not needs_classes or not (
+            self.previous_teacher_clf_loss_weight > 0. or 
+            self.current_teacher_clf_loss_weight > 0.
+        ):
+            return
+
+        class_weight = getattr(self, role + "_teacher_clf_loss_weight")
+        other_role = "current" if role == "previous" else "previous"
+        other_teacher = self.current_teacher_network if role == "previous" else self.teacher_network
+        # Clearing the final enabled class teacher is valid only in the deferred lifecycle.
+        if teacher_network is None:
+            other_active = other_teacher is not None and getattr(
+                self, other_role + "_teacher_clf_loss_weight"
+            ) > 0.
+            # A disabled or missing other role cannot supply required class targets.
+            if not other_active and not self.defer_teacher:
+                raise ValueError("Classifier distillation requires a teacher or defer_teacher=True.")
+
+            return
+
+        # Noise-only roles need no classifier interface.
+        if class_weight <= 0.:
+            return
+
+        # Deferred attachment must validate student logits before the base setter mutates state.
+        if (self.clf_distil_loss_coef > 0. and self.clf_distil_type == "soft") or (
+            self.ctr_loss_coef > 0. and regularizer.get("train_type", "normal") in ("distil", "both")
+            and regularizer.get("distil_type", "hard") == "soft"
+        ):
+            self._require_student_classifier_logits()
+
+        teacher = teacher_network.network if isinstance(
+            teacher_network, 
+            DiffusionModel
+        ) else teacher_network
+        native = callable(getattr(teacher, "predict_class", None))
+        # Ordinary image classifiers expose scores through one inference-only call.
+        if not native:
+            # Native noise outputs and non-callable objects cannot provide class scores.
+            if not callable(teacher) or self._teacher_uses_native_noise_api(teacher):
+                raise ValueError(
+                    "Classification teachers need predict_class or an image-only callable."
+                )
+            # One plain tensor cannot serve as both class scores and epsilon.
+            if self.noise_distil_loss_coef > 0. and getattr(
+                self, role + "_teacher_noise_loss_weight"
+            ) > 0.:
+                raise ValueError(
+                    "An image-only class-score teacher requires its noise loss weight to be zero."
+                )
+
+            return
+
+        for name in ("timesteps", "channels", "use_cfg"):
+            # Task-local vocabulary widths may differ, while diffusion geometry must agree.
+            if getattr(teacher, name, None) != getattr(self.network, name, None):
+                raise ValueError(f"{role}_teacher_network {name} must match the student.")
+        for name, fallback in (
+            ("scheduler_name", "_diffusion_scheduler_name"), 
+            ("modify_first_t", "_diffusion_modify_first_t")
+        ):
+            known = getattr(teacher_network, name, getattr(teacher, fallback, None))
+            # Native wrappers and snapshots carry optional forward-process metadata.
+            if known is not None and known != getattr(self, name):
+                raise ValueError(f"{role}_teacher_network {name} must match the student.")
 
     @property
     def metrics(self) -> list[metrics.Metric]:
@@ -902,6 +1365,8 @@ class DiffusionClassifier(DiffusionModel):
             self.clf_kl_loss_tracker, 
             self.clf_ctr_loss_tracker, 
             self.clf_distil_loss_tracker, 
+            *([self.previous_teacher_clf_loss_tracker, self.current_teacher_clf_loss_tracker]
+            if self.current_teacher_network is not None else []), 
             self.total_accuracy_tracker, 
             self.accuracy_tracker, 
             self.clf_ctr_accuracy_tracker, 
@@ -1136,9 +1601,9 @@ class DiffusionClassifier(DiffusionModel):
         if split_batch:
             diffusion_classes = tf.boolean_mask(classes, diffusion_mask)
             diffusion_labels = tf.boolean_mask(cfg_labels, diffusion_mask)
-            metric_teacher_noise_mask = tf.boolean_mask(
-                teacher_noise_mask, 
-                diffusion_mask
+            metric_teacher_noise_mask = tf.nest.map_structure(
+                lambda mask: tf.boolean_mask(mask, diffusion_mask), 
+                teacher_noise_mask
             ) if teacher_noise_mask is not None else None
 
         results = self.get_results_dict(
@@ -1534,87 +1999,39 @@ class DiffusionClassifier(DiffusionModel):
                 channels, or CFG metadata are incompatible, or base attachment fails.
         """
 
-        teacher_schedule = getattr(
-            teacher_network, 
-            "scheduler_name", 
-            getattr(teacher_network, "_diffusion_scheduler_name", None)
-        ) if teacher_network is not None else None
-        teacher_modify_first = getattr(
-            teacher_network, 
-            "modify_first_t", 
-            getattr(teacher_network, "_diffusion_modify_first_t", None)
-        ) if teacher_network is not None else None
-
+        self._validate_classifier_teacher_candidate(teacher_network, "previous")
         super().set_teacher_network(teacher_network)
 
-        # Base construction calls this override before classifier coefficients have been installed.
+        # Base construction installs teachers before classifier coefficients are available.
         if not hasattr(self, "clf_distil_loss_coef"):
             return
 
-        regularizer_kwargs = getattr(
-            self.network, 
-            "clf_cls_token_regularizer_kwargs", 
-            None
-        )
-        regularizer_kwargs = getattr(
-            self.network, 
-            "cls_token_regularizer_kwargs", 
-            {}
-        ) if regularizer_kwargs is None else regularizer_kwargs
-        needs_class_teacher = bool(
-            self.clf_distil_loss_coef > 0.
-        ) or bool(
-            self.ctr_loss_coef > 0. and
-            regularizer_kwargs.get("train_type", "normal") in (
-                "distil", 
-                "both"
-            )
-        )
-
-        # Teacher-dependent classifier objectives require a teacher unless attachment is deferred.
-        if self.teacher_network is None and needs_class_teacher \
-        and not self.defer_teacher:
-            raise ValueError(
-                "Classifier distillation requires teacher_network; "
-                "set defer_teacher=True only when it will be attached later."
-            )
-        # Check classifier-teacher contracts only when a teacher-dependent classifier objective is
-        # configured.
-        if self.teacher_network is not None and needs_class_teacher:
-            # Classifier distillation needs a teacher capable of returning class probabilities.
-            if not hasattr(self.teacher_network, "predict_class"):
-                raise ValueError(
-                    "Classifier distillation requires teacher.predict_class."
-                )
-            # Known teacher and student schedules must agree for matched noisy predictions.
-            if teacher_schedule is not None \
-            and teacher_schedule != self.scheduler_name:
-                raise ValueError(
-                    "teacher_network scheduler_name must match the student."
-                )
-            # Known timestep-zero conventions must agree between teacher and student.
-            if teacher_modify_first is not None \
-            and teacher_modify_first != self.modify_first_t:
-                raise ValueError(
-                    "teacher_network modify_first_t must match the student."
-                )
-            for name in ("timesteps", "channels", "use_cfg"):
-                # Teacher timestep, channel, and CFG contracts must match those of the student.
-                if getattr(self.teacher_network, name, None) != getattr(
-                    self.network, name, None
-                ):
-                    raise ValueError(
-                        f"teacher_network {name} must match the student."
-                    )
-
+        self._reset_classifier_teacher_metrics()
         self._refresh_loss_flags()
-        # Active teacher objectives require mapped targets; 
-        # teacher-free runs restore their configured preparation.
         self.map_preprocess = True if (
             self.use_noise_distil_loss or 
             self.use_classifier_distil
         ) else self._map_preprocess_without_teacher
-    
+
+    def set_current_teacher_network(
+        self, 
+        teacher_network: tf.keras.Model | None, 
+        class_ids: list[int] | tuple[int, ...] | None = None, 
+        task_class_ids: list[int] | tuple[int, ...] | None = None
+    ) -> None:
+        """Validate and attach a frozen current teacher with independent class mappings."""
+
+        self._validate_classifier_teacher_candidate(teacher_network, "current")
+        super().set_current_teacher_network(teacher_network, class_ids, task_class_ids)
+        # Base construction attaches roles before classifier settings exist.
+        if not hasattr(self, "clf_distil_loss_coef"):
+            return
+
+        self._reset_classifier_teacher_metrics()
+        self._refresh_loss_flags()
+        self.map_preprocess = True if (self.use_noise_distil_loss or self.use_classifier_distil) \
+                            else self._map_preprocess_without_teacher
+
     def prep_inputs_map(
         self, 
         x0: tf.Tensor, 
@@ -1641,7 +2058,9 @@ class DiffusionClassifier(DiffusionModel):
 
         # Retain the training CFG scale for combined targets, including an unset mode sentinel.
         if self.use_noise_distil_loss and self.use_classifier_distil \
-        and self._preprocess_training is not False:
+        and self._preprocess_training is not False \
+        and self._teacher_uses_native_noise_api() \
+        and self.current_teacher_network is None:
             prepared_inputs = self.prep_inputs(
                 (x0, labels),
                 use_label_dropout=True
@@ -1684,11 +2103,13 @@ class DiffusionClassifier(DiffusionModel):
             else:
                 classifier_x, classifier_t = self._classifier_inputs(prepared_inputs, training=True)
                 teacher_labels = self._predict_teacher_labels(
-                    classifier_x,
-                    classifier_t,
+                    classifier_x, 
+                    classifier_t, 
                     uncond_labels if self.clf_train_class_input_type == "null_class_only"
-                    else self._mask_unknown_teacher_labels(cond_labels)
+                    else self._mask_unknown_teacher_labels(cond_labels), 
+                    clean_images=prepared_inputs[0]
                 )
+
             prepared_inputs = (
                 *prepared_inputs, 
                 teacher_noises_pred, 
@@ -1698,7 +2119,8 @@ class DiffusionClassifier(DiffusionModel):
 
             # Append provenance only when the caller supplied a replay mask.
             return prepared_inputs if replay_mask is None else (
-                *prepared_inputs, replay_mask
+                *prepared_inputs, 
+                replay_mask
             )
 
         prepared_inputs = super().prep_inputs_map(x0, labels)
@@ -1723,13 +2145,15 @@ class DiffusionClassifier(DiffusionModel):
             ] # cfg_labels or uncond_labels
 
         # Map only unseen condition IDs to null for narrower past teachers.
-        teacher_labels_in = self._mask_unknown_teacher_labels(
-            teacher_labels_in
-        )
+        # The dual helper maps the original condition independently for each teacher.
+        if self.current_teacher_network is None:
+            teacher_labels_in = self._mask_unknown_teacher_labels(teacher_labels_in)
+        
         teacher_labels = self._predict_teacher_labels(
             teacher_x, 
             teacher_t, 
-            teacher_labels_in
+            teacher_labels_in,
+            clean_images=prepared_inputs[0],
         )
         teacher_inputs = (*prepared_inputs, teacher_labels)
 
@@ -1909,7 +2333,9 @@ class DiffusionClassifier(DiffusionModel):
         ] | None = None, 
         kd_loss_allocator: Callable | None = None, 
         x0: tf.Tensor | None = None,
-        student_logits: tf.Tensor | None = None
+        student_logits: tf.Tensor | None = None,
+        teacher_loss_weight: float | None = None,
+        update_teacher_metrics: bool = False,
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Compute hard-label CE or soft-label KL distillation loss.
 
@@ -1989,6 +2415,23 @@ class DiffusionClassifier(DiffusionModel):
             raise ValueError(
                 "clf_distil_scope must be 'old_classes', "
                 "'replay_only', or 'current_and_replay'."
+            )
+
+        # Multiple teachers retain separate supports, argmax targets, and row normalizers.
+        if isinstance(teacher_labels, (tuple, list)):
+            return self._compute_dual_classifier_distillation(
+                teacher_labels, 
+                distil_classes, 
+                clf_distil_type, 
+                clf_distil_temperature,
+                clf_distil_scope, 
+                clf_distil_loss_mask, 
+                classes, 
+                replay_mask,
+                student_logits, 
+                kd_loss_allocator, 
+                x0, 
+                update_teacher_metrics
             )
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -2096,28 +2539,37 @@ class DiffusionClassifier(DiffusionModel):
         # Intersect the scope selector with any classifier-training mask.
         if scope_mask is not None:
             scope_mask = tf.cast(scope_mask, stable_dtype)
-            # Use the KD scope alone or intersect it multiplicatively with existing classifier
-            # weights.
+            # Use the KD scope alone or intersect it 
+            # multiplicatively with existing classifier weights.
             clf_distil_loss_mask = scope_mask if clf_distil_loss_mask is None \
                                 else clf_distil_loss_mask * scope_mask
 
+        weight = getattr(self, "previous_teacher_clf_loss_weight", 1.) \
+                if teacher_loss_weight is None else teacher_loss_weight
         # A dedicated runtime reducer can change independent KD allocation only.
         if kd_loss_allocator is not None:
-            return kd_loss_allocator(
-                self, clf_distil_loss, 
+            return tf.cast(weight, stable_dtype) * kd_loss_allocator(
+                self, 
+                clf_distil_loss, 
                 clf_distil_loss_mask, 
-                x0, classes, replay_mask
+                x0, 
+                classes, 
+                replay_mask
             ), distil_classes
 
         # Normalize by selected exposure when masked; otherwise average the complete batch.
         clf_distil_loss = tf.math.divide_no_nan(
             tf.reduce_sum(
-                clf_distil_loss * clf_distil_loss_mask
+                clf_distil_loss * 
+                clf_distil_loss_mask
             ), 
             tf.reduce_sum(clf_distil_loss_mask)
         ) if clf_distil_loss_mask is not None else tf.reduce_mean(clf_distil_loss)
 
-        return clf_distil_loss, distil_classes
+        weight = getattr(self, "previous_teacher_clf_loss_weight", 1.) \
+                if teacher_loss_weight is None else teacher_loss_weight
+
+        return tf.cast(weight, stable_dtype) * clf_distil_loss, distil_classes
 
     def compute_clf_distil_ctr_loss(
         self, 
@@ -2304,13 +2756,9 @@ class DiffusionClassifier(DiffusionModel):
             averaged token probabilities, and distillation probabilities.
         """
 
-        # Use the configured primary classifier branch unless explicitly overridden.
         clf_train_type = self.clf_train_type if clf_train_type is None else clf_train_type
-        # Use the configured classifier KL branch unless explicitly overridden.
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
-        # Use the configured classifier token branch unless explicitly overridden.
         ctr_train_type = self.ctr_train_type if ctr_train_type is None else ctr_train_type
-        # Omitted metadata supports direct probability-based helper callers.
         logits_c = {} if logits_c is None else logits_c
         logits_u = {} if logits_u is None else logits_u
 
@@ -2360,11 +2808,12 @@ class DiffusionClassifier(DiffusionModel):
                 "_classifier_kd_allocator", 
                 None
             ) if training is True else None, 
-            x0=x0,
+            x0=x0, 
             student_logits=(logits_c if clf_train_type == "cond" else logits_u).get(
                 "distil_logits" if getattr(self.network, "distil_token", None) is not None
                 else "class_logits"
-            )
+            ), 
+            update_teacher_metrics=True
         ) if self.use_clf_distil_loss else (0., None)
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -2542,25 +2991,17 @@ class DiffusionClassifier(DiffusionModel):
         clf_ctr_preds = None if clf_ctr_preds is None else tf.convert_to_tensor(clf_ctr_preds)
         distil_classes = None if distil_classes is None else tf.convert_to_tensor(distil_classes)
 
-        # An omitted classifier selector includes every row; explicit values become Boolean
-        # selectors.
         clf_acc_mask = tf.ones_like(classes, dtype=tf.bool) \
                     if clf_acc_mask is None else tf.cast(clf_acc_mask, tf.bool)
-        # Default KD metric exposure to the classifier mask unless an exact scope is supplied.
         clf_distil_acc_mask = clf_acc_mask if clf_distil_acc_mask is None \
                             else tf.cast(clf_distil_acc_mask, tf.bool)
-        # Default token metric exposure to the classifier mask unless an exact scope is supplied.
         clf_ctr_mask = clf_acc_mask if clf_ctr_mask is None \
                         else tf.cast(clf_ctr_mask, tf.bool)
-        # Inherit classifier KL reporting unless an explicit switch is supplied.
         use_kl_loss = self.use_clf_kl_loss if use_kl_loss is None else use_kl_loss
-        # Inherit classifier token reporting unless an explicit switch is supplied.
         use_ctr_loss = self.use_clf_ctr_loss if use_ctr_loss is None else use_ctr_loss
-        # Inherit independent-head distillation reporting unless an explicit switch is supplied.
         use_clf_distil_loss = self.use_clf_distil_loss \
                             if use_clf_distil_loss is None \
                             else use_clf_distil_loss
-        # Any active classifier auxiliary objective requests total reporting unless overridden.
         use_total_loss = use_kl_loss or use_ctr_loss or use_clf_distil_loss \
                         if use_total_loss is None else use_total_loss
 
@@ -2605,9 +3046,9 @@ class DiffusionClassifier(DiffusionModel):
         )
         # Static batch shapes keep XLA metric counts correct for partial allocations.
         self.accuracy_tracker.update_state(
-            classes,
-            classes_pred,
-            sample_weight=tf.cast(clf_acc_mask, stable_dtype),
+            classes, 
+            classes_pred, 
+            sample_weight=tf.cast(clf_acc_mask, stable_dtype)
         )
 
         results = {}
@@ -2744,6 +3185,16 @@ class DiffusionClassifier(DiffusionModel):
                 self.clf_distil_acc_tracker.name: 
                 self.clf_distil_acc_tracker.result()
             })
+
+        # The dual total is the weighted sum of independently normalized teacher populations.
+        if use_clf_distil_loss and getattr(self, "current_teacher_network", None) is not None:
+            combined = tf.zeros((), dtype=stable_dtype)
+            for spec in self._classifier_teacher_specs():
+                tracker = getattr(self, spec["role"] + "_teacher_clf_loss_tracker")
+                results[tracker.name] = tracker.result()
+                combined += tf.cast(spec["weight"], stable_dtype) * tracker.result()
+
+            results[self.clf_distil_loss_tracker.name] = combined
 
         return results
 
@@ -3108,10 +3559,10 @@ def run_self_tests() -> dict[str, str]:
         continual_student.set_teacher_network(tf.keras.Sequential())
     except ValueError:
         pass
-    # An installed classifier teacher must provide the class-prediction interface.
+    # A single-output image teacher cannot supervise both class and noise objectives.
     else:
         raise AssertionError(
-            "A classifier teacher must expose predict_class."
+            "Combined noise and class distillation requires a compatible multi-output teacher."
         )
     external_teacher = make_network()
     continual_student.set_teacher_network(external_teacher)

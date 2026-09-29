@@ -555,7 +555,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             teacher_labels = self._predict_teacher_labels(
                 prepared_inputs[1], 
                 prepared_inputs[0], 
-                prepared_inputs[2]
+                prepared_inputs[2], 
+                clean_images=prepared_inputs[4]
             ) if self.use_classifier_distil else None
 
         return prepared_inputs, teacher_labels, replay_mask
@@ -962,7 +963,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             teacher_labels = self._predict_teacher_labels(
                 prepared_inputs[1], 
                 prepared_inputs[0], 
-                prepared_inputs[2]
+                prepared_inputs[2], 
+                clean_images=prepared_inputs[4]
             )
             prepared_inputs = (*prepared_inputs, teacher_labels)
 

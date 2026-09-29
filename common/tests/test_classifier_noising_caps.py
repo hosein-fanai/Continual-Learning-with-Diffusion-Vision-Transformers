@@ -135,21 +135,24 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
         for training in (True, False):
             for noise_distil in (False, True):
                 with self.subTest(training=training, noise_distil=noise_distil):
-                    wrapper = self.make_wrapper(map_preprocess=True, train_cfg_scale=2., test_cfg_scale=3.)
+                    wrapper = self.make_wrapper(
+                        teacher_network=self.make_network(), clf_distil_loss_coef=1.,
+                        noise_distil_loss_coef=1. if noise_distil else 0.,
+                        map_preprocess=True, train_cfg_scale=2., test_cfg_scale=3.,
+                    )
                     wrapper._preprocess_training = training
                     teacher_inputs = []
 
-                    def predict(x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor) -> tf.Tensor:
-                        """Capture the actual teacher image and timestep draw."""
+                    def predict(
+                        x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor,
+                        clean_images: tf.Tensor | None = None,
+                    ) -> tf.Tensor:
+                        """Capture the native draw while preserving clean callable-teacher inputs."""
+                        np.testing.assert_array_equal(clean_images, self.images)
                         teacher_inputs.append((x, t, labels))
                         return tf.constant([[.3, .7]] * 4)
 
-                    with patch.object(wrapper, "use_classifier_distil", True), \
-                         patch.object(wrapper, "use_noise_distil_loss", noise_distil), \
-                         patch.object(wrapper, "_predict_teacher_labels", side_effect=predict), \
-                         patch.object(wrapper, "forward", return_value=(
-                             None, tf.zeros_like(self.images), None, None,
-                             (tf.constant([[.9, .1]] * 4), None))):
+                    with patch.object(wrapper, "_predict_teacher_labels", side_effect=predict):
                         mapped = wrapper.prep_inputs_map(self.images, self.labels, replay)
                         prepared, teacher, provenance = wrapper._prepare_classifier_batch(
                             mapped, use_label_dropout=training)

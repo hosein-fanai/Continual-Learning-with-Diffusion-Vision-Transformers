@@ -1,4 +1,4 @@
-﻿"""Behavioral checks for independent V1 classifier image and condition inputs."""
+"""Behavioral checks for independent V1 classifier image and condition inputs."""
 
 import inspect
 import json
@@ -347,6 +347,7 @@ class CleanClassifierTrainingTests(unittest.TestCase):
                         wrapper = self.make_wrapper(clf_train_noisy_input_type=input_type,
                                                     clf_train_class_input_type=class_input,
                                                     train_cfg_scale=2.0, test_cfg_scale=3.0)
+                        wrapper.set_teacher_network(self.make_network())
                         prepared = self.prepared_batch(wrapper)
                         primary = tf.constant([[0.9, 0.1]] * 4)
                         separate = tf.constant([[0.2, 0.8]] * 4)
@@ -355,8 +356,12 @@ class CleanClassifierTrainingTests(unittest.TestCase):
                         expected_labels = prepared[5] if class_input == "null_class_only" else prepared[4]
                         shared = noise_distil and input_type == "noisy" and class_input == "all_classes"
 
-                        def teacher_prediction(x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor) -> tf.Tensor:
+                        def teacher_prediction(
+                            x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor,
+                            clean_images: tf.Tensor | None = None,
+                        ) -> tf.Tensor:
                             """Verify all selected teacher inputs before returning distinct targets."""
+                            np.testing.assert_array_equal(clean_images, self.images)
                             np.testing.assert_array_equal(x, expected_x)
                             np.testing.assert_array_equal(t, expected_t)
                             np.testing.assert_array_equal(labels, expected_labels)

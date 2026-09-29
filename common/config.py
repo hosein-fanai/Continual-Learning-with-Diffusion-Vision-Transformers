@@ -1255,6 +1255,13 @@ class DiffusionModelConfig(KwargsMixin):
             prediction on the same noisy inputs; zero disables this teacher term. Positive
             values require an attached teacher or defer_teacher=True until continual
             learning supplies one. Defaults to ``0.0``.
+        teacher_noise_input_type (str): Inputs passed to an ordinary callable epsilon
+            teacher: ``"images"`` passes x_t, ``"images_timesteps"`` passes
+            (x_t, t), and ``"images_timesteps_labels"`` passes (x_t, t, labels).
+            Native teachers with the full-return interface retain their existing
+            diffusion call contract. Ordinary teachers run frozen inference only and
+            cannot simultaneously supply classifier and noise targets. Defaults to
+            ``"images_timesteps_labels"``.
         show_separate_noise_losses (bool): When true, report the unchanged full noise loss
             as ``total_noise_loss`` and additionally report ``cond_noise_loss`` and
             ``uncond_noise_loss`` from non-null and null-label rows. These metrics do not
@@ -1308,7 +1315,16 @@ class DiffusionModelConfig(KwargsMixin):
             so continual learning can attach one later. Defaults to ``False``.
         trainable_teacher (bool): Compile an attached runtime teacher independently
             and enable fit_teacher. The matching wrapper handles noise prediction,
-            or noise plus classes for classifiers. Defaults to ``False``.
+            or noise plus classes for classifiers. Ordinary callable teachers are
+            inference-only and do not support True. Defaults to ``False``.
+        previous_teacher_noise_loss_weight (float): Weight of the previous teacher's
+            independently normalized noise KD loss. Defaults to 1.0.
+        current_teacher_noise_loss_weight (float): Weight of the current teacher's
+            independently normalized noise KD loss. Defaults to 1.0; zero disables
+            this teacher's noise objective.
+        dual_teacher_scope (str): With two teacher roles, "task" selects each teacher's
+            taught classes and "all" lets both supervise all examples. Classification
+            exposure for the previous role also respects clf_distil_scope. Defaults to "task".
         teacher_training (str): When trainable_teacher is true, continually fit the
             teacher before each task with ``"each_task"`` (default), or only before
             the first task with ``"first_task"``. Explicit fit_teacher calls are
@@ -1347,6 +1363,10 @@ class DiffusionModelConfig(KwargsMixin):
     defer_teacher: bool = False
     trainable_teacher: bool = False
     teacher_training: str = "each_task"
+    teacher_noise_input_type: str = field(default="images_timesteps_labels", kw_only=True)
+    previous_teacher_noise_loss_weight: float = field(default=1.0, kw_only=True)
+    current_teacher_noise_loss_weight: float = field(default=1.0, kw_only=True)
+    dual_teacher_scope: str = field(default="task", kw_only=True)
 
 
 @dataclass
@@ -1378,7 +1398,19 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             labels represented by the frozen teacher; 'replay_only' selects True entries of
             the explicit replay mask in a third dataset tensor; 'current_and_replay' uses
             all current/replay rows, with teacher class support respected when matching
-            distributions. Defaults to ``'current_and_replay'``.
+            distributions. In dual-teacher mode this scope controls the previous role;
+            the current role follows dual_teacher_scope and classifier row masks.
+            Defaults to ``'current_and_replay'``.
+        previous_teacher_clf_loss_weight (float): Weight of the previous teacher's
+            independently computed hard/soft classification KD. Defaults to 1.0.
+        current_teacher_clf_loss_weight (float): Weight of current-task classifier KD.
+            Zero disables this teacher's class objective. Defaults to 1.0.
+        teacher_classifier_from_logits (bool): Apply softmax to the output of an
+            ordinary callable image classifier when True; False expects class
+            probabilities. A teacher without callable predict_class receives clean
+            x0 with training=False, independently of student noising in V1 and V2.
+            Native predict_class teachers retain their probability interface and
+            shared teacher/student input selection. Defaults to ``False``.
         mask_by_nulls (bool | None): Select only examples whose post-dropout CFG label is
             null ID 0 for classifier loss and accuracy when True; False leaves this mask
             disabled. None lets the model factory use network.use_cfg. This row filter
@@ -1470,6 +1502,9 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_train_batch_fraction: float = field(default=0.0, kw_only=True)
     clf_train_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
     clf_test_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
+    teacher_classifier_from_logits: bool = field(default=False, kw_only=True)
+    previous_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
+    current_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
 
 
 @dataclass
@@ -2062,11 +2097,19 @@ class ContinuallyLearnConfig(KwargsMixin):
         train_classifier_separately (bool): Retained for call compatibility; the learner
             selects the separate classifier phase automatically for
             ``DiffusionClassifierV2``. V1 trains both parts jointly. Defaults to ``False``.
-        use_distillation (bool): Use each completed diffusion classifier's selected raw/EMA
-            snapshot as the next task's frozen teacher. The model must provide a
-            distillation token and a positive teacher objective. An optional runtime teacher
-            may initialize task one but is never stored in this YAML-safe section. Defaults
+        use_distillation (bool): Use each completed diffusion model's selected raw/EMA
+            snapshot as the next task's frozen teacher. The model must enable a positive
+            teacher objective. Classification KD uses its distillation head when available
+            and otherwise its primary classifier head. An optional runtime teacher may
+            initialize task one but is never stored in this YAML-safe section. Defaults
             to ``False``.
+        dual_teacher_distillation (bool): Train a separate current-task teacher only
+            on newly introduced classes and distil alongside the frozen previous
+            student snapshot. Requires use_distillation=True and excludes the older
+            trainable_teacher lifecycle and within-task recovery. Defaults to False.
+        current_teacher_init (str): "fresh" initializes a new task-local teacher;
+            "student" copies the student's current weights before current-only
+            supervised training. Both create a new optimizer each task. Defaults to "fresh".
         snapshot_network_name (str): 'raw' or 'ema' branch cloned for previous-task
             distillation and teacher-scored replay. Selecting 'ema' requires an EMA-enabled
             diffusion wrapper. Defaults to ``'raw'``.
@@ -2142,6 +2185,8 @@ class ContinuallyLearnConfig(KwargsMixin):
     use_generative_model_classifier: bool = False
     train_classifier_separately: bool = False
     use_distillation: bool = False
+    dual_teacher_distillation: bool = field(default=False, kw_only=True)
+    current_teacher_init: str = field(default="fresh", kw_only=True)
     snapshot_network_name: str = "raw"
     use_ensemble_accuracy: bool = False
     evaluate_ensemble_accuracy: bool = False

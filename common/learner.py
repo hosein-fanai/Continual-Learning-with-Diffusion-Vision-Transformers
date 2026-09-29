@@ -30,14 +30,16 @@ from __future__ import annotations
 import tensorflow as tf
 
 import numpy as np
+
 import yaml
 
 from copy import deepcopy
+
 from pathlib import Path
 
 import time
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from common.config import Config, normalize_training_task, resolve_continual_schedule
 from common.utils import CL_plot
@@ -96,6 +98,11 @@ from common.recovery import (
     validate_checkpoint_destination
 )
 from common.keras_compat import optimizer_iterations
+from common.current_task_teacher import (
+    annotate_teacher_task_classes,
+    make_current_task_teacher,
+    student_task_class_ids,
+)
 
 from autoencoder import VariationalAutoencoder, VAEClassifier
 
@@ -729,7 +736,9 @@ def _ensemble_accuracy_row(
     return row
 
 
-def _has_positive_distillation_objective(model: DiffusionModel) -> bool:
+def _has_positive_distillation_objective(
+    model: DiffusionModel, *, dual_teacher_distillation: bool = False,
+) -> bool:
     """Determine whether a diffusion wrapper has an active teacher-dependent loss.
 
     Regularizer training modes distil and both require teacher output; normal mode does not.
@@ -739,10 +748,12 @@ def _has_positive_distillation_objective(model: DiffusionModel) -> bool:
     Args:
         model (DiffusionModel): Compiled diffusion wrapper with noise, classification, and
             token-regularizer coefficients.
+        dual_teacher_distillation (bool): Whether the task lifecycle will construct
+            a current teacher even when none is attached yet.
 
     Returns:
         bool: True for positive noise or classifier distillation, or a positive
-        teacher-trained classifier regularizer.
+        teacher-trained classifier regularizer with a positive effective role weight.
     """
 
     noise_distil_loss_coef = float(tf.keras.backend.get_value(
@@ -765,8 +776,18 @@ def _has_positive_distillation_objective(model: DiffusionModel) -> bool:
         ctr_loss_coef > 0.
         and regularizer_kwargs.get("train_type", "normal") in ("distil", "both")
     )
-    return noise_distil_loss_coef > 0. or clf_distil_loss_coef > 0. \
-        or uses_teacher_regularizer
+    current_available = dual_teacher_distillation or getattr(
+        model, "current_teacher_network", None
+    ) is not None
+    noise_role_enabled = float(getattr(model, "previous_teacher_noise_loss_weight", 1.)) > 0. or (
+        current_available and float(getattr(model, "current_teacher_noise_loss_weight", 1.)) > 0.
+    )
+    class_role_enabled = float(getattr(model, "previous_teacher_clf_loss_weight", 1.)) > 0. or (
+        current_available and float(getattr(model, "current_teacher_clf_loss_weight", 1.)) > 0.
+    )
+    return (noise_distil_loss_coef > 0. and noise_role_enabled) or (
+        (clf_distil_loss_coef > 0. or uses_teacher_regularizer) and class_role_enabled
+    )
 
 
 def _flatten_example_rows(values: np.ndarray) -> np.ndarray:
@@ -899,7 +920,8 @@ def _sample_diffusion_replay(
 ) -> np.ndarray:
     """Generate aligned replay images in bounded label-conditioned batches.
 
-    Each sampling call uses model.test_network_name and adds one to class labels when CFG
+    Each sampling call maps dataset labels to student columns, uses model.test_network_name,
+    and adds one to class labels when CFG
     reserves zero for the null label. No generator call occurs for an empty request.
 
     Args:
@@ -925,6 +947,10 @@ def _sample_diffusion_replay(
     batch_starts = range(0, len(labels), batch_size)
     for chunk_index, start in enumerate(batch_starts):
         chunk_labels = labels[start:start + batch_size]
+        mapper = getattr(generative_model, "_map_classes", None)
+        # Native dynamic wrappers map dataset labels before the optional CFG offset.
+        if callable(mapper):
+            chunk_labels = np.asarray(mapper(tf.convert_to_tensor(chunk_labels)))
         # Report each bounded generation batch only when progress output is enabled.
         if verbose:
             print(
@@ -948,7 +974,9 @@ def _predict_teacher_probabilities(
     x: np.ndarray,
     data_min: float,
     data_range: float,
-    batch_size: int
+    batch_size: int,
+    *,
+    class_mapping: Mapping[int, int] | None = None,
 ) -> np.ndarray:
     """Score replay or probe images with a fixed diffusion classifier network.
 
@@ -963,10 +991,17 @@ def _predict_teacher_probabilities(
         data_min (float): Lower endpoint of the loader preprocessing scale.
         data_range (float): Nonzero width of the loader preprocessing scale.
         batch_size (int): Maximum examples in each inference call.
+        class_mapping (Mapping[int, int] | None): Dense learner dataset IDs mapped
+            to raw output columns. None uses snapshot metadata when available.
 
     Returns:
-        np.ndarray: Primary class probabilities shaped (N, teacher_class_count). For N=0, an
-        empty float32 matrix uses teacher.num_classes when available.
+        np.ndarray: Primary probabilities in dense learner dataset-label order,
+        shaped (N, teacher_class_count). For N=0, an empty float32 matrix uses
+        teacher.num_classes when available.
+
+    Raises:
+        ValueError: Saved or explicit mapping does not cover a dense learner
+            vocabulary and every raw output column exactly once.
     """
 
     diffusion_x = _prepare_diffusion_x(x, data_min, data_range)
@@ -981,13 +1016,24 @@ def _predict_teacher_probabilities(
             training=False
         )))
 
-    # An empty probe returns an empty matrix with the teacher's class width.
+    # An empty probe retains the teacher width and the same mapping validation.
     if not predictions:
         output_width = int(getattr(teacher, "num_classes", 0) or 0)
-
-        return np.empty((0, output_width), dtype="float32")
-
-    return np.concatenate(predictions, axis=0)
+        probabilities = np.empty((0, output_width), dtype="float32")
+    # Nonempty batches preserve the raw output-column order until mapping below.
+    else:
+        probabilities = np.concatenate(predictions, axis=0)
+    mapping = class_mapping if class_mapping is not None else getattr(
+        teacher, "_diffusion_seen_classes", None
+    )
+    # Fixed or legacy networks without mapping metadata already use dense dataset IDs.
+    if not mapping:
+        return probabilities
+    width = probabilities.shape[1]
+    # Continual scoring indexes columns with its contiguous remapped dataset labels.
+    if set(mapping) != set(range(width)) or sorted(mapping.values()) != list(range(width)):
+        raise ValueError("Teacher scoring requires a complete dense dataset-to-output class mapping.")
+    return probabilities[:, [int(mapping[index]) for index in range(width)]]
 
 
 def _resolve_baseline_controls(
@@ -1179,6 +1225,9 @@ def _run_continual_tasks(
     seed: int | None = None,
     show_generated_images: bool = True,
     show_network_summary: bool | None = True,
+    *,
+    dual_teacher_distillation: bool = False,
+    current_teacher_init: str = "fresh",
 ) -> list[float] | dict[str, object]:
     """Train and evaluate a class-incremental schedule with optional replay, distillation, and recovery.
 
@@ -1332,6 +1381,14 @@ def _run_continual_tasks(
         use_distillation (bool): Whether each completed diffusion student becomes the next
             task's frozen teacher; requires an active teacher-dependent objective. Defaults
             to ``False``.
+        dual_teacher_distillation (bool): Fit an independent current-task teacher on
+            new-class real training rows before each student task, alongside the frozen
+            previous-student teacher. Requires use_distillation and excludes
+            trainable_teacher and optimizer-step checkpointing. Defaults to False.
+        current_teacher_init (str): ``"fresh"`` initializes a task-local current
+            teacher; ``"student"`` copies the student's current weights and full
+            vocabulary. Both receive a fresh optimizer and only new-class real data.
+            Defaults to ``"fresh"``.
         snapshot_network_name (str): raw or ema branch used for automatic teachers and
             teacher-scored replay; ema requires an EMA-enabled wrapper. Defaults to
             ``'raw'``.
@@ -2080,6 +2137,25 @@ def _run_continual_tasks(
 
     trainable_teacher = isinstance(generative_model, DiffusionModel) and generative_model.trainable_teacher
     persistent_teacher = trainable_teacher and generative_model.teacher_training == "each_task"
+    # An explicit Boolean keeps configuration typos from enabling another teacher.
+    if not isinstance(dual_teacher_distillation, bool):
+        raise ValueError("dual_teacher_distillation must be a bool.")
+    # Both supported initializations construct an independent task-local trainer.
+    if current_teacher_init not in ("fresh", "student"):
+        raise ValueError("current_teacher_init must be 'fresh' or 'student'.")
+    # Dual training requires frozen previous snapshots and a separate current trainer.
+    if dual_teacher_distillation:
+        # Previous-task retention remains owned by the existing distillation lifecycle.
+        if not use_distillation or not isinstance(generative_model, DiffusionModel):
+            raise ValueError("dual_teacher_distillation requires use_distillation and a diffusion wrapper.")
+        # Legacy persistent-teacher training would replace the previous-task role.
+        if trainable_teacher:
+            raise ValueError("dual_teacher_distillation cannot be combined with trainable_teacher=True.")
+        # Active current-teacher fits do not yet have an optimizer-step recovery protocol.
+        if getattr(generative_model, "checkpoint_interval", 0) > 0:
+            raise ValueError("Dual-teacher training supports task-boundary recovery, not optimizer-step checkpointing.")
+        generative_model.set_current_teacher_network(None)
+        object.__setattr__(generative_model, "_current_teacher_model", None)
     # Opt-in teacher training can start from an independent copy of the initial student.
     if trainable_teacher:
         # Explicit teachers retain their own architecture and initial weights.
@@ -2119,7 +2195,9 @@ def _run_continual_tasks(
         raise ValueError("snapshot_network_name='ema' requires EMA to be enabled.")
 
     # A distilled run must actually enable at least one teacher loss.
-    if use_distillation and not _has_positive_distillation_objective(generative_model):
+    if use_distillation and not _has_positive_distillation_objective(
+        generative_model, dual_teacher_distillation=dual_teacher_distillation,
+    ):
         raise ValueError("use_distillation requires a positive distillation objective.")
     # Replay-only KD is undefined when the continual treatment has no source
     # of replay rows; fail instead of reporting an identically zero objective.
@@ -2534,6 +2612,8 @@ def _run_continual_tasks(
         },
         "distillation_and_metrics": {
             "use_distillation": bool(use_distillation),
+            "dual_teacher_distillation": dual_teacher_distillation,
+            "current_teacher_init": current_teacher_init,
             "snapshot_network_name": snapshot_network_name,
             "mechanistic_metrics": bool(mechanistic_metrics),
             "mechanistic_max_samples": mechanistic_max_samples,
@@ -2763,6 +2843,10 @@ def _run_continual_tasks(
         elif use_distillation and start_task_index > 0:
             restored_teacher = generative_model.snapshot_teacher_network(
                 network_name=snapshot_network_name
+            )
+            annotate_teacher_task_classes(
+                restored_teacher, generative_model,
+                [label for group in completed_groups for label in group],
             )
             generative_model.set_teacher_network(restored_teacher)
 
@@ -3067,6 +3151,12 @@ def _run_continual_tasks(
             # Keep previous-task diagnostics independent of the teacher about to be trained.
             if persistent_teacher and use_distillation:
                 previous_teacher = generative_model._teacher_model.snapshot_teacher_network("raw")
+            # Snapshot scope uses previously taught student columns, including fixed-width heads.
+            if previous_teacher is not None:
+                annotate_teacher_task_classes(
+                    previous_teacher, generative_model,
+                    [label for group in internal_task_groups[:task_index] for label in group],
+                )
 
         # Expand diffusion vocabularies from the task schedule before subsampling training
         # rows.
@@ -3158,6 +3248,52 @@ def _run_continual_tasks(
         # An explicitly disabled validation set is not passed to training or evaluation.
         if not use_valset:
             x_val, y_val = None, None
+
+        current_teacher = None
+        current_teacher_class_ids = None
+        current_teacher_task_class_ids = None
+        current_teacher_trainset = None
+        current_teacher_valset = None
+        # Prepare the current teacher from real new-class rows before any replay mixing.
+        if dual_teacher_distillation:
+            # Select newly introduced real rows independently of cumulative training,
+            # replay budgets, replay concatenation, and later generator resampling.
+            current_teacher_x, current_teacher_y = _select_classes(
+                all_x_train, all_y_train, new_classes
+            )
+            # An empty new-class pool cannot train a current-task teacher.
+            if not len(current_teacher_x):
+                raise ValueError("Current-task teacher training requires new-class real examples.")
+            current_teacher_x_val, current_teacher_y_val = _select_classes(
+                all_x_val, all_y_val, new_classes
+            ) if use_valset and all_x_val is not None and all_y_val is not None else (None, None)
+            # An absent current-class validation cohort disables validation for this teacher.
+            if current_teacher_x_val is not None and not len(current_teacher_x_val):
+                current_teacher_x_val, current_teacher_y_val = None, None
+            current_teacher_task_class_ids = student_task_class_ids(generative_model, new_classes)
+            current_teacher_seed = derive_seed(task_seed, "current_teacher")
+            current_teacher, current_teacher_class_ids = make_current_task_teacher(
+                generative_model, new_classes,
+                initialization=current_teacher_init, seed=current_teacher_seed,
+            )
+            object.__setattr__(generative_model, "_current_teacher_model", current_teacher)
+            current_teacher_trainset = _task_dataset(
+                _prepare_diffusion_x(current_teacher_x, diffusion_data_min, diffusion_data_range),
+                _label_ids(current_teacher_y), training=True,
+            )
+            current_teacher_valset = _task_dataset(
+                _prepare_diffusion_x(current_teacher_x_val, diffusion_data_min, diffusion_data_range),
+                _label_ids(current_teacher_y_val),
+            ) if current_teacher_x_val is not None else None
+            task_resource["current_teacher"] = {
+                "initialization": current_teacher_init,
+                "seed": current_teacher_seed,
+                "class_ids": list(current_teacher_class_ids),
+                "task_class_ids": list(current_teacher_task_class_ids),
+                "dataset_class_ids": list(new_classes),
+                "training_examples": int(len(current_teacher_x)),
+                "validation_examples": 0 if current_teacher_x_val is None else int(len(current_teacher_x_val)),
+            }
 
         # Track the origin of each training row. Diffusion KD consumes this
         # metadata only for the optional replay-only scope.
@@ -3754,6 +3890,36 @@ def _run_continual_tasks(
             else:
                 generative_fit_method = fit_method
 
+            # Freeze the independently trained current teacher before the student's own fit.
+            if dual_teacher_distillation:
+                teacher_started = time.perf_counter()
+                try:
+                    teacher_history = _train_task_model(
+                        current_teacher, current_teacher_trainset, current_teacher_valset,
+                        task_callbacks=_phase_callbacks(
+                            "val_loss" if current_teacher_valset is not None else "loss",
+                            default_mode="min", include_generative=True,
+                        ),
+                        fit_method=fit_method,
+                        fit_kwargs=dict(fit_kwargs or {}),
+                    )
+                finally:
+                    current_teacher.network.trainable = False
+                generative_model.set_current_teacher_network(
+                    current_teacher,
+                    class_ids=current_teacher_class_ids,
+                    task_class_ids=current_teacher_task_class_ids,
+                )
+                task_resource["seconds"]["teacher_fit"] = time.perf_counter() - teacher_started
+                task_resource["current_teacher"]["optimizer_updates"] = {
+                    name: int(optimizer_iterations(optimizer))
+                    for name, optimizer in (
+                        ("optimizer", getattr(current_teacher, "optimizer", None)),
+                        ("generator", getattr(current_teacher, "gen_optimizer", None)),
+                        ("classifier", getattr(current_teacher, "clf_optimizer", None)),
+                    ) if optimizer is not None
+                }
+
             # The constructor selects a one-time warmup or training before every student task.
             if trainable_teacher and (persistent_teacher or task_index == 0):
                 teacher = generative_model._teacher_model
@@ -3876,7 +4042,8 @@ def _run_continual_tasks(
                 probe_x,
                 diffusion_data_min,
                 diffusion_data_range,
-                batch_size
+                batch_size,
+                class_mapping=dict(generative_model.seen_classes),
             )
             task_resource["seconds"]["teacher_scoring"] += float(
                 time.perf_counter() - scoring_started
@@ -4004,7 +4171,11 @@ def _run_continual_tasks(
                 ) if use_diffusion_classifier else new_model.predict(
                     classifier_inputs, verbose=verbose,
                 )
-                correct = np.argmax(predictions, axis=-1) == label_ids
+                target_ids = label_ids
+                # Raw diffusion probabilities use student columns, which may differ from dataset IDs.
+                if use_diffusion_classifier:
+                    target_ids = np.asarray(generative_model._map_classes(tf.convert_to_tensor(label_ids)))
+                correct = np.argmax(predictions, axis=-1) == target_ids
                 ordinary_acc = float(np.mean(correct))
                 for group_index, group in enumerate(learned_groups):
                     selected = np.isin(label_ids, group)
@@ -4074,6 +4245,14 @@ def _run_continual_tasks(
         if ensemble_acc is not None:
             ensemble_acc_list.append(ensemble_acc)
 
+        # Current teacher parameters do not persist across completed task boundaries.
+        if dual_teacher_distillation:
+            # Current teachers are task-local. Only the completed student snapshot
+            # survives into the next task or its task-boundary checkpoint.
+            generative_model.set_current_teacher_network(None)
+            object.__setattr__(generative_model, "_current_teacher_model", None)
+            current_teacher = None
+
         # Store a frozen copy of the just-completed student, not the narrower
         # teacher that was consumed during this task. It is immediately valid
         # for the next task and has a restorable topology.
@@ -4082,6 +4261,7 @@ def _run_continual_tasks(
             completed_teacher = generative_model.snapshot_teacher_network(
                 network_name=snapshot_network_name
             )
+            annotate_teacher_task_classes(completed_teacher, generative_model, seen_classes)
             generative_model.set_teacher_network(completed_teacher)
 
         # Persist task-boundary state when checkpointing is enabled and has a destination.
@@ -4197,6 +4377,8 @@ def _run_continual_tasks(
             "experiment_run_id": experiment_run_id,
             "test_evaluated": experiment_phase != "development",
             "snapshot_network_name": snapshot_network_name,
+            "dual_teacher_distillation": dual_teacher_distillation,
+            "current_teacher_init": current_teacher_init,
             "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
             "checkpoint_dir": checkpoint_dir,
             "checkpoint_paths": checkpoint_paths,

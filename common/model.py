@@ -1074,11 +1074,8 @@ def get_model(
                 wrapper_kwargs = wrapper_section.kwargs() \
                     if wrapper_section is not None else {}
 
-    # Normalize an explicit wrapper name while preserving automatic selection via None.
     wrapper_name = None if wrapper_name is None else str(wrapper_name).lower()
-    # Normalize an explicit classifier name while preserving the family default via None.
-    classifier_name = None if classifier_name is None \
-        else str(classifier_name).lower()
+    classifier_name = None if classifier_name is None else str(classifier_name).lower()
 
     # Reject continual VAEClassifier because its fixed head would expose future classes.
     if task == "continual" and model_name == "vae_classifier":
@@ -1185,10 +1182,11 @@ def get_model(
         num_last_not_frozen = options.pop("num_last_not_frozen", 3)
         resize = options.pop("resize", (299, 299))
         conv_base_name = options.pop(
-            "conv_base_name",
+            "conv_base_name", 
             config.model.conv_base_name if config is not None else kwargs.get(
-                "conv_base_name", "Xception"
-            ),
+                "conv_base_name", 
+                "Xception"
+            )
         )
         architecture_kwargs = deepcopy(
             options.pop("architecture_kwargs", {}) or {}
@@ -1245,8 +1243,8 @@ def get_model(
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 
             verbose=0, 
-            architecture_kwargs=architecture_kwargs,
-            seed=runtime_seed,
+            architecture_kwargs=architecture_kwargs, 
+            seed=runtime_seed
         )
 
 

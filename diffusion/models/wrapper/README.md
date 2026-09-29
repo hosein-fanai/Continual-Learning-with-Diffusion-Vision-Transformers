@@ -352,7 +352,8 @@ Classifier-specific progressive names also include `feature_aggregator` and
 
 `DiffusionModel` owns the shared teacher lifecycle. Set
 `noise_distil_loss_coef > 0` to match the student's epsilon prediction to a frozen
-teacher on the same `x_t`, timestep, condition IDs, and CFG scale. The teacher
+teacher on the same `x_t`. Native diffusion teachers also receive the same
+timestep, condition IDs, and CFG scale. The teacher
 is run with `training=False`, its outputs are stopped, and its variables are
 never optimized. `defer_teacher=True` permits task one to train before
 continual learning snapshots the first completed denoiser.
@@ -361,16 +362,63 @@ contribute their teacher-mask weight, and empty eligible batches contribute zero
 weight. The differentiated per-batch KD objective is unchanged; `total_loss`
 continues to aggregate complete batch objectives.
 
+An ordinary callable Keras epsilon teacher can return a single noise tensor.
+`teacher_noise_input_type` selects its call input: `"images"` passes `x_t`,
+`"images_timesteps"` passes `(x_t, t)`, and the default
+`"images_timesteps_labels"` passes `(x_t, t, labels)`. These selectors apply
+only to callable teachers without the native full-return interface; native
+teachers retain their existing diffusion call contract. For example, attach a
+trained two-input Keras noise model as follows:
+
+```python
+model = DiffusionModel(
+    network=student_denoiser,
+    teacher_network=noise_teacher,  # noise_teacher((x_t, t), training=False)
+    teacher_noise_input_type="images_timesteps",
+    noise_distil_loss_coef=1.0,
+)
+```
+
+An image-only epsilon teacher instead uses `teacher_noise_input_type="images"`;
+its images are still `x_t`, since it is teaching noise prediction.
+
 Classifier distillation is enabled when `teacher_network` is supplied and
 `clf_distil_loss_coef > 0`. It uses the distillation-token head when present,
 otherwise the primary classifier head. Teacher-trained classifier regularizers also enable the
 same inherited `map_preprocess` path when `ctr_loss_coef > 0` and their
-`train_type` is `distil` or `both`. Pass a
-compatible raw classifier, or another wrapper whose `.network` is that
-classifier, as the programmatic teacher. The teacher is deliberately not a
+`train_type` is `distil` or `both`. Pass a compatible raw classifier, another
+wrapper whose `.network` is that classifier, or an ordinary image-only Keras
+classifier as the programmatic teacher. The teacher is deliberately not a
 YAML/dataclass field because it is a live Keras object. The wrapper unwraps and
 freezes the effective raw network, calls it with `training=False`, and stops
 gradients through its probabilities.
+
+A teacher without callable `predict_class` is called as
+`teacher(clean_x0, training=False)` in both V1 and V2. It receives clean images
+even when the student classifier uses noised images; timesteps and condition
+labels are not passed. Its single output must have shape `[batch, classes]`.
+By default this output contains class probabilities. Set
+`teacher_classifier_from_logits=True` when it contains logits so the wrapper
+applies softmax before constructing distillation targets. For a trained Keras
+classifier with a linear output layer:
+
+```python
+model = DiffusionClassifier(
+    network=student,
+    teacher_network=image_classifier,
+    teacher_classifier_from_logits=True,
+    clf_distil_type="soft",
+    clf_distil_loss_coef=1.0,
+    noise_distil_loss_coef=0.0,
+)
+```
+
+Ordinary callable teachers remain frozen and do not support
+`trainable_teacher=True` or `fit_teacher`. A plain single-output teacher cannot
+supply both classification and noise distillation targets simultaneously;
+use a compatible native multi-output teacher for that combination.
+`teacher_noise_input_type` and `teacher_classifier_from_logits` are serialized
+configuration fields; the attached teacher remains a runtime-only object.
 
 Continual learning can instead construct the teacher automatically. With
 `defer_teacher=True`, task one is allowed to run without a teacher;
@@ -423,14 +471,17 @@ classifier rows when `clf_train_batch_fraction > 0`. CFG and timestep masks
 still select rows using the original diffusion inputs. Ensemble-loss replacement
 cannot be combined with explicit V1 caps because it performs its own noising.
 
-During training the teacher receives `(x_t, t, selected_labels)`, where
+During training a native teacher with callable `predict_class` receives
+`(x_t, t, selected_labels)`, where
 `selected_labels` is the conditional or unconditional prepared branch selected
 by the classifier input policy. With an explicit cap, the mapped batch caches
 the classifier image/time pair immediately after the seven diffusion tensors;
 teacher and student consume that same corruption. During validation/evaluation
-the teacher receives the same clean or capped input and unconditional label as
-the student. If it provides `predict_class`, that method supplies the
-target. The custom train/test steps consume the prepared tuple without noising
+the native teacher receives the same clean or capped input and unconditional
+label as the student. Its `predict_class` method supplies probabilities;
+`teacher_classifier_from_logits` does not alter that interface. An ordinary
+image-only teacher always receives clean `x0` instead. The custom train/test
+steps consume the prepared tuple without noising
 or shifting it a second time. Array inputs, separate `x`/`y`, validation tuples,
 and already-prepared datasets are not automatically adapted by this path.
 Progressive resolution changes are mirrored to compatible teachers. For a
@@ -495,8 +546,9 @@ head to the classifier variable group and applies distillation only in the
 discriminator train/test phase. Its generator map returns the ordinary seven
 diffusion tensors, plus the noise-teacher prediction/mask when noise
 distillation is active. Its discriminator map returns
-`(t, x_t, null_labels, classes, x0, teacher_labels)`, so the classifier teacher
-and student see the same clean or bounded-noise phase-specific input.
+`(t, x_t, null_labels, classes, x0, teacher_labels)`. A native classifier teacher
+and student see the same clean or bounded-noise phase-specific input; an
+ordinary image-only teacher receives the clean `x0` field.
 
 ## Split generator/discriminator training
 
@@ -618,6 +670,93 @@ forcing, but no stock wrapper supplies that fourth tensor; use a direct call or
 a custom `train_step` for that workflow. The classifier's inherited depth API
 grows its encoder and classifier branches, and targeted `{"decoder": ...}`
 specs can also grow the attached decoder.
+
+## Previous-task and current-task teachers
+
+The continual learner can train the student against two independent teachers:
+
+```python
+continually_learn = dict(
+    use_distillation=True,
+    dual_teacher_distillation=True,
+    current_teacher_init="fresh",
+)
+```
+
+Use these options in the existing continual-learning configuration or learner
+call. For each task, the learner trains a separate current-task teacher using
+only that task's real training data and validation data. It then freezes this
+teacher and distills the student from both it and the previous completed
+student snapshot. Task one uses just the current teacher. Replay generation keeps
+the existing continual-learning sampler.
+
+`current_teacher_init="fresh"` initializes new weights and a task-local class
+head. `"student"` makes an independent copy of the expanded student and trains
+that copy only on the new data. Each teacher has its own optimizer. The learner
+maps local teacher outputs and conditional labels into the student's vocabulary,
+including an existing nonidentity `seen_classes` mapping. Its keys use the
+learner's remapped dataset IDs; its values identify output columns. Continual-learning
+wrappers must use dynamic vocabularies (`num_classes=None` at construction);
+fixed-width teacher examples below also work with manual wrapper training.
+
+Configure the student's ordinary KD coefficients and optional role weights:
+
+```python
+model = DiffusionClassifier(
+    network=network,
+    defer_teacher=True,
+    noise_distil_loss_coef=1.0,
+    clf_distil_loss_coef=1.0,
+    previous_teacher_noise_loss_weight=1.0,
+    current_teacher_noise_loss_weight=1.0,
+    previous_teacher_clf_loss_weight=1.0,
+    current_teacher_clf_loss_weight=1.0,
+    dual_teacher_scope="task",
+)
+```
+
+Noise-only `DiffusionModel` uses the noise options; both `DiffusionClassifier`
+and `DiffusionClassifierV2` support classification and noise together. Zero
+disables an individual teacher's objective. Each enabled teacher contributes
+its own normalized loss, multiplied by its role weight; their sum is multiplied
+by the existing corresponding KD coefficient. Classification supports both hard
+and soft targets. The teachers' distributions are not averaged together.
+
+The default `dual_teacher_scope="task"` applies each teacher only to examples
+from its taught classes, using original class IDs before CFG label dropout.
+Use `"all"` to apply both teachers to every example, subject to the existing
+noise CFG mask and classifier row masks. The existing `clf_distil_scope` applies
+to the previous teacher: `"replay_only"` preserves its replay restriction while
+the current teacher can still teach new real examples. Without a null condition, noise KD
+also excludes class conditions outside the teacher's vocabulary. Each classification
+teacher targets only its taught output columns; the student's softmax denominator
+still includes all student classes. With task scope, the previous teacher contributes
+only when old-task real or replay examples are present. Use all scope to obtain
+previous-teacher classification targets on current-only data.
+
+For manually trained teachers, keep the previous teacher in `teacher_network`
+and attach the current teacher before fitting:
+
+```python
+model.set_current_teacher_network(
+    current_teacher,
+    class_ids=[4, 5],       # teacher columns 0, 1 map to student classes 4, 5
+    task_class_ids=[4, 5],  # classes taught by this teacher
+)
+```
+
+A full-width current teacher can use `class_ids=list(range(6))` with
+`task_class_ids=[4, 5]`. Ordinary callable image classifiers receive clean images
+in both teacher roles, without `predict_class`; an image-only classifier needs
+its role's noise weight set to zero when noise KD is enabled. Callable epsilon
+teachers use `teacher_noise_input_type` as documented above.
+
+The current teacher and its mappings are runtime attachments. Automatic
+continual learning discards them after each task and rebuilds the next teacher
+after task-boundary recovery. Task-boundary checkpoints are supported;
+optimizer-step/mid-task checkpoints are currently rejected in this mode.
+`dual_teacher_distillation=True` cannot be combined with the older
+`trainable_teacher=True` workflow.
 
 ## Teacher construction and weight-only reload
 
